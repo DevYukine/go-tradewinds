@@ -21,6 +21,8 @@ type Config struct {
 	DB                 DBConfig
 	BaseURL            string
 	APIPort            int
+	Env                string // "development" or "production"
+	LogLevel           string // "debug", "info", "warn", "error"
 	PlayerEmail        string
 	PlayerPassword     string
 	StrategyAllocation []StrategyAlloc
@@ -80,6 +82,8 @@ func Load() (*Config, error) {
 		},
 		BaseURL:            envOrDefault("BOT_BASE_URL", "https://tradewinds.fly.dev"),
 		APIPort:            envIntOrDefault("API_PORT", 3002),
+		Env:                envOrDefault("ENV", "development"),
+		LogLevel:           envOrDefault("LOG_LEVEL", "debug"),
 		PlayerEmail:        os.Getenv("PLAYER_EMAIL"),
 		PlayerPassword:     os.Getenv("PLAYER_PASSWORD"),
 		RateLimitPerMinute: envIntOrDefault("RATE_LIMIT_PER_MINUTE", 300),
