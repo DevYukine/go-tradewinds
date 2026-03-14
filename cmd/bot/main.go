@@ -2,6 +2,8 @@ package main
 
 import (
 	"go.uber.org/fx"
+	"go.uber.org/fx/fxevent"
+	"go.uber.org/zap"
 
 	"github.com/DevYukine/go-tradewinds/internal/agent"
 	"github.com/DevYukine/go-tradewinds/internal/bot"
@@ -15,6 +17,11 @@ import (
 
 func main() {
 	fx.New(
+		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
+			zapLogger := fxevent.ZapLogger{Logger: log}
+			zapLogger.UseLogLevel(zap.DebugLevel)
+			return &zapLogger
+		}),
 		config.Module,    // Provides *Config
 		logging.Module,   // Provides *zap.Logger
 		db.Module,        // Provides *gorm.DB
@@ -22,6 +29,6 @@ func main() {
 		strategy.Module,  // Provides bot.Registry
 		bot.Module,       // Provides *Manager, starts company runners
 		optimizer.Module, // Provides *optimizer.Engine, runs periodic evaluation
-		server.Module,   // Provides API server for dashboard
+		server.Module,    // Provides API server for dashboard
 	).Run()
 }

@@ -11,14 +11,13 @@ var Module = fx.Module("logging",
 	fx.Provide(NewLogger),
 )
 
-// NewLogger creates a production-configured zap logger with debug level enabled.
+// NewLogger creates a development-configured zap logger with colored,
+// human-readable output on stdout.
 func NewLogger() (*zap.Logger, error) {
-	cfg := zap.NewProductionConfig()
+	cfg := zap.NewDevelopmentConfig()
 	cfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
-	cfg.EncoderConfig.TimeKey = "ts"
-	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 	cfg.OutputPaths = []string{"stdout"}
-	cfg.ErrorOutputPaths = []string{"stderr"}
+	cfg.ErrorOutputPaths = []string{"stdout"}
 
 	return cfg.Build()
 }

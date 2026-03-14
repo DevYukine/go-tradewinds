@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
-	gormlogger "gorm.io/gorm/logger"
+	"moul.io/zapgorm2"
 
 	"github.com/DevYukine/go-tradewinds/internal/config"
 )
@@ -31,8 +31,11 @@ var Module = fx.Module("db",
 func NewConnection(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*gorm.DB, error) {
 	log := logger.Named("db")
 
+	gormLog := zapgorm2.New(log)
+	gormLog.SetAsDefault()
+
 	gormCfg := &gorm.Config{
-		Logger: gormlogger.Default.LogMode(gormlogger.Warn),
+		Logger: gormLog,
 	}
 
 	db, err := gorm.Open(postgres.Open(cfg.DB.DSN()), gormCfg)

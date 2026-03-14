@@ -7,7 +7,6 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
-	fiberlogger "github.com/gofiber/fiber/v3/middleware/logger"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -48,13 +47,10 @@ func NewServer(
 	// Middleware.
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: []string{"*"},
-		AllowMethods: []string{"GET"},
-		AllowHeaders: []string{"Content-Type"},
+		AllowMethods: []string{"GET", "OPTIONS"},
+		AllowHeaders: []string{"Content-Type", "Cache-Control", "Connection"},
 	}))
-	app.Use(fiberlogger.New(fiberlogger.Config{
-		Format:     "${time} ${status} ${method} ${path} ${latency}\n",
-		TimeFormat: "15:04:05",
-	}))
+	app.Use(zapRequestLogger(logger.Named("http")))
 
 	s := &Server{
 		app:       app,
@@ -70,6 +66,24 @@ func NewServer(
 	s.registerSSE()
 
 	return s
+}
+
+// zapRequestLogger returns a Fiber middleware that logs requests via zap.
+func zapRequestLogger(log *zap.Logger) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		start := time.Now()
+		err := c.Next()
+		latency := time.Since(start)
+
+		log.Debug("request",
+			zap.Int("status", c.Response().StatusCode()),
+			zap.String("method", c.Method()),
+			zap.String("path", c.Path()),
+			zap.Duration("latency", latency),
+		)
+
+		return err
+	}
 }
 
 // RegisterServer hooks the server into the fx lifecycle.
