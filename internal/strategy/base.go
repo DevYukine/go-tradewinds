@@ -697,24 +697,21 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 // tryBuyShip attempts to purchase a ship at the given port. It checks the
 // shipyard inventory first and picks the best affordable ship. Falls back to
 // other shipyard ports if the primary port has no affordable stock.
+//
+// Safety: uses POST-purchase upkeep (current + new ship) in the 24h reserve
+// check, and refreshes economy state after purchase so subsequent fleet evals
+// see up-to-date treasury/upkeep figures.
 func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurchase) *api.Ship {
-	// Check how much we can spend (treasury minus safety margin for upkeep).
+	// Refresh economy before checking — ensures we have fresh treasury/upkeep
+	// after any recent purchases by this or other strategies.
+	if econ, err := b.ctx.Client.GetEconomy(ctx); err == nil {
+		b.ctx.State.UpdateEconomy(econ)
+	}
+
 	b.ctx.State.RLock()
 	treasury := b.ctx.State.Treasury
 	upkeep := b.ctx.State.TotalUpkeep
 	b.ctx.State.RUnlock()
-
-	// Keep a safety margin of 24h upkeep so we don't go bankrupt.
-	safetyMargin := upkeep * 24
-	// Also account for ~5% tax on purchase.
-	maxSpend := treasury - safetyMargin
-	if maxSpend <= 0 {
-		b.logger.Debug("treasury too low to buy ship",
-			zap.Int64("treasury", treasury),
-			zap.Int64("safety_margin", safetyMargin),
-		)
-		return nil
-	}
 
 	// Try the requested port first, then fall back to other shipyard ports.
 	portsToTry := []uuid.UUID{purchase.PortID}
@@ -751,13 +748,25 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 			return inventory[i].Cost < inventory[j].Cost
 		})
 
+		// canAffordShip checks if we can buy a ship and still maintain 24h of
+		// post-purchase upkeep (current upkeep + new ship's upkeep).
+		canAffordShip := func(item *api.ShipyardInventoryItem) bool {
+			costWithTax := int64(float64(item.Cost) * 1.06)
+			// Look up the new ship's upkeep from world data.
+			newShipUpkeep := int64(0)
+			if st := b.ctx.World.GetShipType(item.ShipTypeID); st != nil {
+				newShipUpkeep = int64(st.Upkeep)
+			}
+			postPurchaseUpkeep := upkeep + newShipUpkeep
+			safetyMargin := postPurchaseUpkeep * 24
+			return treasury >= costWithTax+safetyMargin
+		}
+
 		// First try to find the exact requested ship type that we can afford.
 		var chosenItem *api.ShipyardInventoryItem
 		for i := range inventory {
 			if inventory[i].ShipTypeID == purchase.ShipTypeID {
-				// Add ~5% tax buffer to cost check.
-				costWithTax := int64(float64(inventory[i].Cost) * 1.06)
-				if costWithTax <= maxSpend {
+				if canAffordShip(&inventory[i]) {
 					chosenItem = &inventory[i]
 					break
 				}
@@ -767,8 +776,7 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 		// Fall back to the cheapest affordable ship of any type.
 		if chosenItem == nil {
 			for i := range inventory {
-				costWithTax := int64(float64(inventory[i].Cost) * 1.06)
-				if costWithTax <= maxSpend {
+				if canAffordShip(&inventory[i]) {
 					chosenItem = &inventory[i]
 					b.logger.Debug("desired ship type not in stock or too expensive, using cheapest affordable alternative",
 						zap.String("wanted_type", purchase.ShipTypeID.String()),
@@ -781,9 +789,14 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 		}
 
 		if chosenItem == nil {
+			newShipUpkeep := int64(0)
+			if st := b.ctx.World.GetShipType(inventory[0].ShipTypeID); st != nil {
+				newShipUpkeep = int64(st.Upkeep)
+			}
 			b.logger.Debug("no affordable ships at shipyard",
 				zap.String("port_id", portID.String()),
-				zap.Int64("max_spend", maxSpend),
+				zap.Int64("treasury", treasury),
+				zap.Int64("post_purchase_reserve_needed", (upkeep+newShipUpkeep)*24),
 				zap.Int("cheapest_available", inventory[0].Cost),
 			)
 			continue
@@ -822,11 +835,17 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 		// Track ship purchase cost for P&L (includes ~5% port tax).
 		b.ctx.State.AddShipCost(int64(chosenItem.Cost))
 
+		// Refresh economy so subsequent fleet evals see updated upkeep/treasury.
+		if econ, err := b.ctx.Client.GetEconomy(ctx); err == nil {
+			b.ctx.State.UpdateEconomy(econ)
+		}
+
 		return ship
 	}
 
 	b.logger.Warn("could not buy ship at any shipyard port",
-		zap.Int64("max_spend", maxSpend),
+		zap.Int64("treasury", treasury),
+		zap.Int64("upkeep_24h", upkeep*24),
 	)
 	return nil
 }

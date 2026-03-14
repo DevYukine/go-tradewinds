@@ -25,7 +25,6 @@ const ports = ref<PortInfo[]>([])
 const routes = ref<RouteInfo[]>([])
 const ships = ref<MapShip[]>([])
 const loading = ref(true)
-const selectedShip = ref<MapShip | null>(null)
 
 function portCoords(port: PortInfo): L.LatLngExpression | null {
   if (port.latitude != null && port.longitude != null) {
@@ -192,7 +191,7 @@ function drawShips() {
         weight: 1,
       })
 
-      marker.on('click', () => { selectedShip.value = ship })
+      marker.bindPopup(buildShipPopup(ship), { maxWidth: 280 })
       shipLayer.addLayer(marker)
     } else if (ship.from_port_id && ship.to_port_id) {
       const fromPort = portLookup.get(ship.from_port_id)
@@ -223,10 +222,12 @@ function drawShips() {
         weight: 2,
       })
 
-      marker.on('click', () => { selectedShip.value = ship })
+      marker.bindPopup(buildShipPopup(ship), { maxWidth: 280 })
       shipLayer.addLayer(marker)
 
       // Floating time label above ship
+      const arrivalMs = ship.arriving_at ? new Date(ship.arriving_at).getTime() - now : 0
+      const timeText = ship.arriving_at ? formatTimeRemaining(arrivalMs) : 'In transit'
       const label = L.marker(pos, {
         icon: L.divIcon({
           className: 'ship-time-label',
@@ -280,6 +281,69 @@ function shipEta(ship: MapShip): string {
   return ms > 0 ? formatTimeRemaining(ms) : 'Arriving'
 }
 
+function buildShipPopup(ship: MapShip): string {
+  const strategyColor = STRATEGY_COLORS[ship.strategy] ?? '#94a3b8'
+
+  let statusHtml = ''
+  if (ship.status === 'docked') {
+    statusHtml = `Docked${ship.port_name ? ` at ${ship.port_name}` : ''}`
+  } else {
+    statusHtml = `${ship.from_port_name || '?'} → ${ship.to_port_name || '?'}`
+    const eta = shipEta(ship)
+    if (eta) statusHtml += `<br><span style="color:#94a3b8">ETA:</span> ${eta}`
+  }
+
+  const cargoPercent = ship.capacity > 0 ? Math.round((ship.cargo_total / ship.capacity) * 100) : 0
+  const cargoBarColor = cargoPercent > 80 ? '#f59e0b' : cargoPercent > 50 ? '#3b82f6' : '#10b981'
+
+  let cargoListHtml = '<div style="color:#64748b;font-style:italic">Empty hold</div>'
+  if (ship.cargo && ship.cargo.length > 0) {
+    cargoListHtml = ship.cargo.map(item =>
+      `<div style="display:flex;justify-content:space-between;gap:12px">
+        <span style="color:#94a3b8">${item.good_name}</span>
+        <span style="color:#e2e8f0;font-family:monospace">${item.quantity}</span>
+      </div>`,
+    ).join('')
+  }
+
+  return `<div style="min-width:220px;font-size:12px;line-height:1.5">
+    <div style="font-weight:700;font-size:13px;margin-bottom:2px;color:#f1f5f9">${ship.ship_name}</div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${strategyColor}"></span>
+      <span style="color:${strategyColor};font-weight:600">${ship.strategy}</span>
+      <span style="color:#475569">·</span>
+      <span style="color:#94a3b8">${ship.company_name}</span>
+    </div>
+    <div style="color:#cbd5e1;margin-bottom:8px">${statusHtml}</div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:8px">
+      <div style="background:#1e293b;border-radius:4px;padding:4px;text-align:center">
+        <div style="font-size:9px;color:#64748b;text-transform:uppercase">Speed</div>
+        <div style="color:#e2e8f0;font-family:monospace;font-weight:600">${ship.speed || '---'}</div>
+      </div>
+      <div style="background:#1e293b;border-radius:4px;padding:4px;text-align:center">
+        <div style="font-size:9px;color:#64748b;text-transform:uppercase">Upkeep</div>
+        <div style="color:#e2e8f0;font-family:monospace;font-weight:600">${ship.upkeep ? formatCurrency(ship.upkeep) : '---'}</div>
+      </div>
+      <div style="background:#1e293b;border-radius:4px;padding:4px;text-align:center">
+        <div style="font-size:9px;color:#64748b;text-transform:uppercase">Pax</div>
+        <div style="color:#c084fc;font-family:monospace;font-weight:600">${ship.passenger_count}/${ship.passenger_cap}</div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:4px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+        <span style="color:#64748b;font-weight:600">Cargo</span>
+        <span style="color:#94a3b8;font-family:monospace">${ship.cargo_total} / ${ship.capacity}</span>
+      </div>
+      <div style="background:#1e293b;border-radius:3px;height:4px;overflow:hidden;margin-bottom:6px">
+        <div style="background:${cargoBarColor};height:100%;width:${cargoPercent}%;border-radius:3px;transition:width 0.3s"></div>
+      </div>
+      ${cargoListHtml}
+    </div>
+  </div>`
+}
+
 async function fetchWorldData() {
   try {
     const data = await $fetch<WorldData>(`${apiBase}/api/world`)
@@ -323,8 +387,6 @@ onMounted(() => {
   portLayer.addTo(map)
   shipLayer.addTo(map)
 
-  map.on('click', () => { selectedShip.value = null })
-
   fetchWorldData()
   fetchShips()
 
@@ -357,95 +419,12 @@ onUnmounted(() => {
       </h3>
     </div>
 
-    <div v-if="loading" class="h-[500px] flex items-center justify-center">
+    <div v-if="loading" class="h-[calc(100vh-12rem)] min-h-[400px] flex items-center justify-center">
       <Icon name="mdi:loading" class="animate-spin text-2xl text-slate-500" />
     </div>
 
     <div class="relative">
-      <div ref="mapContainer" class="h-[500px] rounded-lg overflow-hidden" />
-
-      <!-- Ship Detail Panel (bottom-left) -->
-      <div
-        v-if="selectedShip"
-        class="absolute bottom-4 left-4 z-[1000] bg-slate-900/95 border border-slate-700 rounded-lg p-4 text-xs w-72 max-h-[320px] overflow-y-auto"
-      >
-        <div class="flex items-center justify-between mb-2">
-          <div class="font-bold text-slate-200 text-sm">{{ selectedShip.ship_name }}</div>
-          <button class="text-slate-500 hover:text-slate-300" @click="selectedShip = null">
-            <Icon name="lucide:x" class="text-sm" />
-          </button>
-        </div>
-
-        <div class="space-y-1.5 mb-3">
-          <div class="flex justify-between">
-            <span class="text-slate-500">Type</span>
-            <span class="text-slate-300">{{ selectedShip.ship_type || '---' }}</span>
-          </div>
-          <div class="flex justify-between">
-            <span class="text-slate-500">Company</span>
-            <span class="text-slate-300">{{ selectedShip.company_name }}</span>
-          </div>
-          <div class="flex justify-between">
-            <span class="text-slate-500">Strategy</span>
-            <span
-              :class="STRATEGY_COLORS[selectedShip.strategy] ? `font-medium` : ''"
-              :style="{ color: STRATEGY_COLORS[selectedShip.strategy] || '#94a3b8' }"
-            >{{ selectedShip.strategy }}</span>
-          </div>
-          <div class="flex justify-between">
-            <span class="text-slate-500">Status</span>
-            <span class="text-slate-300">
-              <template v-if="selectedShip.status === 'docked'">
-                Docked{{ selectedShip.port_name ? ` at ${selectedShip.port_name}` : '' }}
-              </template>
-              <template v-else>
-                {{ selectedShip.from_port_name || '?' }} → {{ selectedShip.to_port_name || '?' }}
-              </template>
-            </span>
-          </div>
-          <div v-if="selectedShip.status !== 'docked' && selectedShip.arriving_at" class="flex justify-between">
-            <span class="text-slate-500">ETA</span>
-            <span class="text-slate-300">{{ shipEta(selectedShip) }}</span>
-          </div>
-        </div>
-
-        <!-- Stats -->
-        <div class="grid grid-cols-3 gap-2 mb-3">
-          <div class="bg-slate-800/50 rounded p-1.5 text-center">
-            <div class="text-[9px] text-slate-500 uppercase">Speed</div>
-            <div class="text-slate-200 font-mono font-medium">{{ selectedShip.speed || '---' }}</div>
-          </div>
-          <div class="bg-slate-800/50 rounded p-1.5 text-center">
-            <div class="text-[9px] text-slate-500 uppercase">Upkeep</div>
-            <div class="text-slate-200 font-mono font-medium">{{ selectedShip.upkeep ? formatCurrency(selectedShip.upkeep) : '---' }}</div>
-          </div>
-          <div class="bg-slate-800/50 rounded p-1.5 text-center">
-            <div class="text-[9px] text-slate-500 uppercase">Passengers</div>
-            <div class="text-purple-400 font-mono font-medium">{{ selectedShip.passenger_count }}/{{ selectedShip.passenger_cap }}</div>
-          </div>
-        </div>
-
-        <!-- Cargo -->
-        <div>
-          <div class="text-slate-500 font-medium mb-1">
-            Cargo
-            <span class="text-slate-600 font-normal">({{ selectedShip.cargo_total }} / {{ selectedShip.capacity }})</span>
-          </div>
-          <div v-if="!selectedShip.cargo || selectedShip.cargo.length === 0" class="text-slate-600 italic">
-            Empty hold
-          </div>
-          <div v-else class="space-y-0.5">
-            <div
-              v-for="item in selectedShip.cargo"
-              :key="item.good_id"
-              class="flex justify-between"
-            >
-              <span class="text-slate-400">{{ item.good_name }}</span>
-              <span class="text-slate-300 font-mono">{{ item.quantity }}</span>
-            </div>
-          </div>
-        </div>
-      </div>
+      <div ref="mapContainer" class="h-[calc(100vh-12rem)] min-h-[400px] rounded-lg overflow-hidden" />
 
       <!-- Legend -->
       <div class="absolute bottom-4 right-4 z-[1000] bg-slate-900/90 border border-slate-700 rounded-lg p-3 text-xs">
@@ -494,6 +473,11 @@ onUnmounted(() => {
   color: #e2e8f0;
   border-radius: 0.5rem;
   border: 1px solid #334155;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+}
+
+:deep(.leaflet-popup-content) {
+  margin: 10px 14px;
 }
 
 :deep(.leaflet-popup-tip) {
