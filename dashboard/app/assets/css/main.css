@@ -34,3 +34,8 @@ body {
 *::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* Reserve scrollbar space so content doesn't shift or get clipped */
+.scroll-stable {
+  scrollbar-gutter: stable;
+}

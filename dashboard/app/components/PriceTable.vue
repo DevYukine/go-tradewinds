@@ -79,20 +79,20 @@ function spreadColor(spread: number): string {
       No price data available yet
     </div>
 
-    <div v-else class="max-h-96 overflow-y-auto space-y-4 pr-2">
+    <div v-else class="-mr-3 max-h-96 2xl:max-h-[36rem] overflow-y-auto scroll-stable space-y-4">
       <div v-for="(portPrices, portName) in pricesByPort" :key="portName">
         <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
           <Icon name="lucide:map-pin" class="text-sky-400" />
           {{ portName }}
         </div>
-        <div class="overflow-x-auto">
+        <div>
           <table class="w-full text-xs">
             <thead>
               <tr class="text-slate-500 border-b border-slate-700/50">
-                <th class="text-left py-1 pr-2">Good</th>
-                <th class="text-right py-1 pr-2">Buy</th>
-                <th class="text-right py-1 pr-2">Sell</th>
-                <th class="text-right py-1">Spread</th>
+                <th class="text-left py-1 pr-3">Good</th>
+                <th class="text-right py-1 pr-3">Buy</th>
+                <th class="text-right py-1 pr-3">Sell</th>
+                <th class="text-right py-1 pr-3">Spread</th>
               </tr>
             </thead>
             <tbody>
@@ -101,10 +101,10 @@ function spreadColor(spread: number): string {
                 :key="price.good_id"
                 class="border-b border-slate-700/20"
               >
-                <td class="py-1 pr-2 text-slate-300">{{ price.good_name }}</td>
-                <td class="py-1 pr-2 text-right font-mono text-sky-400">{{ formatCurrency(price.buy_price) }}</td>
-                <td class="py-1 pr-2 text-right font-mono text-emerald-400">{{ formatCurrency(price.sell_price) }}</td>
-                <td class="py-1 text-right font-mono" :class="spreadColor(price.spread)">
+                <td class="py-1 pr-3 text-slate-300">{{ price.good_name }}</td>
+                <td class="py-1 pr-3 text-right font-mono text-sky-400">{{ formatCurrency(price.buy_price) }}</td>
+                <td class="py-1 pr-3 text-right font-mono text-emerald-400">{{ formatCurrency(price.sell_price) }}</td>
+                <td class="py-1 pr-3 text-right font-mono" :class="spreadColor(price.spread)">
                   {{ price.spread > 0 ? '+' : '' }}{{ formatCurrency(price.spread) }}
                 </td>
               </tr>

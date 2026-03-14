@@ -95,7 +95,7 @@ function formatTime(dateStr: string): string {
 
     <div
       ref="logContainer"
-      class="h-64 overflow-y-auto font-mono text-xs space-y-0.5 bg-slate-900/50 rounded-lg p-3"
+      class="h-64 2xl:h-80 overflow-y-auto scroll-stable font-mono text-xs space-y-0.5 bg-slate-900/50 rounded-lg p-3"
     >
       <div
         v-for="(entry, i) in logs"

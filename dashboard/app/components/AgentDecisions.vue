@@ -85,7 +85,7 @@ function formatTime(dateStr: string): string {
       No agent decisions recorded
     </div>
 
-    <div v-else class="space-y-2 max-h-80 overflow-y-auto pr-2">
+    <div v-else class="space-y-2 max-h-80 2xl:max-h-[28rem] overflow-y-auto scroll-stable">
       <div
         v-for="decision in decisions"
         :key="decision.id"

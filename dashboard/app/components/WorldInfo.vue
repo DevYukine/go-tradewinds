@@ -53,7 +53,7 @@ function formatCurrency(value: number): string {
       </div>
 
       <!-- Ports Tab -->
-      <div v-if="activeTab === 'ports'" class="max-h-96 overflow-y-auto pr-2">
+      <div v-if="activeTab === 'ports'" class="max-h-96 2xl:max-h-[36rem] overflow-y-auto scroll-stable">
         <table class="w-full text-xs">
           <thead class="sticky top-0 bg-slate-800">
             <tr class="text-slate-500 border-b border-slate-700">
@@ -85,7 +85,7 @@ function formatCurrency(value: number): string {
       </div>
 
       <!-- Goods Tab -->
-      <div v-if="activeTab === 'goods'" class="max-h-96 overflow-y-auto pr-2">
+      <div v-if="activeTab === 'goods'" class="max-h-96 2xl:max-h-[36rem] overflow-y-auto scroll-stable">
         <table class="w-full text-xs">
           <thead class="sticky top-0 bg-slate-800">
             <tr class="text-slate-500 border-b border-slate-700">
@@ -113,7 +113,7 @@ function formatCurrency(value: number): string {
       </div>
 
       <!-- Routes Tab -->
-      <div v-if="activeTab === 'routes'" class="max-h-96 overflow-y-auto pr-2">
+      <div v-if="activeTab === 'routes'" class="max-h-96 2xl:max-h-[36rem] overflow-y-auto scroll-stable">
         <table class="w-full text-xs">
           <thead class="sticky top-0 bg-slate-800">
             <tr class="text-slate-500 border-b border-slate-700">
@@ -141,7 +141,7 @@ function formatCurrency(value: number): string {
       </div>
 
       <!-- Ship Types Tab -->
-      <div v-if="activeTab === 'ships'" class="max-h-96 overflow-y-auto pr-2">
+      <div v-if="activeTab === 'ships'" class="max-h-96 2xl:max-h-[36rem] overflow-y-auto scroll-stable">
         <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div
             v-for="st in world.ship_types"

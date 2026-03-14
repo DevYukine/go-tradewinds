@@ -131,7 +131,7 @@ const totalCapacity = computed(() =>
       </div>
 
       <!-- Ships -->
-      <div v-if="inventory.ships.length > 0" class="space-y-2 max-h-[32rem] overflow-y-auto pr-2">
+      <div v-if="inventory.ships.length > 0" class="space-y-2 max-h-[32rem] 2xl:max-h-[40rem] overflow-y-auto scroll-stable">
         <div
           v-for="ship in inventory.ships"
           :key="ship.ship_id"
@@ -260,7 +260,7 @@ const totalCapacity = computed(() =>
       <!-- Warehouses -->
       <div v-if="inventory.warehouses.length > 0" class="mt-4">
         <h4 class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Warehouses</h4>
-        <div class="space-y-1.5 max-h-48 overflow-y-auto pr-2">
+        <div class="space-y-1.5 max-h-48 2xl:max-h-64 overflow-y-auto scroll-stable">
           <div
             v-for="wh in inventory.warehouses"
             :key="wh.warehouse_id"

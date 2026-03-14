@@ -65,7 +65,7 @@ const navItems = [
   <div class="flex flex-col min-h-screen bg-slate-950 text-slate-100">
     <!-- Header -->
     <header class="bg-slate-900 border-b border-slate-700/50 sticky top-0 z-50">
-      <div class="max-w-screen-2xl mx-auto px-6 h-14 flex items-center justify-between">
+      <div class="max-w-[2400px] mx-auto px-6 h-14 flex items-center justify-between">
         <!-- Left: Logo + Nav -->
         <div class="flex items-center gap-6">
           <NuxtLink to="/" class="flex items-center gap-2 hover:opacity-80 transition-opacity">
@@ -129,14 +129,14 @@ const navItems = [
 
     <!-- Main Content -->
     <main class="flex-1">
-      <div class="max-w-screen-2xl mx-auto px-6 py-6">
+      <div class="max-w-[2400px] mx-auto px-6 py-6">
         <slot />
       </div>
     </main>
 
     <!-- Footer -->
     <footer class="bg-slate-900/50 border-t border-slate-700/30 mt-auto">
-      <div class="max-w-screen-2xl mx-auto px-6 py-3 flex items-center justify-between text-xs text-slate-600">
+      <div class="max-w-[2400px] mx-auto px-6 py-3 flex items-center justify-between text-xs text-slate-600">
         <div class="flex items-center gap-4">
           <span v-if="health">
             <Icon name="lucide:bot" class="inline text-slate-500" />

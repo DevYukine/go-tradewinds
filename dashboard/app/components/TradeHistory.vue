@@ -152,17 +152,17 @@ const totalPassengerCount = computed(() =>
           </div>
         </div>
 
-        <div class="max-h-72 overflow-y-auto pr-2">
-          <table class="w-full text-sm">
+        <div class="-mr-3 max-h-[28rem] 2xl:max-h-[36rem] overflow-y-auto scroll-stable">
+          <table class="w-full text-sm pr-3">
             <thead class="sticky top-0 bg-slate-800 z-10">
               <tr class="text-xs text-slate-500 uppercase tracking-wide border-b border-slate-700">
-                <th class="text-left py-2 pr-2">Time</th>
-                <th class="text-left py-2 pr-2">Action</th>
-                <th class="text-left py-2 pr-2">Good</th>
-                <th class="text-left py-2 pr-2">Port</th>
-                <th class="text-right py-2 pr-2">Qty</th>
-                <th class="text-right py-2 pr-2">Unit</th>
-                <th class="text-right py-2">Total</th>
+                <th class="text-left py-2 pr-3">Time</th>
+                <th class="text-left py-2 pr-3">Action</th>
+                <th class="text-left py-2 pr-3">Good</th>
+                <th class="text-left py-2 pr-3">Port</th>
+                <th class="text-right py-2 pr-3">Qty</th>
+                <th class="text-right py-2 pr-3">Unit</th>
+                <th class="text-right py-2 pr-3">Total</th>
               </tr>
             </thead>
             <tbody>
@@ -171,10 +171,10 @@ const totalPassengerCount = computed(() =>
                 :key="trade.id"
                 class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors"
               >
-                <td class="py-1.5 pr-2 text-xs text-slate-500 font-mono whitespace-nowrap">
+                <td class="py-1.5 pr-3 text-xs text-slate-500 font-mono whitespace-nowrap">
                   {{ formatTime(trade.created_at) }}
                 </td>
-                <td class="py-1.5 pr-2">
+                <td class="py-1.5 pr-3">
                   <span
                     class="px-2 py-0.5 rounded-full text-[10px] font-medium uppercase"
                     :class="trade.action === 'buy'
@@ -184,14 +184,14 @@ const totalPassengerCount = computed(() =>
                     {{ trade.action }}
                   </span>
                 </td>
-                <td class="py-1.5 pr-2 text-slate-300 text-xs">
+                <td class="py-1.5 pr-3 text-slate-300 text-xs">
                   {{ trade.good_name || trade.good_id?.substring(0, 8) || '---' }}
                 </td>
-                <td class="py-1.5 pr-2 text-slate-400 text-xs">{{ trade.port_name }}</td>
-                <td class="py-1.5 pr-2 text-right text-slate-300 font-mono text-xs">{{ trade.quantity }}</td>
-                <td class="py-1.5 pr-2 text-right text-slate-400 font-mono text-xs">{{ formatCurrency(trade.unit_price) }}</td>
+                <td class="py-1.5 pr-3 text-slate-400 text-xs">{{ trade.port_name }}</td>
+                <td class="py-1.5 pr-3 text-right text-slate-300 font-mono text-xs">{{ trade.quantity }}</td>
+                <td class="py-1.5 pr-3 text-right text-slate-400 font-mono text-xs">{{ formatCurrency(trade.unit_price) }}</td>
                 <td
-                  class="py-1.5 text-right font-mono text-xs font-medium"
+                  class="py-1.5 pr-3 text-right font-mono text-xs font-medium"
                   :class="trade.action === 'sell' ? 'text-emerald-400' : 'text-sky-400'"
                 >
                   {{ formatCurrency(trade.total_price) }}
@@ -230,15 +230,15 @@ const totalPassengerCount = computed(() =>
           </div>
         </div>
 
-        <div class="max-h-72 overflow-y-auto pr-2">
+        <div class="-mr-3 max-h-[28rem] 2xl:max-h-[36rem] overflow-y-auto scroll-stable">
           <table class="w-full text-sm">
             <thead class="sticky top-0 bg-slate-800 z-10">
               <tr class="text-xs text-slate-500 uppercase tracking-wide border-b border-slate-700">
-                <th class="text-left py-2 pr-2">Time</th>
-                <th class="text-right py-2 pr-2">Count</th>
-                <th class="text-right py-2 pr-2">Bid</th>
-                <th class="text-left py-2 pr-2">Route</th>
-                <th class="text-left py-2">Ship</th>
+                <th class="text-left py-2 pr-3">Time</th>
+                <th class="text-right py-2 pr-3">Count</th>
+                <th class="text-right py-2 pr-3">Bid</th>
+                <th class="text-left py-2 pr-3">Route</th>
+                <th class="text-left py-2 pr-3">Ship</th>
               </tr>
             </thead>
             <tbody>
