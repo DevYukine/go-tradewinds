@@ -3,7 +3,8 @@ const props = defineProps<{
   companyId: number
 }>()
 
-const { inventory, loading, fetchInventory, startPolling, stopPolling } = useInventory()
+const cid = computed(() => props.companyId)
+const { inventory, loading, startPolling, stopPolling } = useInventory(cid)
 const { now } = useNow()
 
 watch(
@@ -14,7 +15,7 @@ watch(
   { immediate: true }
 )
 
-onUnmounted(() => stopPolling())
+onUnmounted(() => stopPolling(props.companyId))
 
 function formatCurrency(value: number): string {
   return new Intl.NumberFormat('en-US').format(value)

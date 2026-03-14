@@ -1,20 +1,16 @@
 <script setup lang="ts">
-import type { Company, CompanyInventory } from '~/types'
+import type { Company } from '~/types'
 
 const { companies, companiesByStrategy } = useCompanies()
 const router = useRouter()
-const config = useRuntimeConfig()
-const apiBase = config.public.apiBase
 
-// Fetch inventory for each company to get ship counts and upkeep.
-const inventories = ref<Record<number, CompanyInventory>>({})
+// Use the shared inventory composable — same global state as company detail page.
+const { inventories, fetchInventory } = useInventory()
 
 async function fetchAllInventories() {
   for (const company of companies.value) {
     try {
-      inventories.value[company.id] = await $fetch<CompanyInventory>(
-        `${apiBase}/api/companies/${company.id}/inventory`
-      )
+      await fetchInventory(company.id)
     } catch { /* company may not be running */ }
   }
 }
@@ -33,8 +29,10 @@ function selectCompany(company: Company) {
   router.push(`/company/${company.id}`)
 }
 
-// Aggregates
-const totalTreasury = computed(() => companies.value.reduce((s, c) => s + c.treasury, 0))
+// Aggregates — prefer live inventory treasury over stale DB treasury.
+const totalTreasury = computed(() =>
+  companies.value.reduce((s, c) => s + (inventories.value[c.id]?.treasury ?? c.treasury), 0)
+)
 const totalShips = computed(() => Object.values(inventories.value).reduce((s, i) => s + i.ships.length, 0))
 const totalUpkeep = computed(() => Object.values(inventories.value).reduce((s, i) => s + i.total_upkeep, 0))
 const shipsAtSea = computed(() => Object.values(inventories.value).reduce((s, i) => s + i.ships.filter(sh => sh.status === 'traveling').length, 0))
@@ -182,7 +180,7 @@ function strategyBadge(strategy: string): string {
           <div class="grid grid-cols-3 gap-3">
             <div>
               <div class="text-[10px] text-slate-500 uppercase tracking-wide">Treasury</div>
-              <div class="text-sm font-bold text-amber-400 font-mono">{{ formatCurrency(company.treasury) }}</div>
+              <div class="text-sm font-bold text-amber-400 font-mono">{{ formatCurrency(inventories[company.id]?.treasury ?? company.treasury) }}</div>
             </div>
             <div>
               <div class="text-[10px] text-slate-500 uppercase tracking-wide">Ships</div>

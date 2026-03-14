@@ -33,6 +33,7 @@ func (s *Server) registerHandlers() {
 }
 
 // handleCompanies returns all companies with their current status, treasury, and strategy.
+// Treasury and reputation are enriched from live in-memory state when available.
 func (s *Server) handleCompanies(c fiber.Ctx) error {
 	var companies []db.CompanyRecord
 	if err := s.db.Order("id ASC").Find(&companies).Error; err != nil {
@@ -40,6 +41,23 @@ func (s *Server) handleCompanies(c fiber.Ctx) error {
 			"error": "failed to fetch companies",
 		})
 	}
+
+	// Overlay live treasury/reputation from running companies.
+	runners := s.manager.Companies()
+	for i := range companies {
+		for _, runner := range runners {
+			rec := runner.DBRecord()
+			if rec != nil && rec.GameID == companies[i].GameID {
+				state := runner.State()
+				state.RLock()
+				companies[i].Treasury = state.Treasury
+				companies[i].Reputation = state.Reputation
+				state.RUnlock()
+				break
+			}
+		}
+	}
+
 	return c.JSON(companies)
 }
 

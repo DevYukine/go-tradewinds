@@ -6,11 +6,17 @@ const router = useRouter()
 const companyId = computed(() => Number(route.params.id))
 
 const { companies } = useCompanies()
+const { inventory, startPolling: startInvPolling, stopPolling: stopInvPolling } = useInventory(companyId)
 const { history, loading: pnlLoading, fetchHistory, connectSSE, disconnectSSE } = usePnL()
 
 const company = computed<Company | undefined>(() =>
   companies.value.find(c => c.id === companyId.value)
 )
+
+// Live treasury + ship count from inventory (polls every 10s from in-memory state).
+const liveTreasury = computed(() => inventory.value?.treasury ?? company.value?.treasury ?? 0)
+const liveShipCount = computed(() => inventory.value?.ships.length ?? 0)
+const liveUpkeep = computed(() => inventory.value?.total_upkeep ?? 0)
 
 // Redirect back if company not found after loading
 watch([companies, companyId], () => {
@@ -22,11 +28,15 @@ watch([companies, companyId], () => {
 // Single owner of fetch + SSE lifecycle
 watch(companyId, (id) => {
   if (id) {
+    startInvPolling(id, 10000)
     fetchHistory(id).then(() => connectSSE(id))
   }
 }, { immediate: true })
 
-onUnmounted(() => disconnectSSE())
+onUnmounted(() => {
+  disconnectSSE()
+  stopInvPolling()
+})
 
 const latestPnL = computed(() => {
   if (history.value.length === 0) return null
@@ -93,14 +103,15 @@ function strategyBadge(strategy: string): string {
           <Icon name="lucide:coins" class="text-amber-400" />
           Treasury
         </div>
-        <div class="text-lg font-bold text-slate-100 font-mono">{{ formatCurrency(company.treasury) }}</div>
+        <div class="text-lg font-bold text-slate-100 font-mono">{{ formatCurrency(liveTreasury) }}</div>
+        <div v-if="liveUpkeep" class="text-xs text-slate-500 font-mono mt-0.5">-{{ formatCurrency(liveUpkeep) }}/hr</div>
       </div>
       <div class="bg-slate-800 rounded-lg border border-slate-700 p-3">
         <div class="flex items-center gap-2 text-slate-400 text-xs mb-1">
           <Icon name="mdi:ship" class="text-blue-400" />
           Ships
         </div>
-        <div class="text-lg font-bold text-slate-100 font-mono">{{ latestPnL?.ship_count ?? '---' }}</div>
+        <div class="text-lg font-bold text-slate-100 font-mono">{{ liveShipCount || '---' }}</div>
       </div>
       <div class="bg-slate-800 rounded-lg border border-slate-700 p-3">
         <div class="flex items-center gap-2 text-slate-400 text-xs mb-1">
