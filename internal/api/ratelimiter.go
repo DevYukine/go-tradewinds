@@ -27,11 +27,11 @@ const (
 	defaultMaxPerMinute = 300
 
 	// Throttle thresholds as percentages of maxPerMinute.
-	thresholdLowBlock    = 0.85 // 85%: block PriorityLow
-	thresholdNormalBlock = 0.95 // 95%: block PriorityNormal
+	thresholdLowBlock    = 0.70 // 70%: block PriorityLow
+	thresholdNormalBlock = 0.85 // 85%: block PriorityNormal
 
 	// Minimum spacing between requests to avoid micro-bursts.
-	minRequestSpacing = 220 * time.Millisecond // ~270 req/min max throughput (safety margin)
+	minRequestSpacing = 250 * time.Millisecond // ~240 req/min max throughput (safe margin under 300 limit)
 
 	// windowDuration is the sliding window size.
 	windowDuration = 60 * time.Second

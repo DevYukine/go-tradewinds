@@ -13,10 +13,10 @@ import (
 
 const (
 	// baseScanInterval is the time between scanning each port.
-	baseScanInterval = 4 * time.Second
+	baseScanInterval = 8 * time.Second
 
 	// maxScanInterval is the slowest scan interval under high rate limit pressure.
-	maxScanInterval = 15 * time.Second
+	maxScanInterval = 30 * time.Second
 )
 
 // Scanner rotates through all ports, fetching NPC prices for every good.
