@@ -1,5 +1,5 @@
 <script setup lang="ts">
-const { companies, selectedCompany, companiesByStrategy, fetchCompanies, selectCompany } = useCompanies()
+const { companies, selectedCompany, companiesByStrategy, fetchCompanies, selectCompany, clearSelection } = useCompanies()
 const { history } = usePnL()
 
 const config = useRuntimeConfig()
@@ -42,7 +42,17 @@ const latestPnL = computed(() => {
       <!-- Top Bar -->
       <header class="bg-slate-900 border-b border-slate-700 px-6 py-3 flex items-center justify-between flex-shrink-0">
         <div class="flex items-center gap-3">
-          <h1 class="text-lg font-bold text-slate-100">Dashboard</h1>
+          <button
+            v-if="selectedCompany"
+            class="text-slate-400 hover:text-slate-200 transition-colors"
+            @click="clearSelection"
+            title="Back to overview"
+          >
+            <Icon name="lucide:arrow-left" />
+          </button>
+          <h1 class="text-lg font-bold text-slate-100">
+            {{ selectedCompany ? selectedCompany.name : 'Dashboard' }}
+          </h1>
           <div class="flex items-center gap-1.5">
             <span
               class="w-2 h-2 rounded-full"
@@ -58,15 +68,13 @@ const latestPnL = computed(() => {
 
       <!-- Scrollable Content -->
       <main class="flex-1 overflow-y-auto p-6 space-y-6">
-        <!-- No company selected state -->
-        <div
+        <!-- Landing overview when no company selected -->
+        <OverviewLanding
           v-if="!selectedCompany"
-          class="flex flex-col items-center justify-center h-full text-slate-600"
-        >
-          <Icon name="mdi:sail-boat" class="text-6xl mb-4 text-slate-700" />
-          <h2 class="text-xl font-semibold text-slate-500 mb-2">Select a Company</h2>
-          <p class="text-sm">Choose a company from the sidebar to view its details</p>
-        </div>
+          :companies="companies"
+          :companies-by-strategy="companiesByStrategy"
+          @select="selectCompany"
+        />
 
         <!-- Company selected -->
         <template v-else>

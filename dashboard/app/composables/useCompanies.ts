@@ -37,6 +37,10 @@ export function useCompanies() {
     selectedCompany.value = company
   }
 
+  function clearSelection() {
+    selectedCompany.value = null
+  }
+
   return {
     companies,
     selectedCompany,
@@ -45,5 +49,6 @@ export function useCompanies() {
     error,
     fetchCompanies,
     selectCompany,
+    clearSelection,
   }
 }
