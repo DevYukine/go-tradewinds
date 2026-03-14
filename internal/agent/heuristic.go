@@ -494,14 +494,15 @@ func (a *HeuristicAgent) speculativeTrade(
 // reserveHours calculates how many hours of upkeep buffer the company should
 // maintain after a ship purchase. Grows with fleet size so that companies
 // become progressively more cautious before adding each additional ship.
+// The base is 24h so a company must always survive a full day of upkeep
+// before expanding. Growth adds more hours per ship depending on strategy.
 //
-//	fleet 1  → 3h   |  fleet 5  → 5h   |  fleet 10 → 7h
-//	fleet 15 → 9h   |  fleet 20 → 11h  |  fleet 30 → 15h
+//	fleet 1  → 24h  |  fleet 5  → 26h  |  fleet 10 → 29h
 //
 // The strategy multiplier shifts the curve: bulk_hauler is more conservative
 // (fewer but bigger ships), market_maker is more aggressive (cheap ships).
 func reserveHours(numShips int, strategy string) int64 {
-	base := int64(3)
+	base := int64(24)
 	growth := int64(numShips) / 2 // +1 hour of reserve for every 2 ships
 
 	switch strategy {

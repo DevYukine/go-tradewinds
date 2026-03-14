@@ -21,7 +21,7 @@ import (
 func main() {
 	fx.New(
 		fx.StartTimeout(90*time.Second),
-		fx.StopTimeout(10*time.Second),
+		fx.StopTimeout(15*time.Second),
 		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
 			zapLogger := fxevent.ZapLogger{Logger: log}
 			zapLogger.UseLogLevel(zap.DebugLevel)

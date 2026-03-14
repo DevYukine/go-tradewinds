@@ -235,7 +235,7 @@ func (m *Manager) Stop(ctx context.Context, cancel context.CancelFunc) {
 	select {
 	case <-done:
 		m.logger.Info("all goroutines stopped cleanly")
-	case <-time.After(5 * time.Second):
+	case <-time.After(3 * time.Second):
 		m.logger.Warn("timed out waiting for goroutines, proceeding with shutdown")
 	}
 

@@ -682,8 +682,8 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 	upkeep := b.ctx.State.TotalUpkeep
 	b.ctx.State.RUnlock()
 
-	// Keep a safety margin of 3x upkeep so we don't go bankrupt.
-	safetyMargin := upkeep * 3
+	// Keep a safety margin of 24h upkeep so we don't go bankrupt.
+	safetyMargin := upkeep * 24
 	// Also account for ~5% tax on purchase.
 	maxSpend := treasury - safetyMargin
 	if maxSpend <= 0 {
