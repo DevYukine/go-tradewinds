@@ -3,10 +3,13 @@ package api
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
+
+	"golang.org/x/net/http2"
 
 	"go.uber.org/zap"
 )
@@ -134,8 +137,12 @@ func (c *Client) connectSSE(ctx context.Context, path string, requiresAuth bool,
 		}
 	}
 
-	// Use a separate HTTP client without timeout for long-lived SSE connections.
-	sseClient := &http.Client{}
+	// Use a separate HTTP client with HTTP/2 transport for long-lived SSE connections.
+	sseClient := &http.Client{
+		Transport: &http2.Transport{
+			TLSClientConfig: &tls.Config{},
+		},
+	}
 	resp, err := sseClient.Do(req)
 	if err != nil {
 		return err

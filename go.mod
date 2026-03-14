@@ -9,6 +9,7 @@ require (
 	go.uber.org/fx v1.24.0
 	go.uber.org/ratelimit v0.3.1
 	go.uber.org/zap v1.27.1
+	golang.org/x/net v0.50.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/gorm v1.31.1
 	moul.io/zapgorm2 v1.3.0
@@ -36,7 +37,6 @@ require (
 	go.uber.org/dig v1.19.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
-	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
