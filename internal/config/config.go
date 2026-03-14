@@ -50,9 +50,14 @@ func (c DBConfig) DSN() string {
 }
 
 // StrategyAlloc maps a strategy name to the number of companies that should run it.
+// Optional AgentHint overrides the default agent for companies in this allocation.
+// Format in env: "arbitrage:3" or "arbitrage/llm-openrouter@google/gemini-3-flash-preview:1".
 type StrategyAlloc struct {
-	Strategy string
-	Count    int
+	Strategy    string
+	Count       int
+	AgentType   string // "heuristic" (default), "llm"
+	LLMProvider string // "claude", "openai", "openrouter", "ollama"
+	LLMModel    string // e.g. "google/gemini-3.1-flash-lite-preview" (OpenRouter model ID)
 }
 
 // AgentConfig holds configuration for the AI agent integration layer.
@@ -64,6 +69,32 @@ type AgentConfig struct {
 	LLMMaxTokens       int
 	CompositeFastAgent string
 	CompositeSlowAgent string
+
+	// Per-provider API keys for multi-LLM setups.
+	// When set, these override LLMAPIKey for their respective provider.
+	ClaudeAPIKey     string
+	OpenAIAPIKey     string
+	OpenRouterAPIKey string
+}
+
+// APIKeyForProvider returns the API key for the given LLM provider,
+// checking provider-specific keys first then falling back to the generic LLM_API_KEY.
+func (a AgentConfig) APIKeyForProvider(provider string) string {
+	switch provider {
+	case "claude":
+		if a.ClaudeAPIKey != "" {
+			return a.ClaudeAPIKey
+		}
+	case "openai":
+		if a.OpenAIAPIKey != "" {
+			return a.OpenAIAPIKey
+		}
+	case "openrouter":
+		if a.OpenRouterAPIKey != "" {
+			return a.OpenRouterAPIKey
+		}
+	}
+	return a.LLMAPIKey
 }
 
 // Load reads the .env file and parses all configuration values.
@@ -97,6 +128,9 @@ func Load() (*Config, error) {
 			LLMMaxTokens:       envIntOrDefault("LLM_MAX_TOKENS", 4096),
 			CompositeFastAgent: envOrDefault("COMPOSITE_FAST_AGENT", "heuristic"),
 			CompositeSlowAgent: envOrDefault("COMPOSITE_SLOW_AGENT", "llm"),
+			ClaudeAPIKey:       os.Getenv("CLAUDE_API_KEY"),
+			OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
+			OpenRouterAPIKey:   os.Getenv("OPENROUTER_API_KEY"),
 		},
 	}
 
@@ -182,8 +216,8 @@ func parseStrategyAllocation(s string) ([]StrategyAlloc, error) {
 			return nil, fmt.Errorf("invalid format %q, expected strategy:count", pair)
 		}
 
-		strategy := strings.TrimSpace(parts[0])
-		if strategy == "" {
+		strategyPart := strings.TrimSpace(parts[0])
+		if strategyPart == "" {
 			return nil, fmt.Errorf("empty strategy name in %q", pair)
 		}
 
@@ -195,10 +229,31 @@ func parseStrategyAllocation(s string) ([]StrategyAlloc, error) {
 			return nil, fmt.Errorf("count must be >= 1 in %q", pair)
 		}
 
-		allocs = append(allocs, StrategyAlloc{
-			Strategy: strategy,
-			Count:    count,
-		})
+		alloc := StrategyAlloc{Count: count}
+
+		// Support "strategy/agentType-provider@model" format.
+		// Examples: "arbitrage/llm-openrouter@google/gemini-3-flash-preview"
+		if slashIdx := strings.Index(strategyPart, "/"); slashIdx >= 0 {
+			alloc.Strategy = strategyPart[:slashIdx]
+			agentPart := strategyPart[slashIdx+1:]
+			if dashIdx := strings.Index(agentPart, "-"); dashIdx >= 0 {
+				alloc.AgentType = agentPart[:dashIdx]
+				providerAndModel := agentPart[dashIdx+1:]
+				// Split provider@model (model may contain "/" e.g. "google/gemini-3-flash").
+				if atIdx := strings.Index(providerAndModel, "@"); atIdx >= 0 {
+					alloc.LLMProvider = providerAndModel[:atIdx]
+					alloc.LLMModel = providerAndModel[atIdx+1:]
+				} else {
+					alloc.LLMProvider = providerAndModel
+				}
+			} else {
+				alloc.AgentType = agentPart
+			}
+		} else {
+			alloc.Strategy = strategyPart
+		}
+
+		allocs = append(allocs, alloc)
 	}
 
 	if len(allocs) == 0 {

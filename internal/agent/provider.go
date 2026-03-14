@@ -172,6 +172,84 @@ func (p *OpenAIProvider) Complete(ctx context.Context, systemPrompt, userPrompt 
 }
 
 // ---------------------------------------------------------------------------
+// OpenRouter provider
+// ---------------------------------------------------------------------------
+
+// OpenRouterProvider calls the OpenRouter API, which is OpenAI-compatible
+// but routes to many different models (Claude, GPT, Llama, Gemini, etc.).
+type OpenRouterProvider struct {
+	apiKey string
+	model  string
+	maxTok int
+	client *http.Client
+}
+
+// NewOpenRouterProvider creates a provider targeting the OpenRouter API.
+func NewOpenRouterProvider(apiKey, model string, maxTokens int) *OpenRouterProvider {
+	return &OpenRouterProvider{
+		apiKey: apiKey,
+		model:  model,
+		maxTok: maxTokens,
+		client: &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+func (p *OpenRouterProvider) Complete(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+	body := map[string]any{
+		"model":      p.model,
+		"max_tokens": p.maxTok,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userPrompt},
+		},
+	}
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("openrouter: marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://openrouter.ai/api/v1/chat/completions", bytes.NewReader(data))
+	if err != nil {
+		return "", fmt.Errorf("openrouter: build request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("openrouter: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("openrouter: read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("openrouter: HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("openrouter: unmarshal response: %w", err)
+	}
+	if len(result.Choices) == 0 {
+		return "", fmt.Errorf("openrouter: no choices in response")
+	}
+	return result.Choices[0].Message.Content, nil
+}
+
+// ---------------------------------------------------------------------------
 // Ollama provider (local)
 // ---------------------------------------------------------------------------
 

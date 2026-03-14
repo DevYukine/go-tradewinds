@@ -25,9 +25,12 @@ const (
 // ScaledAllocation is the result of scaling a strategy allocation to fit
 // within the rate limit budget.
 type ScaledAllocation struct {
-	Strategy  string
-	Count     int
-	HomePorts []uuid.UUID // Diversified across ports.
+	Strategy    string
+	Count       int
+	HomePorts   []uuid.UUID // Diversified across ports.
+	AgentType   string      // Per-allocation agent override (from config).
+	LLMProvider string      // LLM provider when AgentType is "llm".
+	LLMModel    string      // LLM model ID (e.g. "google/gemini-3-flash-preview").
 }
 
 // Scaler calculates safe company counts based on the rate limit budget.
@@ -77,8 +80,11 @@ func (s *Scaler) CalculateAllocation(
 		// Budget allows all requested companies.
 		for i, a := range requested {
 			allocations[i] = ScaledAllocation{
-				Strategy: a.Strategy,
-				Count:    a.Count,
+				Strategy:    a.Strategy,
+				Count:       a.Count,
+				AgentType:   a.AgentType,
+				LLMProvider: a.LLMProvider,
+				LLMModel:    a.LLMModel,
 			}
 		}
 	} else {
@@ -98,8 +104,10 @@ func (s *Scaler) CalculateAllocation(
 				scaled = remaining
 			}
 			allocations[i] = ScaledAllocation{
-				Strategy: a.Strategy,
-				Count:    scaled,
+				Strategy:    a.Strategy,
+				Count:       scaled,
+				AgentType:   a.AgentType,
+				LLMProvider: a.LLMProvider,
 			}
 			remaining -= scaled
 		}

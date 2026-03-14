@@ -152,16 +152,19 @@ type PassengerLog struct {
 // CompanyParams stores tunable trading parameters per company.
 // The optimizer adjusts these through experiments.
 type CompanyParams struct {
-	ID                     uint    `gorm:"primaryKey" json:"id"`
-	CompanyID              uint    `gorm:"uniqueIndex;not null" json:"company_id"`
-	MinMarginPct           float64 `gorm:"not null;default:0.15" json:"min_margin_pct"`
-	PassengerWeight        float64 `gorm:"not null;default:2.0" json:"passenger_weight"`
-	SpeculativeTradeEnabled bool   `gorm:"not null;default:false" json:"speculative_trade_enabled"`
-	MarketEvalIntervalSec  int     `gorm:"not null;default:60" json:"market_eval_interval_sec"`
-	FleetEvalIntervalSec   int     `gorm:"not null;default:180" json:"fleet_eval_interval_sec"`
-	PassengerDestBonus     float64 `gorm:"not null;default:3.0" json:"passenger_dest_bonus"`
-	CreatedAt              time.Time `json:"created_at"`
-	UpdatedAt              time.Time `json:"updated_at"`
+	ID                      uint      `gorm:"primaryKey" json:"id"`
+	CompanyID               uint      `gorm:"uniqueIndex;not null" json:"company_id"`
+	MinMarginPct            float64   `gorm:"not null;default:0.15" json:"min_margin_pct"`
+	PassengerWeight         float64   `gorm:"not null;default:2.0" json:"passenger_weight"`
+	SpeculativeTradeEnabled bool      `gorm:"not null;default:false" json:"speculative_trade_enabled"`
+	MarketEvalIntervalSec   int       `gorm:"not null;default:60" json:"market_eval_interval_sec"`
+	FleetEvalIntervalSec    int       `gorm:"not null;default:180" json:"fleet_eval_interval_sec"`
+	PassengerDestBonus      float64   `gorm:"not null;default:3.0" json:"passenger_dest_bonus"`
+	AgentType               string    `gorm:"not null;default:heuristic;size:20" json:"agent_type"`   // "heuristic", "llm", "composite"
+	LLMProvider             string    `gorm:"size:20" json:"llm_provider"`                             // "claude", "openai", "ollama"
+	LLMModel                string    `gorm:"size:100" json:"llm_model"`                               // e.g. "claude-sonnet-4-20250514", "gpt-4o"
+	CreatedAt               time.Time `json:"created_at"`
+	UpdatedAt               time.Time `json:"updated_at"`
 }
 
 // ParamExperimentLog records optimizer parameter tuning experiments.

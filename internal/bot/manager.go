@@ -170,7 +170,7 @@ func (m *Manager) Start(startCtx context.Context, runCtx context.Context) error 
 				continue
 			}
 
-			runner, err := m.setupRunner(company, alloc.Strategy, factory, homePortID)
+			runner, err := m.setupRunner(company, alloc.Strategy, factory, homePortID, alloc.AgentType, alloc.LLMProvider, alloc.LLMModel)
 			if err != nil {
 				m.logger.Error("failed to setup company runner",
 					zap.String("ticker", ticker),
@@ -298,11 +298,14 @@ func (m *Manager) ensureCompany(
 }
 
 // setupRunner creates a CompanyRunner with all dependencies wired up.
+// agentType, llmProvider, and llmModel are optional hints from the strategy
+// allocation; if non-empty they override the global agent for this company.
 func (m *Manager) setupRunner(
 	company *api.Company,
 	strategyName string,
 	factory StrategyFactory,
 	homePortID uuid.UUID,
+	agentType, llmProvider, llmModel string,
 ) (*CompanyRunner, error) {
 	// Ensure DB record exists.
 	dbRecord := &db.CompanyRecord{
@@ -328,6 +331,45 @@ func (m *Manager) setupRunner(
 		"status":   "running",
 		"treasury": company.Treasury,
 	})
+
+	// Load or create CompanyParams to check for agent override.
+	var params db.CompanyParams
+	if err := m.gormDB.Where("company_id = ?", dbRecord.ID).First(&params).Error; err != nil {
+		params = db.CompanyParams{CompanyID: dbRecord.ID}
+		m.gormDB.Create(&params)
+	}
+
+	// Apply allocation agent hint to CompanyParams if this is a fresh record with default agent.
+	if agentType != "" && params.AgentType == "heuristic" {
+		params.AgentType = agentType
+		params.LLMProvider = llmProvider
+		params.LLMModel = llmModel
+		m.gormDB.Model(&params).Updates(map[string]any{
+			"agent_type":   agentType,
+			"llm_provider": llmProvider,
+			"llm_model":    llmModel,
+		})
+	}
+
+	// Resolve the agent for this company.
+	companyAgent := m.agent
+	if params.AgentType != "" && params.AgentType != "heuristic" {
+		apiKey := m.cfg.Agent.APIKeyForProvider(params.LLMProvider)
+		companyAgent = agent.NewAgentFromParams(
+			params.AgentType,
+			params.LLMProvider,
+			params.LLMModel,
+			apiKey,
+			m.cfg.Agent.LLMMaxTokens,
+			m.logger,
+		)
+		m.logger.Info("created per-company LLM agent",
+			zap.String("company", company.Name),
+			zap.String("agent_type", params.AgentType),
+			zap.String("provider", params.LLMProvider),
+			zap.String("model", companyAgent.Name()),
+		)
+	}
 
 	// Create company-scoped client.
 	companyClient := m.baseClient.ForCompany(company.ID.String())
@@ -355,7 +397,7 @@ func (m *Manager) setupRunner(
 		State:      state,
 		World:      m.worldData,
 		PriceCache: m.priceCache,
-		Agent:      m.agent,
+		Agent:      companyAgent,
 		Logger:     companyLogger,
 		Events:     events,
 		DB:         m.gormDB,
@@ -373,7 +415,7 @@ func (m *Manager) setupRunner(
 		m.priceCache,
 		state,
 		strategy,
-		m.agent,
+		companyAgent,
 		companyLogger,
 		dbRecord,
 		events,
@@ -563,7 +605,7 @@ func (m *Manager) AddCompany(ctx context.Context, strategyName string) (string, 
 		return "", fmt.Errorf("failed to create company: %w", err)
 	}
 
-	runner, err := m.setupRunner(company, strategyName, factory, homePortID)
+	runner, err := m.setupRunner(company, strategyName, factory, homePortID, "", "", "")
 	if err != nil {
 		return "", fmt.Errorf("failed to setup runner: %w", err)
 	}

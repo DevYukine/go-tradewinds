@@ -81,39 +81,76 @@ func newAgentFromType(agentType string, cfg *config.Config, logger *zap.Logger) 
 	}
 }
 
-// newLLMProvider creates the appropriate LLMProvider based on config.
-func newLLMProvider(cfg *config.Config) (LLMProvider, error) {
-	switch cfg.Agent.LLMProvider {
-	case "claude":
-		if cfg.Agent.LLMAPIKey == "" {
-			return nil, fmt.Errorf("LLM_API_KEY is required for claude provider")
+// NewAgentFromParams creates an agent from explicit settings (not global config).
+// Used for per-company agent overrides. Falls back to heuristic on any error.
+func NewAgentFromParams(agentType, provider, model, apiKey string, maxTokens int, logger *zap.Logger) Agent {
+	if agentType == "" || agentType == "heuristic" {
+		return NewHeuristicAgent(logger)
+	}
+
+	if agentType == "llm" {
+		llmProvider, err := newLLMProviderFromParams(provider, model, apiKey, maxTokens)
+		if err != nil {
+			logger.Warn("failed to create per-company LLM provider, falling back to heuristic",
+				zap.String("provider", provider),
+				zap.Error(err),
+			)
+			return NewHeuristicAgent(logger)
 		}
-		model := cfg.Agent.LLMModel
+		return NewLLMAgent(llmProvider, model, maxTokens, logger)
+	}
+
+	logger.Warn("unknown per-company agent type, falling back to heuristic",
+		zap.String("agent_type", agentType),
+	)
+	return NewHeuristicAgent(logger)
+}
+
+// newLLMProviderFromParams creates an LLMProvider from explicit parameters.
+func newLLMProviderFromParams(provider, model, apiKey string, maxTokens int) (LLMProvider, error) {
+	switch provider {
+	case "claude":
+		if apiKey == "" {
+			return nil, fmt.Errorf("API key is required for claude provider")
+		}
 		if model == "" {
 			model = "claude-sonnet-4-20250514"
 		}
-		return NewClaudeProvider(cfg.Agent.LLMAPIKey, model, cfg.Agent.LLMMaxTokens), nil
+		return NewClaudeProvider(apiKey, model, maxTokens), nil
 
 	case "openai":
-		if cfg.Agent.LLMAPIKey == "" {
-			return nil, fmt.Errorf("LLM_API_KEY is required for openai provider")
+		if apiKey == "" {
+			return nil, fmt.Errorf("API key is required for openai provider")
 		}
-		model := cfg.Agent.LLMModel
 		if model == "" {
 			model = "gpt-4o"
 		}
-		return NewOpenAIProvider(cfg.Agent.LLMAPIKey, model, cfg.Agent.LLMMaxTokens), nil
+		return NewOpenAIProvider(apiKey, model, maxTokens), nil
+
+	case "openrouter":
+		if apiKey == "" {
+			return nil, fmt.Errorf("API key is required for openrouter provider")
+		}
+		if model == "" {
+			model = "anthropic/claude-sonnet-4"
+		}
+		return NewOpenRouterProvider(apiKey, model, maxTokens), nil
 
 	case "ollama":
-		model := cfg.Agent.LLMModel
 		if model == "" {
 			model = "llama3"
 		}
 		return NewOllamaProvider(model), nil
 
 	default:
-		return nil, fmt.Errorf("unknown LLM provider: %q", cfg.Agent.LLMProvider)
+		return nil, fmt.Errorf("unknown LLM provider: %q", provider)
 	}
+}
+
+// newLLMProvider creates the appropriate LLMProvider based on config.
+func newLLMProvider(cfg *config.Config) (LLMProvider, error) {
+	apiKey := cfg.Agent.APIKeyForProvider(cfg.Agent.LLMProvider)
+	return newLLMProviderFromParams(cfg.Agent.LLMProvider, cfg.Agent.LLMModel, apiKey, cfg.Agent.LLMMaxTokens)
 }
 
 // --- Snapshot Types ---

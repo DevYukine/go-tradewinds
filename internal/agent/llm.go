@@ -166,80 +166,154 @@ func stripCodeFences(s string) string {
 // ---------------------------------------------------------------------------
 
 const tradeSystemPrompt = `You are a trading bot AI for a maritime trading game called Tradewinds.
-Given the current game state as JSON, decide what to buy, sell, which passengers to board, and where to sail.
+A ship has just docked at a port. Given the full game state as JSON, decide what to sell, buy, which P2P orders to fill, which passengers to board, and where to sail next.
 
-Respond with ONLY a valid JSON object matching this schema:
+## Strategy Behavior
+The "strategy_hint" field tells you which strategy this company uses:
+- "arbitrage": Maximize profit per distance. Score destinations by (profit / distance). Prefer fast ships and quick turnarounds.
+- "bulk_hauler": Maximize absolute profit per trip. Score destinations by total achievable profit regardless of distance. Prefer large-capacity ships.
+- "market_maker": Same NPC trading as arbitrage, but also fills P2P market orders when profitable.
+
+## Decision Process (follow this order)
+
+### 1. Smart Selling
+Do NOT blindly sell all cargo. For each cargo item, check if a reachable destination offers a significantly better (>20%) net sell price after taxes. If so, HOLD that cargo — do not sell it. Held cargo reduces available capacity for new buys but should be carried to the better port.
+Only sell cargo that is best sold HERE or has no better destination.
+
+### 2. Fill P2P Orders
+Check "port_orders" for profitable fill opportunities. Ignore orders in "own_orders" (self-fill). Only fill orders where the margin exceeds 7% after taxes. You need a warehouse at this port to fill orders — check "warehouses". Include fills in "fill_orders".
+
+### 3. Buy Cargo
+Evaluate ALL reachable destinations, not just one. For each destination, simulate filling the remaining ship capacity with profitable goods sorted by profit per unit. A trade is profitable only if:
+  sell_price - buy_price - buy_tax - sell_tax > buy_price * MinMarginPct
+MinMarginPct defaults to 0.15 (15%) but check "params" for overrides.
+Port taxes are in "ports[].tax_rate_bps" (basis points, e.g., 500 = 5%). Tax = price * bps / 10000.
+
+### 4. Score Destinations
+For each destination, compute a composite score:
+- Arbitrage: (total_cargo_profit / distance) + (passenger_revenue / distance * PassengerWeight) + (held_cargo_gain / distance) + route_history_bonus
+- Bulk hauler: total_cargo_profit + (passenger_revenue / distance * PassengerWeight) + held_cargo_gain + route_history_bonus
+PassengerWeight defaults to 2.0 but check "params" for overrides.
+
+### 5. Passenger Override
+After choosing a destination, check if passenger revenue alone (weighted by PassengerWeight) exceeds the expected trade PROFIT (not cost) from buy orders. If so, override the destination to the best passenger port. PassengerDestBonus defaults to 3.0 for destination-matching passengers.
+
+### 6. Route History
+"route_history" contains recent buy→sell results for routes. Compute average profit per trade for each (from_port → to_port) pair and add as a bonus to destination scoring.
+
+### 7. No Profitable Trade
+If no trade meets the minimum margin, do NOT buy speculatively. Instead, sail to the destination with the highest passenger revenue, or the nearest port if no passengers are available.
+
+## Tunable Parameters (from "params" field, use defaults if absent)
+- MinMarginPct: 0.15 (minimum profit margin as fraction of buy price)
+- PassengerWeight: 2.0 (multiplier for passenger revenue in scoring)
+- PassengerDestBonus: 3.0 (bonus for passengers heading to the chosen destination)
+- SpeculativeTradeEnabled: false (if true, allow buying without guaranteed profit)
+
+## Response Schema
+Respond with ONLY a valid JSON object:
 {
   "action": "buy_and_sail" | "sell_and_buy" | "wait" | "dock",
   "sell_orders": [{"good_id": "uuid", "quantity": int}],
   "buy_orders": [{"good_id": "uuid", "quantity": int, "destination": "uuid"}],
+  "fill_orders": [{"order_id": "uuid", "quantity": int}],
   "board_passengers": ["passenger_uuid"],
-  "sail_to": "uuid" | null,
-  "reasoning": "string",
+  "sail_to": "port_uuid" | null,
+  "reasoning": "string explaining your decision",
   "confidence": 0.0-1.0
 }
-
-Maximize profit by exploiting price differences between ports. Consider:
-- Current cargo and what can be sold profitably at this port
-- Price differences between ports for arbitrage opportunities
-- Distance and travel time to destinations
-- Available budget (treasury constraints)
-- Ship capacity
-- Available passengers: board passengers heading to your destination for extra income (their bid is paid on delivery)
-- Ship passenger capacity (PassengerCap) — you can only board up to this many passenger groups
-- Passengers already boarded — consider delivering them by sailing to their destination
 
 Do NOT include any text outside the JSON object.`
 
 const fleetSystemPrompt = `You are a trading bot AI managing a fleet in the Tradewinds maritime game.
-Given the current company state as JSON, decide whether to buy ships or warehouses.
+Given the current company state as JSON, decide whether to buy ships, sell ships, or buy warehouses.
 
-Respond with ONLY a valid JSON object matching this schema:
+## Ship Buying Rules
+- Only buy if treasury can cover: ship_cost * 1.06 (6% tax) + (current_upkeep + new_ship_upkeep) * 24 hours safety margin
+- Strategy preferences:
+  - "arbitrage": Prefer fastest ships (high speed)
+  - "bulk_hauler": Prefer largest ships (high capacity)
+  - "market_maker": Prefer cheapest upkeep ships
+- Only buy at ports with shipyards ("shipyard_ports" in request)
+
+## Ship Selling (Decommission) Rules
+- If treasury < (total_upkeep * reserve_hours), sell the worst-performing ship to reduce burn
+- Reserve hours scale with fleet size: small fleets (1-3) need 30h, medium (4-10) need 24h, large (10+) need 20h
+- Sell the ship with the worst value ratio (highest upkeep relative to capacity)
+- Include ship IDs to sell in "sell_ships"
+
+## Warehouse Rules
+- Only buy warehouses if: treasury > 10x hourly upkeep, fleet has 3+ ships, and company has fewer than 2 warehouses
+- Prefer ports where multiple ships frequently dock
+
+## Response Schema
+Respond with ONLY a valid JSON object:
 {
   "buy_ships": [{"ship_type_id": "uuid", "port_id": "uuid"}],
+  "sell_ships": ["ship_uuid"],
   "buy_warehouses": ["port_uuid"],
   "reasoning": "string"
 }
 
-Consider:
-- Current treasury and upkeep costs
-- Fleet size and composition
-- Available ship types and their cost/benefit
-- Whether expanding will increase profits enough to justify upkeep
-
 Do NOT include any text outside the JSON object.`
 
 const marketSystemPrompt = `You are a trading bot AI managing P2P market orders in the Tradewinds game.
-Given the current market state as JSON, decide which orders to post, fill, or cancel.
+Given the current market state as JSON, decide which orders to fill, post, or cancel.
 
-Respond with ONLY a valid JSON object matching this schema:
+## Filling Orders
+- Only fill orders at ports where the company has a warehouse (check "warehouses")
+- Filter out orders in "own_orders" to avoid self-filling
+- Sell-side fills: only fill if order price > NPC sell price * 1.10 (10% min margin)
+- Buy-side fills: only fill if NPC buy price > order price * 1.07 (7% min margin)
+- Account for port taxes (tax_rate_bps) in all profit calculations
+
+## Posting New Orders
+- Maximum 5 active orders at a time (check "own_orders" count)
+- Only post at ports where the company has a warehouse
+- Sell orders: price should be 20%+ above NPC buy price at that port
+- Buy orders: price should be 20%+ below NPC sell price at that port
+- Spread should be attractive enough to get filled but still profitable
+
+## Cancelling Orders
+- Cancel orders where NPC prices have moved past your order price (no longer competitive)
+- Cancel orders that have been sitting unfilled for too long
+
+## Response Schema
+Respond with ONLY a valid JSON object:
 {
   "post_orders": [{"port_id": "uuid", "good_id": "uuid", "side": "buy"|"sell", "price": int, "total": int}],
   "fill_orders": [{"order_id": "uuid", "quantity": int}],
-  "cancel_orders": ["uuid"],
+  "cancel_orders": ["order_uuid"],
   "reasoning": "string"
 }
-
-Consider:
-- Current market prices vs NPC prices for profit opportunities
-- Warehouse inventory for fulfillment
-- Company treasury for purchasing power
 
 Do NOT include any text outside the JSON object.`
 
 const strategySystemPrompt = `You are a trading bot AI evaluating strategy performance in the Tradewinds game.
 Given performance metrics as JSON, recommend parameter adjustments or strategy switches.
 
-Respond with ONLY a valid JSON object matching this schema:
+## Strategy Switch Rules
+- Available strategies: "arbitrage", "bulk_hauler", "market_maker"
+- Switch when the best strategy's profit/hour is 1.5x better than the current one
+- Also switch if the current strategy has negative profit (losing money)
+- Only recommend switching to a strategy that is actually performing well
+
+## Parameter Tuning
+Valid tunable parameters and their ranges:
+- MinMarginPct: 0.05 - 0.50 (minimum profit margin, default 0.15)
+- PassengerWeight: 0.5 - 5.0 (passenger revenue weight in scoring, default 2.0)
+- PassengerDestBonus: 1.0 - 10.0 (bonus for destination-matching passengers, default 3.0)
+- FleetEvalIntervalSec: 60 - 600 (seconds between fleet evaluations, default 180)
+- MarketEvalIntervalSec: 30 - 300 (seconds between market evaluations, default 60)
+
+Adjust parameters gradually (10-20% at a time). Do not make dramatic changes.
+
+## Response Schema
+Respond with ONLY a valid JSON object:
 {
-  "param_changes": {"key": value},
+  "param_changes": {"MinMarginPct": 0.18, "PassengerWeight": 2.5},
   "switch_to": "strategy_name" | null,
   "reasoning": "string"
 }
-
-Consider:
-- Win rate and profitability of each strategy
-- Whether a strategy switch could improve performance
-- Gradual parameter tuning over dramatic changes
 
 Do NOT include any text outside the JSON object.`
