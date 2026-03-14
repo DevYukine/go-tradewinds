@@ -18,7 +18,9 @@ func (s *Server) registerHandlers() {
 	api.Get("/companies/:id/trades", s.handleCompanyTrades)
 	api.Get("/companies/:id/logs", s.handleCompanyLogs)
 	api.Get("/companies/:id/decisions", s.handleCompanyDecisions)
+	api.Get("/companies/:id/inventory", s.handleCompanyInventory)
 	api.Get("/strategy-metrics", s.handleStrategyMetrics)
+	api.Get("/optimizer/log", s.handleOptimizerLog)
 	api.Get("/prices", s.handlePrices)
 	api.Get("/ratelimit", s.handleRateLimit)
 	api.Get("/health", s.handleHealth)
@@ -140,6 +142,102 @@ func (s *Server) handleCompanyDecisions(c fiber.Ctx) error {
 		})
 	}
 	return c.JSON(decisions)
+}
+
+// handleCompanyInventory returns the current in-memory inventory for a company,
+// including cargo on ships and warehouse contents.
+func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
+	companyID := c.Params("id")
+
+	runner := s.manager.GetRunner(companyID)
+	if runner == nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "company not found or not running",
+		})
+	}
+
+	state := runner.State()
+	state.RLock()
+	defer state.RUnlock()
+
+	type cargoItem struct {
+		GoodID   string `json:"good_id"`
+		Quantity int    `json:"quantity"`
+	}
+	type shipInventory struct {
+		ShipID   string      `json:"ship_id"`
+		ShipName string      `json:"ship_name"`
+		Status   string      `json:"status"`
+		Cargo    []cargoItem `json:"cargo"`
+	}
+	type warehouseItem struct {
+		GoodID   string `json:"good_id"`
+		Quantity int    `json:"quantity"`
+	}
+	type warehouseInventory struct {
+		WarehouseID string          `json:"warehouse_id"`
+		PortID      string          `json:"port_id"`
+		Level       int             `json:"level"`
+		Capacity    int             `json:"capacity"`
+		Items       []warehouseItem `json:"items"`
+	}
+
+	ships := make([]shipInventory, 0, len(state.Ships))
+	for _, ss := range state.Ships {
+		cargo := make([]cargoItem, len(ss.Cargo))
+		for i, c := range ss.Cargo {
+			cargo[i] = cargoItem{
+				GoodID:   c.GoodID.String(),
+				Quantity: c.Quantity,
+			}
+		}
+		ships = append(ships, shipInventory{
+			ShipID:   ss.Ship.ID.String(),
+			ShipName: ss.Ship.Name,
+			Status:   ss.Ship.Status,
+			Cargo:    cargo,
+		})
+	}
+
+	warehouses := make([]warehouseInventory, 0, len(state.Warehouses))
+	for _, ws := range state.Warehouses {
+		items := make([]warehouseItem, len(ws.Inventory))
+		for i, item := range ws.Inventory {
+			items[i] = warehouseItem{
+				GoodID:   item.GoodID.String(),
+				Quantity: item.Quantity,
+			}
+		}
+		warehouses = append(warehouses, warehouseInventory{
+			WarehouseID: ws.Warehouse.ID.String(),
+			PortID:      ws.Warehouse.PortID.String(),
+			Level:       ws.Warehouse.Level,
+			Capacity:    ws.Warehouse.Capacity,
+			Items:       items,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"company_id": companyID,
+		"ships":      ships,
+		"warehouses": warehouses,
+	})
+}
+
+// handleOptimizerLog returns the optimizer decision history (StrategyMetric records).
+// Query param: limit (default 50).
+func (s *Server) handleOptimizerLog(c fiber.Ctx) error {
+	limit := queryInt(c, "limit", 50)
+
+	var metrics []db.StrategyMetric
+	if err := s.db.Order("created_at DESC").
+		Limit(limit).
+		Find(&metrics).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "failed to fetch optimizer log",
+		})
+	}
+	return c.JSON(metrics)
 }
 
 // handleStrategyMetrics returns the latest StrategyMetric per strategy.

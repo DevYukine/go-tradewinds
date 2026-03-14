@@ -453,3 +453,8 @@ func (r *CompanyRunner) Logger() *CompanyLogger {
 func (r *CompanyRunner) DBRecord() *db.CompanyRecord {
 	return r.dbRecord
 }
+
+// State returns the in-memory company state for external consumers (e.g., API server).
+func (r *CompanyRunner) State() *CompanyState {
+	return r.state
+}
