@@ -445,6 +445,10 @@ onUnmounted(() => {
   color: #94a3b8 !important;
 }
 
+:deep(.leaflet-container) {
+  background-color: #0f172a;
+}
+
 .port-label span {
   color: #cbd5e1;
   font-size: 11px;
