@@ -179,13 +179,13 @@ const totalCapacity = computed(() =>
               <span class="text-xs text-slate-500">
                 {{ ship.arriving_at ? 'Arrival in' : 'In transit' }}
               </span>
-              <span v-if="ship.arriving_at" class="text-sm font-mono font-bold text-sky-400">
+              <span v-if="ship.arriving_at" class="text-sm font-mono font-bold text-emerald-400">
                 {{ timeUntilArrival(ship.arriving_at) }}
               </span>
             </div>
             <div v-if="ship.arriving_at" class="h-1.5 rounded-full bg-slate-700 overflow-hidden">
               <div
-                class="h-full rounded-full bg-sky-500 transition-all duration-1000"
+                class="h-full rounded-full bg-emerald-500 transition-all duration-1000"
                 :style="{ width: `${arrivalProgress(ship.arriving_at, ship.distance)}%` }"
               />
             </div>
@@ -207,7 +207,7 @@ const totalCapacity = computed(() =>
             </div>
             <div class="bg-slate-800/50 rounded px-2 py-1">
               <div class="text-[10px] text-slate-500 uppercase">Cargo</div>
-              <div class="text-xs font-mono" :class="ship.cargo_total > 0 ? 'text-sky-400' : 'text-slate-500'">
+              <div class="text-xs font-mono" :class="ship.cargo_total > 0 ? 'text-violet-400' : 'text-slate-500'">
                 {{ ship.cargo_total }} / {{ ship.capacity }}
               </div>
             </div>
@@ -218,7 +218,7 @@ const totalCapacity = computed(() =>
             <div class="h-1 rounded-full bg-slate-700 overflow-hidden">
               <div
                 class="h-full rounded-full transition-all"
-                :class="ship.cargo_total / ship.capacity > 0.8 ? 'bg-amber-500' : 'bg-sky-500'"
+                :class="ship.cargo_total / ship.capacity > 0.8 ? 'bg-amber-500' : 'bg-violet-500'"
                 :style="{ width: `${Math.min(100, (ship.cargo_total / ship.capacity) * 100)}%` }"
               />
             </div>
