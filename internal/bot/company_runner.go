@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/DevYukine/go-tradewinds/internal/agent"
 	"github.com/DevYukine/go-tradewinds/internal/api"
 	"github.com/DevYukine/go-tradewinds/internal/db"
 	"gorm.io/gorm"
@@ -31,6 +32,7 @@ type CompanyRunner struct {
 	priceCache *PriceCache
 	state      *CompanyState
 	strategy   Strategy
+	agent      agent.Agent
 	logger     *CompanyLogger
 	dbRecord   *db.CompanyRecord
 
@@ -45,6 +47,7 @@ func NewCompanyRunner(
 	priceCache *PriceCache,
 	state *CompanyState,
 	strategy Strategy,
+	ag agent.Agent,
 	logger *CompanyLogger,
 	dbRecord *db.CompanyRecord,
 ) *CompanyRunner {
@@ -55,6 +58,7 @@ func NewCompanyRunner(
 		priceCache: priceCache,
 		state:      state,
 		strategy:   strategy,
+		agent:      ag,
 		logger:     logger,
 		dbRecord:   dbRecord,
 		strategyCh: make(chan Strategy, 1),
@@ -173,20 +177,8 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 		r.state.SetWarehouseInventory(wh.ID, inv)
 	}
 
-	// Initialize strategy.
-	stratCtx := StrategyContext{
-		Client:     r.client,
-		State:      r.state,
-		World:      r.world,
-		PriceCache: r.priceCache,
-		Agent:      nil, // Set by manager before creating runner.
-		Logger:     r.logger,
-		DB:         r.gormDB,
-	}
-
-	if err := r.strategy.Init(stratCtx); err != nil {
-		return err
-	}
+	// Strategy is already initialized by the factory in the manager.
+	// No need to re-init here.
 
 	r.logger.Info("company state initialized",
 		zap.Int64("treasury", econ.Treasury),
@@ -361,6 +353,7 @@ func (r *CompanyRunner) swapStrategy(ctx context.Context, newStrategy Strategy) 
 		State:      r.state,
 		World:      r.world,
 		PriceCache: r.priceCache,
+		Agent:      r.agent,
 		Logger:     r.logger,
 		DB:         r.gormDB,
 	}

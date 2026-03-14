@@ -309,6 +309,7 @@ func (m *Manager) setupRunner(
 		m.priceCache,
 		state,
 		strategy,
+		m.agent,
 		companyLogger,
 		dbRecord,
 	), nil
