@@ -89,17 +89,7 @@ func RegisterManager(lc fx.Lifecycle, m *Manager) {
 			return m.Start(startCtx, ctx)
 		},
 		OnStop: func(stopCtx context.Context) error {
-			cancel()
-			m.wg.Wait()
-
-			// Persist rate limiter state to Redis for seamless restart.
-			timestamps := m.rateLimiter.SnapshotTimestamps()
-			m.redis.SaveRateLimitTimestamps(stopCtx, timestamps)
-			m.logger.Info("rate limiter state saved to Redis",
-				zap.Int("timestamps", len(timestamps)),
-			)
-
-			m.logger.Info("all company runners stopped")
+			m.Stop(stopCtx, cancel)
 			return nil
 		},
 	})
@@ -226,6 +216,40 @@ func (m *Manager) Start(startCtx context.Context, runCtx context.Context) error 
 	)
 
 	return nil
+}
+
+// Stop gracefully shuts down all company runners and persists state.
+func (m *Manager) Stop(ctx context.Context, cancel context.CancelFunc) {
+	m.logger.Info("bot manager stopping, signalling all runners...")
+
+	// Signal all runners to stop.
+	cancel()
+
+	// Wait for all goroutines (runners, scanner, rate limit persister) to finish.
+	m.wg.Wait()
+	m.logger.Info("all goroutines stopped")
+
+	// Write a final P&L snapshot and mark each company as stopped.
+	m.mu.RLock()
+	for gameID, runner := range m.companies {
+		runner.recordPnLSnapshot()
+		m.gormDB.Model(&db.CompanyRecord{}).
+			Where("game_id = ?", gameID).
+			Update("status", "stopped")
+	}
+	m.mu.RUnlock()
+	m.logger.Info("final P&L snapshots written",
+		zap.Int("companies", len(m.companies)),
+	)
+
+	// Persist rate limiter state to Redis for seamless restart.
+	timestamps := m.rateLimiter.SnapshotTimestamps()
+	m.redis.SaveRateLimitTimestamps(ctx, timestamps)
+	m.logger.Info("rate limiter state saved to Redis",
+		zap.Int("timestamps", len(timestamps)),
+	)
+
+	m.logger.Info("bot manager stopped gracefully")
 }
 
 // ensureCompany finds an existing company by ticker or creates a new one.
