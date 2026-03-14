@@ -5,11 +5,13 @@ const chartData = computed(() =>
   metrics.value.map((m) => ({
     strategy: m.strategy_name,
     avg_profit: m.avg_profit_per_trade,
+    win_rate: m.win_rate * 100,
   }))
 )
 
-const categories = {
+const barCategories = {
   avg_profit: { name: 'Avg Profit/Trade', color: '#10b981' },
+  win_rate: { name: 'Win Rate %', color: '#3b82f6' },
 }
 
 function formatNumber(n: number): string {
@@ -44,14 +46,29 @@ function winRateColor(rate: number): string {
     </div>
 
     <template v-else-if="metrics.length > 0">
-      <div class="mb-4">
+      <div class="strategy-chart mb-4">
         <BarChart
           :data="chartData"
-          :categories="categories"
+          :categories="barCategories"
+          :y-axis="['avg_profit', 'win_rate']"
+          x-axis="strategy"
           :height="192"
           :y-grid-line="true"
           :x-grid-line="false"
           :y-num-ticks="5"
+          :radius="4"
+          :bar-padding="0.2"
+          :group-padding="16"
+          :duration="600"
+          :x-domain-line="true"
+          :x-axis-config="{
+            tickTextColor: '#94a3b8',
+            tickTextFontSize: '11px',
+          }"
+          :y-axis-config="{
+            tickTextColor: '#64748b',
+            tickTextFontSize: '11px',
+          }"
         />
       </div>
 
@@ -101,3 +118,16 @@ function winRateColor(rate: number): string {
     </div>
   </div>
 </template>
+
+<style scoped>
+.strategy-chart :deep(svg) {
+  overflow: visible;
+}
+.strategy-chart :deep(.unovis-axis-grid line) {
+  stroke: #1e293b;
+}
+.strategy-chart :deep(.unovis-axis line),
+.strategy-chart :deep(.unovis-axis path) {
+  stroke: #334155;
+}
+</style>
