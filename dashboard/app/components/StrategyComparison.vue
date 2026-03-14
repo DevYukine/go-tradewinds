@@ -1,47 +1,16 @@
 <script setup lang="ts">
 const { metrics, loading, fetchMetrics } = useStrategyMetrics()
 
-const chartData = computed(() => ({
-  labels: metrics.value.map((m) => m.strategy_name),
-  datasets: [
-    {
-      label: 'Avg Profit/Trade',
-      data: metrics.value.map((m) => m.avg_profit_per_trade),
-      backgroundColor: metrics.value.map((m) =>
-        m.avg_profit_per_trade >= 0 ? 'rgba(16, 185, 129, 0.6)' : 'rgba(244, 63, 94, 0.6)'
-      ),
-      borderColor: metrics.value.map((m) =>
-        m.avg_profit_per_trade >= 0 ? '#10b981' : '#f43f5e'
-      ),
-      borderWidth: 1,
-    },
-  ],
-}))
+const chartData = computed(() =>
+  metrics.value.map((m) => ({
+    strategy: m.strategy_name,
+    avg_profit: m.avg_profit_per_trade,
+  }))
+)
 
-const chartOptions = computed(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: {
-    legend: { display: false },
-    tooltip: {
-      backgroundColor: '#1e293b',
-      titleColor: '#e2e8f0',
-      bodyColor: '#94a3b8',
-      borderColor: '#334155',
-      borderWidth: 1,
-    },
-  },
-  scales: {
-    x: {
-      ticks: { color: '#64748b' },
-      grid: { color: '#1e293b' },
-    },
-    y: {
-      ticks: { color: '#64748b' },
-      grid: { color: '#1e293b' },
-    },
-  },
-}))
+const categories = {
+  avg_profit: { name: 'Avg Profit/Trade', color: '#10b981' },
+}
 
 function formatNumber(n: number): string {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 }).format(n)
@@ -75,8 +44,15 @@ function winRateColor(rate: number): string {
     </div>
 
     <template v-else-if="metrics.length > 0">
-      <div class="h-48 mb-4">
-        <Chart type="bar" :data="chartData" :options="chartOptions" />
+      <div class="mb-4">
+        <BarChart
+          :data="chartData"
+          :categories="categories"
+          :height="192"
+          :y-grid-line="true"
+          :x-grid-line="false"
+          :y-num-ticks="5"
+        />
       </div>
 
       <div class="overflow-x-auto">

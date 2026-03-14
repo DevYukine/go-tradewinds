@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import type { PnLPoint } from '~/types'
-
 const props = defineProps<{
   companyId: number
 }>()
@@ -22,66 +20,31 @@ onUnmounted(() => {
   disconnectSSE()
 })
 
-const chartData = computed(() => ({
-  labels: history.value.map((p) => {
-    const d = new Date(p.created_at)
-    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
-  }),
-  datasets: [
-    {
-      label: 'Treasury',
-      data: history.value.map((p) => p.treasury),
-      borderColor: '#10b981',
-      backgroundColor: 'rgba(16, 185, 129, 0.1)',
-      fill: true,
-      tension: 0.3,
-      pointRadius: 0,
-      borderWidth: 2,
-    },
-    {
-      label: 'Net P&L',
-      data: history.value.map((p) => p.net_pnl),
-      borderColor: '#3b82f6',
-      backgroundColor: 'transparent',
-      fill: false,
-      tension: 0.3,
-      pointRadius: 0,
-      borderWidth: 1.5,
-      borderDash: [4, 4],
-    },
-  ],
-}))
+const chartData = computed(() =>
+  history.value.map((p) => ({
+    time: new Date(p.created_at).getTime(),
+    treasury: p.treasury,
+    net_pnl: p.net_pnl,
+  }))
+)
 
-const chartOptions = computed(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: {
-    legend: {
-      labels: {
-        color: '#94a3b8',
-        usePointStyle: true,
-        pointStyleWidth: 8,
-      },
-    },
-    tooltip: {
-      backgroundColor: '#1e293b',
-      titleColor: '#e2e8f0',
-      bodyColor: '#94a3b8',
-      borderColor: '#334155',
-      borderWidth: 1,
-    },
-  },
-  scales: {
-    x: {
-      ticks: { color: '#64748b', maxTicksLimit: 12 },
-      grid: { color: '#1e293b' },
-    },
-    y: {
-      ticks: { color: '#64748b' },
-      grid: { color: '#1e293b' },
-    },
-  },
-}))
+const categories = {
+  treasury: { name: 'Treasury', color: '#10b981' },
+  net_pnl: { name: 'Net P&L', color: '#3b82f6' },
+}
+
+function formatTime(tick: number) {
+  const d = new Date(tick)
+  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
+}
+
+function formatValue(tick: number) {
+  if (tick >= 1_000_000) return `${(tick / 1_000_000).toFixed(1)}M`
+  if (tick >= 1_000) return `${(tick / 1_000).toFixed(1)}K`
+  if (tick <= -1_000_000) return `${(tick / 1_000_000).toFixed(1)}M`
+  if (tick <= -1_000) return `${(tick / 1_000).toFixed(1)}K`
+  return tick.toString()
+}
 </script>
 
 <template>
@@ -102,8 +65,22 @@ const chartOptions = computed(() => ({
       No P&L data available
     </div>
 
-    <div v-else class="h-64">
-      <Chart type="line" :data="chartData" :options="chartOptions" />
+    <div v-else>
+      <LineChart
+        :data="chartData"
+        :categories="categories"
+        :height="256"
+        :x-formatter="formatTime"
+        :y-formatter="formatValue"
+        :x-num-ticks="8"
+        :y-num-ticks="6"
+        x-label="Time"
+        y-label="Value"
+        :y-grid-line="true"
+        :x-grid-line="false"
+        :line-width="2"
+        curve-type="monotoneX"
+      />
     </div>
   </div>
 </template>
