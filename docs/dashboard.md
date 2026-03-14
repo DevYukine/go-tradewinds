@@ -50,4 +50,4 @@ Subscribes to `EventBroadcaster` on the `CompanyRunner`. Streams typed state cha
 - `economy` — treasury/upkeep refresh
 - `warehouse` — warehouse purchased
 
-The dashboard uses these to trigger instant re-fetches of inventory, trades, and company data instead of waiting for poll intervals.
+The **company detail page** uses these to trigger instant re-fetches of inventory, trades, and company data instead of waiting for poll intervals. The overview page uses polling only — SSE connections are limited to the detail page to stay within the browser's 6-connection-per-origin HTTP/1.1 limit.
