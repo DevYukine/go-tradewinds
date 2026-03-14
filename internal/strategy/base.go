@@ -621,6 +621,42 @@ func (b *baseStrategy) recordTrade(exec *api.TradeExecution) {
 	if err := b.ctx.DB.Create(&trade).Error; err != nil {
 		b.logger.Warn("failed to log trade", zap.Error(err))
 	}
+
+	// Record route performance for sell trades (completed buy→sell cycle).
+	if exec.Action == "sell" {
+		b.recordRoutePerformance(exec)
+	}
+}
+
+// recordRoutePerformance finds the most recent buy of the same good and
+// records the profit for the completed buy→sell cycle.
+func (b *baseStrategy) recordRoutePerformance(sell *api.TradeExecution) {
+	// Find the most recent buy of the same good.
+	var buyTrade db.TradeLog
+	err := b.ctx.DB.Where("company_id = ? AND action = ? AND good_id = ? AND created_at > ?",
+		b.ctx.State.CompanyDBID(), "buy", sell.GoodID.String(), time.Now().Add(-24*time.Hour)).
+		Order("created_at DESC").First(&buyTrade).Error
+	if err != nil {
+		return // No matching buy found.
+	}
+
+	profit := sell.TotalPrice - buyTrade.TotalPrice
+
+	rp := db.RoutePerformance{
+		CompanyID:  b.ctx.State.CompanyDBID(),
+		FromPortID: buyTrade.PortID,
+		ToPortID:   sell.PortID.String(),
+		GoodID:     sell.GoodID.String(),
+		BuyPrice:   buyTrade.UnitPrice,
+		SellPrice:  sell.UnitPrice,
+		Quantity:   sell.Quantity,
+		Profit:     profit,
+		Strategy:   b.name,
+	}
+
+	if err := b.ctx.DB.Create(&rp).Error; err != nil {
+		b.logger.Warn("failed to record route performance", zap.Error(err))
+	}
 }
 
 // --- Snapshot Converters ---

@@ -40,7 +40,8 @@ type CompanyRunner struct {
 	logger     *CompanyLogger
 	dbRecord   *db.CompanyRecord
 
-	strategyCh chan Strategy // Receives new strategy assignments from the optimizer.
+	strategyCh      chan Strategy          // Receives new strategy assignments from the optimizer.
+	dispatchedShips map[uuid.UUID]time.Time // Tracks recently dispatched ships.
 }
 
 // NewCompanyRunner creates a runner for a single company.
@@ -65,7 +66,8 @@ func NewCompanyRunner(
 		agent:      ag,
 		logger:     logger,
 		dbRecord:   dbRecord,
-		strategyCh: make(chan Strategy, 1),
+		strategyCh:      make(chan Strategy, 1),
+		dispatchedShips: make(map[uuid.UUID]time.Time),
 	}
 }
 
@@ -258,12 +260,7 @@ func (r *CompanyRunner) handleShipDocked(ctx context.Context, data json.RawMessa
 		return
 	}
 
-	if err := r.strategy.OnShipArrival(ctx, shipState, port); err != nil {
-		r.logger.Error("strategy OnShipArrival failed",
-			zap.String("ship_id", docked.ShipID.String()),
-			zap.Error(err),
-		)
-	}
+	r.dispatchWithRetry(ctx, shipState, port)
 }
 
 // handleShipSetSail updates state when a ship departs.
@@ -345,10 +342,25 @@ func (r *CompanyRunner) handleTick(ctx context.Context) {
 // dispatchIdleShips checks for docked ships and triggers OnShipArrival
 // to ensure ships don't sit idle (e.g., after purchase or missed SSE events).
 func (r *CompanyRunner) dispatchIdleShips(ctx context.Context) {
+	// Clean old entries.
+	now := time.Now()
+	for id, t := range r.dispatchedShips {
+		if now.Sub(t) > 60*time.Second {
+			delete(r.dispatchedShips, id)
+		}
+	}
+
 	docked := r.state.DockedShips()
 	for _, ship := range docked {
 		if ship.Ship.PortID == nil {
 			continue
+		}
+
+		// Skip recently dispatched ships.
+		if lastDispatched, ok := r.dispatchedShips[ship.Ship.ID]; ok {
+			if now.Sub(lastDispatched) < 60*time.Second {
+				continue
+			}
 		}
 
 		port := r.world.GetPort(*ship.Ship.PortID)
@@ -361,12 +373,7 @@ func (r *CompanyRunner) dispatchIdleShips(ctx context.Context) {
 			zap.String("port", port.Name),
 		)
 
-		if err := r.strategy.OnShipArrival(ctx, ship, port); err != nil {
-			r.logger.Warn("idle ship dispatch failed",
-				zap.String("ship_id", ship.Ship.ID.String()),
-				zap.Error(err),
-			)
-		}
+		r.dispatchWithRetry(ctx, ship, port)
 	}
 }
 
@@ -387,12 +394,33 @@ func (r *CompanyRunner) dispatchDockedShip(ctx context.Context, shipID uuid.UUID
 		zap.String("port", port.Name),
 	)
 
-	if err := r.strategy.OnShipArrival(ctx, shipState, port); err != nil {
-		r.logger.Warn("new ship dispatch failed",
-			zap.String("ship_id", shipID.String()),
-			zap.Error(err),
-		)
+	r.dispatchWithRetry(ctx, shipState, port)
+}
+
+// dispatchWithRetry attempts to dispatch a ship up to 3 times with backoff.
+func (r *CompanyRunner) dispatchWithRetry(ctx context.Context, ship *ShipState, port *api.Port) {
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := r.strategy.OnShipArrival(ctx, ship, port); err == nil {
+			r.dispatchedShips[ship.Ship.ID] = time.Now()
+			return
+		} else {
+			r.logger.Warn("dispatch attempt failed",
+				zap.String("ship_id", ship.Ship.ID.String()),
+				zap.Int("attempt", attempt+1),
+				zap.Error(err),
+			)
+		}
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(3 * time.Second):
+			}
+		}
 	}
+	r.logger.Error("all dispatch attempts failed",
+		zap.String("ship_id", ship.Ship.ID.String()),
+	)
 }
 
 // recordPnLSnapshot writes a P&L snapshot to the database.
@@ -400,7 +428,23 @@ func (r *CompanyRunner) recordPnLSnapshot() {
 	r.state.mu.RLock()
 	treasury := r.state.Treasury
 	shipCount := len(r.state.Ships)
+
+	// Compute capacity utilization.
+	var totalCargo, totalCapacity int
+	for _, ship := range r.state.Ships {
+		for _, c := range ship.Cargo {
+			totalCargo += c.Quantity
+		}
+		if st := r.world.GetShipType(ship.Ship.ShipTypeID); st != nil {
+			totalCapacity += st.Capacity
+		}
+	}
 	r.state.mu.RUnlock()
+
+	avgCapUtil := 0.0
+	if totalCapacity > 0 {
+		avgCapUtil = float64(totalCargo) / float64(totalCapacity)
+	}
 
 	// Compute cumulative revenue and costs from trade logs.
 	var totalRev, totalCosts int64
@@ -412,12 +456,13 @@ func (r *CompanyRunner) recordPnLSnapshot() {
 		Select("COALESCE(SUM(total_price), 0)").Scan(&totalCosts)
 
 	snapshot := db.PnLSnapshot{
-		CompanyID:  r.dbRecord.ID,
-		Treasury:   treasury,
-		TotalRev:   totalRev,
-		TotalCosts: totalCosts,
-		NetPnL:     totalRev - totalCosts,
-		ShipCount:  shipCount,
+		CompanyID:       r.dbRecord.ID,
+		Treasury:        treasury,
+		TotalRev:        totalRev,
+		TotalCosts:      totalCosts,
+		NetPnL:          totalRev - totalCosts,
+		ShipCount:       shipCount,
+		AvgCapacityUtil: avgCapUtil,
 	}
 
 	if err := r.gormDB.Create(&snapshot).Error; err != nil {

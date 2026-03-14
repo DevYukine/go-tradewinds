@@ -10,6 +10,13 @@ import (
 	"github.com/DevYukine/go-tradewinds/internal/db"
 )
 
+// decayWeight returns an exponential decay weight based on trade age.
+// Recent trades (last 5 min) get weight ~1.0, trades 14+ min old get ~0.5.
+func decayWeight(tradeTime time.Time, now time.Time) float64 {
+	age := now.Sub(tradeTime).Minutes()
+	return math.Exp(-0.05 * age)
+}
+
 // companyMetrics holds computed performance metrics for a single company.
 type companyMetrics struct {
 	CompanyID      uint
@@ -19,6 +26,9 @@ type companyMetrics struct {
 	TotalLoss      int64
 	WinRate        float64
 	ProfitPerHour  float64
+	AvgTradeProfit int64
+	TradesPerHour  float64
+	CapacityUtil   float64
 }
 
 // collectCompanyMetrics computes performance metrics for a company over the given period.
@@ -36,23 +46,47 @@ func collectCompanyMetrics(gormDB *gorm.DB, companyID uint, strategy string, sin
 		return m
 	}
 
+	now := time.Now()
 	wins := 0
+	var weightedProfit, weightedLoss float64
+	var totalWeight float64
+
 	for _, t := range trades {
+		w := decayWeight(t.CreatedAt, now)
+		totalWeight += w
 		if t.Action == "sell" {
 			m.TotalProfit += int64(t.TotalPrice)
+			weightedProfit += float64(t.TotalPrice) * w
 			wins++
 		} else {
 			m.TotalLoss += int64(t.TotalPrice)
+			weightedLoss += float64(t.TotalPrice) * w
 		}
 	}
 
 	m.WinRate = float64(wins) / float64(m.TradesExecuted)
 
-	// Calculate profit per hour based on period duration.
+	// Use decay-weighted profit for per-hour calculation.
 	hours := time.Since(since).Hours()
+	if hours > 0 && totalWeight > 0 {
+		weightedNet := weightedProfit - weightedLoss
+		m.ProfitPerHour = weightedNet / hours
+	}
+
+	// Average trade profit.
+	if m.TradesExecuted > 0 {
+		m.AvgTradeProfit = (m.TotalProfit - m.TotalLoss) / int64(m.TradesExecuted)
+	}
+
+	// Trades per hour.
 	if hours > 0 {
-		netProfit := m.TotalProfit - m.TotalLoss
-		m.ProfitPerHour = float64(netProfit) / hours
+		m.TradesPerHour = float64(m.TradesExecuted) / hours
+	}
+
+	// Capacity utilization from latest PnL snapshot.
+	var latestPnL db.PnLSnapshot
+	if err := gormDB.Where("company_id = ?", companyID).Order("created_at DESC").First(&latestPnL).Error; err == nil {
+		m.CapacityUtil = latestPnL.AvgCapacityUtil
 	}
 
 	return m
@@ -68,8 +102,10 @@ type strategyStats struct {
 	ConfidenceLow  float64
 	ConfidenceHigh float64
 	TotalTrades    int
-	MeanWinRate    float64
-	Score          float64
+	MeanWinRate       float64
+	MeanTradesPerHour float64
+	MeanCapacityUtil  float64
+	Score             float64
 }
 
 // aggregateByStrategy groups company metrics by strategy and computes
@@ -90,18 +126,22 @@ func aggregateByStrategy(metrics []companyMetrics) []strategyStats {
 
 		// Collect profit-per-hour values for statistical analysis.
 		profits := make([]float64, len(companies))
-		var sumProfit, sumWinRate float64
+		var sumProfit, sumWinRate, sumTradesPerHour, sumCapacityUtil float64
 
 		for i, c := range companies {
 			profits[i] = c.ProfitPerHour
 			sumProfit += c.ProfitPerHour
 			sumWinRate += c.WinRate
+			sumTradesPerHour += c.TradesPerHour
+			sumCapacityUtil += c.CapacityUtil
 			s.TotalTrades += c.TradesExecuted
 		}
 
 		n := float64(len(companies))
 		s.MeanProfit = sumProfit / n
 		s.MeanWinRate = sumWinRate / n
+		s.MeanTradesPerHour = sumTradesPerHour / n
+		s.MeanCapacityUtil = sumCapacityUtil / n
 
 		// Standard deviation.
 		if len(companies) > 1 {
@@ -125,7 +165,7 @@ func aggregateByStrategy(metrics []companyMetrics) []strategyStats {
 		}
 
 		// Composite score: weights consistency (CI lower bound) heavily.
-		s.Score = 0.5*s.ConfidenceLow + 0.3*s.MeanProfit + 0.2*s.MeanWinRate
+		s.Score = 0.35*s.ConfidenceLow + 0.25*s.MeanProfit + 0.20*s.MeanWinRate + 0.10*s.MeanTradesPerHour + 0.10*s.MeanCapacityUtil
 
 		stats = append(stats, s)
 	}

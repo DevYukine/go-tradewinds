@@ -45,8 +45,9 @@ type PnLSnapshot struct {
 	TotalCosts int64     `json:"total_costs"`
 	TotalRev   int64     `json:"total_rev"`
 	NetPnL     int64     `json:"net_pnl"`
-	ShipCount  int       `json:"ship_count"`
-	CreatedAt  time.Time `gorm:"index:idx_pnl_company_time;not null" json:"created_at"`
+	ShipCount       int       `json:"ship_count"`
+	AvgCapacityUtil float64   `json:"avg_capacity_util"`
+	CreatedAt       time.Time `gorm:"index:idx_pnl_company_time;not null" json:"created_at"`
 }
 
 // InventorySnapshot tracks cargo and warehouse state over time.
@@ -113,6 +114,21 @@ type AgentDecisionLog struct {
 	CreatedAt    time.Time `gorm:"index:idx_decision_company_time;not null" json:"created_at"`
 }
 
+// RoutePerformance records the profit of completed buy→sell trade cycles per route.
+type RoutePerformance struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	CompanyID  uint      `gorm:"index:idx_route_company_time;not null" json:"company_id"`
+	FromPortID string    `gorm:"not null" json:"from_port_id"`
+	ToPortID   string    `gorm:"not null" json:"to_port_id"`
+	GoodID     string    `gorm:"not null" json:"good_id"`
+	BuyPrice   int       `gorm:"not null" json:"buy_price"`
+	SellPrice  int       `gorm:"not null" json:"sell_price"`
+	Quantity   int       `gorm:"not null" json:"quantity"`
+	Profit     int       `gorm:"not null" json:"profit"`
+	Strategy   string    `gorm:"not null" json:"strategy"`
+	CreatedAt  time.Time `gorm:"index:idx_route_company_time;not null" json:"created_at"`
+}
+
 // AllModels returns all GORM models for auto-migration.
 func AllModels() []any {
 	return []any{
@@ -124,5 +140,6 @@ func AllModels() []any {
 		&CompanyLog{},
 		&PriceObservation{},
 		&AgentDecisionLog{},
+		&RoutePerformance{},
 	}
 }

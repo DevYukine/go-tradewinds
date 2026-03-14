@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	defaultEvalInterval = 30 * time.Minute
+	defaultEvalInterval = 15 * time.Minute
 
 	// minPeriodsBeforeSwitch requires a strategy to underperform for this many
 	// consecutive evaluation periods before triggering a reallocation.
@@ -155,6 +155,9 @@ func (e *Engine) evaluate(ctx context.Context) {
 		)
 	}
 
+	// 4.5. Check for inactive/stalled companies.
+	e.checkInactiveCompanies(ctx, metrics, stats)
+
 	// 5. Check for reallocation opportunities.
 	e.checkReallocations(ctx, stats)
 
@@ -284,6 +287,82 @@ func (e *Engine) checkDynamicScaling(ctx context.Context, stats []strategyStats)
 			)
 			break // Only pause one company per evaluation.
 		}
+	}
+}
+
+// checkInactiveCompanies detects stalled companies (0 trades with docked ships)
+// and triggers a strategy swap to break the stall.
+func (e *Engine) checkInactiveCompanies(ctx context.Context, metrics []companyMetrics, stats []strategyStats) {
+	if len(stats) < 2 {
+		return
+	}
+
+	// Find best strategy to swap to.
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].Score > stats[j].Score
+	})
+	bestStrategy := stats[0].StrategyName
+
+	for _, m := range metrics {
+		if m.TradesExecuted > 0 {
+			continue
+		}
+
+		// Check if company has docked ships by looking up its state.
+		var dbRecord db.CompanyRecord
+		if err := e.gormDB.First(&dbRecord, m.CompanyID).Error; err != nil {
+			continue
+		}
+
+		runner := e.manager.GetRunner(dbRecord.GameID)
+		if runner == nil {
+			continue
+		}
+
+		// Check if any ships are docked.
+		dockedShips := runner.State().DockedShips()
+		if len(dockedShips) == 0 {
+			continue
+		}
+
+		// Company is stalled — has docked ships but no trades.
+		// Skip if already on the best strategy.
+		if m.Strategy == bestStrategy {
+			continue
+		}
+
+		e.logger.Warn("inactive company detected, triggering strategy swap",
+			zap.Uint("company_id", m.CompanyID),
+			zap.String("current_strategy", m.Strategy),
+			zap.String("swap_to", bestStrategy),
+			zap.Int("docked_ships", len(dockedShips)),
+		)
+
+		factory, ok := e.registry[bestStrategy]
+		if !ok {
+			continue
+		}
+
+		stratCtx := bot.StrategyContext{
+			Client:     e.manager.BaseClient().ForCompany(dbRecord.GameID),
+			State:      runner.State(),
+			World:      e.manager.WorldData(),
+			PriceCache: e.manager.PriceCache(),
+			Agent:      e.agent,
+			Logger:     runner.Logger(),
+			DB:         e.gormDB,
+		}
+
+		newStrategy, err := factory(stratCtx)
+		if err != nil {
+			e.logger.Error("failed to create strategy for inactive swap",
+				zap.Error(err),
+			)
+			continue
+		}
+
+		runner.SwapStrategy(newStrategy)
+		break // Only swap one company per evaluation.
 	}
 }
 
