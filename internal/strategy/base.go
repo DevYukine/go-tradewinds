@@ -392,11 +392,25 @@ func (b *baseStrategy) sendShipToPort(ctx context.Context, ship *bot.ShipState, 
 
 	route := b.ctx.World.FindRoute(*ship.Ship.PortID, destPortID)
 	if route == nil {
-		b.logger.Warn("no direct route found",
+		// Route missing from cache — fetch directly from API.
+		b.logger.Warn("route not in cache, fetching from API",
 			zap.String("from", ship.Ship.PortID.String()),
 			zap.String("to", destPortID.String()),
 		)
-		return nil
+		fetched, err := b.ctx.Client.ListRoutes(ctx, api.RouteFilters{
+			FromID: ship.Ship.PortID,
+			ToID:   &destPortID,
+		})
+		if err != nil || len(fetched) == 0 {
+			b.logger.Warn("no route found even from API",
+				zap.String("from", ship.Ship.PortID.String()),
+				zap.String("to", destPortID.String()),
+				zap.Error(err),
+			)
+			return nil
+		}
+		route = &fetched[0]
+		b.ctx.World.AddRoute(*route)
 	}
 
 	updated, err := b.ctx.Client.SendTransit(ctx, ship.Ship.ID, route.ID)

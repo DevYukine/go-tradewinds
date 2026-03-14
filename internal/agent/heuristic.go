@@ -48,13 +48,25 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 	reachable := a.reachablePorts(req.Routes, currentPortID)
 
 	if len(reachable) == 0 {
-		if len(sells) > 0 {
-			return &TradeDecision{
-				Action: "sell_and_buy", SellOrders: sells,
-				Reasoning: "selling cargo, no outgoing routes", Confidence: 0.5,
-			}, nil
+		a.logger.Warn("no outgoing routes found for port, attempting fallback",
+			zap.String("port_id", currentPortID.String()),
+			zap.Int("total_routes", len(req.Routes)),
+		)
+		// Fallback: pick any other port from the ports list and sail there.
+		// This prevents ships from getting permanently stuck at a port
+		// whose routes are missing from the cache.
+		var fallbackDest *uuid.UUID
+		for _, p := range req.Ports {
+			if p.ID != currentPortID {
+				id := p.ID
+				fallbackDest = &id
+				break
+			}
 		}
-		return &TradeDecision{Action: "wait", Reasoning: "no outgoing routes and no cargo"}, nil
+		return &TradeDecision{
+			Action: "sell_and_buy", SellOrders: sells, SailTo: fallbackDest,
+			Reasoning: "no cached routes for port, sailing to fallback destination", Confidence: 0.3,
+		}, nil
 	}
 
 	budget := req.Constraints.MaxSpend

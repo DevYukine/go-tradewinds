@@ -64,14 +64,20 @@ func TestDecideTradeAction_NoRoutes_WithCargo(t *testing.T) {
 func TestDecideTradeAction_NoRoutes_NoCargo(t *testing.T) {
 	a := testAgent()
 	portA := id(1)
+	portB := id(2)
 	dec, err := a.DecideTradeAction(context.Background(), TradeDecisionRequest{
-		Ship: ShipSnapshot{PortID: &portA},
+		Ship:  ShipSnapshot{PortID: &portA},
+		Ports: []PortInfo{{ID: portA}, {ID: portB}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dec.Action != "wait" {
-		t.Errorf("expected wait, got %s", dec.Action)
+	// Should attempt to sail to a fallback port instead of waiting forever.
+	if dec.Action != "sell_and_buy" {
+		t.Errorf("expected sell_and_buy (fallback), got %s", dec.Action)
+	}
+	if dec.SailTo == nil || *dec.SailTo != portB {
+		t.Errorf("expected fallback sail to portB, got %v", dec.SailTo)
 	}
 }
 

@@ -32,6 +32,8 @@ type WorldCache struct {
 	routesByID     map[uuid.UUID]*api.Route
 	routesByFrom   map[uuid.UUID][]api.Route
 	routesByPorts  map[[2]uuid.UUID]*api.Route // key: [fromID, toID]
+
+	mu sync.RWMutex // protects route indexes for dynamic additions
 }
 
 // LoadWorldData fetches all static world data from the API and builds indexes.
@@ -182,12 +184,32 @@ func (wc *WorldCache) GetRoute(id uuid.UUID) *api.Route {
 
 // RoutesFrom returns all routes departing from the given port.
 func (wc *WorldCache) RoutesFrom(portID uuid.UUID) []api.Route {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
 	return wc.routesByFrom[portID]
 }
 
 // FindRoute returns the route between two ports, or nil if none exists.
 func (wc *WorldCache) FindRoute(fromID, toID uuid.UUID) *api.Route {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
 	return wc.routesByPorts[[2]uuid.UUID{fromID, toID}]
+}
+
+// AddRoute adds a route to the cache indexes. Used when a route is fetched
+// from the API but was missing from the initial cache load.
+func (wc *WorldCache) AddRoute(r api.Route) {
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	key := [2]uuid.UUID{r.FromID, r.ToID}
+	if wc.routesByPorts[key] != nil {
+		return // already cached
+	}
+	wc.Routes = append(wc.Routes, r)
+	idx := len(wc.Routes) - 1
+	wc.routesByID[r.ID] = &wc.Routes[idx]
+	wc.routesByFrom[r.FromID] = append(wc.routesByFrom[r.FromID], r)
+	wc.routesByPorts[key] = &wc.Routes[idx]
 }
 
 // PortIDs returns all port UUIDs for iteration.
@@ -216,6 +238,8 @@ func (wc *WorldCache) ToAgentPorts() []agent.PortInfo {
 
 // ToAgentRoutes converts cached routes to agent-compatible RouteInfo slices.
 func (wc *WorldCache) ToAgentRoutes() []agent.RouteInfo {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
 	routes := make([]agent.RouteInfo, len(wc.Routes))
 	for i, r := range wc.Routes {
 		routes[i] = agent.RouteInfo{
