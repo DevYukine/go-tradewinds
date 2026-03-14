@@ -64,6 +64,12 @@ func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, por
 			b.logger.Warn("buy execution failed", zap.Error(err))
 		}
 		b.boardPassengers(ctx, ship, decision.BoardPassengers)
+		// Reset idle ticks on active trade.
+		b.ctx.State.Lock()
+		if ss := b.ctx.State.Ships[ship.Ship.ID]; ss != nil {
+			ss.IdleTicks = 0
+		}
+		b.ctx.State.Unlock()
 		if decision.SailTo != nil {
 			if err := b.sendShipToPort(ctx, ship, *decision.SailTo); err != nil {
 				b.logger.Warn("transit failed", zap.Error(err))
@@ -73,6 +79,18 @@ func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, por
 		b.logger.Debug("agent decided to wait",
 			zap.String("reasoning", decision.Reasoning),
 		)
+		// Execute sells/fills/passengers even when waiting.
+		if err := b.executeSells(ctx, ship, decision.SellOrders); err != nil {
+			b.logger.Warn("sell execution failed", zap.Error(err))
+		}
+		b.executeFills(ctx, *ship.Ship.PortID, decision.FillOrders)
+		b.boardPassengers(ctx, ship, decision.BoardPassengers)
+		// Track idle ticks.
+		b.ctx.State.Lock()
+		if ss := b.ctx.State.Ships[ship.Ship.ID]; ss != nil {
+			ss.IdleTicks++
+		}
+		b.ctx.State.Unlock()
 	}
 
 	return nil

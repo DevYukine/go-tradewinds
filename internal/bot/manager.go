@@ -35,8 +35,9 @@ type Manager struct {
 	baseClient  *api.Client
 	rateLimiter *api.RateLimiter
 	worldData   *WorldCache
-	priceCache  *PriceCache
-	agent       agent.Agent
+	priceCache      *PriceCache
+	profitAnalyzer  *ProfitAnalyzer
+	agent           agent.Agent
 	registry    Registry
 	scaler      *Scaler
 	companies   map[string]*CompanyRunner
@@ -125,6 +126,9 @@ func (m *Manager) Start(startCtx context.Context, runCtx context.Context) error 
 		return fmt.Errorf("failed to load world data: %w", err)
 	}
 	m.worldData = worldData
+
+	// 3.5. Create profit analyzer (needs world data and price cache).
+	m.profitAnalyzer = NewProfitAnalyzer(m.priceCache, m.worldData)
 
 	// 4. Calculate allocation.
 	allocations := m.scaler.CalculateAllocation(
@@ -393,14 +397,15 @@ func (m *Manager) setupRunner(
 
 	// Create strategy context and strategy instance.
 	stratCtx := StrategyContext{
-		Client:     companyClient,
-		State:      state,
-		World:      m.worldData,
-		PriceCache: m.priceCache,
-		Agent:      companyAgent,
-		Logger:     companyLogger,
-		Events:     events,
-		DB:         m.gormDB,
+		Client:         companyClient,
+		State:          state,
+		World:          m.worldData,
+		PriceCache:     m.priceCache,
+		ProfitAnalyzer: m.profitAnalyzer,
+		Agent:          companyAgent,
+		Logger:         companyLogger,
+		Events:         events,
+		DB:             m.gormDB,
 	}
 
 	strategy, err := factory(stratCtx)
@@ -485,6 +490,7 @@ func (m *Manager) startScanner(ctx context.Context) {
 		scannerClient,
 		m.worldData,
 		m.priceCache,
+		m.profitAnalyzer,
 		m.rateLimiter,
 		m.redis,
 		m.gormDB,

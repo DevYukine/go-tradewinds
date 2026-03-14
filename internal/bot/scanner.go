@@ -24,13 +24,14 @@ const (
 // It runs as a single goroutine shared across all companies to avoid
 // duplicate API calls. Uses PriorityLow to yield to trade executions.
 type Scanner struct {
-	client     *api.Client
-	world      *WorldCache
-	priceCache *PriceCache
-	limiter    *api.RateLimiter
-	redis      *cache.RedisCache
-	gormDB     *gorm.DB
-	logger     *zap.Logger
+	client         *api.Client
+	world          *WorldCache
+	priceCache     *PriceCache
+	profitAnalyzer *ProfitAnalyzer
+	limiter        *api.RateLimiter
+	redis          *cache.RedisCache
+	gormDB         *gorm.DB
+	logger         *zap.Logger
 }
 
 // newScanner creates a new price scanner.
@@ -38,19 +39,21 @@ func newScanner(
 	client *api.Client,
 	world *WorldCache,
 	priceCache *PriceCache,
+	profitAnalyzer *ProfitAnalyzer,
 	limiter *api.RateLimiter,
 	redis *cache.RedisCache,
 	gormDB *gorm.DB,
 	logger *zap.Logger,
 ) *Scanner {
 	return &Scanner{
-		client:     client,
-		world:      world,
-		priceCache: priceCache,
-		limiter:    limiter,
-		redis:      redis,
-		gormDB:     gormDB,
-		logger:     logger.Named("scanner"),
+		client:         client,
+		world:          world,
+		priceCache:     priceCache,
+		profitAnalyzer: profitAnalyzer,
+		limiter:        limiter,
+		redis:          redis,
+		gormDB:         gormDB,
+		logger:         logger.Named("scanner"),
 	}
 }
 
@@ -70,9 +73,16 @@ func (s *Scanner) Run(ctx context.Context) {
 			return
 		}
 
-		port := s.world.Ports[portIdx%len(s.world.Ports)]
+		idx := portIdx % len(s.world.Ports)
+		port := s.world.Ports[idx]
 		s.scanPort(ctx, &port)
 		portIdx++
+
+		// Recompute trade opportunities after completing a full scan cycle.
+		if portIdx%len(s.world.Ports) == 0 && s.profitAnalyzer != nil {
+			s.profitAnalyzer.Recompute()
+			s.logger.Debug("profit analyzer recomputed after full scan cycle")
+		}
 
 		// Persist scanner position to Redis.
 		s.redis.SaveScannerIndex(ctx, portIdx)

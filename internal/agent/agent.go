@@ -175,6 +175,7 @@ type ShipSnapshot struct {
 	Speed        int
 	PassengerCap int // Max passenger groups from ship type.
 	ArrivesAt    *time.Time
+	IdleTicks    int // Consecutive "wait" ticks while docked.
 }
 
 // PassengerInfo describes an available or boarded passenger group.
@@ -266,6 +267,19 @@ type RoutePerformanceEntry struct {
 	CreatedAt  time.Time
 }
 
+// TradeOpportunity represents a cross-port trade opportunity discovered by
+// the ProfitAnalyzer. Passed to agents to guide idle ships toward profit.
+type TradeOpportunity struct {
+	BuyPortID  uuid.UUID `json:"buy_port_id"`
+	SellPortID uuid.UUID `json:"sell_port_id"`
+	GoodID     uuid.UUID `json:"good_id"`
+	BuyPrice   int       `json:"buy_price"`
+	SellPrice  int       `json:"sell_price"`
+	Profit     int       `json:"profit"`
+	Distance   float64   `json:"distance"`
+	Score      float64   `json:"score"`
+}
+
 // Constraints defines safety boundaries for trading decisions.
 type Constraints struct {
 	TreasuryFloor int64 // Minimum treasury to maintain (2x upkeep).
@@ -289,8 +303,9 @@ type TradeDecisionRequest struct {
 	Constraints         Constraints
 	AvailablePassengers []PassengerInfo // Passengers at the current port looking for transport.
 	BoardedPassengers   []PassengerInfo // Passengers already on this ship.
-	PortOrders          []MarketOrder   // P2P orders at the current port (for filling opportunities).
-	OwnOrders           []MarketOrder   // This company's active orders (to avoid self-fill).
+	PortOrders          []MarketOrder      // P2P orders at the current port (for filling opportunities).
+	OwnOrders           []MarketOrder      // This company's active orders (to avoid self-fill).
+	TopOpportunities    []TradeOpportunity // Top global trade opportunities from ProfitAnalyzer.
 	Params              map[string]float64 // Tunable parameters from optimizer (nil = use defaults).
 }
 

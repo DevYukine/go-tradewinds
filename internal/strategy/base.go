@@ -144,6 +144,12 @@ func (b *baseStrategy) buildTradeRequest(ship *bot.ShipState, port *api.Port) ag
 		}
 	}
 
+	// Populate top trade opportunities from the profit analyzer.
+	var topOpps []agent.TradeOpportunity
+	if b.ctx.ProfitAnalyzer != nil {
+		topOpps = b.ctx.ProfitAnalyzer.ToAgentOpportunities()
+	}
+
 	return agent.TradeDecisionRequest{
 		StrategyHint: b.name,
 		Company: agent.CompanySnapshot{
@@ -152,13 +158,14 @@ func (b *baseStrategy) buildTradeRequest(ship *bot.ShipState, port *api.Port) ag
 			Reputation:  state.Reputation,
 			TotalUpkeep: state.TotalUpkeep,
 		},
-		Ship:       shipToSnapshot(ship, world),
-		AllShips:    allShips,
-		Warehouses: warehouses,
-		PriceCache: b.ctx.PriceCache.All(),
-		Routes:     world.ToAgentRoutes(),
-		Ports:      world.ToAgentPorts(),
-		Params:     params,
+		Ship:             shipToSnapshot(ship, world),
+		AllShips:         allShips,
+		Warehouses:       warehouses,
+		PriceCache:       b.ctx.PriceCache.All(),
+		Routes:           world.ToAgentRoutes(),
+		Ports:            world.ToAgentPorts(),
+		TopOpportunities: topOpps,
+		Params:           params,
 		Constraints: agent.Constraints{
 			TreasuryFloor: state.TotalUpkeep * 2,
 			MaxSpend:      state.Treasury - state.TotalUpkeep*2,
@@ -1001,6 +1008,7 @@ func shipToSnapshot(s *bot.ShipState, world *bot.WorldCache) agent.ShipSnapshot 
 		PortID:    s.Ship.PortID,
 		Cargo:     cargo,
 		ArrivesAt: s.Ship.ArrivingAt,
+		IdleTicks: s.IdleTicks,
 	}
 
 	// Enrich with ship type info if available.

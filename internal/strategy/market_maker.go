@@ -70,6 +70,12 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 			m.logger.Warn("buy execution failed", zap.Error(err))
 		}
 		m.boardPassengers(ctx, ship, decision.BoardPassengers)
+		// Reset idle ticks on active trade.
+		m.ctx.State.Lock()
+		if ss := m.ctx.State.Ships[ship.Ship.ID]; ss != nil {
+			ss.IdleTicks = 0
+		}
+		m.ctx.State.Unlock()
 		if decision.SailTo != nil {
 			if err := m.sendShipToPort(ctx, ship, *decision.SailTo); err != nil {
 				m.logger.Warn("transit failed", zap.Error(err))
@@ -79,6 +85,18 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 		m.logger.Debug("agent decided to wait",
 			zap.String("reasoning", decision.Reasoning),
 		)
+		// Execute sells/fills/passengers even when waiting.
+		if err := m.executeSells(ctx, ship, decision.SellOrders); err != nil {
+			m.logger.Warn("sell execution failed", zap.Error(err))
+		}
+		m.executeFills(ctx, *ship.Ship.PortID, decision.FillOrders)
+		m.boardPassengers(ctx, ship, decision.BoardPassengers)
+		// Track idle ticks.
+		m.ctx.State.Lock()
+		if ss := m.ctx.State.Ships[ship.Ship.ID]; ss != nil {
+			ss.IdleTicks++
+		}
+		m.ctx.State.Unlock()
 	}
 
 	return nil

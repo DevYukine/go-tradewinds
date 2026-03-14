@@ -177,11 +177,11 @@ The "strategy_hint" field tells you which strategy this company uses:
 ## Decision Process (follow this order)
 
 ### 1. Smart Selling
-Do NOT blindly sell all cargo. For each cargo item, check if a reachable destination offers a significantly better (>20%) net sell price after taxes. If so, HOLD that cargo — do not sell it. Held cargo reduces available capacity for new buys but should be carried to the better port.
+Do NOT blindly sell all cargo. For each cargo item, check if a reachable destination offers a significantly better (>30%) net sell price after taxes. If so, HOLD that cargo — do not sell it. Held cargo reduces available capacity for new buys but should be carried to the better port.
 Only sell cargo that is best sold HERE or has no better destination.
 
 ### 2. Fill P2P Orders
-Check "port_orders" for profitable fill opportunities. Ignore orders in "own_orders" (self-fill). Only fill orders where the margin exceeds 7% after taxes. You need a warehouse at this port to fill orders — check "warehouses". Include fills in "fill_orders".
+Check "port_orders" for profitable fill opportunities. Ignore orders in "own_orders" (self-fill). Only fill orders where the margin exceeds 5% after taxes. You need a warehouse at this port to fill orders — check "warehouses". Include fills in "fill_orders".
 
 ### 3. Buy Cargo
 Evaluate ALL reachable destinations, not just one. For each destination, simulate filling the remaining ship capacity with profitable goods sorted by profit per unit. A trade is profitable only if:
@@ -202,12 +202,24 @@ After choosing a destination, check if passenger revenue alone (weighted by Pass
 "route_history" contains recent buy→sell results for routes. Compute average profit per trade for each (from_port → to_port) pair and add as a bonus to destination scoring.
 
 ### 7. No Profitable Trade
-If no trade meets the minimum margin, do NOT buy speculatively. Instead, sail to the destination with the highest passenger revenue, or the nearest port if no passengers are available.
+If no trade meets the minimum margin, do NOT buy speculatively. First, sail to the destination with the highest passenger revenue. If no passengers, check "top_opportunities" for a reachable buy port with a known profitable route and sail there. If NOTHING is profitable, return action "wait" — do NOT sail empty.
+
+## Priority: Passengers First
+Passengers are the highest-priority revenue source. Always maximize passenger boarding and prefer destinations with passenger revenue. A port full of high-paying passengers should NEVER be ignored just because there's no cargo margin.
+
+## NEVER Sail Empty
+If no trade or passengers exist, return action "wait" instead of sailing empty. Check "top_opportunities" for globally profitable routes — sail to the buy port of the best reachable one if stuck. Empty sailing burns upkeep for zero revenue.
+
+## Global Trade Intelligence
+The "top_opportunities" field contains the best cross-port trades discovered by the profit analyzer. Use these to:
+1. Add scoring bonus to destinations that are sell ports of top opportunities
+2. When idle (no local trades/passengers), sail to the buy port of a top opportunity
+3. Never ignore this data — it represents known profitable routes across the entire world
 
 ## Tunable Parameters (from "params" field, use defaults if absent)
-- MinMarginPct: 0.15 (minimum profit margin as fraction of buy price)
-- PassengerWeight: 2.0 (multiplier for passenger revenue in scoring)
-- PassengerDestBonus: 3.0 (bonus for passengers heading to the chosen destination)
+- MinMarginPct: 0.08 (minimum profit margin as fraction of buy price)
+- PassengerWeight: 5.0 (multiplier for passenger revenue in scoring)
+- PassengerDestBonus: 5.0 (bonus for passengers heading to the chosen destination)
 - SpeculativeTradeEnabled: false (if true, allow buying without guaranteed profit)
 
 ## Response Schema
@@ -300,9 +312,9 @@ Given performance metrics as JSON, recommend parameter adjustments or strategy s
 
 ## Parameter Tuning
 Valid tunable parameters and their ranges:
-- MinMarginPct: 0.05 - 0.50 (minimum profit margin, default 0.15)
-- PassengerWeight: 0.5 - 5.0 (passenger revenue weight in scoring, default 2.0)
-- PassengerDestBonus: 1.0 - 10.0 (bonus for destination-matching passengers, default 3.0)
+- MinMarginPct: 0.05 - 0.50 (minimum profit margin, default 0.08)
+- PassengerWeight: 0.5 - 10.0 (passenger revenue weight in scoring, default 5.0)
+- PassengerDestBonus: 1.0 - 10.0 (bonus for destination-matching passengers, default 5.0)
 - FleetEvalIntervalSec: 60 - 600 (seconds between fleet evaluations, default 180)
 - MarketEvalIntervalSec: 30 - 300 (seconds between market evaluations, default 60)
 

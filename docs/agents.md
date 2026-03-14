@@ -47,34 +47,37 @@ Hand-coded rules adapting to strategy hints.
 
 ### Trade Decisions (`DecideTradeAction`)
 
-1. **Smart Selling** — Do NOT blindly sell all cargo. For each cargo item, check if a reachable destination offers >20% better net sell price after taxes. If so, HOLD that cargo for the better port. Only sell cargo best sold here or with no better destination.
+1. **Smart Selling** — Do NOT blindly sell all cargo. For each cargo item, check if a reachable destination offers >30% better net sell price after taxes. If so, HOLD that cargo for the better port. Only sell cargo best sold here or with no better destination.
 2. Build price index and reachable ports map (bidirectional route lookup)
 3. Build port tax index from `req.Ports` (TaxRateBps)
-4. **P2P Order Fills** — Check port orders for profitable fills (>7% margin after taxes). Requires warehouse at port. Filters out own orders to avoid self-fill.
+4. **P2P Order Fills** — Check port orders for profitable fills (>5% margin after taxes). Requires warehouse at port. Filters out own orders to avoid self-fill.
 5. If budget <= 0: sell cargo, sail to closest port
 6. Delegate to strategy-specific method:
 
 #### Arbitrage (`decideArbitrageTrade`)
 - **Destination-level scoring**: For each reachable destination, simulate filling remaining ship capacity with all profitable goods sorted by profit/unit
+- **Passenger-only destinations**: Ports with passenger revenue but no cargo profit are also scored as candidates
+- **Opportunity sell-port bonus**: Destinations that are sell ports of top ProfitAnalyzer opportunities get a scoring bonus
 - Profit calculation: `sellPrice - buyPrice - buyTax - sellTax` (both sides taxed)
-- Minimum margin: `profit >= buyPrice * MinMarginPct` (default 15%)
-- Score: `totalCargoProfit / distance + passengerRevenue / distance * PassengerWeight + heldCargoGain / distance + routeHistoryBonus`
-- PassengerWeight default: 2.0, PassengerDestBonus default: 3.0
+- Minimum margin: `profit >= buyPrice * MinMarginPct` (default 8%)
+- Score: `totalCargoProfit / distance + passengerRevenue / distance * PassengerWeight + heldCargoGain / distance + routeHistoryBonus + opportunityBonus`
+- PassengerWeight default: 5.0, PassengerDestBonus default: 5.0
 
 #### Bulk Hauler (`decideBulkHaulerTrade`)
 - Same destination-level simulation as arbitrage
-- Score: `totalCargoProfit + passengerRevenue / distance * PassengerWeight + heldCargoGain + routeHistoryBonus`
+- Same passenger-only destinations and opportunity sell-port bonus
+- Score: `totalCargoProfit + passengerRevenue / distance * PassengerWeight + heldCargoGain + routeHistoryBonus + opportunityBonus`
 - Uses `ship.Capacity` instead of hardcoded limits
 
 #### Speculative (`speculativeTrade`)
 - Triggered when no profitable trade meets minimum margin
 - Does NOT buy cargo speculatively (unless `SpeculativeTradeEnabled` param is true)
-- Sails to destination with highest passenger revenue, or nearest port if no passengers
-- Confidence: 0.4
+- Priority: (1) sail to best passenger revenue destination, (2) sail to ProfitAnalyzer opportunity buy port, (3) WAIT at port (never sail empty)
+- Confidence: 0.3–0.5
 
-7. **Passenger Override** — After choosing a destination, if passenger revenue (weighted by PassengerWeight) exceeds expected trade profit, override destination to best passenger port
+7. **Passenger Override** — After choosing a destination, if passenger revenue (weighted by PassengerWeight) exceeds **half** of expected trade profit, override destination to best passenger port (aggressive override)
 8. **Board passengers** heading to chosen destination (or any reachable port)
-   - Score: `bidPerHead / distance`, PassengerDestBonus (default 3.0) for matching destination
+   - Score: `bidPerHead / distance`, PassengerDestBonus (default 5.0) for matching destination
    - Fill up to `ship.PassengerCap`
 9. **Route History** — `route_history` in request contains recent buy→sell results. Average profit per trade for each (from→to) pair is added as bonus to destination scoring
 
@@ -104,9 +107,9 @@ Order of evaluation:
 - Only recommend switching to a strategy that is actually performing well
 
 ### Tunable Parameters (from `CompanyParams` / request `params` field)
-- `MinMarginPct`: 0.05–0.50 (default 0.15) — minimum profit margin as fraction of buy price
-- `PassengerWeight`: 0.5–5.0 (default 2.0) — passenger revenue weight in destination scoring
-- `PassengerDestBonus`: 1.0–10.0 (default 3.0) — bonus for destination-matching passengers
+- `MinMarginPct`: 0.05–0.50 (default 0.08) — minimum profit margin as fraction of buy price
+- `PassengerWeight`: 0.5–10.0 (default 5.0) — passenger revenue weight in destination scoring
+- `PassengerDestBonus`: 1.0–10.0 (default 5.0) — bonus for destination-matching passengers
 - `FleetEvalIntervalSec`: 60–600 (default 180)
 - `MarketEvalIntervalSec`: 30–300 (default 60)
 - `SpeculativeTradeEnabled`: false (default) — allow buying without guaranteed profit
@@ -117,7 +120,7 @@ Delegates decisions to an LLM (Claude, OpenAI, or Ollama). Falls back to Heurist
 
 - Trade/Fleet/Market/Strategy decisions serialized as JSON → LLM → parsed JSON response
 - System prompts per decision type, fully aligned with heuristic agent features:
-  - **Trade**: Smart selling (hold cargo for >20% better price), P2P order fills (>7% margin), destination-level scoring with strategy-specific formulas, route history bonus, passenger override, tunable params, tax calculations, minimum margins
+  - **Trade**: Smart selling (hold cargo for >30% better price), P2P order fills (>5% margin), destination-level scoring with strategy-specific formulas, route history bonus, passenger override, global trade intelligence (ProfitAnalyzer), no-empty-sailing, tunable params, tax calculations, minimum margins
   - **Fleet**: Strategy-specific ship preferences, reserve hours scaling, 24h safety margin, ship decommission by value ratio, warehouse rules
   - **Market**: Fill margin thresholds (10% sell-side, 7% buy-side), warehouse requirement, self-fill avoidance, max 5 active orders, cancellation of stale orders
   - **Strategy**: Parameter tuning with valid ranges, switch threshold (1.5x), loss detection
@@ -135,7 +138,7 @@ Routes decisions between fast (heuristic) and slow (LLM) agents:
 ## Key Types
 
 ### Request Types
-- `TradeDecisionRequest` — Ship, company, price cache, routes, ports (with TaxRateBps), constraints, passengers
+- `TradeDecisionRequest` — Ship, company, price cache, routes, ports (with TaxRateBps), constraints, passengers, TopOpportunities (from ProfitAnalyzer)
 - `FleetDecisionRequest` — Ships, warehouses, ship types, shipyard ports
 - `MarketDecisionRequest` — Open/own orders, price cache, warehouses
 - `StrategyEvalRequest` — Strategy metrics array

@@ -14,7 +14,7 @@ type Strategy interface {
 }
 ```
 
-`StrategyContext` provides: Client, State, World, PriceCache, Agent, Logger, Events, DB.
+`StrategyContext` provides: Client, State, World, PriceCache, ProfitAnalyzer, Agent, Logger, Events, DB.
 
 ## Registry (`internal/strategy/registry.go`)
 
@@ -83,24 +83,35 @@ All strategies read timing intervals from `CompanyState.Params` (set by the opti
 |-----------|---------|---------|
 | `FleetEvalIntervalSec` | 180 (3 min) | All strategies |
 | `MarketEvalIntervalSec` | 60 (1 min) | Market Maker |
-| `MinMarginPct` | 0.15 (15%) | Heuristic agent trade decisions |
-| `PassengerWeight` | 2.0 | Heuristic agent destination scoring |
-| `PassengerDestBonus` | 3.0 | Heuristic agent passenger selection |
+| `MinMarginPct` | 0.08 (8%) | Heuristic agent trade decisions |
+| `PassengerWeight` | 5.0 | Heuristic agent destination scoring |
+| `PassengerDestBonus` | 5.0 | Heuristic agent passenger selection |
 | `SpeculativeTradeEnabled` | false | Heuristic agent fallback behavior |
 
 ## Profitability Guards
 
 The heuristic agent enforces several guards to prevent money-losing trades:
-- **Minimum margin**: trades must exceed `MinMarginPct` (default 15%) of buy price
+- **Minimum margin**: trades must exceed `MinMarginPct` (default 8%) of buy price
 - **Sell-side tax**: profit calculation includes both buy and sell port taxes
-- **No speculative buying**: when no profitable trade exists, ships sail empty toward passenger revenue (not buying speculative cargo)
-- **P2P fill threshold**: 7% minimum margin for filling player orders
+- **No empty sailing**: when no profitable trade or passengers exist, ships WAIT at port instead of sailing empty. After checking ProfitAnalyzer for known profitable buy ports, ships only sail with purpose.
+- **No speculative buying**: ships don't buy cargo without a guaranteed profitable destination
+- **P2P fill threshold**: 5% minimum margin for filling player orders
+
+## ProfitAnalyzer (`internal/bot/profit_analyzer.go`)
+
+Background analyzer that evaluates all cross-port trade opportunities using cached
+price data. Maintains a ranked list of the top 50 opportunities (by profit/distance).
+
+- **Recompute**: Called after each full scanner cycle. Iterates all price pairs to find profitable (buy port → sell port) routes.
+- **Idle ship routing**: When a ship has no local trades, passengers, or cargo, the agent checks the ProfitAnalyzer for the best reachable buy port and sails there with purpose.
+- **Destination scoring bonus**: Destinations that are sell ports of top opportunities receive a scoring bonus.
+- **Idle tick tracking**: Ships track consecutive "wait" actions via `ShipState.IdleTicks`. Reset to 0 on any trade/sail action.
 
 ## Smart Selling
 
 Instead of dumping all cargo at the current port, the agent evaluates each cargo
 item against reachable destinations. Cargo is held (not sold) when a destination
-offers >20% better net sell price after taxes. Held cargo:
+offers >30% better net sell price after taxes. Held cargo:
 - Reduces available ship capacity for new buys
 - Adds a scoring bonus to the destination it should be carried to
 - Is automatically sold when the ship arrives at the better port
@@ -121,8 +132,10 @@ the entire ship with profitable goods and computes a composite score:
 ### Passenger Override
 
 After choosing a destination, the agent checks if passenger revenue alone
-(weighted by `PassengerWeight`) exceeds the expected trade **profit** from the
-buy orders. If so, the destination is overridden to the best passenger port.
+(weighted by `PassengerWeight`) exceeds **half** of the expected trade **profit**
+from the buy orders. If so, the destination is overridden to the best passenger
+port. This aggressive override ensures passengers — the most reliable revenue
+source — are rarely ignored in favor of marginal cargo trades.
 
 ## Route Performance History
 

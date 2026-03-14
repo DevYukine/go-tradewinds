@@ -33,14 +33,15 @@ type Strategy interface {
 
 // StrategyContext provides all dependencies a strategy needs to operate.
 type StrategyContext struct {
-	Client     *api.Client
-	State      *CompanyState
-	World      *WorldCache
-	PriceCache *PriceCache
-	Agent      agent.Agent
-	Logger     *CompanyLogger
-	Events     *EventBroadcaster
-	DB         *gorm.DB
+	Client          *api.Client
+	State           *CompanyState
+	World           *WorldCache
+	PriceCache      *PriceCache
+	ProfitAnalyzer  *ProfitAnalyzer
+	Agent           agent.Agent
+	Logger          *CompanyLogger
+	Events          *EventBroadcaster
+	DB              *gorm.DB
 }
 
 // StrategyFactory creates a new Strategy instance. Each factory is registered

@@ -104,9 +104,9 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 
 	// Step 2: Find best opportunity — scoring differs by strategy.
 	// Read tunable params with defaults.
-	passengerWeight := getParam(req.Params, "passengerWeight", 2.0)
-	passengerDestBonus := getParam(req.Params, "passengerDestBonus", 3.0)
-	minMarginPct := getParam(req.Params, "minMarginPct", 0.15)
+	passengerWeight := getParam(req.Params, "passengerWeight", 5.0)
+	passengerDestBonus := getParam(req.Params, "passengerDestBonus", 5.0)
+	minMarginPct := getParam(req.Params, "minMarginPct", 0.08)
 	speculativeEnabled := getParam(req.Params, "speculativeTradeEnabled", 0.0) > 0.5
 
 	// Build route history bonus index for destination scoring.
@@ -145,7 +145,7 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 				expectedProfit += int64(b.Quantity) * int64(profit)
 			}
 		}
-		if bestPassRev > 0 && int64(float64(bestPassRev)*passengerWeight) > expectedProfit && bestPassDest != *decision.SailTo {
+		if bestPassRev > 0 && int64(float64(bestPassRev)*passengerWeight) > expectedProfit/2 && bestPassDest != *decision.SailTo {
 			decision.SailTo = &bestPassDest
 			decision.Reasoning += " (overridden: passenger revenue dominates)"
 		}
@@ -349,6 +349,34 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 		candidates = append(candidates, destCandidate{destID, score, unique})
 	}
 
+	// Add passenger-only destinations that have no cargo profit but do have
+	// passenger revenue. These would otherwise be invisible to scoring.
+	candidateSet := make(map[uuid.UUID]bool, len(candidates))
+	for _, c := range candidates {
+		candidateSet[c.destID] = true
+	}
+	for destID, passRev := range passengerRevByDest {
+		if candidateSet[destID] || passRev <= 0 {
+			continue
+		}
+		if _, ok := reachable[destID]; !ok {
+			continue
+		}
+		dist := math.Max(reachable[destID], 1.0)
+		score := float64(passRev) / dist * passengerWeight
+		score += float64(heldProfitByDest[destID]) / dist
+		score += routeBonus[destID] / dist
+		candidates = append(candidates, destCandidate{destID, score, nil})
+	}
+
+	// Add opportunity sell-port bonus from ProfitAnalyzer.
+	oppSellBonus := a.buildOpportunitySellBonus(req.TopOpportunities, reachable)
+	for i := range candidates {
+		if bonus, ok := oppSellBonus[candidates[i].destID]; ok {
+			candidates[i].score += bonus
+		}
+	}
+
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
 
 	if len(candidates) > 0 {
@@ -501,6 +529,34 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 		candidates = append(candidates, destCandidate{destID, score, unique})
 	}
 
+	// Add passenger-only destinations that have no cargo profit but do have
+	// passenger revenue. These would otherwise be invisible to scoring.
+	candidateSet := make(map[uuid.UUID]bool, len(candidates))
+	for _, c := range candidates {
+		candidateSet[c.destID] = true
+	}
+	for destID, passRev := range passengerRevByDest {
+		if candidateSet[destID] || passRev <= 0 {
+			continue
+		}
+		if _, ok := reachable[destID]; !ok {
+			continue
+		}
+		dist := math.Max(reachable[destID], 1.0)
+		score := float64(passRev) / dist * passengerWeight
+		score += float64(heldProfitByDest[destID])
+		score += routeBonus[destID]
+		candidates = append(candidates, destCandidate{destID, score, nil})
+	}
+
+	// Add opportunity sell-port bonus from ProfitAnalyzer.
+	oppSellBonus := a.buildOpportunitySellBonus(req.TopOpportunities, reachable)
+	for i := range candidates {
+		if bonus, ok := oppSellBonus[candidates[i].destID]; ok {
+			candidates[i].score += bonus
+		}
+	}
+
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
 
 	if len(candidates) > 0 {
@@ -542,10 +598,9 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 }
 
 // speculativeTrade handles the fallback when no clear arbitrage exists.
-// By default, speculative buying is disabled — ships sail empty toward
-// the best passenger revenue destination (or closest port if no passengers).
-// When speculativeEnabled is true, it falls back to the old behaviour of
-// buying the best margin opportunity from the price cache.
+// Ships with passengers sail to the best passenger destination. Otherwise,
+// ships check the ProfitAnalyzer for reachable buy ports with known profitable
+// routes. As a last resort, ships WAIT at port rather than sailing empty.
 func (a *HeuristicAgent) speculativeTrade(
 	req TradeDecisionRequest,
 	sells []SellOrder,
@@ -567,11 +622,34 @@ func (a *HeuristicAgent) speculativeTrade(
 		}, nil
 	}
 
-	// Fallback: sail to closest port with no cargo.
-	dest := a.closestPort(reachable)
+	// Check ProfitAnalyzer: is there a reachable buy port with a profitable route?
+	if dest, ok := a.findOpportunityBuyPort(req.TopOpportunities, reachable, currentPortID); ok {
+		a.logger.Info("no local trade, sailing to opportunity buy port",
+			zap.String("dest_port", dest.String()),
+		)
+		return &TradeDecision{
+			Action: "sell_and_buy", SellOrders: sells, SailTo: &dest,
+			Reasoning: "sailing to opportunity buy port from profit analyzer", Confidence: 0.5,
+		}, nil
+	}
+
+	// After 3 consecutive idle ticks (~60s), force a re-check of ProfitAnalyzer
+	// and sail to the best opportunity buy port even if not directly reachable
+	// from the first check (which only checked reachable ports).
+	if req.Ship.IdleTicks >= 3 {
+		// Already checked reachable buy ports above; truly stuck. Log it.
+		a.logger.Warn("ship stuck idle for 3+ ticks, no reachable opportunity",
+			zap.Int("idle_ticks", req.Ship.IdleTicks),
+		)
+	}
+
+	// No profitable trade, no passengers, no opportunity — WAIT at port.
+	// Sitting at port costs the same upkeep as sailing empty, but doesn't
+	// waste travel time. Ship will be re-evaluated on the next economy tick.
+	a.logger.Debug("no profitable opportunity, waiting at port")
 	return &TradeDecision{
-		Action: "sell_and_buy", SellOrders: sells, SailTo: &dest,
-		Reasoning: "no clear arbitrage, exploring without cargo", Confidence: 0.4,
+		Action: "wait", SellOrders: sells,
+		Reasoning: "no profitable trade, passengers, or opportunity — waiting at port", Confidence: 0.3,
 	}, nil
 }
 
@@ -1062,7 +1140,7 @@ func (a *HeuristicAgent) findProfitableOrderFills(
 			// Player selling cheap → we buy (profit = NPC sell price - order price).
 			if npcPrice.SellPrice > 0 && order.Price < npcPrice.SellPrice {
 				profit := npcPrice.SellPrice - order.Price
-				minProfit := npcPrice.SellPrice * 7 / 100 // 7% min margin
+				minProfit := npcPrice.SellPrice * 5 / 100 // 5% min margin
 				if profit >= minProfit {
 					candidates = append(candidates, scoredFill{
 						orderID: order.ID,
@@ -1077,7 +1155,7 @@ func (a *HeuristicAgent) findProfitableOrderFills(
 			// Player buying expensive → we sell to them (profit = order price - NPC buy price).
 			if npcPrice.BuyPrice > 0 && order.Price > npcPrice.BuyPrice {
 				profit := order.Price - npcPrice.BuyPrice
-				minProfit := npcPrice.BuyPrice * 7 / 100 // 7% min margin
+				minProfit := npcPrice.BuyPrice * 5 / 100 // 5% min margin
 				if profit >= minProfit {
 					candidates = append(candidates, scoredFill{
 						orderID: order.ID,
@@ -1173,8 +1251,8 @@ func (a *HeuristicAgent) buildSmartSellOrders(
 			}
 		}
 
-		// Hold if a destination offers >20% better price and current price exists.
-		if currentNet > 0 && bestDestNet > currentNet*120/100 && bestDestID != uuid.Nil {
+		// Hold if a destination offers >30% better price and current price exists.
+		if currentNet > 0 && bestDestNet > currentNet*130/100 && bestDestID != uuid.Nil {
 			held = append(held, heldCargo{
 				goodID:     cargo.GoodID,
 				quantity:   cargo.Quantity,
@@ -1411,4 +1489,53 @@ func (a *HeuristicAgent) bestPassengerDestination(
 		}
 	}
 	return bestDest, bestRev
+}
+
+// findOpportunityBuyPort finds the best reachable buy port from the
+// ProfitAnalyzer's top opportunities. Used when no local trade is profitable.
+func (a *HeuristicAgent) findOpportunityBuyPort(
+	opportunities []TradeOpportunity,
+	reachable map[uuid.UUID]float64,
+	currentPortID uuid.UUID,
+) (uuid.UUID, bool) {
+	if len(opportunities) == 0 {
+		return uuid.Nil, false
+	}
+
+	// Opportunities are already sorted by score descending.
+	for _, opp := range opportunities {
+		// Skip if we're already at the buy port.
+		if opp.BuyPortID == currentPortID {
+			continue
+		}
+		// Check if the buy port is reachable from here.
+		if _, ok := reachable[opp.BuyPortID]; ok {
+			return opp.BuyPortID, true
+		}
+	}
+	return uuid.Nil, false
+}
+
+// buildOpportunitySellBonus computes a small scoring bonus for destinations
+// that are the sell port of a top trade opportunity. This biases ships toward
+// ports where they can sell goods from a known profitable route.
+func (a *HeuristicAgent) buildOpportunitySellBonus(
+	opportunities []TradeOpportunity,
+	reachable map[uuid.UUID]float64,
+) map[uuid.UUID]float64 {
+	bonus := make(map[uuid.UUID]float64)
+	if len(opportunities) == 0 {
+		return bonus
+	}
+
+	for _, opp := range opportunities {
+		if _, ok := reachable[opp.SellPortID]; !ok {
+			continue
+		}
+		// Use opportunity score as bonus, capped at top 10 to avoid noise.
+		if existing, ok := bonus[opp.SellPortID]; !ok || opp.Score > existing {
+			bonus[opp.SellPortID] = opp.Score
+		}
+	}
+	return bonus
 }

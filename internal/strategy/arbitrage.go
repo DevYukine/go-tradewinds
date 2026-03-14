@@ -81,6 +81,12 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 		}
 		// Board passengers.
 		a.boardPassengers(ctx, ship, decision.BoardPassengers)
+		// Reset idle ticks on active trade.
+		a.ctx.State.Lock()
+		if ss := a.ctx.State.Ships[ship.Ship.ID]; ss != nil {
+			ss.IdleTicks = 0
+		}
+		a.ctx.State.Unlock()
 		// Then sail.
 		if decision.SailTo != nil {
 			if err := a.sendShipToPort(ctx, ship, *decision.SailTo); err != nil {
@@ -92,6 +98,18 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 		a.logger.Debug("agent decided to wait",
 			zap.String("reasoning", decision.Reasoning),
 		)
+		// Execute any sells even when waiting.
+		if err := a.executeSells(ctx, ship, decision.SellOrders); err != nil {
+			a.logger.Warn("sell execution failed", zap.Error(err))
+		}
+		a.executeFills(ctx, *ship.Ship.PortID, decision.FillOrders)
+		a.boardPassengers(ctx, ship, decision.BoardPassengers)
+		// Track idle ticks for the ship.
+		a.ctx.State.Lock()
+		if ss := a.ctx.State.Ships[ship.Ship.ID]; ss != nil {
+			ss.IdleTicks++
+		}
+		a.ctx.State.Unlock()
 
 	default:
 		a.logger.Warn("unknown trade action from agent",

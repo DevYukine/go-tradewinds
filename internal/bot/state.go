@@ -265,6 +265,7 @@ type ShipState struct {
 	Ship           api.Ship
 	Cargo          []api.Cargo
 	PassengerCount int // currently boarded passengers
+	IdleTicks      int // consecutive "wait" actions while docked (reset on trade/sail)
 }
 
 // UsedCapacity returns the total quantity of cargo loaded on this ship.
