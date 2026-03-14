@@ -26,6 +26,7 @@ func (s *Server) registerHandlers() {
 	api.Get("/ratelimit", s.handleRateLimit)
 	api.Get("/health", s.handleHealth)
 	api.Get("/world", s.handleWorld)
+	api.Get("/ships", s.handleAllShips)
 }
 
 // handleCompanies returns all companies with their current status, treasury, and strategy.
@@ -450,6 +451,27 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 		IsHub      bool    `json:"is_hub"`
 		TaxRate    float64 `json:"tax_rate"`
 		HasShipyard bool   `json:"has_shipyard"`
+		Latitude   float64 `json:"latitude"`
+		Longitude  float64 `json:"longitude"`
+	}
+
+	// Hardcoded coordinates for European port cities.
+	portCoordinates := map[string][2]float64{
+		"Rotterdam":  {51.9225, 4.4792},
+		"Plymouth":   {50.3755, -4.1427},
+		"Portsmouth": {50.8198, -1.0880},
+		"Amsterdam":  {52.3676, 4.9041},
+		"Hull":       {53.7457, -0.3367},
+		"Bremen":     {53.0793, 8.8017},
+		"Bristol":    {51.4545, -2.5879},
+		"Dublin":     {53.3498, -6.2603},
+		"Dunkirk":    {51.0343, 2.3768},
+		"Edinburgh":  {55.9533, -3.1883},
+		"Calais":     {50.9513, 1.8587},
+		"Hamburg":    {53.5511, 9.9937},
+		"Antwerp":    {51.2194, 4.4025},
+		"Glasgow":    {55.8642, -4.2518},
+		"London":     {51.5074, -0.1278},
 	}
 	type goodInfo struct {
 		ID          string `json:"id"`
@@ -482,7 +504,7 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 
 	ports := make([]portInfo, len(world.Ports))
 	for i, p := range world.Ports {
-		ports[i] = portInfo{
+		pi := portInfo{
 			ID:          p.ID.String(),
 			Name:        p.Name,
 			Code:        p.Code,
@@ -490,6 +512,11 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 			TaxRate:     float64(p.TaxRateBps) / 100.0,
 			HasShipyard: shipyardSet[p.ID],
 		}
+		if coords, ok := portCoordinates[p.Name]; ok {
+			pi.Latitude = coords[0]
+			pi.Longitude = coords[1]
+		}
+		ports[i] = pi
 	}
 
 	goods := make([]goodInfo, len(world.Goods))
@@ -539,6 +566,95 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 		"routes":     routes,
 		"ship_types": shipTypes,
 	})
+}
+
+// handleAllShips returns all ships across all companies for the world map.
+func (s *Server) handleAllShips(c fiber.Ctx) error {
+	world := s.manager.WorldData()
+	companies := s.manager.Companies()
+
+	type shipInfo struct {
+		ShipID        string     `json:"ship_id"`
+		ShipName      string     `json:"ship_name"`
+		ShipType      string     `json:"ship_type"`
+		Status        string     `json:"status"`
+		CompanyID     string     `json:"company_id"`
+		CompanyName   string     `json:"company_name"`
+		Strategy      string     `json:"strategy"`
+		PortID        string     `json:"port_id,omitempty"`
+		PortName      string     `json:"port_name,omitempty"`
+		RouteID       string     `json:"route_id,omitempty"`
+		FromPortID    string     `json:"from_port_id,omitempty"`
+		ToPortID      string     `json:"to_port_id,omitempty"`
+		FromPortName  string     `json:"from_port_name,omitempty"`
+		ToPortName    string     `json:"to_port_name,omitempty"`
+		ArrivingAt    *time.Time `json:"arriving_at,omitempty"`
+		CargoTotal    int        `json:"cargo_total"`
+		Capacity      int        `json:"capacity"`
+	}
+
+	var ships []shipInfo
+	for _, runner := range companies {
+		state := runner.State()
+		state.RLock()
+		record := runner.DBRecord()
+
+		for _, ss := range state.Ships {
+			cargoTotal := 0
+			for _, ci := range ss.Cargo {
+				cargoTotal += ci.Quantity
+			}
+
+			si := shipInfo{
+				ShipID:      ss.Ship.ID.String(),
+				ShipName:    ss.Ship.Name,
+				Status:      ss.Ship.Status,
+				CompanyID:   record.GameID,
+				CompanyName: record.Name,
+				Strategy:    record.Strategy,
+				CargoTotal:  cargoTotal,
+			}
+
+			if world != nil {
+				if st := world.GetShipType(ss.Ship.ShipTypeID); st != nil {
+					si.ShipType = st.Name
+					si.Capacity = st.Capacity
+				}
+			}
+
+			if ss.Ship.PortID != nil {
+				si.PortID = ss.Ship.PortID.String()
+				if world != nil {
+					if p := world.GetPort(*ss.Ship.PortID); p != nil {
+						si.PortName = p.Name
+					}
+				}
+			}
+			if ss.Ship.RouteID != nil {
+				si.RouteID = ss.Ship.RouteID.String()
+				if world != nil {
+					if route := world.GetRoute(*ss.Ship.RouteID); route != nil {
+						si.FromPortID = route.FromID.String()
+						si.ToPortID = route.ToID.String()
+						if from := world.GetPort(route.FromID); from != nil {
+							si.FromPortName = from.Name
+						}
+						if to := world.GetPort(route.ToID); to != nil {
+							si.ToPortName = to.Name
+						}
+					}
+				}
+			}
+			if ss.Ship.ArrivingAt != nil {
+				si.ArrivingAt = ss.Ship.ArrivingAt
+			}
+
+			ships = append(ships, si)
+		}
+		state.RUnlock()
+	}
+
+	return c.JSON(ships)
 }
 
 // queryInt reads an integer query parameter with a default value.
