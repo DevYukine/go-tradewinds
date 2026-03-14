@@ -9,6 +9,7 @@ const apiBase = config.public.apiBase
 const mapContainer = ref<HTMLDivElement | null>(null)
 let map: L.Map | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let animTimer: ReturnType<typeof setInterval> | null = null
 
 const portLayer = L.layerGroup()
 const routeLayer = L.layerGroup()
@@ -127,14 +128,50 @@ function getDockedOffset(shipId: string): [number, number] {
   return dockedOffsets.get(shipId)!
 }
 
+function computeShipProgress(ship: MapShip, routeLookup: Map<string, RouteInfo>, now: number): number {
+  if (!ship.arriving_at) return 0.5
+  const route = routeLookup.get(`${ship.from_port_id}:${ship.to_port_id}`)
+  const travelMinutes = route ? route.distance : 60
+  const travelMs = travelMinutes * 60 * 1000
+  const arrivalTime = new Date(ship.arriving_at).getTime()
+  const departureTime = arrivalTime - travelMs
+  return Math.max(0, Math.min(1, (now - departureTime) / travelMs))
+}
+
+function formatTimeRemaining(ms: number): string {
+  if (ms <= 0) return 'Arriving'
+  const totalSecs = Math.ceil(ms / 1000)
+  const mins = Math.floor(totalSecs / 60)
+  const secs = totalSecs % 60
+  if (mins > 0) return `${mins}m ${secs}s`
+  return `${secs}s`
+}
+
+function interpolateCoords(from: [number, number], to: [number, number], t: number): [number, number] {
+  return [
+    from[0] + (to[0] - from[0]) * t,
+    from[1] + (to[1] - from[1]) * t,
+  ]
+}
+
+// Track Leaflet objects for traveling ships so we can animate them per-second.
+const travelingShipMarkers = new Map<string, {
+  marker: L.CircleMarker
+  label: L.Marker
+  trail: L.Polyline
+  from: [number, number]
+  to: [number, number]
+  ship: MapShip
+}>()
+
 function drawShips() {
   shipLayer.clearLayers()
+  travelingShipMarkers.clear()
   const portLookup = buildPortLookup()
   const routeLookup = buildRouteLookup()
   const now = Date.now()
 
   for (const ship of ships.value) {
-    let coords: L.LatLngExpression | null = null
     const strategyColor = STRATEGY_COLORS[ship.strategy] ?? '#94a3b8'
 
     if (ship.status === 'docked' && ship.port_id) {
@@ -145,56 +182,112 @@ function drawShips() {
       const offset = getDockedOffset(ship.ship_id)
       const lat = (portPos as [number, number])[0] + offset[0]
       const lng = (portPos as [number, number])[1] + offset[1]
-      coords = [lat, lng]
+
+      const marker = L.circleMarker([lat, lng], {
+        radius: 3,
+        fillColor: strategyColor,
+        fillOpacity: 0.9,
+        color: strategyColor,
+        weight: 1,
+      })
+
+      const cargoText = `${ship.cargo_total} / ${ship.capacity}`
+      marker.bindPopup(
+        `<div class="text-sm">
+          <div class="font-bold mb-1">${ship.ship_name}</div>
+          <div>${ship.company_name}</div>
+          <div>Status: Docked${port ? ` at ${port.name}` : ''}</div>
+          <div>Strategy: ${ship.strategy}</div>
+          <div>Cargo: ${cargoText}</div>
+        </div>`,
+      )
+      shipLayer.addLayer(marker)
     } else if (ship.from_port_id && ship.to_port_id) {
       const fromPort = portLookup.get(ship.from_port_id)
       const toPort = portLookup.get(ship.to_port_id)
       if (!fromPort || !toPort) continue
 
-      const fromPos = portCoords(fromPort)
-      const toPos = portCoords(toPort)
+      const fromPos = portCoords(fromPort) as [number, number] | null
+      const toPos = portCoords(toPort) as [number, number] | null
       if (!fromPos || !toPos) continue
 
-      let progress = 0.5 // default mid-route
-      if (ship.arriving_at) {
-        // Use route distance to estimate travel time for better interpolation
-        const route = routeLookup.get(`${ship.from_port_id}:${ship.to_port_id}`)
-        const travelMinutes = route ? route.distance : 60
-        const travelMs = travelMinutes * 60 * 1000
-        const arrivalTime = new Date(ship.arriving_at).getTime()
-        const departureTime = arrivalTime - travelMs
-        progress = Math.max(0, Math.min(1, (now - departureTime) / travelMs))
-      }
+      const progress = computeShipProgress(ship, routeLookup, now)
+      const pos = interpolateCoords(fromPos, toPos, progress)
 
-      const fromArr = fromPos as [number, number]
-      const toArr = toPos as [number, number]
-      const lat = fromArr[0] + (toArr[0] - fromArr[0]) * progress
-      const lng = fromArr[1] + (toArr[1] - fromArr[1]) * progress
-      coords = [lat, lng]
+      // Trail line from origin to current position
+      const trail = L.polyline([fromPos, pos], {
+        color: strategyColor,
+        weight: 2,
+        opacity: 0.5,
+      })
+      shipLayer.addLayer(trail)
+
+      // Ship marker
+      const marker = L.circleMarker(pos, {
+        radius: 6,
+        fillColor: strategyColor,
+        fillOpacity: 1,
+        color: '#ffffff',
+        weight: 2,
+      })
+
+      const arrivalMs = ship.arriving_at ? new Date(ship.arriving_at).getTime() - now : 0
+      const timeText = ship.arriving_at ? formatTimeRemaining(arrivalMs) : 'In transit'
+      const cargoText = `${ship.cargo_total} / ${ship.capacity}`
+
+      marker.bindPopup(
+        `<div class="text-sm">
+          <div class="font-bold mb-1">${ship.ship_name}</div>
+          <div>${ship.company_name}</div>
+          <div>${fromPort.name} → ${toPort.name}</div>
+          <div>ETA: ${timeText}</div>
+          <div>Strategy: ${ship.strategy}</div>
+          <div>Cargo: ${cargoText}</div>
+        </div>`,
+      )
+      shipLayer.addLayer(marker)
+
+      // Floating time label above ship
+      const label = L.marker(pos, {
+        icon: L.divIcon({
+          className: 'ship-time-label',
+          html: `<span style="color:${strategyColor}">${timeText}</span>`,
+          iconSize: [0, 0],
+          iconAnchor: [0, 18],
+        }),
+        interactive: false,
+      })
+      shipLayer.addLayer(label)
+
+      travelingShipMarkers.set(ship.ship_id, { marker, label, trail, from: fromPos, to: toPos, ship })
     }
+  }
+}
 
-    if (!coords) continue
+// Smoothly update traveling ship positions every second without a full redraw.
+function animateShips() {
+  if (travelingShipMarkers.size === 0) return
+  const routeLookup = buildRouteLookup()
+  const now = Date.now()
 
-    const marker = L.circleMarker(coords, {
-      radius: ship.status === 'docked' ? 3 : 5,
-      fillColor: strategyColor,
-      fillOpacity: 0.9,
-      color: ship.status === 'traveling' ? '#ffffff' : strategyColor,
-      weight: ship.status === 'traveling' ? 1.5 : 1,
-    })
+  for (const [, entry] of travelingShipMarkers) {
+    const progress = computeShipProgress(entry.ship, routeLookup, now)
+    const pos = interpolateCoords(entry.from, entry.to, progress)
+    const latLng = L.latLng(pos[0], pos[1])
 
-    const cargoText = `${ship.cargo_total} / ${ship.capacity}`
-    marker.bindPopup(
-      `<div class="text-sm">
-        <div class="font-bold mb-1">${ship.ship_name}</div>
-        <div>${ship.company_name}</div>
-        <div>Status: ${ship.status}</div>
-        <div>Strategy: ${ship.strategy}</div>
-        <div>Cargo: ${cargoText}</div>
-      </div>`,
-    )
+    entry.marker.setLatLng(latLng)
+    entry.label.setLatLng(latLng)
+    entry.trail.setLatLngs([entry.from, pos])
 
-    shipLayer.addLayer(marker)
+    const arrivalMs = entry.ship.arriving_at ? new Date(entry.ship.arriving_at).getTime() - now : 0
+    const timeText = entry.ship.arriving_at ? formatTimeRemaining(arrivalMs) : 'In transit'
+    const strategyColor = STRATEGY_COLORS[entry.ship.strategy] ?? '#94a3b8'
+    entry.label.setIcon(L.divIcon({
+      className: 'ship-time-label',
+      html: `<span style="color:${strategyColor}">${timeText}</span>`,
+      iconSize: [0, 0],
+      iconAnchor: [0, 18],
+    }))
   }
 }
 
@@ -245,12 +338,17 @@ onMounted(() => {
   fetchShips()
 
   pollTimer = setInterval(fetchShips, 10_000)
+  animTimer = setInterval(animateShips, 1_000)
 })
 
 onUnmounted(() => {
   if (pollTimer) {
     clearInterval(pollTimer)
     pollTimer = null
+  }
+  if (animTimer) {
+    clearInterval(animTimer)
+    animTimer = null
   }
   if (map) {
     map.remove()
@@ -353,5 +451,12 @@ onUnmounted(() => {
   font-weight: 600;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8), 0 0 6px rgba(0, 0, 0, 0.6);
   white-space: nowrap;
+}
+
+:deep(.ship-time-label) span {
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 6px rgba(0, 0, 0, 0.7);
 }
 </style>
