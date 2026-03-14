@@ -12,7 +12,7 @@ type CompanyRecord struct {
 	Ticker     string    `gorm:"not null;size:5" json:"ticker"`
 	HomePortID string    `gorm:"not null" json:"home_port_id"`
 	Strategy   string    `gorm:"not null" json:"strategy"`
-	Status     string    `gorm:"not null;default:running" json:"status"`
+	Status     string    `gorm:"not null;default:running;index" json:"status"`
 	Treasury   int64     `json:"treasury"`
 	Reputation int64     `json:"reputation"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -22,9 +22,9 @@ type CompanyRecord struct {
 // TradeLog records every trade executed by the bot.
 type TradeLog struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
-	CompanyID  uint      `gorm:"index:idx_trade_company_time;not null" json:"company_id"`
-	Action     string    `gorm:"not null;size:4" json:"action"`
-	GoodID     string    `gorm:"not null" json:"good_id"`
+	CompanyID  uint      `gorm:"index:idx_trade_company_time;index:idx_trade_company_action;index:idx_trade_buy_lookup;not null" json:"company_id"`
+	Action     string    `gorm:"not null;size:4;index:idx_trade_company_action;index:idx_trade_buy_lookup" json:"action"`
+	GoodID     string    `gorm:"not null;index:idx_trade_buy_lookup" json:"good_id"`
 	GoodName   string    `gorm:"not null" json:"good_name"`
 	PortID     string    `gorm:"not null" json:"port_id"`
 	PortName   string    `gorm:"not null" json:"port_name"`
@@ -96,7 +96,7 @@ type PriceObservation struct {
 	GoodID    string    `gorm:"index:idx_price_port_good;not null" json:"good_id"`
 	BuyPrice  int       `gorm:"not null" json:"buy_price"`
 	SellPrice int       `gorm:"not null" json:"sell_price"`
-	CreatedAt time.Time `gorm:"not null" json:"created_at"`
+	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 }
 
 // AgentDecisionLog records every decision made by an agent for analysis and replay.

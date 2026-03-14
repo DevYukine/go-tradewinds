@@ -189,6 +189,9 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 	// Strategy is already initialized by the factory in the manager.
 	// No need to re-init here.
 
+	// Seed cumulative P&L counters from DB so incremental tracking is accurate.
+	r.seedPnLCounters()
+
 	r.logger.Info("company state initialized",
 		zap.Int64("treasury", econ.Treasury),
 		zap.Int("ships", len(ships)),
@@ -196,6 +199,37 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 	)
 
 	return nil
+}
+
+// seedPnLCounters loads cumulative trade/passenger totals from the database
+// once at startup so recordPnLSnapshot can track them incrementally.
+func (r *CompanyRunner) seedPnLCounters() {
+	var totalRev, totalCosts, passengerRev int64
+
+	r.gormDB.Model(&db.TradeLog{}).
+		Where("company_id = ? AND action = ?", r.dbRecord.ID, "sell").
+		Select("COALESCE(SUM(total_price), 0)").Scan(&totalRev)
+
+	r.gormDB.Model(&db.TradeLog{}).
+		Where("company_id = ? AND action = ?", r.dbRecord.ID, "buy").
+		Select("COALESCE(SUM(total_price), 0)").Scan(&totalCosts)
+
+	r.gormDB.Model(&db.PassengerLog{}).
+		Where("company_id = ?", r.dbRecord.ID).
+		Select("COALESCE(SUM(bid), 0)").Scan(&passengerRev)
+
+	r.state.mu.Lock()
+	r.state.CumTradeRev = totalRev
+	r.state.CumTradeCosts = totalCosts
+	r.state.CumPassengerRev = passengerRev
+	r.state.pnlInitialized = true
+	r.state.mu.Unlock()
+
+	r.logger.Info("P&L counters seeded from database",
+		zap.Int64("trade_rev", totalRev),
+		zap.Int64("trade_costs", totalCosts),
+		zap.Int64("passenger_rev", passengerRev),
+	)
 }
 
 // handleEvent processes an SSE event from the company event stream.
@@ -429,6 +463,9 @@ func (r *CompanyRunner) recordPnLSnapshot() {
 	treasury := r.state.Treasury
 	reputation := r.state.Reputation
 	shipCount := len(r.state.Ships)
+	tradeRev := r.state.CumTradeRev
+	tradeCosts := r.state.CumTradeCosts
+	passengerRev := r.state.CumPassengerRev
 
 	// Compute capacity utilization.
 	var totalCargo, totalCapacity int
@@ -447,28 +484,13 @@ func (r *CompanyRunner) recordPnLSnapshot() {
 		avgCapUtil = float64(totalCargo) / float64(totalCapacity)
 	}
 
-	// Compute cumulative revenue and costs from trade logs.
-	var totalRev, totalCosts int64
-	r.gormDB.Model(&db.TradeLog{}).
-		Where("company_id = ? AND action = ?", r.dbRecord.ID, "sell").
-		Select("COALESCE(SUM(total_price), 0)").Scan(&totalRev)
-	r.gormDB.Model(&db.TradeLog{}).
-		Where("company_id = ? AND action = ?", r.dbRecord.ID, "buy").
-		Select("COALESCE(SUM(total_price), 0)").Scan(&totalCosts)
-
-	// Compute cumulative passenger revenue.
-	var passengerRev int64
-	r.gormDB.Model(&db.PassengerLog{}).
-		Where("company_id = ?", r.dbRecord.ID).
-		Select("COALESCE(SUM(bid), 0)").Scan(&passengerRev)
-
 	snapshot := db.PnLSnapshot{
 		CompanyID:       r.dbRecord.ID,
 		Treasury:        treasury,
-		TotalRev:        totalRev + passengerRev,
-		TotalCosts:      totalCosts,
+		TotalRev:        tradeRev + passengerRev,
+		TotalCosts:      tradeCosts,
 		PassengerRev:    passengerRev,
-		NetPnL:          totalRev + passengerRev - totalCosts,
+		NetPnL:          tradeRev + passengerRev - tradeCosts,
 		ShipCount:       shipCount,
 		AvgCapacityUtil: avgCapUtil,
 	}

@@ -20,7 +20,15 @@ type CompanyState struct {
 	TotalUpkeep int64
 	LastEconomy time.Time
 	dbID        uint // Database record ID for logging.
-	mu          sync.RWMutex
+
+	// Cumulative P&L counters — updated incrementally by trade/passenger logging
+	// so recordPnLSnapshot avoids full-table SUM queries every tick.
+	CumTradeRev     int64 // SUM(total_price) for sell trades
+	CumTradeCosts   int64 // SUM(total_price) for buy trades
+	CumPassengerRev int64 // SUM(bid) for passenger boardings
+	pnlInitialized  bool  // Whether cumulative counters have been seeded from DB.
+
+	mu sync.RWMutex
 }
 
 // NewCompanyState creates an empty state for the given company.
@@ -124,6 +132,27 @@ func (s *CompanyState) DockedShips() []*ShipState {
 		}
 	}
 	return docked
+}
+
+// AddTradeRevenue atomically increments cumulative trade revenue (sell).
+func (s *CompanyState) AddTradeRevenue(amount int64) {
+	s.mu.Lock()
+	s.CumTradeRev += amount
+	s.mu.Unlock()
+}
+
+// AddTradeCost atomically increments cumulative trade costs (buy).
+func (s *CompanyState) AddTradeCost(amount int64) {
+	s.mu.Lock()
+	s.CumTradeCosts += amount
+	s.mu.Unlock()
+}
+
+// AddPassengerRevenue atomically increments cumulative passenger revenue.
+func (s *CompanyState) AddPassengerRevenue(amount int64) {
+	s.mu.Lock()
+	s.CumPassengerRev += amount
+	s.mu.Unlock()
 }
 
 // TreasuryFloor returns the minimum treasury to maintain (2x total upkeep).

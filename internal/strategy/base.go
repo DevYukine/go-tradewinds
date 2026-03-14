@@ -210,6 +210,9 @@ func (b *baseStrategy) boardPassengers(ctx context.Context, ship *bot.ShipState,
 		if err := b.ctx.DB.Create(&plog).Error; err != nil {
 			b.logger.Warn("failed to log passenger boarding", zap.Error(err))
 		}
+
+		// Update cumulative counter for P&L snapshots.
+		b.ctx.State.AddPassengerRevenue(int64(passenger.Bid))
 	}
 }
 
@@ -646,9 +649,12 @@ func (b *baseStrategy) recordTrade(exec *api.TradeExecution) {
 		b.logger.Warn("failed to log trade", zap.Error(err))
 	}
 
-	// Record route performance for sell trades (completed buy→sell cycle).
+	// Update cumulative counters for P&L snapshots.
 	if exec.Action == "sell" {
+		b.ctx.State.AddTradeRevenue(int64(exec.TotalPrice))
 		b.recordRoutePerformance(exec)
+	} else {
+		b.ctx.State.AddTradeCost(int64(exec.TotalPrice))
 	}
 }
 
