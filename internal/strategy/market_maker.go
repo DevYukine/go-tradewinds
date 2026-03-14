@@ -171,6 +171,11 @@ func (m *MarketMaker) evaluateMarket(ctx context.Context) {
 		return
 	}
 
+	// Only log and execute when there are actual actions to take.
+	if len(decision.FillOrders) == 0 && len(decision.PostOrders) == 0 && len(decision.CancelOrders) == 0 {
+		return
+	}
+
 	m.logAgentDecision("market", req, decision, decision.Reasoning, 0, latency)
 
 	// Execute market decisions.
