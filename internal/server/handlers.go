@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 
+	"github.com/DevYukine/go-tradewinds/internal/api"
 	"github.com/DevYukine/go-tradewinds/internal/db"
 )
 
@@ -21,6 +22,7 @@ func (s *Server) registerHandlers() {
 	api.Get("/companies/:id/decisions", s.handleCompanyDecisions)
 	api.Get("/companies/:id/inventory", s.handleCompanyInventory)
 	api.Get("/companies/:id/passengers", s.handleCompanyPassengers)
+	api.Get("/companies/:id/game-trades", s.handleCompanyGameTrades)
 	api.Get("/strategy-metrics", s.handleStrategyMetrics)
 	api.Get("/optimizer/log", s.handleOptimizerLog)
 	api.Get("/prices", s.handlePrices)
@@ -688,6 +690,80 @@ func (s *Server) handleAllShips(c fiber.Ctx) error {
 	}
 
 	return c.JSON(ships)
+}
+
+// handleCompanyGameTrades proxies trade history from the game API for a company.
+// Query param: role (optional, "buyer" or "seller").
+func (s *Server) handleCompanyGameTrades(c fiber.Ctx) error {
+	var company db.CompanyRecord
+	if err := s.db.First(&company, c.Params("id")).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "company not found",
+		})
+	}
+
+	runner := s.manager.GetRunner(company.GameID)
+	if runner == nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "company not running",
+		})
+	}
+
+	filters := api.TradeHistoryFilters{
+		Role: c.Query("role"),
+	}
+
+	entries, err := runner.Client().ListTradeHistory(c.Context(), filters)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
+			"error": "failed to fetch trade history from game API",
+		})
+	}
+
+	// Enrich entries with resolved good and port names.
+	world := s.manager.WorldData()
+
+	type enrichedEntry struct {
+		ID         string    `json:"id"`
+		BuyerID    string    `json:"buyer_id"`
+		SellerID   string    `json:"seller_id"`
+		GoodID     string    `json:"good_id"`
+		GoodName   string    `json:"good_name"`
+		PortID     string    `json:"port_id"`
+		PortName   string    `json:"port_name"`
+		Price      int       `json:"price"`
+		Quantity   int       `json:"quantity"`
+		Source     string    `json:"source"`
+		OccurredAt time.Time `json:"occurred_at"`
+	}
+
+	result := make([]enrichedEntry, 0, len(entries))
+	for _, e := range entries {
+		goodName := e.GoodID.String()
+		portName := e.PortID.String()
+		if world != nil {
+			if g := world.GetGood(e.GoodID); g != nil {
+				goodName = g.Name
+			}
+			if p := world.GetPort(e.PortID); p != nil {
+				portName = p.Name
+			}
+		}
+		result = append(result, enrichedEntry{
+			ID:         e.ID.String(),
+			BuyerID:    e.BuyerID.String(),
+			SellerID:   e.SellerID.String(),
+			GoodID:     e.GoodID.String(),
+			GoodName:   goodName,
+			PortID:     e.PortID.String(),
+			PortName:   portName,
+			Price:      e.Price,
+			Quantity:   e.Quantity,
+			Source:     e.Source,
+			OccurredAt: e.OccurredAt,
+		})
+	}
+	return c.JSON(result)
 }
 
 // queryInt reads an integer query parameter with a default value.

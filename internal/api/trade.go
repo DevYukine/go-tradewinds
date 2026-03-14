@@ -82,3 +82,14 @@ func (c *Client) BatchExecuteQuotes(ctx context.Context, requests []ExecuteQuote
 	}
 	return results, nil
 }
+
+// ListTradeHistory returns the paginated trade history for the current company.
+// Use filters.Role "buyer" or "seller" to narrow results.
+func (c *Client) ListTradeHistory(ctx context.Context, filters TradeHistoryFilters) ([]TradeHistoryEntry, error) {
+	params := make(map[string]string)
+	if filters.Role != "" {
+		params["role"] = filters.Role
+	}
+	path := "/trade/history" + BuildQueryString(params)
+	return Paginate[TradeHistoryEntry](ctx, c, path, PriorityLow)
+}

@@ -223,3 +223,17 @@ export interface PriceEntry {
   spread: number
   updated_at: string
 }
+
+export interface GameTradeEntry {
+  id: string
+  buyer_id: string
+  seller_id: string
+  good_id: string
+  good_name: string
+  port_id: string
+  port_name: string
+  price: number
+  quantity: number
+  source: string
+  occurred_at: string
+}

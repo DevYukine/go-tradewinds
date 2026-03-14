@@ -50,7 +50,7 @@
 | 17 | GET | [`/world/ship-types`](#get-worldship-types--list-ship-types) | List ship types |
 | 18 | GET | [`/world/ship-types/{id}`](#get-worldship-typesid--single-ship-type-detail) | Single ship type detail |
 
-**Trade — NPC (6)**
+**Trade — NPC (7)**
 | # | Method | Endpoint | Description |
 |---|--------|----------|-------------|
 | 19 | GET | [`/trade/traders`](#get-tradetraders--list-npc-traders) | List NPC traders |
@@ -60,6 +60,7 @@
 | 23 | POST | [`/trade/execute`](#post-tradeexecute--direct-trade-no-quote) | Direct trade (no quote) |
 | 24 | POST | [`/trade/quotes/batch`](#post-tradequotesbatch--batch-quotes) | Batch quotes |
 | 25 | POST | [`/trade/quotes/execute/batch`](#post-tradequotesexecutebatch--batch-execute-quotes) | Batch execute quotes |
+| 26 | GET | [`/trade/history`](#get-tradehistory--trade-history) | Trade history (paginated) |
 
 **Market — Player-to-Player (4)**
 | # | Method | Endpoint | Description |
@@ -363,6 +364,14 @@ Caravel is the most efficient (highest cap×speed/upkeep ratio).
 - **Body**: `{ requests: [{ token, destinations }] }`
 - **Response**: List of execution results
 - **Use**: Execute multiple trades at once
+
+#### `GET /trade/history` — Trade history
+- **Auth**: Bearer + company header
+- **Models**: → Response: `TradeHistoryResponse`
+- **Filter**: `role` (`buyer` or `seller`); **Pagination**: `after`, `before`, `limit`
+- **Response**: List of TradeHistoryEntry `{ id, buyer_id, seller_id, good_id, port_id, price, quantity, source, occurred_at }`
+- **Source**: `market`, `npc_trader`, or `contract_execution`
+- **Use**: View all past trades for the company. Filter by role to see only buys or sells.
 
 ---
 

@@ -683,3 +683,8 @@ func (r *CompanyRunner) DBRecord() *db.CompanyRecord {
 func (r *CompanyRunner) State() *CompanyState {
 	return r.state
 }
+
+// Client returns the API client for this company (e.g., for proxying game API calls).
+func (r *CompanyRunner) Client() *api.Client {
+	return r.client
+}

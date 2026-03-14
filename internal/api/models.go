@@ -248,6 +248,24 @@ type OrderFilters struct {
 	Side    string      `url:"side,omitempty"`
 }
 
+// --- Trade History ---
+
+type TradeHistoryEntry struct {
+	ID         uuid.UUID `json:"id"`
+	BuyerID    uuid.UUID `json:"buyer_id"`
+	SellerID   uuid.UUID `json:"seller_id"`
+	GoodID     uuid.UUID `json:"good_id"`
+	PortID     uuid.UUID `json:"port_id"`
+	Price      int       `json:"price"`
+	Quantity   int       `json:"quantity"`
+	Source     string    `json:"source"` // "market", "npc_trader", "contract_execution"
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+type TradeHistoryFilters struct {
+	Role string `url:"role,omitempty"` // "buyer" or "seller"
+}
+
 // --- Passengers ---
 
 type Passenger struct {

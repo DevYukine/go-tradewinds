@@ -3,14 +3,17 @@ const props = defineProps<{
   companyId: number
 }>()
 
-const activeTab = ref<'trades' | 'passengers'>('trades')
+const activeTab = ref<'trades' | 'passengers' | 'game'>('trades')
 const { trades, loading, fetchTrades, lastUpdated } = useTrades()
 const { passengers, loading: passengersLoading, fetchPassengers, lastUpdated: passengersLastUpdated } = usePassengers()
+const { gameTrades, loading: gameLoading, fetchGameTrades, lastUpdated: gameLastUpdated } = useGameTrades()
 const { now } = useNow()
 
-const currentLastUpdated = computed(() =>
-  activeTab.value === 'trades' ? lastUpdated.value : passengersLastUpdated.value
-)
+const currentLastUpdated = computed(() => {
+  if (activeTab.value === 'trades') return lastUpdated.value
+  if (activeTab.value === 'passengers') return passengersLastUpdated.value
+  return gameLastUpdated.value
+})
 
 const lastUpdatedAgo = computed(() => {
   if (!currentLastUpdated.value) return ''
@@ -26,9 +29,11 @@ function startPolling(id: number) {
   if (pollTimer) clearInterval(pollTimer)
   fetchTrades(id)
   fetchPassengers(id)
+  fetchGameTrades(id)
   pollTimer = setInterval(() => {
     fetchTrades(id)
     fetchPassengers(id)
+    fetchGameTrades(id)
   }, 15000)
 }
 
@@ -47,6 +52,7 @@ onUnmounted(() => {
 function refresh() {
   fetchTrades(props.companyId)
   fetchPassengers(props.companyId)
+  fetchGameTrades(props.companyId)
 }
 
 function formatCurrency(value: number): string {
@@ -75,6 +81,32 @@ const totalPassengerRev = computed(() =>
 const totalPassengerCount = computed(() =>
   passengers.value.reduce((s, p) => s + p.count, 0)
 )
+
+const gameTradeVolume = computed(() =>
+  gameTrades.value.reduce((s, t) => s + t.price * t.quantity, 0)
+)
+
+const gameTradeQuantity = computed(() =>
+  gameTrades.value.reduce((s, t) => s + t.quantity, 0)
+)
+
+function sourceLabel(source: string): string {
+  switch (source) {
+    case 'market': return 'Market'
+    case 'npc_trader': return 'NPC'
+    case 'contract_execution': return 'Contract'
+    default: return source
+  }
+}
+
+function sourceColor(source: string): string {
+  switch (source) {
+    case 'market': return 'bg-amber-500/20 text-amber-400'
+    case 'npc_trader': return 'bg-sky-500/20 text-sky-400'
+    case 'contract_execution': return 'bg-violet-500/20 text-violet-400'
+    default: return 'bg-slate-500/20 text-slate-400'
+  }
+}
 </script>
 
 <template>
@@ -117,6 +149,16 @@ const totalPassengerCount = computed(() =>
       >
         Passengers
         <span class="ml-1 text-slate-500">{{ passengers.length }}</span>
+      </button>
+      <button
+        class="px-3 py-1 rounded text-xs font-medium transition-colors"
+        :class="activeTab === 'game'
+          ? 'bg-amber-700/50 text-amber-200'
+          : 'text-slate-500 hover:text-slate-300'"
+        @click="activeTab = 'game'"
+      >
+        Game History
+        <span class="ml-1 text-slate-500">{{ gameTrades.length }}</span>
       </button>
     </div>
 
@@ -260,6 +302,79 @@ const totalPassengerCount = computed(() =>
                   <span class="text-slate-300">{{ p.destination_port_name }}</span>
                 </td>
                 <td class="py-1.5 text-slate-400 text-xs">{{ p.ship_name }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+    </template>
+
+    <!-- Game History Tab -->
+    <template v-if="activeTab === 'game'">
+      <div v-if="gameLoading && gameTrades.length === 0" class="flex items-center justify-center py-8">
+        <Icon name="mdi:loading" class="animate-spin text-2xl text-slate-500" />
+      </div>
+
+      <div v-else-if="gameTrades.length === 0" class="text-center text-slate-600 text-sm py-8">
+        No game trades recorded yet
+      </div>
+
+      <template v-else>
+        <!-- Game Trade Summary -->
+        <div class="grid grid-cols-3 gap-3 mb-3">
+          <div class="bg-slate-900/50 rounded-lg p-2">
+            <div class="text-[10px] text-slate-500 uppercase">Trades</div>
+            <div class="text-sm font-bold text-amber-400 font-mono">{{ gameTrades.length }}</div>
+          </div>
+          <div class="bg-slate-900/50 rounded-lg p-2">
+            <div class="text-[10px] text-slate-500 uppercase">Quantity</div>
+            <div class="text-sm font-bold text-slate-300 font-mono">{{ gameTradeQuantity }}</div>
+          </div>
+          <div class="bg-slate-900/50 rounded-lg p-2">
+            <div class="text-[10px] text-slate-500 uppercase">Volume</div>
+            <div class="text-sm font-bold text-emerald-400 font-mono">{{ formatCurrency(gameTradeVolume) }}</div>
+          </div>
+        </div>
+
+        <div class="-mr-3 max-h-[28rem] 2xl:max-h-[36rem] overflow-y-auto scroll-stable">
+          <table class="w-full text-sm pr-3">
+            <thead class="sticky top-0 bg-slate-800 z-10">
+              <tr class="text-xs text-slate-500 uppercase tracking-wide border-b border-slate-700">
+                <th class="text-left py-2 pr-3">Time</th>
+                <th class="text-left py-2 pr-3">Source</th>
+                <th class="text-left py-2 pr-3">Good</th>
+                <th class="text-left py-2 pr-3">Port</th>
+                <th class="text-right py-2 pr-3">Qty</th>
+                <th class="text-right py-2 pr-3">Price</th>
+                <th class="text-right py-2 pr-3">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="t in gameTrades"
+                :key="t.id"
+                class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors"
+              >
+                <td class="py-1.5 pr-3 text-xs text-slate-500 font-mono whitespace-nowrap">
+                  {{ formatTime(t.occurred_at) }}
+                </td>
+                <td class="py-1.5 pr-3">
+                  <span
+                    class="px-2 py-0.5 rounded-full text-[10px] font-medium"
+                    :class="sourceColor(t.source)"
+                  >
+                    {{ sourceLabel(t.source) }}
+                  </span>
+                </td>
+                <td class="py-1.5 pr-3 text-slate-300 text-xs">
+                  {{ t.good_name || t.good_id?.substring(0, 8) || '---' }}
+                </td>
+                <td class="py-1.5 pr-3 text-slate-400 text-xs">{{ t.port_name }}</td>
+                <td class="py-1.5 pr-3 text-right text-slate-300 font-mono text-xs">{{ t.quantity }}</td>
+                <td class="py-1.5 pr-3 text-right text-slate-400 font-mono text-xs">{{ formatCurrency(t.price) }}</td>
+                <td class="py-1.5 pr-3 text-right font-mono text-xs font-medium text-amber-400">
+                  {{ formatCurrency(t.price * t.quantity) }}
+                </td>
               </tr>
             </tbody>
           </table>
