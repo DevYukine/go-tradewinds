@@ -216,13 +216,13 @@ const totalCapacity = computed(() =>
             </div>
             <div class="bg-slate-800/50 rounded px-2 py-1">
               <div class="text-[10px] text-slate-500 uppercase">Cargo</div>
-              <div class="text-xs font-mono" :class="ship.cargo_total > 0 ? 'text-violet-400' : 'text-slate-500'">
+              <div class="text-xs font-mono" :class="ship.cargo_total > 0 ? 'text-amber-400' : 'text-slate-500'">
                 {{ ship.cargo_total }} / {{ ship.capacity }}
               </div>
             </div>
             <div v-if="ship.passenger_cap > 0" class="bg-slate-800/50 rounded px-2 py-1">
               <div class="text-[10px] text-slate-500 uppercase">Passengers</div>
-              <div class="text-xs font-mono" :class="ship.passenger_count > 0 ? 'text-purple-400' : 'text-slate-500'">
+              <div class="text-xs font-mono" :class="ship.passenger_count > 0 ? 'text-cyan-400' : 'text-slate-500'">
                 {{ ship.passenger_count }} / {{ ship.passenger_cap }}
               </div>
             </div>
@@ -232,23 +232,23 @@ const totalCapacity = computed(() =>
           <div v-if="ship.capacity > 0 || ship.passenger_cap > 0" class="mb-2">
             <div class="flex items-center gap-1.5 mb-1">
               <span v-if="ship.capacity > 0" class="flex items-center gap-1 text-[10px]">
-                <span class="inline-block w-2 h-2 rounded-sm bg-violet-500" />
+                <span class="inline-block w-2 h-2 rounded-sm bg-amber-500" />
                 <span class="text-slate-400">Cargo {{ ship.cargo_total }}/{{ ship.capacity }}</span>
               </span>
               <span v-if="ship.passenger_cap > 0" class="flex items-center gap-1 text-[10px]">
-                <span class="inline-block w-2 h-2 rounded-sm bg-purple-500" />
+                <span class="inline-block w-2 h-2 rounded-sm bg-cyan-500" />
                 <span class="text-slate-400">Passengers {{ ship.passenger_count }}/{{ ship.passenger_cap }}</span>
               </span>
             </div>
             <div class="h-1.5 rounded-full bg-slate-700 overflow-hidden flex">
               <div
                 v-if="ship.capacity > 0"
-                class="h-full bg-violet-500 transition-all"
+                class="h-full bg-amber-500 transition-all"
                 :style="{ width: `${(ship.cargo_total / (ship.capacity + ship.passenger_cap)) * 100}%` }"
               />
               <div
                 v-if="ship.passenger_cap > 0"
-                class="h-full bg-purple-500 transition-all"
+                class="h-full bg-cyan-500 transition-all"
                 :style="{ width: `${(ship.passenger_cap / (ship.capacity + ship.passenger_cap)) * 100}%` }"
               />
             </div>
