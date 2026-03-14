@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import type { ShipDetail, WarehouseDetail } from '~/types'
-
 const props = defineProps<{
   companyId: number
 }>()
@@ -46,13 +44,14 @@ function statusClasses(status: string): string {
   }
 }
 
-const dockedShips = computed(() =>
-  inventory.value?.ships.filter(s => s.status === 'docked') ?? []
-)
-
-const sailingShips = computed(() =>
-  inventory.value?.ships.filter(s => s.status !== 'docked') ?? []
-)
+function shipTypeColor(shipType: string): string {
+  switch (shipType?.toLowerCase()) {
+    case 'cog': return 'bg-slate-500/20 text-slate-300'
+    case 'caravel': return 'bg-blue-500/20 text-blue-300'
+    case 'galleon': return 'bg-amber-500/20 text-amber-300'
+    default: return 'bg-slate-500/20 text-slate-300'
+  }
+}
 
 const totalCargoValue = computed(() =>
   inventory.value?.ships.reduce((sum, s) => sum + s.cargo_total, 0) ?? 0
@@ -63,6 +62,10 @@ const totalWarehouseItems = computed(() =>
     (sum, w) => sum + w.items.reduce((s, i) => s + i.quantity, 0),
     0
   ) ?? 0
+)
+
+const totalCapacity = computed(() =>
+  inventory.value?.ships.reduce((sum, s) => sum + s.capacity, 0) ?? 0
 )
 </script>
 
@@ -88,7 +91,7 @@ const totalWarehouseItems = computed(() =>
 
     <template v-else-if="inventory">
       <!-- Summary Stats -->
-      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+      <div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
         <div class="bg-slate-900/50 rounded-lg p-2.5">
           <div class="text-[10px] text-slate-500 uppercase tracking-wide">Ships</div>
           <div class="text-base font-bold text-slate-100 font-mono">{{ inventory.ships.length }}</div>
@@ -98,17 +101,21 @@ const totalWarehouseItems = computed(() =>
           <div class="text-base font-bold text-amber-400 font-mono">{{ formatCurrency(inventory.total_upkeep) }}</div>
         </div>
         <div class="bg-slate-900/50 rounded-lg p-2.5">
-          <div class="text-[10px] text-slate-500 uppercase tracking-wide">Cargo in Transit</div>
-          <div class="text-base font-bold text-sky-400 font-mono">{{ totalCargoValue }}</div>
+          <div class="text-[10px] text-slate-500 uppercase tracking-wide">Cargo</div>
+          <div class="text-base font-bold text-sky-400 font-mono">{{ totalCargoValue }} / {{ totalCapacity }}</div>
         </div>
         <div class="bg-slate-900/50 rounded-lg p-2.5">
           <div class="text-[10px] text-slate-500 uppercase tracking-wide">Warehoused</div>
           <div class="text-base font-bold text-purple-400 font-mono">{{ totalWarehouseItems }}</div>
         </div>
+        <div class="bg-slate-900/50 rounded-lg p-2.5">
+          <div class="text-[10px] text-slate-500 uppercase tracking-wide">Treasury</div>
+          <div class="text-base font-bold text-amber-400 font-mono">{{ formatCurrency(inventory.treasury) }}</div>
+        </div>
       </div>
 
       <!-- Ships -->
-      <div v-if="inventory.ships.length > 0" class="space-y-1.5 max-h-72 overflow-y-auto">
+      <div v-if="inventory.ships.length > 0" class="space-y-1.5 max-h-96 overflow-y-auto">
         <div
           v-for="ship in inventory.ships"
           :key="ship.ship_id"
@@ -122,27 +129,80 @@ const totalWarehouseItems = computed(() =>
                 class="flex-shrink-0"
               />
               <div class="min-w-0">
-                <span class="text-sm font-medium text-slate-200 truncate block">{{ ship.ship_name }}</span>
-                <div class="flex items-center gap-2 text-xs text-slate-500">
-                  <span class="capitalize">{{ ship.status }}</span>
-                  <template v-if="ship.port_name">
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-medium text-slate-200 truncate">{{ ship.ship_name }}</span>
+                  <span
+                    v-if="ship.ship_type"
+                    class="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                    :class="shipTypeColor(ship.ship_type)"
+                  >
+                    {{ ship.ship_type }}
+                  </span>
+                </div>
+                <div class="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
+                  <!-- Docked -->
+                  <template v-if="ship.status === 'docked' && ship.port_name">
+                    <span class="text-emerald-400">Docked</span>
                     <span class="text-slate-600">at</span>
-                    <span class="text-slate-400">{{ ship.port_name }}</span>
+                    <span class="text-slate-300">{{ ship.port_name }}</span>
                   </template>
-                  <template v-if="ship.status === 'sailing' && ship.arriving_at">
-                    <span class="text-slate-600">ETA</span>
-                    <span class="text-sky-400 font-mono">{{ timeUntilArrival(ship.arriving_at) }}</span>
+                  <!-- Sailing with route info -->
+                  <template v-else-if="ship.from_port_name && ship.to_port_name">
+                    <span class="text-sky-400">Sailing</span>
+                    <span class="text-slate-400">{{ ship.from_port_name }}</span>
+                    <Icon name="lucide:arrow-right" class="text-[10px] text-slate-600" />
+                    <span class="text-slate-300">{{ ship.to_port_name }}</span>
+                    <template v-if="ship.arriving_at">
+                      <span class="text-slate-600">|</span>
+                      <span class="text-sky-400 font-mono">{{ timeUntilArrival(ship.arriving_at) }}</span>
+                    </template>
+                  </template>
+                  <!-- Sailing without route info -->
+                  <template v-else-if="ship.status !== 'docked'">
+                    <span class="text-sky-400 capitalize">{{ ship.status }}</span>
+                    <template v-if="ship.arriving_at">
+                      <span class="text-slate-600">ETA</span>
+                      <span class="text-sky-400 font-mono">{{ timeUntilArrival(ship.arriving_at) }}</span>
+                    </template>
                   </template>
                 </div>
               </div>
             </div>
 
-            <div class="flex items-center gap-3 flex-shrink-0">
+            <div class="flex items-center gap-4 flex-shrink-0 text-right">
+              <!-- Ship stats -->
+              <div class="hidden md:flex items-center gap-3 text-[10px] text-slate-500">
+                <span v-if="ship.capacity" title="Capacity">
+                  <Icon name="lucide:package" class="inline text-[10px]" />
+                  {{ ship.capacity }}
+                </span>
+                <span v-if="ship.speed" title="Speed">
+                  <Icon name="lucide:gauge" class="inline text-[10px]" />
+                  {{ ship.speed }}
+                </span>
+                <span v-if="ship.upkeep" title="Upkeep">
+                  <Icon name="lucide:coins" class="inline text-[10px]" />
+                  {{ ship.upkeep }}
+                </span>
+              </div>
+
+              <!-- Cargo summary -->
               <div v-if="ship.cargo.length > 0" class="text-right">
-                <div class="text-[10px] text-slate-500">Cargo</div>
-                <div class="text-xs text-slate-300 font-mono">{{ ship.cargo_total }} units</div>
+                <div class="text-xs text-slate-300 font-mono">{{ ship.cargo_total }} / {{ ship.capacity || '?' }}</div>
+                <div class="text-[10px] text-slate-500">cargo</div>
               </div>
               <div v-else class="text-xs text-slate-600 italic">Empty</div>
+            </div>
+          </div>
+
+          <!-- Cargo bar -->
+          <div v-if="ship.capacity > 0" class="mt-2">
+            <div class="h-1 rounded-full bg-slate-700 overflow-hidden">
+              <div
+                class="h-full rounded-full transition-all"
+                :class="ship.cargo_total / ship.capacity > 0.8 ? 'bg-amber-500' : 'bg-sky-500'"
+                :style="{ width: `${Math.min(100, (ship.cargo_total / ship.capacity) * 100)}%` }"
+              />
             </div>
           </div>
 
@@ -182,6 +242,13 @@ const totalWarehouseItems = computed(() =>
               <span class="text-xs text-slate-500 font-mono">
                 {{ wh.items.reduce((s: number, i: { quantity: number }) => s + i.quantity, 0) }} / {{ wh.capacity }}
               </span>
+            </div>
+            <!-- Capacity bar -->
+            <div class="h-1 rounded-full bg-slate-700 overflow-hidden mb-1.5">
+              <div
+                class="h-full rounded-full bg-purple-500 transition-all"
+                :style="{ width: `${Math.min(100, (wh.items.reduce((s: number, i: { quantity: number }) => s + i.quantity, 0) / wh.capacity) * 100)}%` }"
+              />
             </div>
             <div v-if="wh.items.length > 0" class="flex flex-wrap gap-1">
               <span

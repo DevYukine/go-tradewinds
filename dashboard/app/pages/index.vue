@@ -93,6 +93,9 @@ const latestPnL = computed(() => {
           <!-- P&L Chart -->
           <PnLChart :company-id="selectedCompany.id" />
 
+          <!-- Market Prices -->
+          <PriceTable />
+
           <!-- Agent Decisions -->
           <AgentDecisions :company-id="selectedCompany.id" />
 
@@ -104,6 +107,9 @@ const latestPnL = computed(() => {
             <StrategyComparison />
             <OptimizerLog />
           </div>
+
+          <!-- World Data Reference -->
+          <WorldInfo />
         </template>
       </main>
     </div>

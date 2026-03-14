@@ -65,7 +65,7 @@ function formatCurrency(value: number): string {
       <span class="text-xs text-slate-500 font-mono">ID: {{ company.game_id }}</span>
     </div>
 
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+    <div class="grid grid-cols-2 lg:grid-cols-6 gap-4">
       <div class="bg-slate-900/50 rounded-lg p-3">
         <div class="flex items-center gap-2 text-slate-400 text-xs mb-1">
           <Icon name="lucide:coins" class="text-amber-400" />
@@ -96,6 +96,26 @@ function formatCurrency(value: number): string {
           :class="(latestPnL?.net_pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'"
         >
           {{ latestPnL ? formatCurrency(latestPnL.net_pnl) : '---' }}
+        </div>
+      </div>
+
+      <div class="bg-slate-900/50 rounded-lg p-3">
+        <div class="flex items-center gap-2 text-slate-400 text-xs mb-1">
+          <Icon name="lucide:arrow-up-right" class="text-emerald-400" />
+          Revenue
+        </div>
+        <div class="text-lg font-bold text-emerald-400 font-mono">
+          {{ latestPnL ? formatCurrency(latestPnL.total_rev) : '---' }}
+        </div>
+      </div>
+
+      <div class="bg-slate-900/50 rounded-lg p-3">
+        <div class="flex items-center gap-2 text-slate-400 text-xs mb-1">
+          <Icon name="lucide:arrow-down-right" class="text-rose-400" />
+          Costs
+        </div>
+        <div class="text-lg font-bold text-rose-400 font-mono">
+          {{ latestPnL ? formatCurrency(latestPnL.total_costs) : '---' }}
         </div>
       </div>
 
