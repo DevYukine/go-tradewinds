@@ -396,7 +396,7 @@ func (b *baseStrategy) sendShipToPort(ctx context.Context, ship *bot.ShipState, 
 		return nil
 	}
 
-	_, err := b.ctx.Client.SendTransit(ctx, ship.Ship.ID, route.ID)
+	updated, err := b.ctx.Client.SendTransit(ctx, ship.Ship.ID, route.ID)
 	if err != nil {
 		return err
 	}
@@ -408,6 +408,7 @@ func (b *baseStrategy) sendShipToPort(ctx context.Context, ship *bot.ShipState, 
 		ss.Ship.Status = "traveling"
 		ss.Ship.PortID = nil
 		ss.Ship.RouteID = &route.ID
+		ss.Ship.ArrivingAt = updated.ArrivingAt
 	}
 	b.ctx.State.Unlock()
 
