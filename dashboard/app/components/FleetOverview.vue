@@ -222,8 +222,8 @@ const totalCapacity = computed(() =>
             </div>
             <div v-if="ship.passenger_cap > 0" class="bg-slate-800/50 rounded px-2 py-1">
               <div class="text-[10px] text-slate-500 uppercase">Passengers</div>
-              <div class="text-xs font-mono text-purple-400">
-                {{ ship.passenger_cap }}
+              <div class="text-xs font-mono" :class="ship.passenger_count > 0 ? 'text-purple-400' : 'text-slate-500'">
+                {{ ship.passenger_count }} / {{ ship.passenger_cap }}
               </div>
             </div>
           </div>
@@ -237,7 +237,7 @@ const totalCapacity = computed(() =>
               </span>
               <span v-if="ship.passenger_cap > 0" class="flex items-center gap-1 text-[10px]">
                 <span class="inline-block w-2 h-2 rounded-sm bg-purple-500" />
-                <span class="text-slate-400">Passengers {{ ship.passenger_cap }}</span>
+                <span class="text-slate-400">Passengers {{ ship.passenger_count }}/{{ ship.passenger_cap }}</span>
               </span>
             </div>
             <div class="h-1.5 rounded-full bg-slate-700 overflow-hidden flex">

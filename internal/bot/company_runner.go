@@ -166,6 +166,32 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 		r.state.SetShipCargo(ship.ID, cargo)
 	}
 
+	// Fetch boarded passenger counts for ships with passenger capacity.
+	if r.world != nil {
+		for _, ship := range ships {
+			st := r.world.GetShipType(ship.ShipTypeID)
+			if st == nil || st.Passengers <= 0 {
+				continue
+			}
+			boarded, err := r.client.ListPassengers(ctx, api.PassengerFilters{
+				Status: "boarded",
+				ShipID: ship.ID.String(),
+			})
+			if err != nil {
+				r.logger.Debug("failed to fetch boarded passengers",
+					zap.String("ship_id", ship.ID.String()),
+					zap.Error(err),
+				)
+				continue
+			}
+			count := 0
+			for _, p := range boarded {
+				count += p.Count
+			}
+			r.state.SetShipPassengers(ship.ID, count)
+		}
+	}
+
 	// Fetch warehouses.
 	warehouses, err := r.client.ListWarehouses(ctx)
 	if err != nil {
@@ -291,6 +317,7 @@ func (r *CompanyRunner) handleShipDocked(ctx context.Context, data json.RawMessa
 			ss.Ship.PortID = &docked.PortID
 			ss.Ship.RouteID = nil
 			ss.Ship.ArrivingAt = nil
+			ss.PassengerCount = 0
 		}
 		r.state.mu.Unlock()
 		return
@@ -303,6 +330,7 @@ func (r *CompanyRunner) handleShipDocked(ctx context.Context, data json.RawMessa
 		r.state.mu.Lock()
 		if ss, ok := r.state.Ships[docked.ShipID]; ok {
 			ss.Ship = *ship
+			ss.PassengerCount = 0
 		} else {
 			r.state.Ships[docked.ShipID] = &ShipState{Ship: *ship}
 		}
@@ -314,6 +342,7 @@ func (r *CompanyRunner) handleShipDocked(ctx context.Context, data json.RawMessa
 	if ss, ok := r.state.Ships[docked.ShipID]; ok {
 		ss.Ship = *ship
 		ss.Cargo = cargo
+		ss.PassengerCount = 0
 	} else {
 		r.state.Ships[docked.ShipID] = &ShipState{Ship: *ship, Cargo: cargo}
 	}

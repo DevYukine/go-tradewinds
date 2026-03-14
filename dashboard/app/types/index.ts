@@ -98,6 +98,7 @@ export interface ShipDetail {
   ship_type: string
   capacity: number
   passenger_cap: number
+  passenger_count: number
   speed: number
   upkeep: number
   status: string

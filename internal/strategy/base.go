@@ -213,6 +213,9 @@ func (b *baseStrategy) boardPassengers(ctx context.Context, ship *bot.ShipState,
 
 		// Update cumulative counter for P&L snapshots.
 		b.ctx.State.AddPassengerRevenue(int64(passenger.Bid))
+
+		// Track boarded passenger count on the ship.
+		ship.PassengerCount += passenger.Count
 	}
 }
 

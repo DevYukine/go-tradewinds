@@ -82,6 +82,16 @@ func (s *CompanyState) SetShipCargo(shipID uuid.UUID, cargo []api.Cargo) {
 	}
 }
 
+// SetShipPassengers updates the boarded passenger count for a specific ship.
+func (s *CompanyState) SetShipPassengers(shipID uuid.UUID, count int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if ship, ok := s.Ships[shipID]; ok {
+		ship.PassengerCount = count
+	}
+}
+
 // UpdateWarehouses replaces the full warehouse roster from an API response.
 func (s *CompanyState) UpdateWarehouses(warehouses []api.Warehouse) {
 	s.mu.Lock()
@@ -211,8 +221,9 @@ func (s *CompanyState) RUnlock() {
 
 // ShipState tracks a single ship and its cargo.
 type ShipState struct {
-	Ship  api.Ship
-	Cargo []api.Cargo
+	Ship           api.Ship
+	Cargo          []api.Cargo
+	PassengerCount int // currently boarded passengers
 }
 
 // UsedCapacity returns the total quantity of cargo loaded on this ship.

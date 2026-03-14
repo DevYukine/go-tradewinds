@@ -205,23 +205,24 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 		Quantity int    `json:"quantity"`
 	}
 	type shipDetail struct {
-		ShipID       string      `json:"ship_id"`
-		ShipName     string      `json:"ship_name"`
-		ShipType     string      `json:"ship_type"`
-		Capacity     int         `json:"capacity"`
-		PassengerCap int         `json:"passenger_cap"`
-		Speed        int         `json:"speed"`
-		Upkeep       int         `json:"upkeep"`
-		Status       string      `json:"status"`
-		PortID       string      `json:"port_id,omitempty"`
-		PortName     string      `json:"port_name,omitempty"`
-		RouteID      string      `json:"route_id,omitempty"`
-		FromPortName string      `json:"from_port_name,omitempty"`
-		ToPortName   string      `json:"to_port_name,omitempty"`
-		Distance     float64     `json:"distance,omitempty"`
-		ArrivingAt   *time.Time  `json:"arriving_at,omitempty"`
-		Cargo        []cargoItem `json:"cargo"`
-		CargoTotal   int         `json:"cargo_total"`
+		ShipID         string      `json:"ship_id"`
+		ShipName       string      `json:"ship_name"`
+		ShipType       string      `json:"ship_type"`
+		Capacity       int         `json:"capacity"`
+		PassengerCap   int         `json:"passenger_cap"`
+		PassengerCount int         `json:"passenger_count"`
+		Speed          int         `json:"speed"`
+		Upkeep         int         `json:"upkeep"`
+		Status         string      `json:"status"`
+		PortID         string      `json:"port_id,omitempty"`
+		PortName       string      `json:"port_name,omitempty"`
+		RouteID        string      `json:"route_id,omitempty"`
+		FromPortName   string      `json:"from_port_name,omitempty"`
+		ToPortName     string      `json:"to_port_name,omitempty"`
+		Distance       float64     `json:"distance,omitempty"`
+		ArrivingAt     *time.Time  `json:"arriving_at,omitempty"`
+		Cargo          []cargoItem `json:"cargo"`
+		CargoTotal     int         `json:"cargo_total"`
 	}
 	type warehouseItem struct {
 		GoodID   string `json:"good_id"`
@@ -257,11 +258,12 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 		}
 
 		sd := shipDetail{
-			ShipID:     ss.Ship.ID.String(),
-			ShipName:   ss.Ship.Name,
-			Status:     ss.Ship.Status,
-			Cargo:      cargo,
-			CargoTotal: cargoTotal,
+			ShipID:         ss.Ship.ID.String(),
+			ShipName:       ss.Ship.Name,
+			Status:         ss.Ship.Status,
+			Cargo:          cargo,
+			CargoTotal:     cargoTotal,
+			PassengerCount: ss.PassengerCount,
 		}
 
 		// Resolve ship type details.
