@@ -79,7 +79,7 @@ func Load() (*Config, error) {
 			SSLMode:  envOrDefault("DB_SSLMODE", "disable"),
 		},
 		BaseURL:            envOrDefault("BOT_BASE_URL", "https://tradewinds.fly.dev"),
-		APIPort:            envIntOrDefault("API_PORT", 3001),
+		APIPort:            envIntOrDefault("API_PORT", 3002),
 		PlayerEmail:        os.Getenv("PLAYER_EMAIL"),
 		PlayerPassword:     os.Getenv("PLAYER_PASSWORD"),
 		RateLimitPerMinute: envIntOrDefault("RATE_LIMIT_PER_MINUTE", 300),

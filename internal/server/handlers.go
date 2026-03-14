@@ -187,9 +187,11 @@ func (s *Server) handleRateLimit(c fiber.Ctx) error {
 	utilization := rl.Utilization()
 
 	return c.JSON(fiber.Map{
-		"used":        used,
-		"max":         max,
-		"utilization": utilization,
+		"used":                 used,
+		"max_per_minute":       max,
+		"current_utilization":  utilization,
+		"remaining":            max - used,
+		"active_companies":     s.manager.CompanyCount(),
 	})
 }
 

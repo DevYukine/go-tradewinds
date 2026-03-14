@@ -6,111 +6,111 @@ import (
 
 // CompanyRecord tracks each bot-managed company in the game.
 type CompanyRecord struct {
-	ID         uint   `gorm:"primaryKey"`
-	GameID     string `gorm:"uniqueIndex;not null"` // Game UUID of the company.
-	Name       string `gorm:"not null"`
-	Ticker     string `gorm:"not null;size:5"`
-	HomePortID string `gorm:"not null"`
-	Strategy   string `gorm:"not null"`              // Current strategy name.
-	Status     string `gorm:"not null;default:running"` // running, paused, error, bankrupt.
-	Treasury   int64
-	Reputation int64
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	GameID     string    `gorm:"uniqueIndex;not null" json:"game_id"`
+	Name       string    `gorm:"not null" json:"name"`
+	Ticker     string    `gorm:"not null;size:5" json:"ticker"`
+	HomePortID string    `gorm:"not null" json:"home_port_id"`
+	Strategy   string    `gorm:"not null" json:"strategy"`
+	Status     string    `gorm:"not null;default:running" json:"status"`
+	Treasury   int64     `json:"treasury"`
+	Reputation int64     `json:"reputation"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // TradeLog records every trade executed by the bot.
 type TradeLog struct {
-	ID         uint      `gorm:"primaryKey"`
-	CompanyID  uint      `gorm:"index:idx_trade_company_time;not null"`
-	Action     string    `gorm:"not null;size:4"` // "buy" or "sell".
-	GoodID     string    `gorm:"not null"`
-	GoodName   string    `gorm:"not null"`
-	PortID     string    `gorm:"not null"`
-	PortName   string    `gorm:"not null"`
-	Quantity   int       `gorm:"not null"`
-	UnitPrice  int       `gorm:"not null"`
-	TotalPrice int       `gorm:"not null"`
-	TaxPaid    int
-	Strategy   string    `gorm:"not null"`
-	AgentName  string    // Which agent made this decision.
-	CreatedAt  time.Time `gorm:"index:idx_trade_company_time;not null"`
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	CompanyID  uint      `gorm:"index:idx_trade_company_time;not null" json:"company_id"`
+	Action     string    `gorm:"not null;size:4" json:"action"`
+	GoodID     string    `gorm:"not null" json:"good_id"`
+	GoodName   string    `gorm:"not null" json:"good_name"`
+	PortID     string    `gorm:"not null" json:"port_id"`
+	PortName   string    `gorm:"not null" json:"port_name"`
+	Quantity   int       `gorm:"not null" json:"quantity"`
+	UnitPrice  int       `gorm:"not null" json:"unit_price"`
+	TotalPrice int       `gorm:"not null" json:"total_price"`
+	TaxPaid    int       `json:"tax_paid"`
+	Strategy   string    `gorm:"not null" json:"strategy"`
+	AgentName  string    `json:"agent_name"`
+	CreatedAt  time.Time `gorm:"index:idx_trade_company_time;not null" json:"created_at"`
 }
 
 // PnLSnapshot stores periodic profit/loss snapshots per company.
 type PnLSnapshot struct {
-	ID         uint      `gorm:"primaryKey"`
-	CompanyID  uint      `gorm:"index:idx_pnl_company_time;not null"`
-	Treasury   int64     `gorm:"not null"`
-	TotalCosts int64     // Cumulative upkeep + taxes.
-	TotalRev   int64     // Cumulative trade revenue.
-	NetPnL     int64     // Treasury - initial deposit.
-	ShipCount  int
-	CreatedAt  time.Time `gorm:"index:idx_pnl_company_time;not null"`
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	CompanyID  uint      `gorm:"index:idx_pnl_company_time;not null" json:"company_id"`
+	Treasury   int64     `gorm:"not null" json:"treasury"`
+	TotalCosts int64     `json:"total_costs"`
+	TotalRev   int64     `json:"total_rev"`
+	NetPnL     int64     `json:"net_pnl"`
+	ShipCount  int       `json:"ship_count"`
+	CreatedAt  time.Time `gorm:"index:idx_pnl_company_time;not null" json:"created_at"`
 }
 
 // InventorySnapshot tracks cargo and warehouse state over time.
 type InventorySnapshot struct {
-	ID        uint      `gorm:"primaryKey"`
-	CompanyID uint      `gorm:"index:idx_inv_company_time;not null"`
-	Location  string    `gorm:"not null"` // "ship:<uuid>" or "warehouse:<uuid>".
-	GoodID    string    `gorm:"not null"`
-	GoodName  string    `gorm:"not null"`
-	Quantity  int       `gorm:"not null"`
-	CreatedAt time.Time `gorm:"index:idx_inv_company_time;not null"`
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	CompanyID uint      `gorm:"index:idx_inv_company_time;not null" json:"company_id"`
+	Location  string    `gorm:"not null" json:"location"`
+	GoodID    string    `gorm:"not null" json:"good_id"`
+	GoodName  string    `gorm:"not null" json:"good_name"`
+	Quantity  int       `gorm:"not null" json:"quantity"`
+	CreatedAt time.Time `gorm:"index:idx_inv_company_time;not null" json:"created_at"`
 }
 
 // StrategyMetric tracks per-strategy performance aggregated across companies.
 type StrategyMetric struct {
-	ID                uint      `gorm:"primaryKey"`
-	StrategyName      string    `gorm:"index;not null"`
-	CompanyCount      int       `gorm:"not null"` // How many companies ran this strategy.
-	TradesExecuted    int
-	TotalProfit       int64
-	TotalLoss         int64
-	AvgProfitPerTrade float64
-	StdDevProfit      float64 // Standard deviation across companies.
-	WinRate           float64
-	ConfidenceLow     float64 // 95% CI lower bound on profit/hour.
-	ConfidenceHigh    float64 // 95% CI upper bound.
-	PeriodStart       time.Time
-	PeriodEnd         time.Time
-	CreatedAt         time.Time
+	ID                uint      `gorm:"primaryKey" json:"id"`
+	StrategyName      string    `gorm:"index;not null" json:"strategy_name"`
+	CompanyCount      int       `gorm:"not null" json:"company_count"`
+	TradesExecuted    int       `json:"trades_executed"`
+	TotalProfit       int64     `json:"total_profit"`
+	TotalLoss         int64     `json:"total_loss"`
+	AvgProfitPerTrade float64   `json:"avg_profit_per_trade"`
+	StdDevProfit      float64   `json:"std_dev_profit"`
+	WinRate           float64   `json:"win_rate"`
+	ConfidenceLow     float64   `json:"confidence_low"`
+	ConfidenceHigh    float64   `json:"confidence_high"`
+	PeriodStart       time.Time `json:"period_start"`
+	PeriodEnd         time.Time `json:"period_end"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // CompanyLog stores log lines for dashboard streaming and historical view.
 type CompanyLog struct {
-	ID        uint      `gorm:"primaryKey"`
-	CompanyID uint      `gorm:"index:idx_log_company_time;not null"`
-	Level     string    `gorm:"not null;size:10"` // info, warn, error, trade, event, optimizer, agent.
-	Message   string    `gorm:"type:text;not null"`
-	CreatedAt time.Time `gorm:"index:idx_log_company_time;not null"`
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	CompanyID uint      `gorm:"index:idx_log_company_time;not null" json:"company_id"`
+	Level     string    `gorm:"not null;size:10" json:"level"`
+	Message   string    `gorm:"type:text;not null" json:"message"`
+	CreatedAt time.Time `gorm:"index:idx_log_company_time;not null" json:"created_at"`
 }
 
 // PriceObservation records NPC prices for trend analysis.
 type PriceObservation struct {
-	ID        uint      `gorm:"primaryKey"`
-	PortID    string    `gorm:"index:idx_price_port_good;not null"`
-	GoodID    string    `gorm:"index:idx_price_port_good;not null"`
-	BuyPrice  int       `gorm:"not null"`
-	SellPrice int       `gorm:"not null"`
-	CreatedAt time.Time `gorm:"not null"`
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	PortID    string    `gorm:"index:idx_price_port_good;not null" json:"port_id"`
+	GoodID    string    `gorm:"index:idx_price_port_good;not null" json:"good_id"`
+	BuyPrice  int       `gorm:"not null" json:"buy_price"`
+	SellPrice int       `gorm:"not null" json:"sell_price"`
+	CreatedAt time.Time `gorm:"not null" json:"created_at"`
 }
 
 // AgentDecisionLog records every decision made by an agent for analysis and replay.
 type AgentDecisionLog struct {
-	ID           uint      `gorm:"primaryKey"`
-	CompanyID    uint      `gorm:"index:idx_decision_company_time;not null"`
-	AgentName    string    `gorm:"not null"`
-	DecisionType string    `gorm:"not null;size:20"` // trade, fleet, market, strategy_eval.
-	Request      string    `gorm:"type:text"`        // JSON-serialized request (game state snapshot).
-	Response     string    `gorm:"type:text"`        // JSON-serialized decision.
-	Reasoning    string    `gorm:"type:text"`        // Agent's explanation.
-	Confidence   float64
-	LatencyMs    int64
-	Outcome      string `gorm:"size:10"` // profit, loss, neutral (filled in later).
-	OutcomeValue int64
-	CreatedAt    time.Time `gorm:"index:idx_decision_company_time;not null"`
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	CompanyID    uint      `gorm:"index:idx_decision_company_time;not null" json:"company_id"`
+	AgentName    string    `gorm:"not null" json:"agent_name"`
+	DecisionType string    `gorm:"not null;size:20" json:"decision_type"`
+	Request      string    `gorm:"type:text" json:"request"`
+	Response     string    `gorm:"type:text" json:"response"`
+	Reasoning    string    `gorm:"type:text" json:"reasoning"`
+	Confidence   float64   `json:"confidence"`
+	LatencyMs    int64     `json:"latency_ms"`
+	Outcome      string    `gorm:"size:10" json:"outcome"`
+	OutcomeValue int64     `json:"outcome_value"`
+	CreatedAt    time.Time `gorm:"index:idx_decision_company_time;not null" json:"created_at"`
 }
 
 // AllModels returns all GORM models for auto-migration.
