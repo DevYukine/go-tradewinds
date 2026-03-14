@@ -124,8 +124,12 @@ func (a *HeuristicAgent) selectPassengers(
 		return nil
 	}
 
-	// Remaining capacity = cap minus already boarded groups.
-	remaining := passengerCap - len(boarded)
+	// Remaining capacity = cap minus total individual passengers already boarded.
+	boardedCount := 0
+	for _, p := range boarded {
+		boardedCount += p.Count
+	}
+	remaining := passengerCap - boardedCount
 	if remaining <= 0 {
 		return nil
 	}
@@ -133,12 +137,18 @@ func (a *HeuristicAgent) selectPassengers(
 	// Score passengers: those heading to our destination get a 2x bonus.
 	type scored struct {
 		id    uuid.UUID
+		count int
 		score float64
 	}
 	var candidates []scored
 	for _, p := range available {
 		// Only board passengers heading to a reachable port.
 		if _, ok := reachable[p.DestinationPortID]; !ok {
+			continue
+		}
+
+		// Skip groups that are too large to fit.
+		if p.Count > remaining {
 			continue
 		}
 
@@ -151,7 +161,7 @@ func (a *HeuristicAgent) selectPassengers(
 			score *= 2.0
 		}
 
-		candidates = append(candidates, scored{id: p.ID, score: score})
+		candidates = append(candidates, scored{id: p.ID, count: p.Count, score: score})
 	}
 
 	sort.Slice(candidates, func(i, j int) bool {
@@ -159,11 +169,13 @@ func (a *HeuristicAgent) selectPassengers(
 	})
 
 	var selected []uuid.UUID
+	used := 0
 	for _, c := range candidates {
-		if len(selected) >= remaining {
-			break
+		if used+c.count > remaining {
+			continue // skip groups that don't fit
 		}
 		selected = append(selected, c.id)
+		used += c.count
 	}
 
 	if len(selected) > 0 {
