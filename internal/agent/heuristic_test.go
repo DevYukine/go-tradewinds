@@ -287,6 +287,7 @@ func TestDecideMarketAction_FillUnderpricedSellOrder(t *testing.T) {
 		PriceCache: []PricePoint{
 			{PortID: portA, GoodID: goodX, BuyPrice: 30, SellPrice: 80}, // NPC sell at 80
 		},
+		Warehouses: []WarehouseSnapshot{{PortID: portA}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -354,6 +355,7 @@ func TestDecideMarketAction_FillOverpricedBuyOrder(t *testing.T) {
 		PriceCache: []PricePoint{
 			{PortID: portA, GoodID: goodX, BuyPrice: 50, SellPrice: 80}, // NPC buy at 50
 		},
+		Warehouses: []WarehouseSnapshot{{PortID: portA}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -535,6 +537,7 @@ func TestDecideMarketAction_PostOrdersAtWideSpread(t *testing.T) {
 		PriceCache: []PricePoint{
 			{PortID: portA, GoodID: goodX, BuyPrice: 50, SellPrice: 120}, // 70 spread, 140% > 20%
 		},
+		Warehouses: []WarehouseSnapshot{{PortID: portA}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -632,6 +635,7 @@ func TestDecideMarketAction_BudgetConstrainsFillQuantity(t *testing.T) {
 		PriceCache: []PricePoint{
 			{PortID: portA, GoodID: goodX, BuyPrice: 10, SellPrice: 80},
 		},
+		Warehouses: []WarehouseSnapshot{{PortID: portA}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -696,6 +700,7 @@ func TestDecideMarketAction_MultipleFills(t *testing.T) {
 			{PortID: portA, GoodID: goodX, BuyPrice: 10, SellPrice: 80},
 			{PortID: portA, GoodID: goodY, BuyPrice: 50, SellPrice: 100},
 		},
+		Warehouses: []WarehouseSnapshot{{PortID: portA}},
 	})
 	if err != nil {
 		t.Fatal(err)
