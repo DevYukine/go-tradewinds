@@ -173,10 +173,13 @@ type ExecuteQuoteRequest struct {
 }
 
 type TradeExecution struct {
-	Action     string `json:"action"`
-	Quantity   int    `json:"quantity"`
-	UnitPrice  int    `json:"unit_price"`
-	TotalPrice int    `json:"total_price"`
+	Action     string    `json:"action"`
+	CompanyID  uuid.UUID `json:"company_id"`
+	GoodID     uuid.UUID `json:"good_id"`
+	PortID     uuid.UUID `json:"port_id"`
+	Quantity   int       `json:"quantity"`
+	UnitPrice  int       `json:"unit_price"`
+	TotalPrice int       `json:"total_price"`
 }
 
 type ExecuteTradeRequest struct {

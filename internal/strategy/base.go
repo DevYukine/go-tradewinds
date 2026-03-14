@@ -168,7 +168,7 @@ func (b *baseStrategy) executeSells(ctx context.Context, ship *bot.ShipState, se
 				zap.Int("unit_price", r.Execution.UnitPrice),
 				zap.Int("total", r.Execution.TotalPrice),
 			)
-			b.recordTrade(r.Execution, *portID, "sell")
+			b.recordTrade(r.Execution)
 		}
 	}
 
@@ -268,7 +268,7 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 				zap.Int("unit_price", r.Execution.UnitPrice),
 				zap.Int("total", r.Execution.TotalPrice),
 			)
-			b.recordTrade(r.Execution, *portID, "buy")
+			b.recordTrade(r.Execution)
 		}
 	}
 
@@ -511,17 +511,22 @@ func (b *baseStrategy) logAgentDecision(
 // --- Trade Logging ---
 
 // recordTrade writes a trade to the database.
-func (b *baseStrategy) recordTrade(exec *api.TradeExecution, portID uuid.UUID, action string) {
-	port := b.ctx.World.GetPort(portID)
-	portName := portID.String()
-	if port != nil {
-		portName = port.Name
+func (b *baseStrategy) recordTrade(exec *api.TradeExecution) {
+	portName := exec.PortID.String()
+	if p := b.ctx.World.GetPort(exec.PortID); p != nil {
+		portName = p.Name
+	}
+	goodName := exec.GoodID.String()
+	if g := b.ctx.World.GetGood(exec.GoodID); g != nil {
+		goodName = g.Name
 	}
 
 	trade := db.TradeLog{
 		CompanyID:  b.ctx.State.CompanyDBID(),
-		Action:     action,
-		PortID:     portID.String(),
+		Action:     exec.Action,
+		GoodID:     exec.GoodID.String(),
+		GoodName:   goodName,
+		PortID:     exec.PortID.String(),
 		PortName:   portName,
 		Quantity:   exec.Quantity,
 		UnitPrice:  exec.UnitPrice,

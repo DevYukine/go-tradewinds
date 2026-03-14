@@ -24,10 +24,12 @@ type WorldCache struct {
 	ShipyardPorts []uuid.UUID
 
 	// Indexes for fast lookup.
-	portsByID     map[uuid.UUID]*api.Port
-	goodsByID     map[uuid.UUID]*api.Good
-	routesByFrom  map[uuid.UUID][]api.Route
-	routesByPorts map[[2]uuid.UUID]*api.Route // key: [fromID, toID]
+	portsByID      map[uuid.UUID]*api.Port
+	goodsByID      map[uuid.UUID]*api.Good
+	shipTypesByID  map[uuid.UUID]*api.ShipType
+	routesByID     map[uuid.UUID]*api.Route
+	routesByFrom   map[uuid.UUID][]api.Route
+	routesByPorts  map[[2]uuid.UUID]*api.Route // key: [fromID, toID]
 }
 
 // LoadWorldData fetches all static world data from the API and builds indexes.
@@ -60,10 +62,12 @@ func LoadWorldData(ctx context.Context, client *api.Client, logger *zap.Logger) 
 		Goods:         goods,
 		Routes:        routes,
 		ShipTypes:     shipTypes,
-		portsByID:     make(map[uuid.UUID]*api.Port, len(ports)),
-		goodsByID:     make(map[uuid.UUID]*api.Good, len(goods)),
-		routesByFrom:  make(map[uuid.UUID][]api.Route),
-		routesByPorts: make(map[[2]uuid.UUID]*api.Route),
+		portsByID:      make(map[uuid.UUID]*api.Port, len(ports)),
+		goodsByID:      make(map[uuid.UUID]*api.Good, len(goods)),
+		shipTypesByID:  make(map[uuid.UUID]*api.ShipType, len(shipTypes)),
+		routesByID:     make(map[uuid.UUID]*api.Route, len(routes)),
+		routesByFrom:   make(map[uuid.UUID][]api.Route),
+		routesByPorts:  make(map[[2]uuid.UUID]*api.Route),
 	}
 
 	for i := range ports {
@@ -72,7 +76,11 @@ func LoadWorldData(ctx context.Context, client *api.Client, logger *zap.Logger) 
 	for i := range goods {
 		wc.goodsByID[goods[i].ID] = &goods[i]
 	}
+	for i := range shipTypes {
+		wc.shipTypesByID[shipTypes[i].ID] = &shipTypes[i]
+	}
 	for i := range routes {
+		wc.routesByID[routes[i].ID] = &routes[i]
 		wc.routesByFrom[routes[i].FromID] = append(wc.routesByFrom[routes[i].FromID], routes[i])
 		wc.routesByPorts[[2]uuid.UUID{routes[i].FromID, routes[i].ToID}] = &routes[i]
 	}
@@ -111,6 +119,16 @@ func (wc *WorldCache) GetPort(id uuid.UUID) *api.Port {
 // GetGood returns a good by ID, or nil if not found.
 func (wc *WorldCache) GetGood(id uuid.UUID) *api.Good {
 	return wc.goodsByID[id]
+}
+
+// GetShipType returns a ship type by ID, or nil if not found.
+func (wc *WorldCache) GetShipType(id uuid.UUID) *api.ShipType {
+	return wc.shipTypesByID[id]
+}
+
+// GetRoute returns a route by ID, or nil if not found.
+func (wc *WorldCache) GetRoute(id uuid.UUID) *api.Route {
+	return wc.routesByID[id]
 }
 
 // RoutesFrom returns all routes departing from the given port.

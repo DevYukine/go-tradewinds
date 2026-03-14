@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 
 	"github.com/DevYukine/go-tradewinds/internal/db"
 )
@@ -24,6 +25,7 @@ func (s *Server) registerHandlers() {
 	api.Get("/prices", s.handlePrices)
 	api.Get("/ratelimit", s.handleRateLimit)
 	api.Get("/health", s.handleHealth)
+	api.Get("/world", s.handleWorld)
 }
 
 // handleCompanies returns all companies with their current status, treasury, and strategy.
@@ -175,15 +177,22 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 		Quantity int    `json:"quantity"`
 	}
 	type shipDetail struct {
-		ShipID     string      `json:"ship_id"`
-		ShipName   string      `json:"ship_name"`
-		Status     string      `json:"status"`
-		PortID     string      `json:"port_id,omitempty"`
-		PortName   string      `json:"port_name,omitempty"`
-		RouteID    string      `json:"route_id,omitempty"`
-		ArrivingAt *time.Time  `json:"arriving_at,omitempty"`
-		Cargo      []cargoItem `json:"cargo"`
-		CargoTotal int         `json:"cargo_total"`
+		ShipID       string      `json:"ship_id"`
+		ShipName     string      `json:"ship_name"`
+		ShipType     string      `json:"ship_type"`
+		Capacity     int         `json:"capacity"`
+		Speed        int         `json:"speed"`
+		Upkeep       int         `json:"upkeep"`
+		Status       string      `json:"status"`
+		PortID       string      `json:"port_id,omitempty"`
+		PortName     string      `json:"port_name,omitempty"`
+		RouteID      string      `json:"route_id,omitempty"`
+		FromPortName string      `json:"from_port_name,omitempty"`
+		ToPortName   string      `json:"to_port_name,omitempty"`
+		Distance     float64     `json:"distance,omitempty"`
+		ArrivingAt   *time.Time  `json:"arriving_at,omitempty"`
+		Cargo        []cargoItem `json:"cargo"`
+		CargoTotal   int         `json:"cargo_total"`
 	}
 	type warehouseItem struct {
 		GoodID   string `json:"good_id"`
@@ -226,6 +235,16 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 			CargoTotal: cargoTotal,
 		}
 
+		// Resolve ship type details.
+		if world != nil {
+			if st := world.GetShipType(ss.Ship.ShipTypeID); st != nil {
+				sd.ShipType = st.Name
+				sd.Capacity = st.Capacity
+				sd.Speed = st.Speed
+				sd.Upkeep = st.Upkeep
+			}
+		}
+
 		if ss.Ship.PortID != nil {
 			sd.PortID = ss.Ship.PortID.String()
 			if world != nil {
@@ -236,6 +255,18 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 		}
 		if ss.Ship.RouteID != nil {
 			sd.RouteID = ss.Ship.RouteID.String()
+			// Resolve route origin and destination port names.
+			if world != nil {
+				if route := world.GetRoute(*ss.Ship.RouteID); route != nil {
+					sd.Distance = route.Distance
+					if from := world.GetPort(route.FromID); from != nil {
+						sd.FromPortName = from.Name
+					}
+					if to := world.GetPort(route.ToID); to != nil {
+						sd.ToPortName = to.Name
+					}
+				}
+			}
 		}
 		if ss.Ship.ArrivingAt != nil {
 			sd.ArrivingAt = ss.Ship.ArrivingAt
@@ -322,7 +353,7 @@ func (s *Server) handleStrategyMetrics(c fiber.Ctx) error {
 	return c.JSON(metrics)
 }
 
-// handlePrices returns the latest price observations.
+// handlePrices returns the latest price observations with resolved names.
 func (s *Server) handlePrices(c fiber.Ctx) error {
 	var prices []db.PriceObservation
 
@@ -338,7 +369,44 @@ func (s *Server) handlePrices(c fiber.Ctx) error {
 			"error": "failed to fetch prices",
 		})
 	}
-	return c.JSON(prices)
+
+	world := s.manager.WorldData()
+
+	type enrichedPrice struct {
+		PortID    string `json:"port_id"`
+		PortName  string `json:"port_name"`
+		GoodID    string `json:"good_id"`
+		GoodName  string `json:"good_name"`
+		BuyPrice  int    `json:"buy_price"`
+		SellPrice int    `json:"sell_price"`
+		Spread    int    `json:"spread"`
+		UpdatedAt string `json:"updated_at"`
+	}
+
+	result := make([]enrichedPrice, 0, len(prices))
+	for _, p := range prices {
+		portName := p.PortID
+		goodName := p.GoodID
+		if world != nil {
+			if port := world.GetPort(uuid.MustParse(p.PortID)); port != nil {
+				portName = port.Name
+			}
+			if good := world.GetGood(uuid.MustParse(p.GoodID)); good != nil {
+				goodName = good.Name
+			}
+		}
+		result = append(result, enrichedPrice{
+			PortID:    p.PortID,
+			PortName:  portName,
+			GoodID:    p.GoodID,
+			GoodName:  goodName,
+			BuyPrice:  p.BuyPrice,
+			SellPrice: p.SellPrice,
+			Spread:    p.SellPrice - p.BuyPrice,
+			UpdatedAt: p.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	return c.JSON(result)
 }
 
 // handleRateLimit returns the current rate limit utilization.
@@ -363,6 +431,109 @@ func (s *Server) handleHealth(c fiber.Ctx) error {
 		"uptime_seconds": time.Since(s.startedAt).Seconds(),
 		"company_count": s.manager.CompanyCount(),
 		"agent_type":    s.cfg.Agent.Type,
+	})
+}
+
+// handleWorld returns static world data: ports, goods, routes, and ship types.
+func (s *Server) handleWorld(c fiber.Ctx) error {
+	world := s.manager.WorldData()
+	if world == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "world data not loaded yet",
+		})
+	}
+
+	type portInfo struct {
+		ID         string  `json:"id"`
+		Name       string  `json:"name"`
+		Code       string  `json:"code"`
+		IsHub      bool    `json:"is_hub"`
+		TaxRate    float64 `json:"tax_rate"`
+		HasShipyard bool   `json:"has_shipyard"`
+	}
+	type goodInfo struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Category    string `json:"category"`
+	}
+	type routeInfo struct {
+		ID           string  `json:"id"`
+		FromPortName string  `json:"from_port_name"`
+		ToPortName   string  `json:"to_port_name"`
+		Distance     float64 `json:"distance"`
+	}
+	type shipTypeInfo struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Capacity  int    `json:"capacity"`
+		Speed     int    `json:"speed"`
+		Upkeep    int    `json:"upkeep"`
+		BasePrice int    `json:"base_price"`
+	}
+
+	// Build shipyard port set for quick lookup.
+	shipyardSet := make(map[uuid.UUID]bool, len(world.ShipyardPorts))
+	for _, id := range world.ShipyardPorts {
+		shipyardSet[id] = true
+	}
+
+	ports := make([]portInfo, len(world.Ports))
+	for i, p := range world.Ports {
+		ports[i] = portInfo{
+			ID:          p.ID.String(),
+			Name:        p.Name,
+			Code:        p.Code,
+			IsHub:       p.IsHub,
+			TaxRate:     float64(p.TaxRateBps) / 100.0,
+			HasShipyard: shipyardSet[p.ID],
+		}
+	}
+
+	goods := make([]goodInfo, len(world.Goods))
+	for i, g := range world.Goods {
+		goods[i] = goodInfo{
+			ID:          g.ID.String(),
+			Name:        g.Name,
+			Description: g.Description,
+			Category:    g.Category,
+		}
+	}
+
+	routes := make([]routeInfo, len(world.Routes))
+	for i, r := range world.Routes {
+		fromName, toName := r.FromID.String(), r.ToID.String()
+		if from := world.GetPort(r.FromID); from != nil {
+			fromName = from.Name
+		}
+		if to := world.GetPort(r.ToID); to != nil {
+			toName = to.Name
+		}
+		routes[i] = routeInfo{
+			ID:           r.ID.String(),
+			FromPortName: fromName,
+			ToPortName:   toName,
+			Distance:     r.Distance,
+		}
+	}
+
+	shipTypes := make([]shipTypeInfo, len(world.ShipTypes))
+	for i, st := range world.ShipTypes {
+		shipTypes[i] = shipTypeInfo{
+			ID:        st.ID.String(),
+			Name:      st.Name,
+			Capacity:  st.Capacity,
+			Speed:     st.Speed,
+			Upkeep:    st.Upkeep,
+			BasePrice: st.BasePrice,
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"ports":      ports,
+		"goods":      goods,
+		"routes":     routes,
+		"ship_types": shipTypes,
 	})
 }
 
