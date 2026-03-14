@@ -13,7 +13,8 @@ export function usePnL() {
     loading.value = true
     error.value = null
     try {
-      history.value = await $fetch<PnLPoint[]>(`${apiBase}/api/companies/${companyId}/pnl`)
+      const since = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString()
+      history.value = await $fetch<PnLPoint[]>(`${apiBase}/api/companies/${companyId}/pnl?since=${since}`)
     } catch (e: any) {
       error.value = e.message || 'Failed to fetch P&L history'
       console.error('Failed to fetch P&L history:', e)

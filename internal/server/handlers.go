@@ -62,7 +62,7 @@ func (s *Server) handleCompanyPnL(c fiber.Ctx) error {
 	}
 
 	var snapshots []db.PnLSnapshot
-	if err := query.Find(&snapshots).Error; err != nil {
+	if err := query.Limit(500).Find(&snapshots).Error; err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "failed to fetch PnL snapshots",
 		})

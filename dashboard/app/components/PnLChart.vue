@@ -20,9 +20,10 @@ onUnmounted(() => {
   disconnectSSE()
 })
 
+// Use index as x-value so the library spaces ticks evenly across data points
 const chartData = computed(() =>
-  history.value.map((p) => ({
-    time: new Date(p.created_at).getTime(),
+  history.value.map((p, i) => ({
+    x: i,
     treasury: p.treasury,
     revenue: p.total_rev,
     costs: -p.total_costs,
@@ -37,9 +38,13 @@ const categories = {
   net_pnl: { name: 'Net P&L', color: '#a78bfa' },
 }
 
+// Map index tick back to actual timestamp for display
 function formatTime(tick: number) {
-  const d = new Date(tick)
-  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
+  const idx = Math.round(tick)
+  const point = history.value[idx]
+  if (!point) return ''
+  const d = new Date(point.created_at)
+  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`
 }
 
 function formatValue(tick: number) {
@@ -76,7 +81,7 @@ function formatValue(tick: number) {
         :height="288"
         :x-formatter="formatTime"
         :y-formatter="formatValue"
-        :x-num-ticks="8"
+        :x-num-ticks="Math.min(chartData.length, 6)"
         :y-num-ticks="6"
         curve-type="monotoneX"
         :line-width="2"
