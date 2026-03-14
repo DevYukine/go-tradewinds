@@ -6,16 +6,24 @@ const props = defineProps<{
   loading: boolean
 }>()
 
+// Offset timestamps relative to first data point so the chart library
+// doesn't struggle with huge millisecond values. Store the base so the
+// formatter can convert back to real times.
+const timeBase = computed(() => {
+  if (props.history.length === 0) return 0
+  return new Date(props.history[0].created_at).getTime()
+})
+
 const treasuryData = computed(() =>
   props.history.map(p => ({
-    x: new Date(p.created_at).getTime(),
+    x: new Date(p.created_at).getTime() - timeBase.value,
     treasury: p.treasury,
   }))
 )
 
 const pnlData = computed(() =>
   props.history.map(p => ({
-    x: new Date(p.created_at).getTime(),
+    x: new Date(p.created_at).getTime() - timeBase.value,
     revenue: p.total_rev,
     costs: -p.total_costs,
     net_pnl: p.net_pnl,
@@ -33,7 +41,7 @@ const pnlCategories = {
 }
 
 function formatTime(tick: number) {
-  const d = new Date(tick)
+  const d = new Date(tick + timeBase.value)
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
 }
 

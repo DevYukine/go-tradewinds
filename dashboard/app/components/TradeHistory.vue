@@ -3,7 +3,16 @@ const props = defineProps<{
   companyId: number
 }>()
 
-const { trades, loading, fetchTrades } = useTrades()
+const { trades, loading, fetchTrades, lastUpdated } = useTrades()
+const { now } = useNow()
+
+const lastUpdatedAgo = computed(() => {
+  if (!lastUpdated.value) return ''
+  const secs = Math.floor((now.value - lastUpdated.value) / 1000)
+  if (secs < 5) return 'just now'
+  if (secs < 60) return `${secs}s ago`
+  return `${Math.floor(secs / 60)}m ago`
+})
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -50,13 +59,16 @@ const tradeProfit = computed(() => totalSold.value - totalBought.value)
         <Icon name="lucide:arrow-left-right" class="text-amber-400" />
         Trade History
       </h3>
-      <button
-        class="text-xs text-slate-500 hover:text-slate-300 transition-colors"
-        @click="fetchTrades(companyId)"
-      >
-        <Icon name="lucide:refresh-cw" class="mr-1" />
-        Refresh
-      </button>
+      <div class="flex items-center gap-3">
+        <span v-if="lastUpdatedAgo" class="text-[10px] text-slate-600">Updated {{ lastUpdatedAgo }}</span>
+        <button
+          class="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+          @click="fetchTrades(companyId)"
+        >
+          <Icon name="lucide:refresh-cw" class="mr-1" />
+          Refresh
+        </button>
+      </div>
     </div>
 
     <div v-if="loading && trades.length === 0" class="flex items-center justify-center py-8">

@@ -15,7 +15,8 @@ export function useInventory() {
     error.value = null
     try {
       inventory.value = await $fetch<CompanyInventory>(
-        `${apiBase}/api/companies/${companyId}/inventory`
+        `${apiBase}/api/companies/${companyId}/inventory`,
+        { params: { _t: Date.now() } }
       )
     } catch (e: any) {
       error.value = e.message || 'Failed to fetch inventory'

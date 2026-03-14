@@ -7,15 +7,18 @@ export function useTrades() {
   const trades = ref<TradeLog[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const lastUpdated = ref<number>(0)
 
   async function fetchTrades(companyId: number, limit = 50) {
     loading.value = true
     error.value = null
     try {
-      trades.value = await $fetch<TradeLog[]>(
+      const data = await $fetch<TradeLog[]>(
         `${apiBase}/api/companies/${companyId}/trades`,
-        { params: { limit } }
+        { params: { limit, _t: Date.now() } }
       )
+      trades.value = data
+      lastUpdated.value = Date.now()
     } catch (e: any) {
       error.value = e.message || 'Failed to fetch trades'
       console.error('Failed to fetch trades:', e)
@@ -28,6 +31,7 @@ export function useTrades() {
     trades,
     loading,
     error,
+    lastUpdated,
     fetchTrades,
   }
 }

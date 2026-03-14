@@ -29,6 +29,12 @@ function timeUntilArrival(arrivingAt: string): string {
   return `${secs}s`
 }
 
+function estimateTravelTime(distance: number, speed: number): string {
+  const mins = Math.ceil(distance / speed)
+  if (mins >= 60) return `${Math.floor(mins / 60)}h ${mins % 60}m`
+  return `${mins}m`
+}
+
 function arrivalProgress(arrivingAt: string, distance?: number): number {
   if (!distance || !arrivingAt) return 0
   const arriveTime = new Date(arrivingAt).getTime()
@@ -177,10 +183,13 @@ const totalCapacity = computed(() =>
           <div v-if="ship.status === 'traveling'" class="mb-2">
             <div class="flex items-center justify-between mb-1">
               <span class="text-xs text-slate-500">
-                {{ ship.arriving_at ? 'Arrival in' : 'In transit' }}
+                {{ ship.arriving_at ? 'Arrival in' : (ship.distance && ship.speed ? 'Est. travel' : 'In transit') }}
               </span>
               <span v-if="ship.arriving_at" class="text-sm font-mono font-bold text-emerald-400">
                 {{ timeUntilArrival(ship.arriving_at) }}
+              </span>
+              <span v-else-if="ship.distance && ship.speed" class="text-sm font-mono font-bold text-slate-400">
+                ~{{ estimateTravelTime(ship.distance, ship.speed) }}
               </span>
             </div>
             <div v-if="ship.arriving_at" class="h-1.5 rounded-full bg-slate-700 overflow-hidden">
