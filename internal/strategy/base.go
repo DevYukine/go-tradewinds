@@ -579,6 +579,9 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 			continue
 		}
 
+		// Track ship purchase cost for P&L (includes ~5% port tax).
+		b.ctx.State.AddShipCost(int64(chosenItem.Cost))
+
 		return ship
 	}
 

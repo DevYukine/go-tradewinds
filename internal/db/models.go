@@ -42,10 +42,11 @@ type PnLSnapshot struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
 	CompanyID  uint      `gorm:"index:idx_pnl_company_time;not null" json:"company_id"`
 	Treasury   int64     `gorm:"not null" json:"treasury"`
-	TotalCosts   int64     `json:"total_costs"`
-	TotalRev     int64     `json:"total_rev"`
-	PassengerRev int64     `json:"passenger_rev"`
-	NetPnL       int64     `json:"net_pnl"`
+	TotalCosts      int64     `json:"total_costs"`
+	TotalRev        int64     `json:"total_rev"`
+	PassengerRev    int64     `json:"passenger_rev"`
+	ShipCosts       int64     `json:"ship_costs"`
+	NetPnL          int64     `json:"net_pnl"`
 	ShipCount       int       `json:"ship_count"`
 	AvgCapacityUtil float64   `json:"avg_capacity_util"`
 	CreatedAt       time.Time `gorm:"index:idx_pnl_company_time;not null" json:"created_at"`

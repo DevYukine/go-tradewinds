@@ -23,10 +23,13 @@ type CompanyState struct {
 
 	// Cumulative P&L counters — updated incrementally by trade/passenger logging
 	// so recordPnLSnapshot avoids full-table SUM queries every tick.
-	CumTradeRev     int64 // SUM(total_price) for sell trades
-	CumTradeCosts   int64 // SUM(total_price) for buy trades
-	CumPassengerRev int64 // SUM(bid) for passenger boardings
-	pnlInitialized  bool  // Whether cumulative counters have been seeded from DB.
+	CumTradeRev       int64 // SUM(total_price) for sell trades
+	CumTradeCosts     int64 // SUM(total_price) for buy trades
+	CumPassengerRev   int64 // SUM(bid) for passenger boardings
+	CumShipCosts      int64 // Total spent on ship purchases
+	CumWarehouseCosts int64 // Total spent on warehouse purchases
+	InitialTreasury   int64 // Treasury at bot start, for upkeep derivation
+	pnlInitialized    bool  // Whether cumulative counters have been seeded from DB.
 
 	mu sync.RWMutex
 }
@@ -152,6 +155,20 @@ func (s *CompanyState) AddTradeCost(amount int64) {
 func (s *CompanyState) AddPassengerRevenue(amount int64) {
 	s.mu.Lock()
 	s.CumPassengerRev += amount
+	s.mu.Unlock()
+}
+
+// AddShipCost atomically increments cumulative ship purchase costs.
+func (s *CompanyState) AddShipCost(amount int64) {
+	s.mu.Lock()
+	s.CumShipCosts += amount
+	s.mu.Unlock()
+}
+
+// AddWarehouseCost atomically increments cumulative warehouse purchase costs.
+func (s *CompanyState) AddWarehouseCost(amount int64) {
+	s.mu.Lock()
+	s.CumWarehouseCosts += amount
 	s.mu.Unlock()
 }
 

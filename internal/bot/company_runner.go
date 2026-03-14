@@ -189,6 +189,11 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 	// Strategy is already initialized by the factory in the manager.
 	// No need to re-init here.
 
+	// Capture initial treasury before seeding P&L counters.
+	r.state.mu.Lock()
+	r.state.InitialTreasury = econ.Treasury
+	r.state.mu.Unlock()
+
 	// Seed cumulative P&L counters from DB so incremental tracking is accurate.
 	r.seedPnLCounters()
 
@@ -203,6 +208,8 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 
 // seedPnLCounters loads cumulative trade/passenger totals from the database
 // once at startup so recordPnLSnapshot can track them incrementally.
+// Also seeds InitialTreasury from the earliest P&L snapshot (or current
+// treasury if no history exists).
 func (r *CompanyRunner) seedPnLCounters() {
 	var totalRev, totalCosts, passengerRev int64
 
@@ -218,14 +225,25 @@ func (r *CompanyRunner) seedPnLCounters() {
 		Where("company_id = ?", r.dbRecord.ID).
 		Select("COALESCE(SUM(bid), 0)").Scan(&passengerRev)
 
+	// Use the earliest P&L snapshot's treasury as the initial value so
+	// lifetime P&L survives restarts. Fall back to current treasury.
+	var firstSnapshot db.PnLSnapshot
+	err := r.gormDB.Where("company_id = ?", r.dbRecord.ID).
+		Order("id ASC").First(&firstSnapshot).Error
+
 	r.state.mu.Lock()
 	r.state.CumTradeRev = totalRev
 	r.state.CumTradeCosts = totalCosts
 	r.state.CumPassengerRev = passengerRev
+	if err == nil {
+		r.state.InitialTreasury = firstSnapshot.Treasury
+	}
+	// else: keep the value set from econ.Treasury in initState
 	r.state.pnlInitialized = true
 	r.state.mu.Unlock()
 
 	r.logger.Info("P&L counters seeded from database",
+		zap.Int64("initial_treasury", r.state.InitialTreasury),
 		zap.Int64("trade_rev", totalRev),
 		zap.Int64("trade_costs", totalCosts),
 		zap.Int64("passenger_rev", passengerRev),
@@ -464,8 +482,9 @@ func (r *CompanyRunner) recordPnLSnapshot() {
 	reputation := r.state.Reputation
 	shipCount := len(r.state.Ships)
 	tradeRev := r.state.CumTradeRev
-	tradeCosts := r.state.CumTradeCosts
 	passengerRev := r.state.CumPassengerRev
+	initialTreasury := r.state.InitialTreasury
+	shipCosts := r.state.CumShipCosts
 
 	// Compute capacity utilization.
 	var totalCargo, totalCapacity int
@@ -484,14 +503,29 @@ func (r *CompanyRunner) recordPnLSnapshot() {
 		avgCapUtil = float64(totalCargo) / float64(totalCapacity)
 	}
 
+	// Total revenue is trade sells + passenger boardings.
+	totalRev := tradeRev + passengerRev
+
+	// Derive total costs from the treasury identity:
+	//   current_treasury = initial_treasury + all_revenue - all_costs
+	// This captures trade buys, ship purchases, warehouse purchases, upkeep, and taxes.
+	totalCosts := initialTreasury + totalRev - treasury
+	if totalCosts < 0 {
+		totalCosts = 0 // Guard against timing skew.
+	}
+
+	// Net P&L is what the company has gained/lost since bot start.
+	netPnL := treasury - initialTreasury
+
 	snapshot := db.PnLSnapshot{
 		CompanyID:       r.dbRecord.ID,
 		Treasury:        treasury,
-		TotalRev:        tradeRev + passengerRev,
-		TotalCosts:      tradeCosts,
+		TotalRev:        totalRev,
+		TotalCosts:      totalCosts,
 		PassengerRev:    passengerRev,
-		NetPnL:          tradeRev + passengerRev - tradeCosts,
+		NetPnL:          netPnL,
 		ShipCount:       shipCount,
+		ShipCosts:       shipCosts,
 		AvgCapacityUtil: avgCapUtil,
 	}
 

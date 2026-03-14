@@ -17,6 +17,7 @@ export interface PnLPoint {
   total_costs: number
   total_rev: number
   passenger_rev: number
+  ship_costs: number
   net_pnl: number
   ship_count: number
   created_at: string
