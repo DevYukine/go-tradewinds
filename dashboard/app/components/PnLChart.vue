@@ -6,24 +6,14 @@ const props = defineProps<{
   loading: boolean
 }>()
 
-// Offset timestamps relative to first data point so the chart library
-// doesn't struggle with huge millisecond values. Store the base so the
-// formatter can convert back to real times.
-const timeBase = computed(() => {
-  if (props.history.length === 0) return 0
-  return new Date(props.history[0].created_at).getTime()
-})
-
 const treasuryData = computed(() =>
   props.history.map(p => ({
-    x: new Date(p.created_at).getTime() - timeBase.value,
     treasury: p.treasury,
   }))
 )
 
 const pnlData = computed(() =>
   props.history.map(p => ({
-    x: new Date(p.created_at).getTime() - timeBase.value,
     revenue: p.total_rev,
     costs: -p.total_costs,
     net_pnl: p.net_pnl,
@@ -40,9 +30,20 @@ const pnlCategories = {
   net_pnl: { name: 'Net P&L', color: '#f59e0b' },
 }
 
-function formatTime(tick: number) {
-  const d = new Date(tick + timeBase.value)
-  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
+function formatTime(i: number) {
+  const point = props.history[i]
+  if (!point) return ''
+  const d = new Date(point.created_at)
+  const hh = d.getHours().toString().padStart(2, '0')
+  const mm = d.getMinutes().toString().padStart(2, '0')
+  const ss = d.getSeconds().toString().padStart(2, '0')
+  // Show seconds when data spans less than 1 hour
+  if (props.history.length >= 2) {
+    const first = new Date(props.history[0].created_at).getTime()
+    const last = new Date(props.history[props.history.length - 1].created_at).getTime()
+    if (last - first < 3_600_000) return `${hh}:${mm}:${ss}`
+  }
+  return `${hh}:${mm}`
 }
 
 function formatCurrency(tick: number) {
@@ -79,7 +80,7 @@ function formatCurrency(tick: number) {
           :height="200"
           :x-formatter="formatTime"
           :y-formatter="formatCurrency"
-          :x-num-ticks="Math.min(treasuryData.length, 6)"
+          :x-num-ticks="Math.min(treasuryData.length, 8)"
           :y-num-ticks="5"
           curve-type="monotoneX"
           :line-width="2"
@@ -132,7 +133,7 @@ function formatCurrency(tick: number) {
           :height="250"
           :x-formatter="formatTime"
           :y-formatter="formatCurrency"
-          :x-num-ticks="Math.min(pnlData.length, 6)"
+          :x-num-ticks="Math.min(pnlData.length, 8)"
           :y-num-ticks="6"
           curve-type="monotoneX"
           :line-width="2"
