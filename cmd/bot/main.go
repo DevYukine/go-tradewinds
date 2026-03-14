@@ -8,18 +8,19 @@ import (
 	"github.com/DevYukine/go-tradewinds/internal/config"
 	"github.com/DevYukine/go-tradewinds/internal/db"
 	"github.com/DevYukine/go-tradewinds/internal/logging"
+	"github.com/DevYukine/go-tradewinds/internal/optimizer"
 	"github.com/DevYukine/go-tradewinds/internal/strategy"
 )
 
 func main() {
 	fx.New(
-		config.Module,   // Provides *Config
-		logging.Module,  // Provides *zap.Logger
-		db.Module,       // Provides *gorm.DB
-		agent.Module,    // Provides agent.Agent
-		strategy.Module, // Provides bot.Registry
-		bot.Module,      // Provides *Manager, starts company runners
-		// Step 4 will add: optimizer.Module
+		config.Module,    // Provides *Config
+		logging.Module,   // Provides *zap.Logger
+		db.Module,        // Provides *gorm.DB
+		agent.Module,     // Provides agent.Agent
+		strategy.Module,  // Provides bot.Registry
+		bot.Module,       // Provides *Manager, starts company runners
+		optimizer.Module, // Provides *optimizer.Engine, runs periodic evaluation
 		// Step 5 will add: server.Module
 	).Run()
 }
