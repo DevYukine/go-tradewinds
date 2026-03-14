@@ -144,8 +144,8 @@ func (s *Server) handleCompanyDecisions(c fiber.Ctx) error {
 	return c.JSON(decisions)
 }
 
-// handleCompanyInventory returns the current in-memory inventory for a company,
-// including cargo on ships and warehouse contents.
+// handleCompanyInventory returns the current in-memory state for a company,
+// including full ship details (location, arrival time, cargo) and warehouses.
 func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 	companyID := c.Params("id")
 
@@ -160,57 +160,112 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 	state.RLock()
 	defer state.RUnlock()
 
+	// Resolve port/good names from world cache.
+	world := s.manager.WorldData()
+
 	type cargoItem struct {
 		GoodID   string `json:"good_id"`
+		GoodName string `json:"good_name"`
 		Quantity int    `json:"quantity"`
 	}
-	type shipInventory struct {
-		ShipID   string      `json:"ship_id"`
-		ShipName string      `json:"ship_name"`
-		Status   string      `json:"status"`
-		Cargo    []cargoItem `json:"cargo"`
+	type shipDetail struct {
+		ShipID     string      `json:"ship_id"`
+		ShipName   string      `json:"ship_name"`
+		Status     string      `json:"status"`
+		PortID     string      `json:"port_id,omitempty"`
+		PortName   string      `json:"port_name,omitempty"`
+		RouteID    string      `json:"route_id,omitempty"`
+		ArrivingAt *time.Time  `json:"arriving_at,omitempty"`
+		Cargo      []cargoItem `json:"cargo"`
+		CargoTotal int         `json:"cargo_total"`
 	}
 	type warehouseItem struct {
 		GoodID   string `json:"good_id"`
+		GoodName string `json:"good_name"`
 		Quantity int    `json:"quantity"`
 	}
-	type warehouseInventory struct {
+	type warehouseDetail struct {
 		WarehouseID string          `json:"warehouse_id"`
 		PortID      string          `json:"port_id"`
+		PortName    string          `json:"port_name"`
 		Level       int             `json:"level"`
 		Capacity    int             `json:"capacity"`
 		Items       []warehouseItem `json:"items"`
 	}
 
-	ships := make([]shipInventory, 0, len(state.Ships))
+	ships := make([]shipDetail, 0, len(state.Ships))
 	for _, ss := range state.Ships {
 		cargo := make([]cargoItem, len(ss.Cargo))
-		for i, c := range ss.Cargo {
+		cargoTotal := 0
+		for i, ci := range ss.Cargo {
+			goodName := ci.GoodID.String()
+			if world != nil {
+				if g := world.GetGood(ci.GoodID); g != nil {
+					goodName = g.Name
+				}
+			}
 			cargo[i] = cargoItem{
-				GoodID:   c.GoodID.String(),
-				Quantity: c.Quantity,
+				GoodID:   ci.GoodID.String(),
+				GoodName: goodName,
+				Quantity: ci.Quantity,
+			}
+			cargoTotal += ci.Quantity
+		}
+
+		sd := shipDetail{
+			ShipID:     ss.Ship.ID.String(),
+			ShipName:   ss.Ship.Name,
+			Status:     ss.Ship.Status,
+			Cargo:      cargo,
+			CargoTotal: cargoTotal,
+		}
+
+		if ss.Ship.PortID != nil {
+			sd.PortID = ss.Ship.PortID.String()
+			if world != nil {
+				if p := world.GetPort(*ss.Ship.PortID); p != nil {
+					sd.PortName = p.Name
+				}
 			}
 		}
-		ships = append(ships, shipInventory{
-			ShipID:   ss.Ship.ID.String(),
-			ShipName: ss.Ship.Name,
-			Status:   ss.Ship.Status,
-			Cargo:    cargo,
-		})
+		if ss.Ship.RouteID != nil {
+			sd.RouteID = ss.Ship.RouteID.String()
+		}
+		if ss.Ship.ArrivingAt != nil {
+			sd.ArrivingAt = ss.Ship.ArrivingAt
+		}
+
+		ships = append(ships, sd)
 	}
 
-	warehouses := make([]warehouseInventory, 0, len(state.Warehouses))
+	warehouses := make([]warehouseDetail, 0, len(state.Warehouses))
 	for _, ws := range state.Warehouses {
 		items := make([]warehouseItem, len(ws.Inventory))
 		for i, item := range ws.Inventory {
+			goodName := item.GoodID.String()
+			if world != nil {
+				if g := world.GetGood(item.GoodID); g != nil {
+					goodName = g.Name
+				}
+			}
 			items[i] = warehouseItem{
 				GoodID:   item.GoodID.String(),
+				GoodName: goodName,
 				Quantity: item.Quantity,
 			}
 		}
-		warehouses = append(warehouses, warehouseInventory{
+
+		portName := ws.Warehouse.PortID.String()
+		if world != nil {
+			if p := world.GetPort(ws.Warehouse.PortID); p != nil {
+				portName = p.Name
+			}
+		}
+
+		warehouses = append(warehouses, warehouseDetail{
 			WarehouseID: ws.Warehouse.ID.String(),
 			PortID:      ws.Warehouse.PortID.String(),
+			PortName:    portName,
 			Level:       ws.Warehouse.Level,
 			Capacity:    ws.Warehouse.Capacity,
 			Items:       items,
@@ -218,9 +273,11 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"company_id": companyID,
-		"ships":      ships,
-		"warehouses": warehouses,
+		"company_id":    companyID,
+		"treasury":      state.Treasury,
+		"total_upkeep":  state.TotalUpkeep,
+		"ships":         ships,
+		"warehouses":    warehouses,
 	})
 }
 

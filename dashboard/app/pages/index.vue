@@ -76,6 +76,12 @@ const latestPnL = computed(() => {
             :latest-pn-l="latestPnL"
           />
 
+          <!-- Fleet & Inventory + Trade History -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <FleetOverview :company-id="selectedCompany.id" />
+            <TradeHistory :company-id="selectedCompany.id" />
+          </div>
+
           <!-- P&L Chart -->
           <PnLChart :company-id="selectedCompany.id" />
 

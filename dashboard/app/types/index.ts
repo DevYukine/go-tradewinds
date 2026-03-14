@@ -69,3 +69,44 @@ export interface RateLimitStatus {
   remaining: number
   active_companies: number
 }
+
+export interface CargoItem {
+  good_id: string
+  good_name: string
+  quantity: number
+}
+
+export interface ShipDetail {
+  ship_id: string
+  ship_name: string
+  status: string
+  port_id?: string
+  port_name?: string
+  route_id?: string
+  arriving_at?: string
+  cargo: CargoItem[]
+  cargo_total: number
+}
+
+export interface WarehouseItem {
+  good_id: string
+  good_name: string
+  quantity: number
+}
+
+export interface WarehouseDetail {
+  warehouse_id: string
+  port_id: string
+  port_name: string
+  level: number
+  capacity: number
+  items: WarehouseItem[]
+}
+
+export interface CompanyInventory {
+  company_id: string
+  treasury: number
+  total_upkeep: number
+  ships: ShipDetail[]
+  warehouses: WarehouseDetail[]
+}
