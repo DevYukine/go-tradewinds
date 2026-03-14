@@ -314,7 +314,7 @@ func (r *CompanyRunner) handleEvent(ctx context.Context, event api.SSEEvent) {
 	case "ledger_entry":
 		// Treasury is refreshed periodically via economy poll; no action needed.
 	default:
-		r.logger.Debug("unhandled SSE event type", zap.String("type", event.Type))
+		r.logger.Warn("unhandled SSE event type", zap.String("type", event.Type))
 	}
 }
 
