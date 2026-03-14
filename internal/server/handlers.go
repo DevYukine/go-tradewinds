@@ -459,6 +459,8 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 	}
 	type routeInfo struct {
 		ID           string  `json:"id"`
+		FromPortID   string  `json:"from_port_id"`
+		ToPortID     string  `json:"to_port_id"`
 		FromPortName string  `json:"from_port_name"`
 		ToPortName   string  `json:"to_port_name"`
 		Distance     float64 `json:"distance"`
@@ -511,6 +513,8 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 		}
 		routes[i] = routeInfo{
 			ID:           r.ID.String(),
+			FromPortID:   r.FromID.String(),
+			ToPortID:     r.ToID.String(),
 			FromPortName: fromName,
 			ToPortName:   toName,
 			Distance:     r.Distance,

@@ -151,6 +151,8 @@ export interface GoodInfo {
 
 export interface RouteInfo {
   id: string
+  from_port_id: string
+  to_port_id: string
   from_port_name: string
   to_port_name: string
   distance: number

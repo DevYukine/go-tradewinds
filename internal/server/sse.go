@@ -97,12 +97,21 @@ func (s *Server) handleSSEPnL(c fiber.Ctx) error {
 	c.Set("Connection", "keep-alive")
 	c.Set("Transfer-Encoding", "chunked")
 
+	// Read optional since_id to skip already-fetched snapshots.
+	sinceID := uint(0)
+	if sid := c.Query("since_id"); sid != "" {
+		if parsed, err := strconv.ParseUint(sid, 10, 64); err == nil {
+			sinceID = uint(parsed)
+		}
+	}
+
 	return c.SendStreamWriter(func(w *bufio.Writer) {
 		s.logger.Info("SSE PnL stream started",
 			zap.Uint64("company_id", companyID),
+			zap.Uint("since_id", sinceID),
 		)
 
-		lastID := uint(0)
+		lastID := sinceID
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 

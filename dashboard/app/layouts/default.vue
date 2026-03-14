@@ -24,11 +24,19 @@ async function fetchRateLimit() {
   } catch { /* ignore */ }
 }
 
+let healthInterval: ReturnType<typeof setInterval>
+let rateLimitInterval: ReturnType<typeof setInterval>
+
 onMounted(() => {
   fetchHealth()
   fetchRateLimit()
-  setInterval(fetchHealth, 15000)
-  setInterval(fetchRateLimit, 5000)
+  healthInterval = setInterval(fetchHealth, 15000)
+  rateLimitInterval = setInterval(fetchRateLimit, 5000)
+})
+
+onUnmounted(() => {
+  clearInterval(healthInterval)
+  clearInterval(rateLimitInterval)
 })
 
 const utilization = computed(() => rateLimit.value?.current_utilization ?? 0)

@@ -6,7 +6,7 @@ const router = useRouter()
 const companyId = computed(() => Number(route.params.id))
 
 const { companies } = useCompanies()
-const { history, fetchHistory, connectSSE, disconnectSSE } = usePnL()
+const { history, loading: pnlLoading, fetchHistory, connectSSE, disconnectSSE } = usePnL()
 
 const company = computed<Company | undefined>(() =>
   companies.value.find(c => c.id === companyId.value)
@@ -19,10 +19,10 @@ watch([companies, companyId], () => {
   }
 })
 
+// Single owner of fetch + SSE lifecycle
 watch(companyId, (id) => {
   if (id) {
-    fetchHistory(id)
-    connectSSE(id)
+    fetchHistory(id).then(() => connectSSE(id))
   }
 }, { immediate: true })
 
@@ -134,14 +134,17 @@ function strategyBadge(strategy: string): string {
       </div>
     </div>
 
+    <!-- World Map (full width) -->
+    <WorldMap :company-id="companyId" />
+
+    <!-- P&L Charts (Treasury + P&L Breakdown) -->
+    <PnLChart :history="history" :loading="pnlLoading" />
+
     <!-- Fleet & Trades (side by side) -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <FleetOverview :company-id="companyId" />
       <TradeHistory :company-id="companyId" />
     </div>
-
-    <!-- P&L Chart (full width) -->
-    <PnLChart :company-id="companyId" />
 
     <!-- Agent Decisions + Live Logs (side by side) -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
