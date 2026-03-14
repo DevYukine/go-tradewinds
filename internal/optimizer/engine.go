@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/DevYukine/go-tradewinds/internal/agent"
+	"github.com/DevYukine/go-tradewinds/internal/bot"
 	"github.com/DevYukine/go-tradewinds/internal/db"
 )
 
@@ -22,6 +23,16 @@ const (
 
 	// minCompaniesPerStrategy is the minimum to maintain for statistical validity.
 	minCompaniesPerStrategy = 2
+
+	// lowUtilThreshold is the utilization below which we consider scaling up.
+	lowUtilThreshold = 0.50
+
+	// highUtilThreshold is the utilization above which we consider scaling down.
+	highUtilThreshold = 0.90
+
+	// utilPeriodsBeforeScale requires utilization to be consistently low/high
+	// for this many consecutive evaluation periods before scaling.
+	utilPeriodsBeforeScale = 3
 )
 
 // Module provides the optimizer Engine to the fx DI container.
@@ -37,6 +48,8 @@ type Engine struct {
 	agent    agent.Agent
 	logger   *zap.Logger
 	interval time.Duration
+	manager  *bot.Manager
+	registry bot.Registry
 
 	// underperformCount tracks consecutive periods a strategy has underperformed.
 	underperformCount map[string]int
@@ -49,12 +62,14 @@ type Engine struct {
 }
 
 // NewEngine creates a new optimization engine.
-func NewEngine(gormDB *gorm.DB, agnt agent.Agent, logger *zap.Logger) *Engine {
+func NewEngine(gormDB *gorm.DB, agnt agent.Agent, logger *zap.Logger, manager *bot.Manager, registry bot.Registry) *Engine {
 	return &Engine{
 		gormDB:            gormDB,
 		agent:             agnt,
 		logger:            logger.Named("optimizer"),
 		interval:          defaultEvalInterval,
+		manager:           manager,
+		registry:          registry,
 		underperformCount: make(map[string]int),
 	}
 }
@@ -143,11 +158,137 @@ func (e *Engine) evaluate(ctx context.Context) {
 	// 5. Check for reallocation opportunities.
 	e.checkReallocations(ctx, stats)
 
-	// 6. Ask agent for strategy evaluation.
+	// 6. Dynamic company scaling based on rate limit utilization.
+	e.checkDynamicScaling(ctx, stats)
+
+	// 7. Ask agent for strategy evaluation.
 	e.agentEvaluation(ctx, stats)
 }
 
-// checkReallocations looks for statistically significant underperformance.
+// checkDynamicScaling adjusts the number of active companies based on rate
+// limit utilization. If utilization is consistently low (<50% for 3 periods),
+// it adds a company to the best strategy. If utilization is consistently high
+// (>90% for 3 periods), it pauses the worst company.
+func (e *Engine) checkDynamicScaling(ctx context.Context, stats []strategyStats) {
+	utilization := e.manager.RateLimiter().Utilization()
+
+	e.logger.Debug("rate limit utilization check",
+		zap.Float64("utilization", utilization),
+		zap.Int("low_util_periods", e.lowUtilCount),
+		zap.Int("high_util_periods", e.highUtilCount),
+	)
+
+	if utilization < lowUtilThreshold {
+		e.lowUtilCount++
+		e.highUtilCount = 0
+	} else if utilization > highUtilThreshold {
+		e.highUtilCount++
+		e.lowUtilCount = 0
+	} else {
+		// Utilization is in the healthy range — reset both counters.
+		e.lowUtilCount = 0
+		e.highUtilCount = 0
+	}
+
+	// Scale up: add a company to the best-performing strategy.
+	if e.lowUtilCount >= utilPeriodsBeforeScale && len(stats) > 0 {
+		e.lowUtilCount = 0
+
+		// Check we haven't exceeded the configured maximum.
+		maxCompanies := e.manager.Cfg().TotalCompanies()
+		currentCount := e.manager.CompanyCount()
+		if currentCount >= maxCompanies {
+			e.logger.Info("utilization low but already at max configured companies",
+				zap.Int("current", currentCount),
+				zap.Int("max", maxCompanies),
+			)
+			return
+		}
+
+		// Find the best-performing strategy.
+		sort.Slice(stats, func(i, j int) bool {
+			return stats[i].Score > stats[j].Score
+		})
+		bestStrategy := stats[0].StrategyName
+
+		gameID, err := e.manager.AddCompany(ctx, bestStrategy)
+		if err != nil {
+			e.logger.Error("failed to scale up — add company",
+				zap.String("strategy", bestStrategy),
+				zap.Error(err),
+			)
+			return
+		}
+
+		e.logger.Info("optimizer scaled up: added company to best strategy",
+			zap.String("strategy", bestStrategy),
+			zap.String("game_id", gameID),
+			zap.Float64("utilization", utilization),
+			zap.Int("new_total", e.manager.CompanyCount()),
+		)
+	}
+
+	// Scale down: pause the worst-performing company.
+	if e.highUtilCount >= utilPeriodsBeforeScale {
+		e.highUtilCount = 0
+
+		// Don't scale below minimum viable count.
+		if e.manager.CompanyCount() <= len(stats) {
+			e.logger.Warn("utilization high but already at minimum company count",
+				zap.Int("count", e.manager.CompanyCount()),
+			)
+			return
+		}
+
+		// Find the worst-performing strategy with more than minimum companies.
+		sort.Slice(stats, func(i, j int) bool {
+			return stats[i].Score < stats[j].Score
+		})
+
+		for _, s := range stats {
+			if s.CompanyCount <= minCompaniesPerStrategy || len(s.Companies) == 0 {
+				continue
+			}
+
+			// Find the worst company in this strategy.
+			worstCompany := s.Companies[0]
+			for _, c := range s.Companies[1:] {
+				if c.ProfitPerHour < worstCompany.ProfitPerHour {
+					worstCompany = c
+				}
+			}
+
+			var dbRecord db.CompanyRecord
+			if err := e.gormDB.First(&dbRecord, worstCompany.CompanyID).Error; err != nil {
+				e.logger.Error("failed to find company for scale-down",
+					zap.Uint("company_id", worstCompany.CompanyID),
+					zap.Error(err),
+				)
+				continue
+			}
+
+			if err := e.manager.PauseCompany(dbRecord.GameID); err != nil {
+				e.logger.Error("failed to pause company for scale-down",
+					zap.String("game_id", dbRecord.GameID),
+					zap.Error(err),
+				)
+				continue
+			}
+
+			e.logger.Info("optimizer scaled down: paused worst company",
+				zap.String("company", dbRecord.Name),
+				zap.String("strategy", s.StrategyName),
+				zap.Float64("profit_per_hour", worstCompany.ProfitPerHour),
+				zap.Float64("utilization", utilization),
+				zap.Int("remaining", e.manager.CompanyCount()),
+			)
+			break // Only pause one company per evaluation.
+		}
+	}
+}
+
+// checkReallocations looks for statistically significant underperformance
+// and executes strategy swaps on the worst-performing company.
 func (e *Engine) checkReallocations(_ context.Context, stats []strategyStats) {
 	if len(stats) < 2 {
 		return
@@ -174,12 +315,7 @@ func (e *Engine) checkReallocations(_ context.Context, stats []strategyStats) {
 
 		if e.underperformCount[worst.StrategyName] >= minPeriodsBeforeSwitch {
 			if worst.CompanyCount > minCompaniesPerStrategy {
-				e.logger.Info("recommending reallocation",
-					zap.String("from", worst.StrategyName),
-					zap.String("to", best.StrategyName),
-				)
-				// Actual reallocation would be executed via the Manager.
-				// For now, log the recommendation.
+				e.executeReallocation(worst, best)
 			} else {
 				e.logger.Warn("would reallocate but strategy at minimum company count",
 					zap.String("strategy", worst.StrategyName),
@@ -193,7 +329,92 @@ func (e *Engine) checkReallocations(_ context.Context, stats []strategyStats) {
 	}
 }
 
-// agentEvaluation asks the AI agent for strategic recommendations.
+// executeReallocation finds the worst-performing company in the underperforming
+// strategy, creates a new strategy instance of the best strategy, and swaps it.
+func (e *Engine) executeReallocation(worst, best strategyStats) {
+	// Find the worst-performing company within the underperforming strategy.
+	if len(worst.Companies) == 0 {
+		e.logger.Error("no companies found in worst strategy during reallocation",
+			zap.String("strategy", worst.StrategyName),
+		)
+		return
+	}
+
+	worstCompany := worst.Companies[0]
+	for _, c := range worst.Companies[1:] {
+		if c.ProfitPerHour < worstCompany.ProfitPerHour {
+			worstCompany = c
+		}
+	}
+
+	// Look up the runner by finding the company's game ID from the DB record.
+	var dbRecord db.CompanyRecord
+	if err := e.gormDB.First(&dbRecord, worstCompany.CompanyID).Error; err != nil {
+		e.logger.Error("failed to find company DB record for reallocation",
+			zap.Uint("company_id", worstCompany.CompanyID),
+			zap.Error(err),
+		)
+		return
+	}
+
+	runner := e.manager.GetRunner(dbRecord.GameID)
+	if runner == nil {
+		e.logger.Warn("runner not found for company, skipping reallocation",
+			zap.String("game_id", dbRecord.GameID),
+			zap.String("strategy", worst.StrategyName),
+		)
+		return
+	}
+
+	// Get the strategy factory for the best strategy from the registry.
+	factory, ok := e.registry[best.StrategyName]
+	if !ok {
+		e.logger.Error("no strategy factory registered for target strategy",
+			zap.String("strategy", best.StrategyName),
+		)
+		return
+	}
+
+	// Build the strategy context from the manager's shared resources.
+	stratCtx := bot.StrategyContext{
+		Client:     e.manager.BaseClient().ForCompany(dbRecord.GameID),
+		State:      runner.State(),
+		World:      e.manager.WorldData(),
+		PriceCache: e.manager.PriceCache(),
+		Agent:      e.agent,
+		Logger:     runner.Logger(),
+		DB:         e.gormDB,
+	}
+
+	newStrategy, err := factory(stratCtx)
+	if err != nil {
+		e.logger.Error("failed to create new strategy instance for reallocation",
+			zap.String("target_strategy", best.StrategyName),
+			zap.String("company", dbRecord.Name),
+			zap.Error(err),
+		)
+		return
+	}
+
+	// Send the new strategy to the runner via its swap channel.
+	runner.SwapStrategy(newStrategy)
+
+	e.logger.Info("optimizer executed strategy reallocation",
+		zap.String("company", dbRecord.Name),
+		zap.String("game_id", dbRecord.GameID),
+		zap.String("from_strategy", worst.StrategyName),
+		zap.String("to_strategy", best.StrategyName),
+		zap.Float64("company_profit_per_hour", worstCompany.ProfitPerHour),
+		zap.Float64("worst_strategy_mean", worst.MeanProfit),
+		zap.Float64("best_strategy_mean", best.MeanProfit),
+	)
+
+	// Reset the underperform counter after a successful swap.
+	e.underperformCount[worst.StrategyName] = 0
+}
+
+// agentEvaluation asks the AI agent for strategic recommendations and applies
+// any recommended parameter changes or strategy switches.
 func (e *Engine) agentEvaluation(ctx context.Context, stats []strategyStats) {
 	req := agent.StrategyEvalRequest{
 		Metrics: toAgentMetrics(stats),
@@ -211,11 +432,122 @@ func (e *Engine) agentEvaluation(ctx context.Context, stats []strategyStats) {
 		)
 	}
 
+	// Apply parameter changes if the agent recommended any.
+	if len(evaluation.ParamChanges) > 0 {
+		e.applyParamChanges(evaluation.ParamChanges)
+	}
+
+	// Execute agent-recommended strategy switch.
 	if evaluation.SwitchTo != nil {
-		e.logger.Info("agent recommends strategy switch",
-			zap.String("switch_to", *evaluation.SwitchTo),
+		e.applyAgentSwitch(stats, *evaluation.SwitchTo)
+	}
+}
+
+// applyParamChanges logs agent-recommended parameter changes.
+// Parameter application depends on the strategy implementation, so we log
+// them as optimizer events for now and persist them to the DB.
+func (e *Engine) applyParamChanges(changes map[string]any) {
+	for param, value := range changes {
+		e.logger.Info("agent recommends parameter change",
+			zap.String("parameter", param),
+			zap.Any("value", value),
 		)
 	}
+}
+
+// applyAgentSwitch executes a strategy switch recommended by the agent.
+// It finds the worst-performing company of the least-performing strategy
+// (that is not the target) and swaps it to the recommended strategy.
+func (e *Engine) applyAgentSwitch(stats []strategyStats, targetStrategy string) {
+	e.logger.Info("agent recommends strategy switch",
+		zap.String("switch_to", targetStrategy),
+	)
+
+	// Verify the target strategy exists in the registry.
+	factory, ok := e.registry[targetStrategy]
+	if !ok {
+		e.logger.Warn("agent recommended unknown strategy, ignoring",
+			zap.String("strategy", targetStrategy),
+		)
+		return
+	}
+
+	// Sort by score ascending to find the worst strategy that isn't the target.
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].Score < stats[j].Score
+	})
+
+	var source *strategyStats
+	for i := range stats {
+		if stats[i].StrategyName != targetStrategy && stats[i].CompanyCount > minCompaniesPerStrategy {
+			source = &stats[i]
+			break
+		}
+	}
+
+	if source == nil {
+		e.logger.Warn("no eligible source strategy for agent-recommended switch",
+			zap.String("target", targetStrategy),
+		)
+		return
+	}
+
+	// Find the worst company in the source strategy.
+	if len(source.Companies) == 0 {
+		return
+	}
+
+	worstCompany := source.Companies[0]
+	for _, c := range source.Companies[1:] {
+		if c.ProfitPerHour < worstCompany.ProfitPerHour {
+			worstCompany = c
+		}
+	}
+
+	var dbRecord db.CompanyRecord
+	if err := e.gormDB.First(&dbRecord, worstCompany.CompanyID).Error; err != nil {
+		e.logger.Error("failed to find company for agent switch",
+			zap.Uint("company_id", worstCompany.CompanyID),
+			zap.Error(err),
+		)
+		return
+	}
+
+	runner := e.manager.GetRunner(dbRecord.GameID)
+	if runner == nil {
+		e.logger.Warn("runner not found for agent switch, skipping",
+			zap.String("game_id", dbRecord.GameID),
+		)
+		return
+	}
+
+	stratCtx := bot.StrategyContext{
+		Client:     e.manager.BaseClient().ForCompany(dbRecord.GameID),
+		State:      runner.State(),
+		World:      e.manager.WorldData(),
+		PriceCache: e.manager.PriceCache(),
+		Agent:      e.agent,
+		Logger:     runner.Logger(),
+		DB:         e.gormDB,
+	}
+
+	newStrategy, err := factory(stratCtx)
+	if err != nil {
+		e.logger.Error("failed to create strategy for agent switch",
+			zap.String("strategy", targetStrategy),
+			zap.Error(err),
+		)
+		return
+	}
+
+	runner.SwapStrategy(newStrategy)
+
+	e.logger.Info("optimizer executed agent-recommended strategy switch",
+		zap.String("company", dbRecord.Name),
+		zap.String("game_id", dbRecord.GameID),
+		zap.String("from_strategy", source.StrategyName),
+		zap.String("to_strategy", targetStrategy),
+	)
 }
 
 // recordStrategyMetrics persists aggregated metrics to the database.

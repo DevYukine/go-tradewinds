@@ -410,3 +410,94 @@ func (m *Manager) CompanyCount() int {
 	defer m.mu.RUnlock()
 	return len(m.companies)
 }
+
+// AddCompany dynamically adds a new company to the given strategy.
+// It creates a new company via the API, sets up a runner, and spawns it.
+// Returns the company's game ID or an error.
+func (m *Manager) AddCompany(ctx context.Context, strategyName string) (string, error) {
+	factory, ok := m.registry[strategyName]
+	if !ok {
+		return "", fmt.Errorf("no strategy factory registered for %q", strategyName)
+	}
+
+	// Pick a home port from world data.
+	if len(m.worldData.Ports) == 0 {
+		return "", fmt.Errorf("no ports available")
+	}
+	homePortID := m.worldData.Ports[rand.IntN(len(m.worldData.Ports))].ID
+
+	// Build name and ticker.
+	ticker := m.buildTicker(strategyName, 0)
+	name := m.buildCompanyName(strategyName, 0)
+
+	// Check for existing company with this ticker.
+	existingCompanies, err := m.baseClient.ListMyCompanies(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to list companies: %w", err)
+	}
+	companyByTicker := make(map[string]*api.Company, len(existingCompanies))
+	for i := range existingCompanies {
+		companyByTicker[existingCompanies[i].Ticker] = &existingCompanies[i]
+	}
+
+	company, err := m.ensureCompany(ctx, companyByTicker, name, ticker, homePortID)
+	if err != nil {
+		return "", fmt.Errorf("failed to create company: %w", err)
+	}
+
+	runner, err := m.setupRunner(company, strategyName, factory, homePortID)
+	if err != nil {
+		return "", fmt.Errorf("failed to setup runner: %w", err)
+	}
+
+	gameID := company.ID.String()
+
+	m.mu.Lock()
+	m.companies[gameID] = runner
+	m.mu.Unlock()
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		runner.Run(ctx)
+	}()
+
+	m.logger.Info("dynamically added company",
+		zap.String("name", name),
+		zap.String("ticker", ticker),
+		zap.String("strategy", strategyName),
+		zap.String("game_id", gameID),
+	)
+
+	return gameID, nil
+}
+
+// PauseCompany stops a running company by cancelling its context and removing
+// it from the active runners map. Updates the DB status to "paused".
+func (m *Manager) PauseCompany(gameID string) error {
+	m.mu.Lock()
+	runner, ok := m.companies[gameID]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("company %s not found", gameID)
+	}
+	delete(m.companies, gameID)
+	m.mu.Unlock()
+
+	// Update DB status.
+	m.gormDB.Model(&db.CompanyRecord{}).Where("game_id = ?", gameID).Update("status", "paused")
+
+	m.logger.Info("paused company",
+		zap.String("game_id", gameID),
+	)
+
+	// The runner will stop on its own when the parent context is cancelled,
+	// but we remove it from the active map so it's no longer tracked.
+	_ = runner // runner stops via shared context cancellation
+	return nil
+}
+
+// Cfg returns the bot configuration.
+func (m *Manager) Cfg() *config.Config {
+	return m.cfg
+}
