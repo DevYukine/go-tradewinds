@@ -8,6 +8,9 @@
       <p class="text-sm text-slate-500 mt-1">Prices, strategies, and optimizer performance</p>
     </div>
 
+    <!-- Global Win/Loss (full width) -->
+    <GlobalPnL />
+
     <!-- Prices (full width) -->
     <PriceTable />
 

@@ -3,9 +3,10 @@ const props = defineProps<{
   companyId: number
 }>()
 
-const activeTab = ref<'trades' | 'passengers' | 'game'>('trades')
+const activeTab = ref<'trades' | 'passengers' | 'market' | 'game'>('trades')
 const { trades, loading, fetchTrades, lastUpdated } = useTrades()
 const { passengers, loading: passengersLoading, fetchPassengers, lastUpdated: passengersLastUpdated } = usePassengers()
+const { orders: marketOrders, loading: marketLoading, fetchMarketOrders, lastUpdated: marketLastUpdated } = useMarketOrders()
 const { gameTrades, loading: gameLoading, fetchGameTrades, lastUpdated: gameLastUpdated } = useGameTrades()
 const { connect: connectEvents, disconnect: disconnectEvents } = useCompanyEvents()
 const { now } = useNow()
@@ -13,6 +14,7 @@ const { now } = useNow()
 const currentLastUpdated = computed(() => {
   if (activeTab.value === 'trades') return lastUpdated.value
   if (activeTab.value === 'passengers') return passengersLastUpdated.value
+  if (activeTab.value === 'market') return marketLastUpdated.value
   return gameLastUpdated.value
 })
 
@@ -29,6 +31,7 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 function fetchAll(id: number) {
   fetchTrades(id)
   fetchPassengers(id)
+  fetchMarketOrders(id)
   fetchGameTrades(id)
 }
 
@@ -119,6 +122,17 @@ function sourceColor(source: string): string {
     default: return 'bg-slate-500/20 text-slate-400'
   }
 }
+
+function truncate(text: string, max: number): string {
+  if (!text || text.length <= max) return text || ''
+  return text.substring(0, max) + '...'
+}
+
+function confidenceColor(confidence: number): string {
+  if (confidence >= 0.8) return 'text-emerald-400'
+  if (confidence >= 0.5) return 'text-amber-400'
+  return 'text-rose-400'
+}
 </script>
 
 <template>
@@ -161,6 +175,16 @@ function sourceColor(source: string): string {
       >
         Passengers
         <span class="ml-1 text-slate-500">{{ passengers.length }}</span>
+      </button>
+      <button
+        class="px-3 py-1 rounded text-xs font-medium transition-colors"
+        :class="activeTab === 'market'
+          ? 'bg-teal-700/50 text-teal-200'
+          : 'text-slate-500 hover:text-slate-300'"
+        @click="activeTab = 'market'"
+      >
+        Market Orders
+        <span class="ml-1 text-slate-500">{{ marketOrders.length }}</span>
       </button>
       <button
         class="px-3 py-1 rounded text-xs font-medium transition-colors"
@@ -314,6 +338,72 @@ function sourceColor(source: string): string {
                   <span class="text-slate-300">{{ p.destination_port_name }}</span>
                 </td>
                 <td class="py-1.5 text-slate-400 text-xs">{{ p.ship_name }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+    </template>
+
+    <!-- Market Orders Tab -->
+    <template v-if="activeTab === 'market'">
+      <div v-if="marketLoading && marketOrders.length === 0" class="flex items-center justify-center py-8">
+        <Icon name="mdi:loading" class="animate-spin text-2xl text-slate-500" />
+      </div>
+
+      <div v-else-if="marketOrders.length === 0" class="text-center text-slate-600 text-sm py-8">
+        No market order activity yet
+      </div>
+
+      <template v-else>
+        <!-- Market Summary -->
+        <div class="grid grid-cols-3 gap-3 mb-3">
+          <div class="bg-slate-900/50 rounded-lg p-2">
+            <div class="text-[10px] text-slate-500 uppercase">Decisions</div>
+            <div class="text-sm font-bold text-teal-400 font-mono">{{ marketOrders.length }}</div>
+          </div>
+          <div class="bg-slate-900/50 rounded-lg p-2">
+            <div class="text-[10px] text-slate-500 uppercase">Avg Confidence</div>
+            <div class="text-sm font-bold text-slate-300 font-mono">
+              {{ marketOrders.length > 0 ? (marketOrders.reduce((s, o) => s + o.confidence, 0) / marketOrders.length * 100).toFixed(0) + '%' : '---' }}
+            </div>
+          </div>
+          <div class="bg-slate-900/50 rounded-lg p-2">
+            <div class="text-[10px] text-slate-500 uppercase">Avg Latency</div>
+            <div class="text-sm font-bold text-slate-300 font-mono">
+              {{ marketOrders.length > 0 ? Math.round(marketOrders.reduce((s, o) => s + o.latency_ms, 0) / marketOrders.length) + 'ms' : '---' }}
+            </div>
+          </div>
+        </div>
+
+        <div class="-mr-3 max-h-[28rem] 2xl:max-h-[36rem] overflow-y-auto scroll-stable">
+          <table class="w-full text-sm pr-3">
+            <thead class="sticky top-0 bg-slate-800 z-10">
+              <tr class="text-xs text-slate-500 uppercase tracking-wide border-b border-slate-700">
+                <th class="text-left py-2 pr-3">Time</th>
+                <th class="text-left py-2 pr-3">Agent</th>
+                <th class="text-right py-2 pr-3">Confidence</th>
+                <th class="text-right py-2 pr-3">Latency</th>
+                <th class="text-left py-2 pr-3">Reasoning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="order in marketOrders"
+                :key="order.id"
+                class="border-b border-slate-700/30 hover:bg-slate-700/20 transition-colors"
+              >
+                <td class="py-1.5 pr-3 text-xs text-slate-500 font-mono whitespace-nowrap">
+                  {{ formatTime(order.created_at) }}
+                </td>
+                <td class="py-1.5 pr-3 text-xs text-slate-300">{{ order.agent_name }}</td>
+                <td class="py-1.5 pr-3 text-right font-mono text-xs" :class="confidenceColor(order.confidence)">
+                  {{ (order.confidence * 100).toFixed(0) }}%
+                </td>
+                <td class="py-1.5 pr-3 text-right text-slate-400 font-mono text-xs">{{ order.latency_ms }}ms</td>
+                <td class="py-1.5 pr-3 text-xs text-slate-400" :title="order.reasoning">
+                  {{ truncate(order.reasoning, 80) }}
+                </td>
               </tr>
             </tbody>
           </table>

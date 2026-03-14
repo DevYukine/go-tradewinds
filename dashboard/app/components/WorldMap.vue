@@ -25,6 +25,7 @@ const ports = ref<PortInfo[]>([])
 const routes = ref<RouteInfo[]>([])
 const ships = ref<MapShip[]>([])
 const loading = ref(true)
+const selectedShip = ref<MapShip | null>(null)
 
 function portCoords(port: PortInfo): L.LatLngExpression | null {
   if (port.latitude != null && port.longitude != null) {
@@ -191,16 +192,7 @@ function drawShips() {
         weight: 1,
       })
 
-      const cargoText = `${ship.cargo_total} / ${ship.capacity}`
-      marker.bindPopup(
-        `<div class="text-sm">
-          <div class="font-bold mb-1">${ship.ship_name}</div>
-          <div>${ship.company_name}</div>
-          <div>Status: Docked${port ? ` at ${port.name}` : ''}</div>
-          <div>Strategy: ${ship.strategy}</div>
-          <div>Cargo: ${cargoText}</div>
-        </div>`,
-      )
+      marker.on('click', () => { selectedShip.value = ship })
       shipLayer.addLayer(marker)
     } else if (ship.from_port_id && ship.to_port_id) {
       const fromPort = portLookup.get(ship.from_port_id)
@@ -231,20 +223,7 @@ function drawShips() {
         weight: 2,
       })
 
-      const arrivalMs = ship.arriving_at ? new Date(ship.arriving_at).getTime() - now : 0
-      const timeText = ship.arriving_at ? formatTimeRemaining(arrivalMs) : 'In transit'
-      const cargoText = `${ship.cargo_total} / ${ship.capacity}`
-
-      marker.bindPopup(
-        `<div class="text-sm">
-          <div class="font-bold mb-1">${ship.ship_name}</div>
-          <div>${ship.company_name}</div>
-          <div>${fromPort.name} → ${toPort.name}</div>
-          <div>ETA: ${timeText}</div>
-          <div>Strategy: ${ship.strategy}</div>
-          <div>Cargo: ${cargoText}</div>
-        </div>`,
-      )
+      marker.on('click', () => { selectedShip.value = ship })
       shipLayer.addLayer(marker)
 
       // Floating time label above ship
@@ -291,6 +270,16 @@ function animateShips() {
   }
 }
 
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat('en-US').format(value)
+}
+
+function shipEta(ship: MapShip): string {
+  if (!ship.arriving_at) return ''
+  const ms = new Date(ship.arriving_at).getTime() - Date.now()
+  return ms > 0 ? formatTimeRemaining(ms) : 'Arriving'
+}
+
 async function fetchWorldData() {
   try {
     const data = await $fetch<WorldData>(`${apiBase}/api/world`)
@@ -334,6 +323,8 @@ onMounted(() => {
   portLayer.addTo(map)
   shipLayer.addTo(map)
 
+  map.on('click', () => { selectedShip.value = null })
+
   fetchWorldData()
   fetchShips()
 
@@ -372,6 +363,89 @@ onUnmounted(() => {
 
     <div class="relative">
       <div ref="mapContainer" class="h-[500px] rounded-lg overflow-hidden" />
+
+      <!-- Ship Detail Panel (bottom-left) -->
+      <div
+        v-if="selectedShip"
+        class="absolute bottom-4 left-4 z-[1000] bg-slate-900/95 border border-slate-700 rounded-lg p-4 text-xs w-72 max-h-[320px] overflow-y-auto"
+      >
+        <div class="flex items-center justify-between mb-2">
+          <div class="font-bold text-slate-200 text-sm">{{ selectedShip.ship_name }}</div>
+          <button class="text-slate-500 hover:text-slate-300" @click="selectedShip = null">
+            <Icon name="lucide:x" class="text-sm" />
+          </button>
+        </div>
+
+        <div class="space-y-1.5 mb-3">
+          <div class="flex justify-between">
+            <span class="text-slate-500">Type</span>
+            <span class="text-slate-300">{{ selectedShip.ship_type || '---' }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-slate-500">Company</span>
+            <span class="text-slate-300">{{ selectedShip.company_name }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-slate-500">Strategy</span>
+            <span
+              :class="STRATEGY_COLORS[selectedShip.strategy] ? `font-medium` : ''"
+              :style="{ color: STRATEGY_COLORS[selectedShip.strategy] || '#94a3b8' }"
+            >{{ selectedShip.strategy }}</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-slate-500">Status</span>
+            <span class="text-slate-300">
+              <template v-if="selectedShip.status === 'docked'">
+                Docked{{ selectedShip.port_name ? ` at ${selectedShip.port_name}` : '' }}
+              </template>
+              <template v-else>
+                {{ selectedShip.from_port_name || '?' }} → {{ selectedShip.to_port_name || '?' }}
+              </template>
+            </span>
+          </div>
+          <div v-if="selectedShip.status !== 'docked' && selectedShip.arriving_at" class="flex justify-between">
+            <span class="text-slate-500">ETA</span>
+            <span class="text-slate-300">{{ shipEta(selectedShip) }}</span>
+          </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="grid grid-cols-3 gap-2 mb-3">
+          <div class="bg-slate-800/50 rounded p-1.5 text-center">
+            <div class="text-[9px] text-slate-500 uppercase">Speed</div>
+            <div class="text-slate-200 font-mono font-medium">{{ selectedShip.speed || '---' }}</div>
+          </div>
+          <div class="bg-slate-800/50 rounded p-1.5 text-center">
+            <div class="text-[9px] text-slate-500 uppercase">Upkeep</div>
+            <div class="text-slate-200 font-mono font-medium">{{ selectedShip.upkeep ? formatCurrency(selectedShip.upkeep) : '---' }}</div>
+          </div>
+          <div class="bg-slate-800/50 rounded p-1.5 text-center">
+            <div class="text-[9px] text-slate-500 uppercase">Passengers</div>
+            <div class="text-purple-400 font-mono font-medium">{{ selectedShip.passenger_count }}/{{ selectedShip.passenger_cap }}</div>
+          </div>
+        </div>
+
+        <!-- Cargo -->
+        <div>
+          <div class="text-slate-500 font-medium mb-1">
+            Cargo
+            <span class="text-slate-600 font-normal">({{ selectedShip.cargo_total }} / {{ selectedShip.capacity }})</span>
+          </div>
+          <div v-if="!selectedShip.cargo || selectedShip.cargo.length === 0" class="text-slate-600 italic">
+            Empty hold
+          </div>
+          <div v-else class="space-y-0.5">
+            <div
+              v-for="item in selectedShip.cargo"
+              :key="item.good_id"
+              class="flex justify-between"
+            >
+              <span class="text-slate-400">{{ item.good_name }}</span>
+              <span class="text-slate-300 font-mono">{{ item.quantity }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- Legend -->
       <div class="absolute bottom-4 right-4 z-[1000] bg-slate-900/90 border border-slate-700 rounded-lg p-3 text-xs">

@@ -151,16 +151,54 @@ export interface PortInfo {
 export interface MapShip {
   ship_id: string
   ship_name: string
+  ship_type: string
   company_name: string
   company_id: string
   strategy: string
   status: string
   port_id?: string
+  port_name?: string
   from_port_id?: string
   to_port_id?: string
+  from_port_name?: string
+  to_port_name?: string
   arriving_at?: string
   cargo_total: number
   capacity: number
+  speed: number
+  upkeep: number
+  passenger_cap: number
+  passenger_count: number
+  cargo: CargoItem[]
+}
+
+export interface GlobalPnLCompany {
+  company_id: number
+  company_name: string
+  strategy: string
+  treasury: number
+  trade_rev: number
+  trade_costs: number
+  passenger_rev: number
+  net_pnl: number
+  trade_count: number
+  win_count: number
+  win_rate: number
+}
+
+export interface GlobalPnLTotals {
+  trade_rev: number
+  trade_costs: number
+  passenger_rev: number
+  net_pnl: number
+  trade_count: number
+  win_count: number
+  win_rate: number
+}
+
+export interface GlobalPnLResponse {
+  companies: GlobalPnLCompany[]
+  totals: GlobalPnLTotals
 }
 
 export interface GoodInfo {

@@ -30,6 +30,8 @@ func (s *Server) registerHandlers() {
 	api.Get("/health", s.handleHealth)
 	api.Get("/world", s.handleWorld)
 	api.Get("/ships", s.handleAllShips)
+	api.Get("/global-pnl", s.handleGlobalPnL)
+	api.Get("/companies/:id/market-orders", s.handleCompanyMarketOrders)
 }
 
 // handleCompanies returns all companies with their current status, treasury, and strategy.
@@ -622,28 +624,39 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 }
 
 // handleAllShips returns all ships across all companies for the world map.
+// Includes full cargo details and passenger info for ship detail panels.
 func (s *Server) handleAllShips(c fiber.Ctx) error {
 	world := s.manager.WorldData()
 	companies := s.manager.Companies()
 
+	type cargoItem struct {
+		GoodID   string `json:"good_id"`
+		GoodName string `json:"good_name"`
+		Quantity int    `json:"quantity"`
+	}
 	type shipInfo struct {
-		ShipID        string     `json:"ship_id"`
-		ShipName      string     `json:"ship_name"`
-		ShipType      string     `json:"ship_type"`
-		Status        string     `json:"status"`
-		CompanyID     string     `json:"company_id"`
-		CompanyName   string     `json:"company_name"`
-		Strategy      string     `json:"strategy"`
-		PortID        string     `json:"port_id,omitempty"`
-		PortName      string     `json:"port_name,omitempty"`
-		RouteID       string     `json:"route_id,omitempty"`
-		FromPortID    string     `json:"from_port_id,omitempty"`
-		ToPortID      string     `json:"to_port_id,omitempty"`
-		FromPortName  string     `json:"from_port_name,omitempty"`
-		ToPortName    string     `json:"to_port_name,omitempty"`
-		ArrivingAt    *time.Time `json:"arriving_at,omitempty"`
-		CargoTotal    int        `json:"cargo_total"`
-		Capacity      int        `json:"capacity"`
+		ShipID         string      `json:"ship_id"`
+		ShipName       string      `json:"ship_name"`
+		ShipType       string      `json:"ship_type"`
+		Status         string      `json:"status"`
+		CompanyID      string      `json:"company_id"`
+		CompanyName    string      `json:"company_name"`
+		Strategy       string      `json:"strategy"`
+		PortID         string      `json:"port_id,omitempty"`
+		PortName       string      `json:"port_name,omitempty"`
+		RouteID        string      `json:"route_id,omitempty"`
+		FromPortID     string      `json:"from_port_id,omitempty"`
+		ToPortID       string      `json:"to_port_id,omitempty"`
+		FromPortName   string      `json:"from_port_name,omitempty"`
+		ToPortName     string      `json:"to_port_name,omitempty"`
+		ArrivingAt     *time.Time  `json:"arriving_at,omitempty"`
+		CargoTotal     int         `json:"cargo_total"`
+		Capacity       int         `json:"capacity"`
+		Speed          int         `json:"speed"`
+		Upkeep         int         `json:"upkeep"`
+		PassengerCap   int         `json:"passenger_cap"`
+		PassengerCount int         `json:"passenger_count"`
+		Cargo          []cargoItem `json:"cargo"`
 	}
 
 	var ships []shipInfo
@@ -653,25 +666,42 @@ func (s *Server) handleAllShips(c fiber.Ctx) error {
 		record := runner.DBRecord()
 
 		for _, ss := range state.Ships {
+			cargo := make([]cargoItem, 0, len(ss.Cargo))
 			cargoTotal := 0
 			for _, ci := range ss.Cargo {
+				goodName := ci.GoodID.String()
+				if world != nil {
+					if g := world.GetGood(ci.GoodID); g != nil {
+						goodName = g.Name
+					}
+				}
+				cargo = append(cargo, cargoItem{
+					GoodID:   ci.GoodID.String(),
+					GoodName: goodName,
+					Quantity: ci.Quantity,
+				})
 				cargoTotal += ci.Quantity
 			}
 
 			si := shipInfo{
-				ShipID:      ss.Ship.ID.String(),
-				ShipName:    ss.Ship.Name,
-				Status:      ss.Ship.Status,
-				CompanyID:   record.GameID,
-				CompanyName: record.Name,
-				Strategy:    record.Strategy,
-				CargoTotal:  cargoTotal,
+				ShipID:         ss.Ship.ID.String(),
+				ShipName:       ss.Ship.Name,
+				Status:         ss.Ship.Status,
+				CompanyID:      record.GameID,
+				CompanyName:    record.Name,
+				Strategy:       record.Strategy,
+				CargoTotal:     cargoTotal,
+				PassengerCount: ss.PassengerCount,
+				Cargo:          cargo,
 			}
 
 			if world != nil {
 				if st := world.GetShipType(ss.Ship.ShipTypeID); st != nil {
 					si.ShipType = st.Name
 					si.Capacity = st.Capacity
+					si.Speed = st.Speed
+					si.Upkeep = st.Upkeep
+					si.PassengerCap = st.Passengers
 				}
 			}
 
@@ -782,6 +812,129 @@ func (s *Server) handleCompanyGameTrades(c fiber.Ctx) error {
 		})
 	}
 	return c.JSON(result)
+}
+
+// handleGlobalPnL returns aggregate win/loss stats across all companies.
+func (s *Server) handleGlobalPnL(c fiber.Ctx) error {
+	type companyPnL struct {
+		CompanyID    uint    `json:"company_id"`
+		CompanyName  string  `json:"company_name"`
+		Strategy     string  `json:"strategy"`
+		Treasury     int64   `json:"treasury"`
+		TradeRev     int64   `json:"trade_rev"`
+		TradeCosts   int64   `json:"trade_costs"`
+		PassengerRev int64   `json:"passenger_rev"`
+		NetPnL       int64   `json:"net_pnl"`
+		TradeCount   int64   `json:"trade_count"`
+		WinCount     int64   `json:"win_count"`
+		WinRate      float64 `json:"win_rate"`
+	}
+
+	var companies []db.CompanyRecord
+	s.db.Where("status = ?", "running").Find(&companies)
+
+	result := make([]companyPnL, 0, len(companies))
+	var globalTradeRev, globalTradeCosts, globalPassengerRev int64
+	var globalTradeCount, globalWinCount int64
+
+	runners := s.manager.Companies()
+
+	for _, comp := range companies {
+		var tradeRev, tradeCosts int64
+		var tradeCount, winCount int64
+		var passengerRev int64
+
+		s.db.Model(&db.TradeLog{}).Where("company_id = ? AND action = ?", comp.ID, "sell").
+			Select("COALESCE(SUM(total_price), 0)").Scan(&tradeRev)
+		s.db.Model(&db.TradeLog{}).Where("company_id = ? AND action = ?", comp.ID, "sell").
+			Select("COUNT(*)").Scan(&winCount)
+		s.db.Model(&db.TradeLog{}).Where("company_id = ? AND action = ?", comp.ID, "buy").
+			Select("COALESCE(SUM(total_price), 0)").Scan(&tradeCosts)
+		s.db.Model(&db.TradeLog{}).Where("company_id = ?", comp.ID).
+			Select("COUNT(*)").Scan(&tradeCount)
+		s.db.Model(&db.PassengerLog{}).Where("company_id = ?", comp.ID).
+			Select("COALESCE(SUM(bid), 0)").Scan(&passengerRev)
+
+		treasury := comp.Treasury
+		// Overlay live treasury.
+		for _, runner := range runners {
+			rec := runner.DBRecord()
+			if rec != nil && rec.GameID == comp.GameID {
+				state := runner.State()
+				state.RLock()
+				treasury = state.Treasury
+				state.RUnlock()
+				break
+			}
+		}
+
+		winRate := 0.0
+		if tradeCount > 0 {
+			winRate = float64(winCount) / float64(tradeCount)
+		}
+
+		result = append(result, companyPnL{
+			CompanyID:    comp.ID,
+			CompanyName:  comp.Name,
+			Strategy:     comp.Strategy,
+			Treasury:     treasury,
+			TradeRev:     tradeRev,
+			TradeCosts:   tradeCosts,
+			PassengerRev: passengerRev,
+			NetPnL:       tradeRev + passengerRev - tradeCosts,
+			TradeCount:   tradeCount,
+			WinCount:     winCount,
+			WinRate:      winRate,
+		})
+
+		globalTradeRev += tradeRev
+		globalTradeCosts += tradeCosts
+		globalPassengerRev += passengerRev
+		globalTradeCount += tradeCount
+		globalWinCount += winCount
+	}
+
+	globalWinRate := 0.0
+	if globalTradeCount > 0 {
+		globalWinRate = float64(globalWinCount) / float64(globalTradeCount)
+	}
+
+	return c.JSON(fiber.Map{
+		"companies": result,
+		"totals": fiber.Map{
+			"trade_rev":     globalTradeRev,
+			"trade_costs":   globalTradeCosts,
+			"passenger_rev": globalPassengerRev,
+			"net_pnl":       globalTradeRev + globalPassengerRev - globalTradeCosts,
+			"trade_count":   globalTradeCount,
+			"win_count":     globalWinCount,
+			"win_rate":      globalWinRate,
+		},
+	})
+}
+
+// handleCompanyMarketOrders returns P2P order activity (fills, posts, cancels) for a company.
+// This queries the agent decision logs for market-type decisions.
+func (s *Server) handleCompanyMarketOrders(c fiber.Ctx) error {
+	companyID, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "invalid company id",
+		})
+	}
+
+	limit := queryInt(c, "limit", 50)
+
+	var decisions []db.AgentDecisionLog
+	if err := s.db.Where("company_id = ? AND decision_type = ?", companyID, "market").
+		Order("created_at DESC").
+		Limit(limit).
+		Find(&decisions).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "failed to fetch market orders",
+		})
+	}
+	return c.JSON(decisions)
 }
 
 // queryInt reads an integer query parameter with a default value.
