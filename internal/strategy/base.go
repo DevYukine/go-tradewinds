@@ -53,6 +53,7 @@ func (b *baseStrategy) buildTradeRequest(ship *bot.ShipState, port *api.Port) ag
 	}
 
 	return agent.TradeDecisionRequest{
+		StrategyHint: b.name,
 		Company: agent.CompanySnapshot{
 			ID:          state.CompanyID,
 			Treasury:    state.Treasury,
@@ -90,6 +91,7 @@ func (b *baseStrategy) buildFleetRequest() agent.FleetDecisionRequest {
 	}
 
 	return agent.FleetDecisionRequest{
+		StrategyHint: b.name,
 		Company: agent.CompanySnapshot{
 			ID:          state.CompanyID,
 			Treasury:    state.Treasury,
@@ -306,8 +308,22 @@ func (b *baseStrategy) sendShipToPort(ctx context.Context, ship *bot.ShipState, 
 	return nil
 }
 
-// executeFleetDecision handles ship purchases and warehouse construction.
+// executeFleetDecision handles ship purchases, ship sales, and warehouse construction.
 func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent.FleetDecision) {
+	// Sell (decommission) ships first to free up upkeep budget.
+	for _, shipID := range decision.SellShips {
+		if err := b.ctx.Client.SellShip(ctx, shipID); err != nil {
+			b.logger.Warn("failed to decommission ship (game may not support ship sales)",
+				zap.String("ship_id", shipID.String()),
+				zap.Error(err),
+			)
+			continue
+		}
+		b.logger.Trade("decommissioned ship",
+			zap.String("ship_id", shipID.String()),
+		)
+	}
+
 	for _, purchase := range decision.BuyShips {
 		shipyard, err := b.ctx.Client.FindShipyard(ctx, purchase.PortID)
 		if err != nil || shipyard == nil {

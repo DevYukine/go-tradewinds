@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,16 +41,78 @@ type Agent interface {
 }
 
 // NewAgent creates the appropriate Agent implementation based on config.
-// Additional agent types (LLM, composite) will be added in later steps.
 func NewAgent(cfg *config.Config, logger *zap.Logger) (Agent, error) {
-	switch cfg.Agent.Type {
+	return newAgentFromType(cfg.Agent.Type, cfg, logger)
+}
+
+// newAgentFromType builds an agent of the given type, allowing recursive
+// construction for composite agents.
+func newAgentFromType(agentType string, cfg *config.Config, logger *zap.Logger) (Agent, error) {
+	switch agentType {
 	case "heuristic", "":
 		return NewHeuristicAgent(logger), nil
+
+	case "llm":
+		provider, err := newLLMProvider(cfg)
+		if err != nil {
+			logger.Warn("failed to create LLM provider, falling back to heuristic",
+				zap.Error(err),
+			)
+			return NewHeuristicAgent(logger), nil
+		}
+		return NewLLMAgent(provider, cfg.Agent.LLMModel, cfg.Agent.LLMMaxTokens, logger), nil
+
+	case "composite":
+		fast, err := newAgentFromType(cfg.Agent.CompositeFastAgent, cfg, logger)
+		if err != nil {
+			return nil, fmt.Errorf("create composite fast agent: %w", err)
+		}
+		slow, err := newAgentFromType(cfg.Agent.CompositeSlowAgent, cfg, logger)
+		if err != nil {
+			return nil, fmt.Errorf("create composite slow agent: %w", err)
+		}
+		return NewCompositeAgent(fast, slow, logger), nil
+
 	default:
 		logger.Warn("unknown agent type, falling back to heuristic",
-			zap.String("configured_type", cfg.Agent.Type),
+			zap.String("configured_type", agentType),
 		)
 		return NewHeuristicAgent(logger), nil
+	}
+}
+
+// newLLMProvider creates the appropriate LLMProvider based on config.
+func newLLMProvider(cfg *config.Config) (LLMProvider, error) {
+	switch cfg.Agent.LLMProvider {
+	case "claude":
+		if cfg.Agent.LLMAPIKey == "" {
+			return nil, fmt.Errorf("LLM_API_KEY is required for claude provider")
+		}
+		model := cfg.Agent.LLMModel
+		if model == "" {
+			model = "claude-sonnet-4-20250514"
+		}
+		return NewClaudeProvider(cfg.Agent.LLMAPIKey, model, cfg.Agent.LLMMaxTokens), nil
+
+	case "openai":
+		if cfg.Agent.LLMAPIKey == "" {
+			return nil, fmt.Errorf("LLM_API_KEY is required for openai provider")
+		}
+		model := cfg.Agent.LLMModel
+		if model == "" {
+			model = "gpt-4o"
+		}
+		return NewOpenAIProvider(cfg.Agent.LLMAPIKey, model, cfg.Agent.LLMMaxTokens), nil
+
+	case "ollama":
+		model := cfg.Agent.LLMModel
+		if model == "" {
+			model = "llama3"
+		}
+		return NewOllamaProvider(model), nil
+
+	default:
+		return nil, fmt.Errorf("unknown LLM provider: %q", cfg.Agent.LLMProvider)
 	}
 }
 
@@ -153,6 +216,7 @@ type Constraints struct {
 
 // TradeDecisionRequest contains everything an agent needs to decide a trade.
 type TradeDecisionRequest struct {
+	StrategyHint string // "arbitrage", "bulk_hauler", "market_maker" — guides agent behavior.
 	Company      CompanySnapshot
 	Ship         ShipSnapshot
 	AllShips     []ShipSnapshot
@@ -191,11 +255,12 @@ type TradeDecision struct {
 
 // FleetDecisionRequest contains state needed for capital investment decisions.
 type FleetDecisionRequest struct {
-	Company    CompanySnapshot
-	Ships      []ShipSnapshot
-	Warehouses []WarehouseSnapshot
-	ShipTypes  []ShipTypeInfo
-	PriceCache []PricePoint
+	StrategyHint string // "arbitrage", "bulk_hauler", "market_maker" — guides ship selection.
+	Company      CompanySnapshot
+	Ships        []ShipSnapshot
+	Warehouses   []WarehouseSnapshot
+	ShipTypes    []ShipTypeInfo
+	PriceCache   []PricePoint
 }
 
 // ShipPurchase describes a ship to buy at a specific port.
@@ -207,6 +272,7 @@ type ShipPurchase struct {
 // FleetDecision is the agent's response to a fleet decision request.
 type FleetDecision struct {
 	BuyShips      []ShipPurchase
+	SellShips     []uuid.UUID // Ship IDs to decommission (sell back to game).
 	BuyWarehouses []uuid.UUID // Port IDs to build warehouses at.
 	Reasoning     string
 }

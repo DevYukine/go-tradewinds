@@ -68,3 +68,11 @@ func (c *Client) TransferToWarehouse(ctx context.Context, shipID uuid.UUID, req 
 	path := fmt.Sprintf("/ships/%s/transfer-to-warehouse", shipID)
 	return c.do(ctx, http.MethodPost, path, req, nil, PriorityNormal)
 }
+
+// SellShip decommissions (scuttles) a ship, removing it from the fleet.
+// The ship must be docked and have no cargo. Returns error if the game API
+// does not support this operation.
+func (c *Client) SellShip(ctx context.Context, shipID uuid.UUID) error {
+	path := fmt.Sprintf("/ships/%s", shipID)
+	return c.do(ctx, http.MethodDelete, path, nil, nil, PriorityNormal)
+}
