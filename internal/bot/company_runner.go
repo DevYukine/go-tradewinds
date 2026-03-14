@@ -398,12 +398,27 @@ func (r *CompanyRunner) dispatchDockedShip(ctx context.Context, shipID uuid.UUID
 // recordPnLSnapshot writes a P&L snapshot to the database.
 func (r *CompanyRunner) recordPnLSnapshot() {
 	r.state.mu.RLock()
-	snapshot := db.PnLSnapshot{
-		CompanyID: r.dbRecord.ID,
-		Treasury:  r.state.Treasury,
-		ShipCount: len(r.state.Ships),
-	}
+	treasury := r.state.Treasury
+	shipCount := len(r.state.Ships)
 	r.state.mu.RUnlock()
+
+	// Compute cumulative revenue and costs from trade logs.
+	var totalRev, totalCosts int64
+	r.gormDB.Model(&db.TradeLog{}).
+		Where("company_id = ? AND action = ?", r.dbRecord.ID, "sell").
+		Select("COALESCE(SUM(total_price), 0)").Scan(&totalRev)
+	r.gormDB.Model(&db.TradeLog{}).
+		Where("company_id = ? AND action = ?", r.dbRecord.ID, "buy").
+		Select("COALESCE(SUM(total_price), 0)").Scan(&totalCosts)
+
+	snapshot := db.PnLSnapshot{
+		CompanyID:  r.dbRecord.ID,
+		Treasury:   treasury,
+		TotalRev:   totalRev,
+		TotalCosts: totalCosts,
+		NetPnL:     totalRev - totalCosts,
+		ShipCount:  shipCount,
+	}
 
 	if err := r.gormDB.Create(&snapshot).Error; err != nil {
 		r.logger.Warn("failed to record P&L snapshot", zap.Error(err))
