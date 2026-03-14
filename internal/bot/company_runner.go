@@ -17,12 +17,14 @@ import (
 )
 
 const (
-	// economyRefreshInterval is how often to poll the economy endpoint.
-	economyRefreshInterval = 60 * time.Second
+	// economyRefreshInterval is how often to poll the economy endpoint and
+	// dispatch idle ships. Shorter intervals ensure ships don't sit idle if
+	// SSE events are missed.
+	economyRefreshInterval = 30 * time.Second
 
 	// economyJitterMax is the maximum random offset added to the economy ticker
 	// to prevent all companies from refreshing at the same instant.
-	economyJitterMax = 10 * time.Second
+	economyJitterMax = 15 * time.Second
 )
 
 // CompanyRunner manages the lifecycle of a single company: subscribing to
@@ -97,6 +99,9 @@ func (r *CompanyRunner) Run(ctx context.Context) {
 	defer ticker.Stop()
 
 	r.logger.Info("company runner ready, entering main loop")
+
+	// Immediately dispatch any docked ships — don't wait for the first tick.
+	r.dispatchIdleShips(ctx)
 
 	for {
 		select {

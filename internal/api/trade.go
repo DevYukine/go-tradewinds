@@ -59,9 +59,15 @@ func (c *Client) DirectTrade(ctx context.Context, req ExecuteTradeRequest) (*Tra
 // BatchQuotes requests multiple quotes in a single API call.
 // Each result contains either a successful quote or an error message.
 func (c *Client) BatchQuotes(ctx context.Context, requests []QuoteRequest) ([]BatchQuoteResult, error) {
+	return c.BatchQuotesWithPriority(ctx, requests, PriorityHigh)
+}
+
+// BatchQuotesWithPriority is like BatchQuotes but with an explicit priority.
+// The scanner uses PriorityLow so it yields to trade executions.
+func (c *Client) BatchQuotesWithPriority(ctx context.Context, requests []QuoteRequest, priority Priority) ([]BatchQuoteResult, error) {
 	req := BatchQuoteRequest{Requests: requests}
 	var results []BatchQuoteResult
-	if err := c.do(ctx, http.MethodPost, "/trade/quotes/batch", req, &results, PriorityHigh); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/trade/quotes/batch", req, &results, priority); err != nil {
 		return nil, err
 	}
 	return results, nil

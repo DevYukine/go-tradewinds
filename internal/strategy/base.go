@@ -293,6 +293,16 @@ func (b *baseStrategy) sendShipToPort(ctx context.Context, ship *bot.ShipState, 
 		return err
 	}
 
+	// Immediately update local state so the ship isn't re-dispatched by
+	// dispatchIdleShips before the SSE event arrives.
+	b.ctx.State.Lock()
+	if ss := b.ctx.State.Ships[ship.Ship.ID]; ss != nil {
+		ss.Ship.Status = "traveling"
+		ss.Ship.PortID = nil
+		ss.Ship.RouteID = &route.ID
+	}
+	b.ctx.State.Unlock()
+
 	destPort := b.ctx.World.GetPort(destPortID)
 	destName := destPortID.String()
 	if destPort != nil {

@@ -95,7 +95,7 @@ func (s *Scanner) scanPort(ctx context.Context, port *api.Port) {
 		}
 	}
 
-	buyResults, err := s.client.BatchQuotes(ctx, buyReqs)
+	buyResults, err := s.client.BatchQuotesWithPriority(ctx, buyReqs, api.PriorityLow)
 	if err != nil {
 		s.logger.Debug("batch buy quote failed for port",
 			zap.String("port", port.Name),
@@ -115,7 +115,7 @@ func (s *Scanner) scanPort(ctx context.Context, port *api.Port) {
 		}
 	}
 
-	sellResults, err := s.client.BatchQuotes(ctx, sellReqs)
+	sellResults, err := s.client.BatchQuotesWithPriority(ctx, sellReqs, api.PriorityLow)
 	if err != nil {
 		s.logger.Debug("batch sell quote failed for port",
 			zap.String("port", port.Name),
@@ -126,6 +126,8 @@ func (s *Scanner) scanPort(ctx context.Context, port *api.Port) {
 
 	// Merge buy and sell prices into the cache.
 	updated := 0
+	var observations []db.PriceObservation
+
 	for i, good := range goods {
 		var buyPrice, sellPrice int
 
@@ -140,15 +142,18 @@ func (s *Scanner) scanPort(ctx context.Context, port *api.Port) {
 			s.priceCache.Set(port.ID, good.ID, buyPrice, sellPrice)
 			updated++
 
-			// Persist to DB for trend analysis.
-			obs := db.PriceObservation{
+			observations = append(observations, db.PriceObservation{
 				PortID:    port.ID.String(),
 				GoodID:    good.ID.String(),
 				BuyPrice:  buyPrice,
 				SellPrice: sellPrice,
-			}
-			s.gormDB.Create(&obs)
+			})
 		}
+	}
+
+	// Batch insert all observations for this port.
+	if len(observations) > 0 {
+		s.gormDB.CreateInBatches(&observations, len(observations))
 	}
 
 	s.logger.Debug("port scanned",

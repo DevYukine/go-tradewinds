@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"go.uber.org/ratelimit"
 	"go.uber.org/zap"
 )
 
@@ -29,20 +27,29 @@ const (
 	defaultMaxPerMinute = 300
 
 	// Throttle thresholds as percentages of maxPerMinute.
-	thresholdLowBlock    = 0.90 // 90%: block PriorityLow
-	thresholdNormalBlock = 0.98 // 98%: block PriorityNormal
+	thresholdLowBlock    = 0.85 // 85%: block PriorityLow
+	thresholdNormalBlock = 0.95 // 95%: block PriorityNormal
+
+	// Minimum spacing between requests to avoid micro-bursts.
+	minRequestSpacing = 220 * time.Millisecond // ~270 req/min max throughput (safety margin)
+
+	// windowDuration is the sliding window size.
+	windowDuration = 60 * time.Second
 )
 
 // RateLimiter enforces the game's rate limit of 300 requests per 60 seconds per IP.
-// It wraps uber/ratelimit for even request spacing (token bucket) and adds a
-// sliding window counter for budget tracking and priority-based throttling.
+// It uses a true sliding window (ring buffer of timestamps) to avoid the burst
+// problem that tumbling windows have at reset boundaries.
 type RateLimiter struct {
 	maxPerMinute int
-	limiter      ratelimit.Limiter // uber/ratelimit: smooths requests to ~5/sec
 
-	// Sliding window counter for the 60-second budget.
-	usedThisWindow atomic.Int64
-	windowStart    time.Time
+	// Sliding window: circular buffer of request timestamps.
+	timestamps []time.Time
+	head       int // next write position
+	count      int // number of valid entries
+
+	// lastRequest tracks when the last request was made for spacing.
+	lastRequest time.Time
 
 	// backoffUntil is set when a 429 is received; all requests block until this time.
 	backoffUntil time.Time
@@ -52,49 +59,31 @@ type RateLimiter struct {
 }
 
 // NewRateLimiter creates a rate limiter enforcing the given requests-per-minute limit.
-// It uses uber/ratelimit internally for even request spacing and adds priority-based
-// throttling on top via a sliding window counter.
+// Uses a true sliding window for accurate budget tracking.
 func NewRateLimiter(maxPerMinute int, logger *zap.Logger) *RateLimiter {
 	if maxPerMinute <= 0 {
 		maxPerMinute = defaultMaxPerMinute
 	}
 
-	ratePerSecond := maxPerMinute / 60
-	if ratePerSecond < 1 {
-		ratePerSecond = 1
-	}
-
 	return &RateLimiter{
 		maxPerMinute: maxPerMinute,
-		limiter:      ratelimit.New(ratePerSecond, ratelimit.WithSlack(10)),
-		windowStart:  time.Now(),
+		timestamps:   make([]time.Time, maxPerMinute),
 		logger:       logger.Named("rate_limiter"),
 	}
 }
 
 // Acquire blocks until a request slot is available for the given priority,
-// or the context is cancelled. It first checks priority-based budget thresholds,
-// then delegates to uber/ratelimit for even spacing.
+// or the context is cancelled. Uses a true sliding window to prevent
+// burst-at-boundary problems.
 func (rl *RateLimiter) Acquire(ctx context.Context, priority Priority) error {
-	// Spin until priority thresholds allow this request through.
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("rate limiter: context cancelled: %w", err)
 		}
 
-		if rl.canProceed(priority) {
-			break
-		}
-
-		// Wait before rechecking. Higher priority gets shorter waits.
-		var wait time.Duration
-		switch priority {
-		case PriorityHigh:
-			wait = 20 * time.Millisecond
-		case PriorityNormal:
-			wait = 50 * time.Millisecond
-		case PriorityLow:
-			wait = 100 * time.Millisecond
+		wait := rl.tryAcquire(priority)
+		if wait == 0 {
+			return nil // Acquired successfully.
 		}
 
 		select {
@@ -103,27 +92,52 @@ func (rl *RateLimiter) Acquire(ctx context.Context, priority Priority) error {
 		case <-time.After(wait):
 		}
 	}
-
-	// Delegate to uber/ratelimit for even spacing (~5 req/sec for 300/min).
-	// This call blocks until the next available slot.
-	rl.limiter.Take()
-
-	// Increment the sliding window counter.
-	rl.usedThisWindow.Add(1)
-
-	return nil
 }
 
-// TryAcquire attempts to acquire a request slot without blocking.
-// Returns true if the slot was acquired, false if the request should wait.
-func (rl *RateLimiter) TryAcquire(priority Priority) bool {
-	if !rl.canProceed(priority) {
-		return false
+// tryAcquire attempts to acquire a slot. Returns 0 if acquired, or the
+// duration to wait before retrying.
+func (rl *RateLimiter) tryAcquire(priority Priority) time.Duration {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+
+	// Check emergency backoff from a 429 response.
+	if now.Before(rl.backoffUntil) {
+		return time.Until(rl.backoffUntil)
 	}
 
-	rl.limiter.Take()
-	rl.usedThisWindow.Add(1)
-	return true
+	// Evict expired timestamps.
+	rl.evictExpired(now)
+
+	// Check priority-based throttling thresholds.
+	usageRatio := float64(rl.count) / float64(rl.maxPerMinute)
+
+	switch {
+	case rl.count >= rl.maxPerMinute:
+		// At capacity — wait until the oldest timestamp expires.
+		oldest := rl.oldestTimestamp()
+		return time.Until(oldest.Add(windowDuration)) + 10*time.Millisecond
+	case usageRatio >= thresholdNormalBlock && priority > PriorityHigh:
+		return 100 * time.Millisecond
+	case usageRatio >= thresholdLowBlock && priority > PriorityNormal:
+		return 200 * time.Millisecond
+	}
+
+	// Enforce minimum spacing between requests to avoid micro-bursts.
+	if elapsed := now.Sub(rl.lastRequest); elapsed < minRequestSpacing {
+		return minRequestSpacing - elapsed
+	}
+
+	// Acquired — record this request.
+	rl.timestamps[rl.head] = now
+	rl.head = (rl.head + 1) % len(rl.timestamps)
+	if rl.count < len(rl.timestamps) {
+		rl.count++
+	}
+	rl.lastRequest = now
+
+	return 0
 }
 
 // RecordBackoff sets a backoff period after receiving a 429 response.
@@ -139,14 +153,14 @@ func (rl *RateLimiter) RecordBackoff(retryAfter time.Duration) {
 	)
 }
 
-// CurrentBudget returns the number of requests used in the current 60-second
+// CurrentBudget returns the number of requests used in the current sliding
 // window and the maximum allowed.
 func (rl *RateLimiter) CurrentBudget() (used, max int) {
 	rl.mu.Lock()
-	rl.maybeResetWindow()
-	rl.mu.Unlock()
+	defer rl.mu.Unlock()
 
-	return int(rl.usedThisWindow.Load()), rl.maxPerMinute
+	rl.evictExpired(time.Now())
+	return rl.count, rl.maxPerMinute
 }
 
 // Utilization returns the current rate limit utilization as a float between 0.0 and 1.0.
@@ -158,52 +172,33 @@ func (rl *RateLimiter) Utilization() float64 {
 	return float64(used) / float64(max)
 }
 
-// canProceed checks whether a request at the given priority level is allowed
-// through based on backoff state and sliding window budget thresholds.
-func (rl *RateLimiter) canProceed(priority Priority) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
+// evictExpired removes timestamps older than windowDuration from the count.
+// Must be called while holding rl.mu.
+func (rl *RateLimiter) evictExpired(now time.Time) {
+	cutoff := now.Add(-windowDuration)
+	evicted := 0
 
-	now := time.Now()
-
-	// Check emergency backoff from a 429 response.
-	if now.Before(rl.backoffUntil) {
-		return false
+	// Walk from the tail (oldest) forward and count expired entries.
+	for rl.count > 0 {
+		tail := (rl.head - rl.count + len(rl.timestamps)) % len(rl.timestamps)
+		if rl.timestamps[tail].After(cutoff) {
+			break
+		}
+		rl.count--
+		evicted++
 	}
 
-	// Reset the sliding window if 60 seconds have elapsed.
-	rl.maybeResetWindow()
-
-	// Check priority-based throttling thresholds.
-	used := rl.usedThisWindow.Load()
-	usageRatio := float64(used) / float64(rl.maxPerMinute)
-
-	switch {
-	case used >= int64(rl.maxPerMinute):
-		return false
-	case usageRatio >= thresholdNormalBlock && priority > PriorityHigh:
-		return false
-	case usageRatio >= thresholdLowBlock && priority > PriorityNormal:
-		return false
+	if evicted > 20 {
+		rl.logger.Debug("rate limit window eviction",
+			zap.Int("evicted", evicted),
+			zap.Int("remaining", rl.count),
+		)
 	}
-
-	return true
 }
 
-// maybeResetWindow resets the sliding window counter if 60 seconds have elapsed.
-// Must be called while holding rl.mu.
-func (rl *RateLimiter) maybeResetWindow() {
-	now := time.Now()
-	if now.Sub(rl.windowStart) >= 60*time.Second {
-		previousUsed := rl.usedThisWindow.Load()
-		rl.usedThisWindow.Store(0)
-		rl.windowStart = now
-
-		if previousUsed > 0 {
-			rl.logger.Debug("rate limit window reset",
-				zap.Int64("previous_window_usage", previousUsed),
-				zap.Int("max_per_minute", rl.maxPerMinute),
-			)
-		}
-	}
+// oldestTimestamp returns the oldest non-expired timestamp in the ring buffer.
+// Must be called while holding rl.mu and when count > 0.
+func (rl *RateLimiter) oldestTimestamp() time.Time {
+	tail := (rl.head - rl.count + len(rl.timestamps)) % len(rl.timestamps)
+	return rl.timestamps[tail]
 }

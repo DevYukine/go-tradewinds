@@ -143,6 +143,16 @@ func (s *CompanyState) CompanyDBID() uint {
 	return s.dbID
 }
 
+// Lock acquires a write lock on the state.
+func (s *CompanyState) Lock() {
+	s.mu.Lock()
+}
+
+// Unlock releases the write lock on the state.
+func (s *CompanyState) Unlock() {
+	s.mu.Unlock()
+}
+
 // RLock acquires a read lock on the state.
 func (s *CompanyState) RLock() {
 	s.mu.RLock()
