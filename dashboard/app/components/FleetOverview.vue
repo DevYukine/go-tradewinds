@@ -249,7 +249,7 @@ const totalCapacity = computed(() =>
               <div
                 v-if="ship.passenger_cap > 0"
                 class="h-full bg-cyan-500 transition-all"
-                :style="{ width: `${(ship.passenger_cap / (ship.capacity + ship.passenger_cap)) * 100}%` }"
+                :style="{ width: `${(ship.passenger_count / (ship.capacity + ship.passenger_cap)) * 100}%` }"
               />
             </div>
           </div>
