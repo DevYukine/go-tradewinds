@@ -36,7 +36,7 @@ func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, por
 		zap.String("port", port.Name),
 	)
 
-	req := b.buildTradeRequest(ship, port)
+	req := b.buildTradeRequestWithPassengers(ctx, ship, port)
 
 	start := time.Now()
 	decision, err := b.ctx.Agent.DecideTradeAction(ctx, req)
@@ -62,6 +62,7 @@ func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, por
 		if err := b.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
 			b.logger.Error("buy execution failed", zap.Error(err))
 		}
+		b.boardPassengers(ctx, ship, decision.BoardPassengers)
 		if decision.SailTo != nil {
 			if err := b.sendShipToPort(ctx, ship, *decision.SailTo); err != nil {
 				b.logger.Error("transit failed", zap.Error(err))

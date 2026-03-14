@@ -60,20 +60,102 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 	budget := req.Constraints.MaxSpend
 	if budget <= 0 {
 		dest := a.closestPort(reachable)
+		passengers := a.selectPassengers(req.AvailablePassengers, req.BoardedPassengers, ship.PassengerCap, &dest, reachable)
 		return &TradeDecision{
 			Action: "sell_and_buy", SellOrders: sells, SailTo: &dest,
-			Reasoning: "treasury at floor, selling and moving on", Confidence: 0.4,
+			BoardPassengers: passengers,
+			Reasoning:       "treasury at floor, selling and moving on", Confidence: 0.4,
 		}, nil
 	}
 
 	// Step 2: Find best opportunity — scoring differs by strategy.
+	var decision *TradeDecision
+	var err error
+
 	switch req.StrategyHint {
 	case "bulk_hauler":
-		return a.decideBulkHaulerTrade(req, sells, priceIndex, reachable, currentPortID, budget)
+		decision, err = a.decideBulkHaulerTrade(req, sells, priceIndex, reachable, currentPortID, budget)
 	default:
-		// Arbitrage and market_maker both use profit/distance scoring for NPC trades.
-		return a.decideArbitrageTrade(req, sells, priceIndex, reachable, currentPortID, budget)
+		decision, err = a.decideArbitrageTrade(req, sells, priceIndex, reachable, currentPortID, budget)
 	}
+
+	if err != nil {
+		return decision, err
+	}
+
+	// Step 3: Board passengers heading to our destination (or any reachable port).
+	decision.BoardPassengers = a.selectPassengers(
+		req.AvailablePassengers, req.BoardedPassengers,
+		ship.PassengerCap, decision.SailTo, reachable,
+	)
+
+	return decision, nil
+}
+
+// selectPassengers picks profitable passengers to board, preferring those heading
+// to the chosen destination. Returns passenger IDs to board.
+func (a *HeuristicAgent) selectPassengers(
+	available []PassengerInfo,
+	boarded []PassengerInfo,
+	passengerCap int,
+	destPortID *uuid.UUID,
+	reachable map[uuid.UUID]float64,
+) []uuid.UUID {
+	if passengerCap <= 0 || len(available) == 0 {
+		return nil
+	}
+
+	// Remaining capacity = cap minus already boarded groups.
+	remaining := passengerCap - len(boarded)
+	if remaining <= 0 {
+		return nil
+	}
+
+	// Score passengers: those heading to our destination get a 2x bonus.
+	type scored struct {
+		id    uuid.UUID
+		score float64
+	}
+	var candidates []scored
+	for _, p := range available {
+		// Only board passengers heading to a reachable port.
+		if _, ok := reachable[p.DestinationPortID]; !ok {
+			continue
+		}
+
+		bidPerHead := float64(p.Bid) / float64(p.Count)
+		dist := reachable[p.DestinationPortID]
+		score := bidPerHead / max(dist, 1.0)
+
+		// Bonus if heading to the same destination we've already chosen.
+		if destPortID != nil && p.DestinationPortID == *destPortID {
+			score *= 2.0
+		}
+
+		candidates = append(candidates, scored{id: p.ID, score: score})
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+
+	var selected []uuid.UUID
+	for _, c := range candidates {
+		if len(selected) >= remaining {
+			break
+		}
+		selected = append(selected, c.id)
+	}
+
+	if len(selected) > 0 {
+		a.logger.Info("selecting passengers to board",
+			zap.Int("count", len(selected)),
+			zap.Int("available", len(available)),
+			zap.Int("capacity_remaining", remaining),
+		)
+	}
+
+	return selected
 }
 
 // decideArbitrageTrade scores opportunities by profit per unit of distance (fast turnover).

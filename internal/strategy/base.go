@@ -41,10 +41,12 @@ func (b *baseStrategy) buildTradeRequest(ship *bot.ShipState, port *api.Port) ag
 	state.RLock()
 	defer state.RUnlock()
 
+	world := b.ctx.World
+
 	// Build ship snapshots.
 	allShips := make([]agent.ShipSnapshot, 0, len(state.Ships))
 	for _, s := range state.Ships {
-		allShips = append(allShips, shipToSnapshot(s))
+		allShips = append(allShips, shipToSnapshot(s, world))
 	}
 
 	// Build warehouse snapshots.
@@ -61,12 +63,12 @@ func (b *baseStrategy) buildTradeRequest(ship *bot.ShipState, port *api.Port) ag
 			Reputation:  state.Reputation,
 			TotalUpkeep: state.TotalUpkeep,
 		},
-		Ship:       shipToSnapshot(ship),
+		Ship:       shipToSnapshot(ship, world),
 		AllShips:    allShips,
 		Warehouses: warehouses,
 		PriceCache: b.ctx.PriceCache.All(),
-		Routes:     b.ctx.World.ToAgentRoutes(),
-		Ports:      b.ctx.World.ToAgentPorts(),
+		Routes:     world.ToAgentRoutes(),
+		Ports:      world.ToAgentPorts(),
 		Constraints: agent.Constraints{
 			TreasuryFloor: state.TotalUpkeep * 2,
 			MaxSpend:      state.Treasury - state.TotalUpkeep*2,
@@ -83,7 +85,7 @@ func (b *baseStrategy) buildFleetRequest() agent.FleetDecisionRequest {
 
 	ships := make([]agent.ShipSnapshot, 0, len(state.Ships))
 	for _, s := range state.Ships {
-		ships = append(ships, shipToSnapshot(s))
+		ships = append(ships, shipToSnapshot(s, b.ctx.World))
 	}
 
 	warehouses := make([]agent.WarehouseSnapshot, 0, len(state.Warehouses))
@@ -104,6 +106,87 @@ func (b *baseStrategy) buildFleetRequest() agent.FleetDecisionRequest {
 		ShipTypes:     b.ctx.World.ToAgentShipTypes(),
 		PriceCache:    b.ctx.PriceCache.All(),
 		ShipyardPorts: b.ctx.World.ShipyardPorts,
+	}
+}
+
+// buildTradeRequestWithPassengers extends buildTradeRequest by fetching
+// available passengers at the current port and boarded passengers on the ship.
+func (b *baseStrategy) buildTradeRequestWithPassengers(ctx context.Context, ship *bot.ShipState, port *api.Port) agent.TradeDecisionRequest {
+	req := b.buildTradeRequest(ship, port)
+
+	// Only fetch passengers if the ship type supports them.
+	if req.Ship.PassengerCap <= 0 {
+		return req
+	}
+
+	// Fetch available passengers at this port.
+	available, err := b.ctx.Client.ListPassengers(ctx, api.PassengerFilters{
+		Status: "available",
+		PortID: port.ID.String(),
+	})
+	if err != nil {
+		b.logger.Debug("failed to fetch available passengers", zap.Error(err))
+	} else {
+		for _, p := range available {
+			req.AvailablePassengers = append(req.AvailablePassengers, agent.PassengerInfo{
+				ID:                p.ID,
+				Count:             p.Count,
+				Bid:               p.Bid,
+				OriginPortID:      p.OriginPortID,
+				DestinationPortID: p.DestinationPortID,
+				ExpiresAt:         p.ExpiresAt,
+			})
+		}
+	}
+
+	// Fetch passengers already boarded on this ship.
+	boarded, err := b.ctx.Client.ListPassengers(ctx, api.PassengerFilters{
+		Status: "boarded",
+		ShipID: ship.Ship.ID.String(),
+	})
+	if err != nil {
+		b.logger.Debug("failed to fetch boarded passengers", zap.Error(err))
+	} else {
+		for _, p := range boarded {
+			req.BoardedPassengers = append(req.BoardedPassengers, agent.PassengerInfo{
+				ID:                p.ID,
+				Count:             p.Count,
+				Bid:               p.Bid,
+				OriginPortID:      p.OriginPortID,
+				DestinationPortID: p.DestinationPortID,
+				ExpiresAt:         p.ExpiresAt,
+			})
+		}
+	}
+
+	return req
+}
+
+// --- Passenger Boarding ---
+
+// boardPassengers boards the specified passengers onto the ship.
+func (b *baseStrategy) boardPassengers(ctx context.Context, ship *bot.ShipState, passengerIDs []uuid.UUID) {
+	for _, pid := range passengerIDs {
+		passenger, err := b.ctx.Client.BoardPassenger(ctx, pid, ship.Ship.ID)
+		if err != nil {
+			b.logger.Warn("failed to board passenger",
+				zap.String("passenger_id", pid.String()),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		destName := passenger.DestinationPortID.String()
+		if p := b.ctx.World.GetPort(passenger.DestinationPortID); p != nil {
+			destName = p.Name
+		}
+
+		b.logger.Trade("boarded passengers",
+			zap.String("passenger_id", pid.String()),
+			zap.Int("count", passenger.Count),
+			zap.Int("bid", passenger.Bid),
+			zap.String("destination", destName),
+		)
 	}
 }
 
@@ -542,7 +625,7 @@ func (b *baseStrategy) recordTrade(exec *api.TradeExecution) {
 
 // --- Snapshot Converters ---
 
-func shipToSnapshot(s *bot.ShipState) agent.ShipSnapshot {
+func shipToSnapshot(s *bot.ShipState, world *bot.WorldCache) agent.ShipSnapshot {
 	cargo := make([]agent.CargoItem, len(s.Cargo))
 	for i, c := range s.Cargo {
 		cargo[i] = agent.CargoItem{
@@ -552,13 +635,21 @@ func shipToSnapshot(s *bot.ShipState) agent.ShipSnapshot {
 	}
 
 	snap := agent.ShipSnapshot{
-		ID:       s.Ship.ID,
-		Name:     s.Ship.Name,
-		Status:   s.Ship.Status,
-		PortID:   s.Ship.PortID,
-		Cargo:    cargo,
+		ID:        s.Ship.ID,
+		Name:      s.Ship.Name,
+		Status:    s.Ship.Status,
+		PortID:    s.Ship.PortID,
+		Cargo:     cargo,
 		ArrivesAt: s.Ship.ArrivingAt,
 	}
+
+	// Enrich with ship type info if available.
+	if st := world.GetShipType(s.Ship.ShipTypeID); st != nil {
+		snap.Capacity = st.Capacity
+		snap.Speed = st.Speed
+		snap.PassengerCap = st.Passengers
+	}
+
 	return snap
 }
 

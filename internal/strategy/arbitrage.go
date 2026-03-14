@@ -43,8 +43,8 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 		zap.String("port", port.Name),
 	)
 
-	// Build decision request with full game state.
-	req := a.buildTradeRequest(ship, port)
+	// Build decision request with full game state including passengers.
+	req := a.buildTradeRequestWithPassengers(ctx, ship, port)
 
 	// Ask the agent.
 	start := time.Now()
@@ -77,6 +77,8 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 		if err := a.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
 			a.logger.Error("buy execution failed", zap.Error(err))
 		}
+		// Board passengers.
+		a.boardPassengers(ctx, ship, decision.BoardPassengers)
 		// Then sail.
 		if decision.SailTo != nil {
 			if err := a.sendShipToPort(ctx, ship, *decision.SailTo); err != nil {

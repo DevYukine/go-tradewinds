@@ -43,7 +43,7 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 		zap.String("port", port.Name),
 	)
 
-	req := m.buildTradeRequest(ship, port)
+	req := m.buildTradeRequestWithPassengers(ctx, ship, port)
 
 	start := time.Now()
 	decision, err := m.ctx.Agent.DecideTradeAction(ctx, req)
@@ -68,6 +68,7 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 		if err := m.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
 			m.logger.Error("buy execution failed", zap.Error(err))
 		}
+		m.boardPassengers(ctx, ship, decision.BoardPassengers)
 		if decision.SailTo != nil {
 			if err := m.sendShipToPort(ctx, ship, *decision.SailTo); err != nil {
 				m.logger.Error("transit failed", zap.Error(err))

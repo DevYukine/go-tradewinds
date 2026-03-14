@@ -166,13 +166,14 @@ func stripCodeFences(s string) string {
 // ---------------------------------------------------------------------------
 
 const tradeSystemPrompt = `You are a trading bot AI for a maritime trading game called Tradewinds.
-Given the current game state as JSON, decide what to buy, sell, and where to sail.
+Given the current game state as JSON, decide what to buy, sell, which passengers to board, and where to sail.
 
 Respond with ONLY a valid JSON object matching this schema:
 {
   "action": "buy_and_sail" | "sell_and_buy" | "wait" | "dock",
   "sell_orders": [{"good_id": "uuid", "quantity": int}],
   "buy_orders": [{"good_id": "uuid", "quantity": int, "destination": "uuid"}],
+  "board_passengers": ["passenger_uuid"],
   "sail_to": "uuid" | null,
   "reasoning": "string",
   "confidence": 0.0-1.0
@@ -184,6 +185,9 @@ Maximize profit by exploiting price differences between ports. Consider:
 - Distance and travel time to destinations
 - Available budget (treasury constraints)
 - Ship capacity
+- Available passengers: board passengers heading to your destination for extra income (their bid is paid on delivery)
+- Ship passenger capacity (PassengerCap) — you can only board up to this many passenger groups
+- Passengers already boarded — consider delivering them by sailing to their destination
 
 Do NOT include any text outside the JSON object.`
 

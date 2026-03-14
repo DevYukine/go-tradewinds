@@ -184,12 +184,13 @@ func (wc *WorldCache) ToAgentShipTypes() []agent.ShipTypeInfo {
 	types := make([]agent.ShipTypeInfo, len(wc.ShipTypes))
 	for i, st := range wc.ShipTypes {
 		types[i] = agent.ShipTypeInfo{
-			ID:        st.ID,
-			Name:      st.Name,
-			Capacity:  st.Capacity,
-			Speed:     st.Speed,
-			Upkeep:    st.Upkeep,
-			BasePrice: st.BasePrice,
+			ID:           st.ID,
+			Name:         st.Name,
+			Capacity:     st.Capacity,
+			Speed:        st.Speed,
+			Upkeep:       st.Upkeep,
+			BasePrice:    st.BasePrice,
+			PassengerCap: st.Passengers,
 		}
 	}
 	return types

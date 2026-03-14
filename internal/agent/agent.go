@@ -129,14 +129,25 @@ type CompanySnapshot struct {
 
 // ShipSnapshot is a point-in-time view of a ship's state.
 type ShipSnapshot struct {
-	ID        uuid.UUID
-	Name      string
-	Status    string // "docked" or "traveling"
-	PortID    *uuid.UUID
-	Cargo     []CargoItem
-	Capacity  int
-	Speed     int
-	ArrivesAt *time.Time
+	ID           uuid.UUID
+	Name         string
+	Status       string // "docked" or "traveling"
+	PortID       *uuid.UUID
+	Cargo        []CargoItem
+	Capacity     int
+	Speed        int
+	PassengerCap int // Max passenger groups from ship type.
+	ArrivesAt    *time.Time
+}
+
+// PassengerInfo describes an available or boarded passenger group.
+type PassengerInfo struct {
+	ID                uuid.UUID
+	Count             int
+	Bid               int // Payment on delivery.
+	OriginPortID      uuid.UUID
+	DestinationPortID uuid.UUID
+	ExpiresAt         time.Time
 }
 
 // CargoItem represents a quantity of a good on a ship.
@@ -188,12 +199,13 @@ type RouteInfo struct {
 
 // ShipTypeInfo describes an available ship type for purchase decisions.
 type ShipTypeInfo struct {
-	ID        uuid.UUID
-	Name      string
-	Capacity  int
-	Speed     int
-	Upkeep    int
-	BasePrice int
+	ID           uuid.UUID
+	Name         string
+	Capacity     int
+	Speed        int
+	Upkeep       int
+	BasePrice    int
+	PassengerCap int // Maximum number of passenger groups this ship can carry.
 }
 
 // TradeLogEntry is a recent trade for context in decision-making.
@@ -216,16 +228,18 @@ type Constraints struct {
 
 // TradeDecisionRequest contains everything an agent needs to decide a trade.
 type TradeDecisionRequest struct {
-	StrategyHint string // "arbitrage", "bulk_hauler", "market_maker" — guides agent behavior.
-	Company      CompanySnapshot
-	Ship         ShipSnapshot
-	AllShips     []ShipSnapshot
-	Warehouses   []WarehouseSnapshot
-	PriceCache   []PricePoint
-	Routes       []RouteInfo
-	Ports        []PortInfo
-	RecentTrades []TradeLogEntry
-	Constraints  Constraints
+	StrategyHint        string // "arbitrage", "bulk_hauler", "market_maker" — guides agent behavior.
+	Company             CompanySnapshot
+	Ship                ShipSnapshot
+	AllShips            []ShipSnapshot
+	Warehouses          []WarehouseSnapshot
+	PriceCache          []PricePoint
+	Routes              []RouteInfo
+	Ports               []PortInfo
+	RecentTrades        []TradeLogEntry
+	Constraints         Constraints
+	AvailablePassengers []PassengerInfo // Passengers at the current port looking for transport.
+	BoardedPassengers   []PassengerInfo // Passengers already on this ship.
 }
 
 // SellOrder instructs the bot to sell a good at the current port.
@@ -243,12 +257,13 @@ type BuyOrder struct {
 
 // TradeDecision is the agent's response to a trade decision request.
 type TradeDecision struct {
-	Action     string      // "buy_and_sail", "sell_and_buy", "wait", "dock"
-	SellOrders []SellOrder // What to sell at current port.
-	BuyOrders  []BuyOrder  // What to buy before departing.
-	SailTo     *uuid.UUID  // Destination port (nil = stay docked).
-	Reasoning  string      // Human-readable explanation.
-	Confidence float64     // 0.0-1.0, used by optimizer to weight decisions.
+	Action          string      // "buy_and_sail", "sell_and_buy", "wait", "dock"
+	SellOrders      []SellOrder // What to sell at current port.
+	BuyOrders       []BuyOrder  // What to buy before departing.
+	BoardPassengers []uuid.UUID // Passenger IDs to board before departing.
+	SailTo          *uuid.UUID  // Destination port (nil = stay docked).
+	Reasoning       string      // Human-readable explanation.
+	Confidence      float64     // 0.0-1.0, used by optimizer to weight decisions.
 }
 
 // --- Fleet Decision ---
