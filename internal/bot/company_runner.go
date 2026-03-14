@@ -242,23 +242,30 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 	}
 
 	// Load or create tunable params from DB.
+	// Use a two-step lookup to avoid duplicate key errors when multiple
+	// runners start concurrently and race on FirstOrCreate.
 	var params db.CompanyParams
-	result := r.gormDB.Where("company_id = ?", r.dbRecord.ID).FirstOrCreate(&params, db.CompanyParams{
-		CompanyID:              r.dbRecord.ID,
-		MinMarginPct:           0.15,
-		PassengerWeight:        2.0,
-		SpeculativeTradeEnabled: false,
-		MarketEvalIntervalSec:  60,
-		FleetEvalIntervalSec:   180,
-		PassengerDestBonus:     3.0,
-	})
-	if result.Error != nil {
-		r.logger.Warn("failed to load company params, using defaults", zap.Error(result.Error))
-	} else {
-		r.state.mu.Lock()
-		r.state.Params = &params
-		r.state.mu.Unlock()
+	if err := r.gormDB.Where("company_id = ?", r.dbRecord.ID).First(&params).Error; err != nil {
+		// Not found — create with defaults.
+		params = db.CompanyParams{
+			CompanyID:               r.dbRecord.ID,
+			MinMarginPct:            0.15,
+			PassengerWeight:         2.0,
+			SpeculativeTradeEnabled: false,
+			MarketEvalIntervalSec:   60,
+			FleetEvalIntervalSec:    180,
+			PassengerDestBonus:      3.0,
+		}
+		if err := r.gormDB.Create(&params).Error; err != nil {
+			// Another runner may have created it — try loading again.
+			if err2 := r.gormDB.Where("company_id = ?", r.dbRecord.ID).First(&params).Error; err2 != nil {
+				r.logger.Warn("failed to load company params, using defaults", zap.Error(err2))
+			}
+		}
 	}
+	r.state.mu.Lock()
+	r.state.Params = &params
+	r.state.mu.Unlock()
 
 	// Fetch active P2P orders.
 	orders, err := r.client.ListOrders(ctx, api.OrderFilters{})
