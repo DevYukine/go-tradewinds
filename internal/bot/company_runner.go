@@ -40,6 +40,7 @@ type CompanyRunner struct {
 	logger     *CompanyLogger
 	dbRecord   *db.CompanyRecord
 
+	events          *EventBroadcaster
 	strategyCh      chan Strategy          // Receives new strategy assignments from the optimizer.
 	dispatchedShips map[uuid.UUID]time.Time // Tracks recently dispatched ships.
 }
@@ -55,17 +56,19 @@ func NewCompanyRunner(
 	ag agent.Agent,
 	logger *CompanyLogger,
 	dbRecord *db.CompanyRecord,
+	events *EventBroadcaster,
 ) *CompanyRunner {
 	return &CompanyRunner{
-		client:     client,
-		gormDB:     gormDB,
-		world:      world,
-		priceCache: priceCache,
-		state:      state,
-		strategy:   strategy,
-		agent:      ag,
-		logger:     logger,
-		dbRecord:   dbRecord,
+		client:          client,
+		gormDB:          gormDB,
+		world:           world,
+		priceCache:      priceCache,
+		state:           state,
+		strategy:        strategy,
+		agent:           ag,
+		logger:          logger,
+		dbRecord:        dbRecord,
+		events:          events,
 		strategyCh:      make(chan Strategy, 1),
 		dispatchedShips: make(map[uuid.UUID]time.Time),
 	}
@@ -395,6 +398,7 @@ func (r *CompanyRunner) handleShipDocked(ctx context.Context, data json.RawMessa
 		return
 	}
 
+	r.events.Emit(EventShipDocked)
 	r.dispatchWithRetry(ctx, shipState, port)
 }
 
@@ -418,6 +422,7 @@ func (r *CompanyRunner) handleShipSetSail(data json.RawMessage) {
 		ss.Ship.PortID = nil
 	}
 	r.state.mu.Unlock()
+	r.events.Emit(EventShipSailed)
 }
 
 // handleShipBought updates state when a new ship is purchased and triggers
@@ -444,6 +449,7 @@ func (r *CompanyRunner) handleShipBought(ctx context.Context, data json.RawMessa
 	r.state.mu.Lock()
 	r.state.Ships[bought.ShipID] = &ShipState{Ship: *ship}
 	r.state.mu.Unlock()
+	r.events.Emit(EventShipBought)
 
 	// Trigger first trade for newly bought ship if it's docked.
 	if ship.Status == "docked" && ship.PortID != nil {
@@ -460,6 +466,7 @@ func (r *CompanyRunner) handleTick(ctx context.Context) {
 		r.logger.Warn("economy refresh failed", zap.Error(err))
 	} else {
 		r.state.UpdateEconomy(econ)
+		r.events.Emit(EventEconomyTick)
 	}
 
 	// Record P&L snapshot.
@@ -682,6 +689,7 @@ func (r *CompanyRunner) swapStrategy(ctx context.Context, newStrategy Strategy) 
 		PriceCache: r.priceCache,
 		Agent:      r.agent,
 		Logger:     r.logger,
+		Events:     r.events,
 		DB:         r.gormDB,
 	}
 
@@ -709,6 +717,11 @@ func (r *CompanyRunner) swapStrategy(ctx context.Context, newStrategy Strategy) 
 // Logger returns the company logger for external consumers (e.g., SSE streaming).
 func (r *CompanyRunner) Logger() *CompanyLogger {
 	return r.logger
+}
+
+// Events returns the event broadcaster for external consumers (e.g., SSE streaming).
+func (r *CompanyRunner) Events() *EventBroadcaster {
+	return r.events
 }
 
 // refreshOrders fetches active orders, updates state, and auto-cancels expired ones.

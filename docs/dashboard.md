@@ -35,9 +35,19 @@ Fiber web server on `API_PORT` (default 3002).
 |------|-------------|
 | GET | `/sse/logs/:id` | Live log stream for a company |
 | GET | `/sse/pnl/:id` | Live P&L stream (`?since_id=`) |
+| GET | `/sse/events/:id` | Real-time state change notifications |
 
 ### `/sse/logs/:id`
 Subscribes to `CompanyLogger` ring buffer. Streams log entries as line-delimited JSON. Auto-cleans on disconnect.
 
 ### `/sse/pnl/:id`
 Polls `PnLSnapshot` table every 5 seconds. Tracks `since_id` to only send new snapshots. Supports `?since_id=` query param for resumption.
+
+### `/sse/events/:id`
+Subscribes to `EventBroadcaster` on the `CompanyRunner`. Streams typed state change events as JSON:
+- `ship_bought`, `ship_docked`, `ship_sailed`, `ship_sold` — fleet changes
+- `trade`, `passenger` — activity events
+- `economy` — treasury/upkeep refresh
+- `warehouse` — warehouse purchased
+
+The dashboard uses these to trigger instant re-fetches of inventory, trades, and company data instead of waiting for poll intervals.

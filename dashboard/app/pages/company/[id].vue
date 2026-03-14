@@ -5,9 +5,10 @@ const route = useRoute()
 const router = useRouter()
 const companyId = computed(() => Number(route.params.id))
 
-const { companies } = useCompanies()
-const { inventory, startPolling: startInvPolling, stopPolling: stopInvPolling } = useInventory(companyId)
+const { companies, fetchCompanies } = useCompanies()
+const { inventory, fetchInventory, startPolling: startInvPolling, stopPolling: stopInvPolling } = useInventory(companyId)
 const { history, loading: pnlLoading, fetchHistory, connectSSE, disconnectSSE } = usePnL()
+const { connect: connectEvents, disconnect: disconnectEvents } = useCompanyEvents()
 
 const company = computed<Company | undefined>(() =>
   companies.value.find(c => c.id === companyId.value)
@@ -25,16 +26,33 @@ watch([companies, companyId], () => {
   }
 })
 
+// Event types that trigger inventory refresh (ships, cargo, warehouses).
+const inventoryEvents = new Set([
+  'ship_bought', 'ship_docked', 'ship_sailed', 'ship_sold',
+  'trade', 'passenger', 'warehouse', 'economy',
+])
+
 // Single owner of fetch + SSE lifecycle
 watch(companyId, (id) => {
   if (id) {
     startInvPolling(id, 10000)
     fetchHistory(id).then(() => connectSSE(id))
+
+    // Connect real-time events SSE — trigger instant re-fetches.
+    connectEvents(id, (event) => {
+      if (inventoryEvents.has(event.type)) {
+        fetchInventory(id)
+      }
+      if (event.type === 'economy' || event.type === 'ship_bought' || event.type === 'ship_sold') {
+        fetchCompanies()
+      }
+    })
   }
 }, { immediate: true })
 
 onUnmounted(() => {
   disconnectSSE()
+  disconnectEvents()
   stopInvPolling()
 })
 

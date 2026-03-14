@@ -337,6 +337,8 @@ func (m *Manager) setupRunner(
 		m.gormDB,
 	)
 
+	events := NewEventBroadcaster()
+
 	// Create strategy context and strategy instance.
 	stratCtx := StrategyContext{
 		Client:     companyClient,
@@ -345,6 +347,7 @@ func (m *Manager) setupRunner(
 		PriceCache: m.priceCache,
 		Agent:      m.agent,
 		Logger:     companyLogger,
+		Events:     events,
 		DB:         m.gormDB,
 	}
 
@@ -363,6 +366,7 @@ func (m *Manager) setupRunner(
 		m.agent,
 		companyLogger,
 		dbRecord,
+		events,
 	), nil
 }
 

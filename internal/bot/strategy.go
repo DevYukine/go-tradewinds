@@ -39,6 +39,7 @@ type StrategyContext struct {
 	PriceCache *PriceCache
 	Agent      agent.Agent
 	Logger     *CompanyLogger
+	Events     *EventBroadcaster
 	DB         *gorm.DB
 }
 

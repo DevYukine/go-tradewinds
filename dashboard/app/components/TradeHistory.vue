@@ -7,6 +7,7 @@ const activeTab = ref<'trades' | 'passengers' | 'game'>('trades')
 const { trades, loading, fetchTrades, lastUpdated } = useTrades()
 const { passengers, loading: passengersLoading, fetchPassengers, lastUpdated: passengersLastUpdated } = usePassengers()
 const { gameTrades, loading: gameLoading, fetchGameTrades, lastUpdated: gameLastUpdated } = useGameTrades()
+const { connect: connectEvents, disconnect: disconnectEvents } = useCompanyEvents()
 const { now } = useNow()
 
 const currentLastUpdated = computed(() => {
@@ -25,34 +26,45 @@ const lastUpdatedAgo = computed(() => {
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-function startPolling(id: number) {
-  if (pollTimer) clearInterval(pollTimer)
+function fetchAll(id: number) {
   fetchTrades(id)
   fetchPassengers(id)
   fetchGameTrades(id)
-  pollTimer = setInterval(() => {
-    fetchTrades(id)
-    fetchPassengers(id)
-    fetchGameTrades(id)
-  }, 15000)
+}
+
+function startPolling(id: number) {
+  if (pollTimer) clearInterval(pollTimer)
+  fetchAll(id)
+  // Slower fallback poll since events provide instant updates.
+  pollTimer = setInterval(() => fetchAll(id), 30000)
 }
 
 watch(
   () => props.companyId,
   (id) => {
-    if (id) startPolling(id)
+    if (id) {
+      startPolling(id)
+      // Instant refresh on trade/passenger events.
+      connectEvents(id, (event) => {
+        if (event.type === 'trade') {
+          fetchTrades(id)
+          fetchGameTrades(id)
+        } else if (event.type === 'passenger') {
+          fetchPassengers(id)
+        }
+      })
+    }
   },
   { immediate: true }
 )
 
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
+  disconnectEvents()
 })
 
 function refresh() {
-  fetchTrades(props.companyId)
-  fetchPassengers(props.companyId)
-  fetchGameTrades(props.companyId)
+  fetchAll(props.companyId)
 }
 
 function formatCurrency(value: number): string {

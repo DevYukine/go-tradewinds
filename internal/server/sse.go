@@ -19,6 +19,7 @@ func (s *Server) registerSSE() {
 
 	sse.Get("/logs/:id", s.handleSSELogs)
 	sse.Get("/pnl/:id", s.handleSSEPnL)
+	sse.Get("/events/:id", s.handleSSEEvents)
 }
 
 // handleSSELogs streams live log entries for a specific company.
@@ -120,6 +121,62 @@ func (s *Server) handleSSEPnL(c fiber.Ctx) error {
 
 		for range ticker.C {
 			if !s.sendPnLUpdates(w, &lastID, companyID) {
+				return
+			}
+		}
+	})
+}
+
+// handleSSEEvents streams real-time state change notifications for a company.
+// The dashboard uses these to trigger immediate re-fetches instead of waiting
+// for the next poll cycle.
+func (s *Server) handleSSEEvents(c fiber.Ctx) error {
+	companyID, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "invalid company id",
+		})
+	}
+
+	var record db.CompanyRecord
+	if err := s.db.First(&record, companyID).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "company not found",
+		})
+	}
+
+	runner := s.manager.GetRunner(record.GameID)
+	if runner == nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "company runner not found",
+		})
+	}
+
+	subID, ch := runner.Events().Subscribe()
+
+	c.Set("Content-Type", "text/event-stream")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
+	c.Set("Transfer-Encoding", "chunked")
+
+	return c.SendStreamWriter(func(w *bufio.Writer) {
+		defer runner.Events().Unsubscribe(subID)
+
+		s.logger.Info("SSE events stream started",
+			zap.Uint64("company_id", companyID),
+			zap.Int("sub_id", subID),
+		)
+
+		for event := range ch {
+			data, err := json.Marshal(event)
+			if err != nil {
+				continue
+			}
+
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				return
+			}
+			if err := w.Flush(); err != nil {
 				return
 			}
 		}

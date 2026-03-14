@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import type { Company } from '~/types'
 
-const { companies, companiesByStrategy } = useCompanies()
+const { companies, companiesByStrategy, fetchCompanies } = useCompanies()
 const router = useRouter()
 
 // Use the shared inventory composable — same global state as company detail page.
 const { inventories, fetchInventory } = useInventory()
+
+const config = useRuntimeConfig()
+const apiBase = config.public.apiBase
 
 async function fetchAllInventories() {
   for (const company of companies.value) {
@@ -21,9 +24,39 @@ watch(
   { immediate: true }
 )
 
+// Fallback poll at a slower rate since SSE events handle instant updates.
 let pollTimer: ReturnType<typeof setInterval> | null = null
-onMounted(() => { pollTimer = setInterval(fetchAllInventories, 15000) })
-onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
+onMounted(() => { pollTimer = setInterval(fetchAllInventories, 30000) })
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+  // Clean up all event sources.
+  for (const conn of eventSources.values()) {
+    conn.close()
+  }
+  eventSources.clear()
+})
+
+// SSE event connections per company — triggers instant re-fetches.
+const eventSources = new Map<number, EventSource>()
+
+watch(
+  () => companies.value,
+  (list) => {
+    for (const company of list) {
+      if (eventSources.has(company.id)) continue
+
+      const source = new EventSource(`${apiBase}/sse/events/${company.id}`)
+      eventSources.set(company.id, source)
+
+      source.onmessage = () => {
+        // Any event from any company → refresh that company's inventory + company list.
+        fetchInventory(company.id)
+        fetchCompanies()
+      }
+    }
+  },
+  { immediate: true }
+)
 
 function selectCompany(company: Company) {
   router.push(`/company/${company.id}`)

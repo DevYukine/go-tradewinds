@@ -320,6 +320,9 @@ func (b *baseStrategy) boardPassengers(ctx context.Context, ship *bot.ShipState,
 		// Track boarded passenger count on the ship.
 		ship.PassengerCount += passenger.Count
 	}
+	if len(passengerIDs) > 0 {
+		b.ctx.Events.Emit(bot.EventPassenger)
+	}
 }
 
 // --- P2P Order Fills ---
@@ -396,6 +399,7 @@ func (b *baseStrategy) executeSells(ctx context.Context, ship *bot.ShipState, se
 		return err
 	}
 
+	traded := false
 	for _, r := range execResults {
 		if r.Status == "success" && r.Execution != nil {
 			b.logger.Trade("sold cargo",
@@ -405,7 +409,11 @@ func (b *baseStrategy) executeSells(ctx context.Context, ship *bot.ShipState, se
 				zap.Int("total", r.Execution.TotalPrice),
 			)
 			b.recordTrade(r.Execution)
+			traded = true
 		}
+	}
+	if traded {
+		b.ctx.Events.Emit(bot.EventTrade)
 	}
 
 	return nil
@@ -496,6 +504,7 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 		return err
 	}
 
+	traded := false
 	for _, r := range execResults {
 		if r.Status == "success" && r.Execution != nil {
 			b.logger.Trade("bought cargo",
@@ -505,7 +514,11 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 				zap.Int("total", r.Execution.TotalPrice),
 			)
 			b.recordTrade(r.Execution)
+			traded = true
 		}
+	}
+	if traded {
+		b.ctx.Events.Emit(bot.EventTrade)
 	}
 
 	return nil
@@ -613,6 +626,7 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 			zap.String("ship_id", shipID.String()),
 			zap.Int("price", resp.Price),
 		)
+		b.ctx.Events.Emit(bot.EventShipSold)
 	}
 
 	for _, purchase := range decision.BuyShips {
@@ -639,6 +653,7 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 			zap.String("warehouse_id", wh.ID.String()),
 			zap.String("port_id", portID.String()),
 		)
+		b.ctx.Events.Emit(bot.EventWarehouse)
 	}
 }
 
