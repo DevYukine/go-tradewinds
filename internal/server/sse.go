@@ -18,7 +18,7 @@ func (s *Server) registerSSE() {
 	sse := s.app.Group("/sse")
 
 	sse.Get("/logs/:id", s.handleSSELogs)
-	sse.Get("/pnl", s.handleSSEPnL)
+	sse.Get("/pnl/:id", s.handleSSEPnL)
 }
 
 // handleSSELogs streams live log entries for a specific company.
@@ -82,36 +82,47 @@ func (s *Server) handleSSELogs(c fiber.Ctx) error {
 	})
 }
 
-// handleSSEPnL streams live P&L updates by polling the database every 5 seconds.
+// handleSSEPnL streams live P&L updates for a specific company by polling the
+// database every 5 seconds.
 func (s *Server) handleSSEPnL(c fiber.Ctx) error {
+	companyID, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "invalid company id",
+		})
+	}
+
 	c.Set("Content-Type", "text/event-stream")
 	c.Set("Cache-Control", "no-cache")
 	c.Set("Connection", "keep-alive")
 	c.Set("Transfer-Encoding", "chunked")
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
-		s.logger.Info("SSE PnL stream started")
+		s.logger.Info("SSE PnL stream started",
+			zap.Uint64("company_id", companyID),
+		)
 
 		lastID := uint(0)
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
 		// Send initial batch.
-		s.sendPnLUpdates(w, &lastID)
+		s.sendPnLUpdates(w, &lastID, companyID)
 
 		for range ticker.C {
-			if !s.sendPnLUpdates(w, &lastID) {
+			if !s.sendPnLUpdates(w, &lastID, companyID) {
 				return
 			}
 		}
 	})
 }
 
-// sendPnLUpdates queries for new PnL snapshots since lastID, sends them as SSE,
-// and updates lastID. Returns false if the write failed (client disconnected).
-func (s *Server) sendPnLUpdates(w *bufio.Writer, lastID *uint) bool {
+// sendPnLUpdates queries for new PnL snapshots since lastID for a specific
+// company, sends them as SSE, and updates lastID. Returns false if the write
+// failed (client disconnected).
+func (s *Server) sendPnLUpdates(w *bufio.Writer, lastID *uint, companyID uint64) bool {
 	var snapshots []db.PnLSnapshot
-	query := s.db.Where("id > ?", *lastID).Order("id ASC").Limit(100)
+	query := s.db.Where("id > ? AND company_id = ?", *lastID, companyID).Order("id ASC").Limit(100)
 	if err := query.Find(&snapshots).Error; err != nil {
 		s.logger.Error("failed to query PnL snapshots for SSE", zap.Error(err))
 		return true // Keep connection open, just skip this cycle.
