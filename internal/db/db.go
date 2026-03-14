@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
-	"github.com/blazy/tradewinds/internal/config"
+	"github.com/DevYukine/go-tradewinds/internal/config"
 )
 
 const (
