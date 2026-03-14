@@ -153,6 +153,32 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 	}
 	r.state.UpdateShips(ships)
 
+	// Rename any ships that don't have an FFXIV-themed name yet.
+	for _, ship := range ships {
+		if IsFFXIVName(ship.Name) {
+			continue
+		}
+		name := GenerateShipName()
+		renamed, err := r.client.RenameShip(ctx, ship.ID, name)
+		if err != nil {
+			r.logger.Warn("failed to rename legacy ship",
+				zap.String("ship_id", ship.ID.String()),
+				zap.String("old_name", ship.Name),
+				zap.Error(err),
+			)
+			continue
+		}
+		r.logger.Info("renamed legacy ship",
+			zap.String("old_name", ship.Name),
+			zap.String("new_name", renamed.Name),
+		)
+		r.state.Lock()
+		if ss := r.state.Ships[ship.ID]; ss != nil {
+			ss.Ship.Name = renamed.Name
+		}
+		r.state.Unlock()
+	}
+
 	// Fetch cargo for each ship.
 	for _, ship := range ships {
 		cargo, err := r.client.GetShipInventory(ctx, ship.ID)

@@ -625,7 +625,7 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 		}
 
 		// Give the ship a fun FFXIV-themed name.
-		name := generateShipName()
+		name := bot.GenerateShipName()
 		if renamed, err := b.ctx.Client.RenameShip(ctx, ship.ID, name); err != nil {
 			b.logger.Warn("failed to name ship", zap.Error(err))
 		} else {
