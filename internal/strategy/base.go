@@ -634,6 +634,13 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 				zap.String("name", name),
 				zap.String("ship_id", ship.ID.String()),
 			)
+			// Update local state so the dashboard picks up the new name
+			// immediately instead of waiting for the next SSE refresh.
+			b.ctx.State.Lock()
+			if ss := b.ctx.State.Ships[ship.ID]; ss != nil {
+				ss.Ship.Name = name
+			}
+			b.ctx.State.Unlock()
 		}
 
 		// Track ship purchase cost for P&L (includes ~5% port tax).
