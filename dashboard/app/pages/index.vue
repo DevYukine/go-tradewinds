@@ -37,7 +37,7 @@ function selectCompany(company: Company) {
 const totalTreasury = computed(() => companies.value.reduce((s, c) => s + c.treasury, 0))
 const totalShips = computed(() => Object.values(inventories.value).reduce((s, i) => s + i.ships.length, 0))
 const totalUpkeep = computed(() => Object.values(inventories.value).reduce((s, i) => s + i.total_upkeep, 0))
-const shipsAtSea = computed(() => Object.values(inventories.value).reduce((s, i) => s + i.ships.filter(sh => sh.status === 'sailing').length, 0))
+const shipsAtSea = computed(() => Object.values(inventories.value).reduce((s, i) => s + i.ships.filter(sh => sh.status === 'traveling').length, 0))
 const shipsDocked = computed(() => Object.values(inventories.value).reduce((s, i) => s + i.ships.filter(sh => sh.status === 'docked').length, 0))
 const statusCounts = computed(() => {
   const c: Record<string, number> = { running: 0, paused: 0, error: 0, bankrupt: 0 }
@@ -198,7 +198,7 @@ function strategyBadge(strategy: string): string {
           <div v-if="inventories[company.id]?.ships.length" class="mt-3">
             <div class="flex items-center gap-2 text-[10px] text-slate-500 mb-1">
               <span><span class="text-emerald-400">{{ inventories[company.id]?.ships.filter(s => s.status === 'docked').length }}</span> docked</span>
-              <span><span class="text-sky-400">{{ inventories[company.id]?.ships.filter(s => s.status === 'sailing').length }}</span> sailing</span>
+              <span><span class="text-sky-400">{{ inventories[company.id]?.ships.filter(s => s.status === 'traveling').length }}</span> sailing</span>
               <span v-if="inventories[company.id]?.total_upkeep">
                 upkeep <span class="text-rose-400 font-mono">{{ formatCurrency(inventories[company.id]!.total_upkeep) }}/hr</span>
               </span>

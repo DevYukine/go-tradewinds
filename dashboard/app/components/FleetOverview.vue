@@ -41,7 +41,7 @@ function arrivalProgress(arrivingAt: string, distance?: number): number {
 function statusIcon(status: string): string {
   switch (status) {
     case 'docked': return 'lucide:anchor'
-    case 'sailing': return 'mdi:sail-boat'
+    case 'traveling': return 'mdi:sail-boat'
     default: return 'lucide:circle'
   }
 }
@@ -49,7 +49,7 @@ function statusIcon(status: string): string {
 function statusClasses(status: string): string {
   switch (status) {
     case 'docked': return 'text-emerald-400'
-    case 'sailing': return 'text-sky-400'
+    case 'traveling': return 'text-sky-400'
     default: return 'text-slate-400'
   }
 }
@@ -159,7 +159,7 @@ const totalCapacity = computed(() =>
               <span class="text-slate-300">{{ ship.port_name }}</span>
             </template>
             <!-- Sailing with route info -->
-            <template v-else-if="ship.status === 'sailing'">
+            <template v-else-if="ship.status === 'traveling'">
               <span class="text-sky-400 font-medium">Sailing</span>
               <template v-if="ship.from_port_name && ship.to_port_name">
                 <span class="text-slate-400">{{ ship.from_port_name }}</span>
@@ -178,7 +178,7 @@ const totalCapacity = computed(() =>
           </div>
 
           <!-- Sailing progress bar -->
-          <div v-if="ship.status === 'sailing' && ship.arriving_at" class="mb-2">
+          <div v-if="ship.status === 'traveling' && ship.arriving_at" class="mb-2">
             <div class="h-1.5 rounded-full bg-slate-700 overflow-hidden">
               <div
                 class="h-full rounded-full bg-sky-500 transition-all duration-1000"
