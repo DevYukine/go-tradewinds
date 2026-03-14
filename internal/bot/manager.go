@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
-	"strings"
 	"sync"
 	"time"
 
@@ -314,41 +313,50 @@ func (m *Manager) setupRunner(
 	), nil
 }
 
-// buildTicker generates a ticker like "ARB1", "BLK2", "MKT1".
-func (m *Manager) buildTicker(strategy string, index int) string {
-	prefixes := map[string]string{
-		"arbitrage":    "ARB",
-		"bulk_hauler":  "BLK",
-		"market_maker": "MKT",
-	}
-
-	prefix, ok := prefixes[strategy]
-	if !ok {
-		// Use first 3 chars uppercased.
-		prefix = strings.ToUpper(strategy)
-		if len(prefix) > 3 {
-			prefix = prefix[:3]
-		}
-	}
-
-	return fmt.Sprintf("%s%d", prefix, index)
+// ffxivNames is the pool of FFXIV character names used for company naming.
+// Each company gets a unique character — no duplicates across strategies.
+var ffxivNames = []struct {
+	Name   string // Company name: "<Character>'s <Venture>"
+	Ticker string // 3-5 char ticker derived from the character
+}{
+	{"Alphinaud's Ventures", "ALPHI"},
+	{"Alisaie's Expeditions", "ALISA"},
+	{"Y'shtola's Consortium", "YSHTO"},
+	{"Thancred's Trading Co", "THANC"},
+	{"Urianger's Emporium", "URIAN"},
+	{"G'raha's Enterprises", "GRAHA"},
+	{"Estinien's Imports", "ESTIN"},
+	{"Tataru's Goldworks", "TATAR"},
+	{"Krile's Shipments", "KRILE"},
+	{"Minfilia's Commerce", "MINFI"},
+	{"Haurchefant's Guild", "HAUCH"},
+	{"Aymeric's Holdings", "AYMRC"},
+	{"Hien's Trade Routes", "HIEN"},
+	{"Yugiri's Supply Co", "YUGIR"},
+	{"Cid's Ironworks", "CID"},
+	{"Emet-Selch's Legacy", "EMETS"},
+	{"Lyse's Exports", "LYSE"},
+	{"Nero's Machinations", "NERO"},
+	{"Ryne's Caravans", "RYNE"},
+	{"Lyna's Guard Trade", "LYNA"},
 }
 
-// buildCompanyName generates a human-readable company name.
-func (m *Manager) buildCompanyName(strategy string, index int) string {
-	names := map[string]string{
-		"arbitrage":    "Arbitrage",
-		"bulk_hauler":  "Bulk Hauler",
-		"market_maker": "Market Maker",
-	}
+// nameIndex tracks how many names have been assigned so far.
+// Reset each time the manager starts.
+var nameIndex int
 
-	base, ok := names[strategy]
-	if !ok {
-		base = strings.ReplaceAll(strategy, "_", " ")
-		base = strings.Title(base) //nolint:staticcheck
-	}
+// buildTicker returns the FFXIV-themed ticker for the next company.
+func (m *Manager) buildTicker(_ string, _ int) string {
+	idx := nameIndex % len(ffxivNames)
+	return ffxivNames[idx].Ticker
+}
 
-	return fmt.Sprintf("%s %d", base, index)
+// buildCompanyName returns the FFXIV-themed name for the next company
+// and advances the name index so the next call gets a different character.
+func (m *Manager) buildCompanyName(_ string, _ int) string {
+	idx := nameIndex % len(ffxivNames)
+	nameIndex++
+	return ffxivNames[idx].Name
 }
 
 // GetRunner returns a company runner by game ID.
