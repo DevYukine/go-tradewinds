@@ -1054,7 +1054,8 @@ func TestCalcQuantity(t *testing.T) {
 		{"zero price", 1000, 0, 100, 0},
 		{"affordable max", 10000, 10, 100, 100},
 		{"budget limited", 500, 100, 100, 5},
-		{"min 1", 1, 100, 100, 1},
+		{"cannot afford", 1, 100, 100, 0},
+		{"can afford one", 100, 100, 100, 1},
 	}
 
 	for _, tc := range tests {

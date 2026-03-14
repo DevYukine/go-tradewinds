@@ -351,6 +351,31 @@ func (pc *PriceCache) Get(portID, goodID uuid.UUID) (agent.PricePoint, bool) {
 	return pp, ok
 }
 
+// PortAge returns the age of the oldest price entry for a port.
+// Returns a very large duration if the port has never been scanned.
+func (pc *PriceCache) PortAge(portID uuid.UUID) time.Duration {
+	prefix := portID.String() + ":"
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+
+	oldest := time.Duration(0)
+	found := false
+	now := time.Now()
+	for key, pp := range pc.prices {
+		if len(key) > 36 && key[:37] == prefix {
+			age := now.Sub(pp.ObservedAt)
+			if !found || age > oldest {
+				oldest = age
+				found = true
+			}
+		}
+	}
+	if !found {
+		return 24 * time.Hour // never scanned
+	}
+	return oldest
+}
+
 // All returns a snapshot of all observed prices.
 func (pc *PriceCache) All() []agent.PricePoint {
 	pc.mu.RLock()

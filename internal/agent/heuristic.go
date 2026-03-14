@@ -1078,7 +1078,7 @@ func (a *HeuristicAgent) calcQuantity(budget int64, unitPrice int, maxQty int) i
 		maxQty = affordable
 	}
 	if maxQty < 1 {
-		maxQty = 1
+		return 0
 	}
 	return maxQty
 }

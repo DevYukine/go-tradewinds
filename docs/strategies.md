@@ -27,9 +27,12 @@ Maps names to factory functions:
 
 Shared logic used by all strategies.
 
+### On-Demand Price Scanning
+- `ensurePortPrices(ctx, port)` — Checks if port prices are stale (>3 min) or missing, fetches fresh buy/sell quotes on demand using `PriorityNormal`. Called automatically by `buildTradeRequestWithPassengers` so ships never make trade decisions with missing price data.
+
 ### Request Builders
 - `buildTradeRequest(ship, port)` — Assembles TradeDecisionRequest from state
-- `buildTradeRequestWithPassengers(ctx, ship, port)` — Extends with available/boarded passengers
+- `buildTradeRequestWithPassengers(ctx, ship, port)` — Calls `ensurePortPrices`, then extends with available/boarded passengers and P2P orders
 - `buildFleetRequest()` — Assembles FleetDecisionRequest
 
 ### Trade Execution

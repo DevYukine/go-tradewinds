@@ -32,6 +32,81 @@ func (b *baseStrategy) Init(ctx bot.StrategyContext) error {
 
 func (b *baseStrategy) Shutdown() error { return nil }
 
+// --- On-Demand Price Scanning ---
+
+// ensurePortPrices checks if the price cache for a port is stale or missing
+// and fetches fresh buy/sell quotes on demand. This prevents ships from
+// arriving at unscanned ports and finding no profitable trades.
+func (b *baseStrategy) ensurePortPrices(ctx context.Context, port *api.Port) {
+	const stalePriceThreshold = 3 * time.Minute
+
+	age := b.ctx.PriceCache.PortAge(port.ID)
+	if age < stalePriceThreshold {
+		return
+	}
+
+	b.logger.Debug("port prices stale or missing, scanning on demand",
+		zap.String("port", port.Name),
+		zap.Duration("age", age),
+	)
+
+	goods := b.ctx.World.Goods
+
+	// Fetch buy quotes for all goods at this port.
+	buyReqs := make([]api.QuoteRequest, len(goods))
+	for i, good := range goods {
+		buyReqs[i] = api.QuoteRequest{
+			PortID:   port.ID,
+			GoodID:   good.ID,
+			Action:   "buy",
+			Quantity: 1,
+		}
+	}
+
+	buyResults, err := b.ctx.Client.BatchQuotesWithPriority(ctx, buyReqs, api.PriorityNormal)
+	if err != nil {
+		b.logger.Warn("on-demand buy quote scan failed", zap.String("port", port.Name), zap.Error(err))
+		return
+	}
+
+	// Fetch sell quotes for all goods at this port.
+	sellReqs := make([]api.QuoteRequest, len(goods))
+	for i, good := range goods {
+		sellReqs[i] = api.QuoteRequest{
+			PortID:   port.ID,
+			GoodID:   good.ID,
+			Action:   "sell",
+			Quantity: 1,
+		}
+	}
+
+	sellResults, err := b.ctx.Client.BatchQuotesWithPriority(ctx, sellReqs, api.PriorityNormal)
+	if err != nil {
+		b.logger.Warn("on-demand sell quote scan failed", zap.String("port", port.Name), zap.Error(err))
+		return
+	}
+
+	updated := 0
+	for i, good := range goods {
+		var buyPrice, sellPrice int
+		if i < len(buyResults) && buyResults[i].Status == "success" && buyResults[i].Quote != nil {
+			buyPrice = buyResults[i].Quote.UnitPrice
+		}
+		if i < len(sellResults) && sellResults[i].Status == "success" && sellResults[i].Quote != nil {
+			sellPrice = sellResults[i].Quote.UnitPrice
+		}
+		if buyPrice > 0 || sellPrice > 0 {
+			b.ctx.PriceCache.Set(port.ID, good.ID, buyPrice, sellPrice)
+			updated++
+		}
+	}
+
+	b.logger.Info("on-demand port scan complete",
+		zap.String("port", port.Name),
+		zap.Int("prices_updated", updated),
+	)
+}
+
 // --- Decision Request Builders ---
 
 // buildTradeRequest assembles a TradeDecisionRequest from current state.
@@ -113,6 +188,9 @@ func (b *baseStrategy) buildFleetRequest() agent.FleetDecisionRequest {
 // available passengers at the current port, boarded passengers on the ship,
 // and P2P market orders at the current port for fill opportunities.
 func (b *baseStrategy) buildTradeRequestWithPassengers(ctx context.Context, ship *bot.ShipState, port *api.Port) agent.TradeDecisionRequest {
+	// Ensure we have fresh prices for this port before making trade decisions.
+	b.ensurePortPrices(ctx, port)
+
 	req := b.buildTradeRequest(ship, port)
 
 	// Fetch P2P orders at this port for fill opportunities.
