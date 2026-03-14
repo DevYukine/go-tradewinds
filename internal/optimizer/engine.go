@@ -15,11 +15,11 @@ import (
 )
 
 const (
-	defaultEvalInterval = 15 * time.Minute
+	defaultEvalInterval = 5 * time.Minute
 
 	// minPeriodsBeforeSwitch requires a strategy to underperform for this many
 	// consecutive evaluation periods before triggering a reallocation.
-	minPeriodsBeforeSwitch = 2
+	minPeriodsBeforeSwitch = 1
 
 	// minCompaniesPerStrategy is the minimum to maintain for statistical validity.
 	minCompaniesPerStrategy = 2
@@ -32,7 +32,7 @@ const (
 
 	// utilPeriodsBeforeScale requires utilization to be consistently low/high
 	// for this many consecutive evaluation periods before scaling.
-	utilPeriodsBeforeScale = 3
+	utilPeriodsBeforeScale = 2
 )
 
 // Module provides the optimizer Engine to the fx DI container.
@@ -50,6 +50,7 @@ type Engine struct {
 	interval time.Duration
 	manager  *bot.Manager
 	registry bot.Registry
+	tuner    *ParameterTuner
 
 	// underperformCount tracks consecutive periods a strategy has underperformed.
 	underperformCount map[string]int
@@ -63,7 +64,7 @@ type Engine struct {
 
 // NewEngine creates a new optimization engine.
 func NewEngine(gormDB *gorm.DB, agnt agent.Agent, logger *zap.Logger, manager *bot.Manager, registry bot.Registry) *Engine {
-	return &Engine{
+	e := &Engine{
 		gormDB:            gormDB,
 		agent:             agnt,
 		logger:            logger.Named("optimizer"),
@@ -72,6 +73,8 @@ func NewEngine(gormDB *gorm.DB, agnt agent.Agent, logger *zap.Logger, manager *b
 		registry:          registry,
 		underperformCount: make(map[string]int),
 	}
+	e.tuner = NewParameterTuner(gormDB, manager, logger.Named("tuner"))
+	return e
 }
 
 // RegisterEngine hooks the optimizer into the fx lifecycle.
@@ -166,6 +169,10 @@ func (e *Engine) evaluate(ctx context.Context) {
 
 	// 7. Ask agent for strategy evaluation.
 	e.agentEvaluation(ctx, stats)
+
+	// 8. Parameter tuning: evaluate active experiments, then start new ones.
+	e.tuner.EvaluateExperiments(metrics)
+	e.tuner.RunExperiment(metrics)
 }
 
 // checkDynamicScaling adjusts the number of active companies based on rate

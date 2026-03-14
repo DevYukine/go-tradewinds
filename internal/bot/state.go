@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/DevYukine/go-tradewinds/internal/api"
+	"github.com/DevYukine/go-tradewinds/internal/db"
 )
 
 // CompanyState holds the in-memory state for a single company.
@@ -30,6 +31,9 @@ type CompanyState struct {
 	CumWarehouseCosts int64 // Total spent on warehouse purchases
 	InitialTreasury   int64 // Treasury at bot start, for upkeep derivation
 	pnlInitialized    bool  // Whether cumulative counters have been seeded from DB.
+
+	// Tunable trading parameters from optimizer.
+	Params *db.CompanyParams
 
 	// Active P2P market orders placed by this company.
 	Orders map[uuid.UUID]*api.Order

@@ -14,7 +14,7 @@ type Strategy interface {
 }
 ```
 
-`StrategyContext` provides: Client, State, World, PriceCache, Agent, Logger, DB.
+`StrategyContext` provides: Client, State, World, PriceCache, Agent, Logger, Events, DB.
 
 ## Registry (`internal/strategy/registry.go`)
 
@@ -31,7 +31,7 @@ Shared logic used by all strategies.
 - `ensurePortPrices(ctx, port)` — Checks if port prices are stale (>3 min) or missing, fetches fresh buy/sell quotes on demand using `PriorityNormal`. Called automatically by `buildTradeRequestWithPassengers` so ships never make trade decisions with missing price data.
 
 ### Request Builders
-- `buildTradeRequest(ship, port)` — Assembles TradeDecisionRequest from state
+- `buildTradeRequest(ship, port)` — Assembles TradeDecisionRequest from state, includes `Params` map from `CompanyState.Params`
 - `buildTradeRequestWithPassengers(ctx, ship, port)` — Calls `ensurePortPrices`, then extends with available/boarded passengers and P2P orders
 - `buildFleetRequest()` — Assembles FleetDecisionRequest
 
@@ -58,19 +58,40 @@ Shared logic used by all strategies.
 Fast buy-low-sell-high across ports.
 
 - `OnShipArrival`: Build trade request with passengers → agent decides → execute sells → buys → board passengers → sail
-- `OnTick`: Fleet evaluation every 5 minutes
+- `OnTick`: Fleet evaluation every 3 min (configurable via `FleetEvalIntervalSec` param)
 
 ## Bulk Hauler Strategy (`internal/strategy/bulk_hauler.go`)
 
 High-volume trading with large ships.
 
 - Same flow as arbitrage but agent favors high-value goods and large ship capacity
-- Fleet eval every 5 minutes
+- Fleet eval every 3 min (configurable via `FleetEvalIntervalSec` param)
 
 ## Market Maker Strategy (`internal/strategy/market_maker.go`)
 
 P2P market trading + NPC trading.
 
 - `OnShipArrival`: Same NPC trade flow as arbitrage
-- `OnTick`: Fleet eval (5 min) + market eval (2 min)
+- `OnTick`: Fleet eval (3 min) + market eval (1 min) — both configurable via params
 - `evaluateMarket`: Fetch all open orders + own orders → agent decides → fill orders, post new orders, cancel stale orders
+
+## Configurable Parameters
+
+All strategies read timing intervals from `CompanyState.Params` (set by the optimizer's parameter tuner). If params are nil, hardcoded defaults are used.
+
+| Parameter | Default | Used By |
+|-----------|---------|---------|
+| `FleetEvalIntervalSec` | 180 (3 min) | All strategies |
+| `MarketEvalIntervalSec` | 60 (1 min) | Market Maker |
+| `MinMarginPct` | 0.15 (15%) | Heuristic agent trade decisions |
+| `PassengerWeight` | 2.0 | Heuristic agent destination scoring |
+| `PassengerDestBonus` | 3.0 | Heuristic agent passenger selection |
+| `SpeculativeTradeEnabled` | false | Heuristic agent fallback behavior |
+
+## Profitability Guards
+
+The heuristic agent enforces several guards to prevent money-losing trades:
+- **Minimum margin**: trades must exceed `MinMarginPct` (default 15%) of buy price
+- **Sell-side tax**: profit calculation includes both buy and sell port taxes
+- **No speculative buying**: when no profitable trade exists, ships sail empty toward passenger revenue (not buying speculative cargo)
+- **P2P fill threshold**: 7% minimum margin for filling player orders

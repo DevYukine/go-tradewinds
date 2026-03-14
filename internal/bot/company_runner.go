@@ -241,8 +241,24 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 		r.state.SetWarehouseInventory(wh.ID, inv)
 	}
 
-	// Strategy is already initialized by the factory in the manager.
-	// No need to re-init here.
+	// Load or create tunable params from DB.
+	var params db.CompanyParams
+	result := r.gormDB.Where("company_id = ?", r.dbRecord.ID).FirstOrCreate(&params, db.CompanyParams{
+		CompanyID:              r.dbRecord.ID,
+		MinMarginPct:           0.15,
+		PassengerWeight:        2.0,
+		SpeculativeTradeEnabled: false,
+		MarketEvalIntervalSec:  60,
+		FleetEvalIntervalSec:   180,
+		PassengerDestBonus:     3.0,
+	})
+	if result.Error != nil {
+		r.logger.Warn("failed to load company params, using defaults", zap.Error(result.Error))
+	} else {
+		r.state.mu.Lock()
+		r.state.Params = &params
+		r.state.mu.Unlock()
+	}
 
 	// Fetch active P2P orders.
 	orders, err := r.client.ListOrders(ctx, api.OrderFilters{})

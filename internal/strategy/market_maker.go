@@ -13,7 +13,7 @@ import (
 
 const (
 	// marketEvalInterval is how often the market maker evaluates P2P orders.
-	marketEvalInterval = 2 * time.Minute
+	marketEvalInterval = 1 * time.Minute
 )
 
 // MarketMaker operates on the P2P market by posting buy/sell orders and
@@ -85,14 +85,28 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 }
 
 func (m *MarketMaker) OnTick(ctx context.Context, _ *bot.CompanyState) error {
+	// Use configurable intervals from company params if available.
+	marketInterval := marketEvalInterval
+	fleetInterval := fleetEvalInterval
+	m.ctx.State.RLock()
+	if m.ctx.State.Params != nil {
+		if m.ctx.State.Params.MarketEvalIntervalSec > 0 {
+			marketInterval = time.Duration(m.ctx.State.Params.MarketEvalIntervalSec) * time.Second
+		}
+		if m.ctx.State.Params.FleetEvalIntervalSec > 0 {
+			fleetInterval = time.Duration(m.ctx.State.Params.FleetEvalIntervalSec) * time.Second
+		}
+	}
+	m.ctx.State.RUnlock()
+
 	// Evaluate market opportunities periodically.
-	if time.Since(m.lastMarketEval) >= marketEvalInterval {
+	if time.Since(m.lastMarketEval) >= marketInterval {
 		m.lastMarketEval = time.Now()
 		m.evaluateMarket(ctx)
 	}
 
 	// Evaluate fleet decisions less frequently.
-	if time.Since(m.lastFleetEval) >= fleetEvalInterval {
+	if time.Since(m.lastFleetEval) >= fleetInterval {
 		m.lastFleetEval = time.Now()
 		m.evaluateFleet(ctx)
 	}

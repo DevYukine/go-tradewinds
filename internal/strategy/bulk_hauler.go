@@ -79,7 +79,14 @@ func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, por
 }
 
 func (b *BulkHauler) OnTick(ctx context.Context, _ *bot.CompanyState) error {
-	if time.Since(b.lastFleetEval) < fleetEvalInterval {
+	fleetInterval := fleetEvalInterval
+	b.ctx.State.RLock()
+	if b.ctx.State.Params != nil && b.ctx.State.Params.FleetEvalIntervalSec > 0 {
+		fleetInterval = time.Duration(b.ctx.State.Params.FleetEvalIntervalSec) * time.Second
+	}
+	b.ctx.State.RUnlock()
+
+	if time.Since(b.lastFleetEval) < fleetInterval {
 		return nil
 	}
 	b.lastFleetEval = time.Now()

@@ -242,6 +242,7 @@ type TradeDecisionRequest struct {
 	BoardedPassengers   []PassengerInfo // Passengers already on this ship.
 	PortOrders          []MarketOrder   // P2P orders at the current port (for filling opportunities).
 	OwnOrders           []MarketOrder   // This company's active orders (to avoid self-fill).
+	Params              map[string]float64 // Tunable parameters from optimizer (nil = use defaults).
 }
 
 // SellOrder instructs the bot to sell a good at the current port.

@@ -19,16 +19,17 @@ func decayWeight(tradeTime time.Time, now time.Time) float64 {
 
 // companyMetrics holds computed performance metrics for a single company.
 type companyMetrics struct {
-	CompanyID      uint
-	Strategy       string
-	TradesExecuted int
-	TotalProfit    int64
-	TotalLoss      int64
-	WinRate        float64
-	ProfitPerHour  float64
-	AvgTradeProfit int64
-	TradesPerHour  float64
-	CapacityUtil   float64
+	CompanyID        uint
+	Strategy         string
+	TradesExecuted   int
+	TotalProfit      int64
+	TotalLoss        int64
+	PassengerRevenue int64
+	WinRate          float64
+	ProfitPerHour    float64
+	AvgTradeProfit   int64
+	TradesPerHour    float64
+	CapacityUtil     float64
 }
 
 // collectCompanyMetrics computes performance metrics for a company over the given period.
@@ -41,12 +42,20 @@ func collectCompanyMetrics(gormDB *gorm.DB, companyID uint, strategy string, sin
 	var trades []db.TradeLog
 	gormDB.Where("company_id = ? AND created_at >= ?", companyID, since).Find(&trades)
 
+	// Query passenger revenue for this period.
+	var passengers []db.PassengerLog
+	gormDB.Where("company_id = ? AND created_at >= ?", companyID, since).Find(&passengers)
+
+	now := time.Now()
+	for _, p := range passengers {
+		m.PassengerRevenue += int64(p.Bid)
+	}
+
 	m.TradesExecuted = len(trades)
-	if m.TradesExecuted == 0 {
+	if m.TradesExecuted == 0 && m.PassengerRevenue == 0 {
 		return m
 	}
 
-	now := time.Now()
 	wins := 0
 	var weightedProfit, weightedLoss float64
 	var totalWeight float64
@@ -64,12 +73,23 @@ func collectCompanyMetrics(gormDB *gorm.DB, companyID uint, strategy string, sin
 		}
 	}
 
-	m.WinRate = float64(wins) / float64(m.TradesExecuted)
+	// Add decay-weighted passenger revenue.
+	var weightedPassengerRev float64
+	for _, p := range passengers {
+		w := decayWeight(p.CreatedAt, now)
+		weightedPassengerRev += float64(p.Bid) * w
+		totalWeight += w
+	}
+	m.TotalProfit += m.PassengerRevenue
 
-	// Use decay-weighted profit for per-hour calculation.
+	if m.TradesExecuted > 0 {
+		m.WinRate = float64(wins) / float64(m.TradesExecuted)
+	}
+
+	// Use decay-weighted profit (including passengers) for per-hour calculation.
 	hours := time.Since(since).Hours()
 	if hours > 0 && totalWeight > 0 {
-		weightedNet := weightedProfit - weightedLoss
+		weightedNet := weightedProfit - weightedLoss + weightedPassengerRev
 		m.ProfitPerHour = weightedNet / hours
 	}
 

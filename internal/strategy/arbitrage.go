@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	// fleetEvalInterval is how often arbitrage evaluates fleet decisions.
-	fleetEvalInterval = 5 * time.Minute
+	// fleetEvalInterval is how often strategies evaluate fleet decisions.
+	fleetEvalInterval = 3 * time.Minute
 )
 
 // Arbitrage implements a buy-low-sell-high strategy across ports.
@@ -104,7 +104,14 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 
 // OnTick handles periodic fleet management decisions.
 func (a *Arbitrage) OnTick(ctx context.Context, _ *bot.CompanyState) error {
-	if time.Since(a.lastFleetEval) < fleetEvalInterval {
+	fleetInterval := fleetEvalInterval
+	a.ctx.State.RLock()
+	if a.ctx.State.Params != nil && a.ctx.State.Params.FleetEvalIntervalSec > 0 {
+		fleetInterval = time.Duration(a.ctx.State.Params.FleetEvalIntervalSec) * time.Second
+	}
+	a.ctx.State.RUnlock()
+
+	if time.Since(a.lastFleetEval) < fleetInterval {
 		return nil
 	}
 	a.lastFleetEval = time.Now()

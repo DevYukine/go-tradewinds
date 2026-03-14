@@ -1,27 +1,28 @@
 # Optimizer
 
-Evaluates strategy performance and reallocates companies between strategies.
+Evaluates strategy performance and reallocates companies between strategies. Includes a self-learning parameter tuner that experiments with trading parameters.
 
 ## Engine (`internal/optimizer/engine.go`)
 
 ### Configuration
-- `defaultEvalInterval = 15 min` — Evaluation cycle
-- `minPeriodsBeforeSwitch = 2` — Consecutive underperform periods before swap (30 min total)
+- `defaultEvalInterval = 5 min` — Evaluation cycle
+- `minPeriodsBeforeSwitch = 1` — Consecutive underperform periods before swap (5 min total)
 - `minCompaniesPerStrategy = 2` — Minimum for statistical validity
 - `lowUtilThreshold = 0.50` — Scale up below this
 - `highUtilThreshold = 0.90` — Scale down above this
-- `utilPeriodsBeforeScale = 3` — Consecutive periods before scaling (45 min)
+- `utilPeriodsBeforeScale = 2` — Consecutive periods before scaling (10 min)
 
 ### Evaluation Cycle (`evaluate`)
 
-1. Collect per-company metrics from trade logs
+1. Collect per-company metrics from trade logs **and passenger logs**
 2. Aggregate by strategy (mean, std dev, 95% CI, score)
 3. Record strategy metrics to DB
 4. Log results
 5. **Check inactive companies** — 0 trades + docked ships → swap to best strategy
-6. **Check reallocations** — Worst CI_high < best CI_low for 2 periods → swap worst company
+6. **Check reallocations** — Worst CI_high < best CI_low for 1 period → swap worst company
 7. **Dynamic scaling** — Low utilization → add company; high utilization → pause worst
 8. **Agent evaluation** — Ask agent for strategy recommendations
+9. **Parameter tuning** — Evaluate active experiments, then start new ones
 
 ### Inactivity Detection (`checkInactiveCompanies`)
 - Companies with 0 trades and docked ships are "stalled"
@@ -36,8 +37,8 @@ Evaluates strategy performance and reallocates companies between strategies.
 - Won't reduce below `minCompaniesPerStrategy`
 
 ### Dynamic Scaling (`checkDynamicScaling`)
-- **Scale up**: `lowUtilCount >= 3` → add company to best strategy (respects max from config)
-- **Scale down**: `highUtilCount >= 3` → pause worst company in worst strategy
+- **Scale up**: `lowUtilCount >= 2` → add company to best strategy (respects max from config)
+- **Scale down**: `highUtilCount >= 2` → pause worst company in worst strategy
 - Counters reset when utilization returns to healthy range
 
 ### Agent Evaluation (`agentEvaluation`)
@@ -51,10 +52,11 @@ Evaluates strategy performance and reallocates companies between strategies.
 | Field | Description |
 |-------|-------------|
 | `TradesExecuted` | Total trades in eval window |
-| `TotalProfit` | Sum of sell revenue (raw) |
+| `TotalProfit` | Sum of sell revenue + passenger revenue (raw) |
 | `TotalLoss` | Sum of buy costs (raw) |
+| `PassengerRevenue` | Sum of passenger bids in eval window |
 | `WinRate` | sells / total trades |
-| `ProfitPerHour` | Decay-weighted net profit / hours |
+| `ProfitPerHour` | Decay-weighted net profit (incl. passengers) / hours |
 | `AvgTradeProfit` | Net profit / trade count |
 | `TradesPerHour` | Trades / hours |
 | `CapacityUtil` | From latest PnL snapshot |
@@ -66,7 +68,7 @@ func decayWeight(tradeTime, now time.Time) float64 {
     return math.Exp(-0.05 * age) // Half-life ~14 min
 }
 ```
-Recent trades (1 min) get weight ~0.95. Trades 14 min old get ~0.5. Applied to ProfitPerHour calculation.
+Recent trades (1 min) get weight ~0.95. Trades 14 min old get ~0.5. Applied to ProfitPerHour calculation including passenger revenue.
 
 ### Strategy Stats (`strategyStats`)
 | Field | Description |
@@ -87,3 +89,33 @@ Score = 0.35 * CI_lower
       + 0.10 * mean_trades_per_hour
       + 0.10 * mean_capacity_util
 ```
+
+## Parameter Tuner (`internal/optimizer/tuner.go`)
+
+Self-learning system that experiments with per-company trading parameters.
+
+### Tunable Parameters
+| Parameter | Min | Max | Step% | Description |
+|-----------|-----|-----|-------|-------------|
+| `MinMarginPct` | 0.05 | 0.30 | 15% | Minimum profit margin to accept a trade |
+| `PassengerWeight` | 0.5 | 5.0 | 20% | Weight of passenger revenue in destination scoring |
+| `PassengerDestBonus` | 1.5 | 5.0 | 15% | Multiplier for passengers heading to chosen destination |
+| `FleetEvalIntervalSec` | 60 | 600 | 20% | How often to evaluate fleet decisions |
+| `MarketEvalIntervalSec` | 30 | 300 | 20% | How often to evaluate P2P market |
+
+### Experiment Flow
+1. **Pick target**: worst-performing company by profit/hour
+2. **Pick param**: least-recently-tuned parameter for that company
+3. **Adjust**: change by ±step% (try increase first, decrease if at max)
+4. **Record**: save to `ParamExperimentLog` with status "active"
+5. **Wait**: one eval period (5 min)
+6. **Evaluate**: compare profit before/after
+   - Better → mark "completed", propagate to peers on same strategy
+   - Worse → mark "reverted", restore old value
+
+### Propagation
+When an experiment succeeds, the winning parameter value is applied to all other companies running the same strategy.
+
+### DB Models
+- `CompanyParams` — per-company tunable parameters (1:1 with CompanyRecord)
+- `ParamExperimentLog` — experiment history with status tracking

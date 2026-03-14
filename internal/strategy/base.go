@@ -130,6 +130,20 @@ func (b *baseStrategy) buildTradeRequest(ship *bot.ShipState, port *api.Port) ag
 		warehouses = append(warehouses, warehouseToSnapshot(w))
 	}
 
+	// Build tunable params map from CompanyParams.
+	var params map[string]float64
+	if state.Params != nil {
+		params = map[string]float64{
+			"minMarginPct":           state.Params.MinMarginPct,
+			"passengerWeight":        state.Params.PassengerWeight,
+			"passengerDestBonus":     state.Params.PassengerDestBonus,
+			"speculativeTradeEnabled": 0.0,
+		}
+		if state.Params.SpeculativeTradeEnabled {
+			params["speculativeTradeEnabled"] = 1.0
+		}
+	}
+
 	return agent.TradeDecisionRequest{
 		StrategyHint: b.name,
 		Company: agent.CompanySnapshot{
@@ -144,6 +158,7 @@ func (b *baseStrategy) buildTradeRequest(ship *bot.ShipState, port *api.Port) ag
 		PriceCache: b.ctx.PriceCache.All(),
 		Routes:     world.ToAgentRoutes(),
 		Ports:      world.ToAgentPorts(),
+		Params:     params,
 		Constraints: agent.Constraints{
 			TreasuryFloor: state.TotalUpkeep * 2,
 			MaxSpend:      state.Treasury - state.TotalUpkeep*2,
