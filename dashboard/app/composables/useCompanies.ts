@@ -42,7 +42,7 @@ export function useCompanies() {
     subscribers++
     if (subscribers === 1) {
       fetchCompanies()
-      pollTimer = setInterval(fetchCompanies, 10000)
+      pollTimer = setInterval(fetchCompanies, 30000)
     }
   })
 

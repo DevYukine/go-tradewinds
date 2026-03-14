@@ -35,7 +35,7 @@ const inventoryEvents = new Set([
 // Single owner of fetch + SSE lifecycle
 watch(companyId, (id) => {
   if (id) {
-    startInvPolling(id, 10000)
+    startInvPolling(id, 30000)
     fetchHistory(id).then(() => connectSSE(id))
 
     // Connect real-time events SSE — trigger instant re-fetches.

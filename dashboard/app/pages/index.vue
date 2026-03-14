@@ -7,56 +7,34 @@ const router = useRouter()
 // Use the shared inventory composable — same global state as company detail page.
 const { inventories, fetchInventory } = useInventory()
 
-const config = useRuntimeConfig()
-const apiBase = config.public.apiBase
-
 async function fetchAllInventories() {
-  for (const company of companies.value) {
-    try {
-      await fetchInventory(company.id)
-    } catch { /* company may not be running */ }
-  }
+  // Fetch all inventories concurrently (not sequentially) to avoid slow waterfalls.
+  await Promise.allSettled(
+    companies.value.map(c => fetchInventory(c.id))
+  )
 }
 
-watch(
-  () => companies.value,
-  (list) => { if (list.length > 0) fetchAllInventories() },
-  { immediate: true }
-)
-
-// Fallback poll at a slower rate since SSE events handle instant updates.
-let pollTimer: ReturnType<typeof setInterval> | null = null
-onMounted(() => { pollTimer = setInterval(fetchAllInventories, 30000) })
-onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer)
-  // Clean up all event sources.
-  for (const conn of eventSources.values()) {
-    conn.close()
-  }
-  eventSources.clear()
-})
-
-// SSE event connections per company — triggers instant re-fetches.
-const eventSources = new Map<number, EventSource>()
-
+// Initial fetch when companies arrive, then poll.
+// No SSE on the overview page — opening 7 SSE connections (one per company)
+// would exceed the browser's 6-connection-per-origin HTTP/1.1 limit and block
+// all other API requests.
+let initialFetchDone = false
 watch(
   () => companies.value,
   (list) => {
-    for (const company of list) {
-      if (eventSources.has(company.id)) continue
-
-      const source = new EventSource(`${apiBase}/sse/events/${company.id}`)
-      eventSources.set(company.id, source)
-
-      source.onmessage = () => {
-        // Any event from any company → refresh that company's inventory + company list.
-        fetchInventory(company.id)
-        fetchCompanies()
-      }
+    if (list.length > 0 && !initialFetchDone) {
+      initialFetchDone = true
+      fetchAllInventories()
     }
   },
   { immediate: true }
 )
+
+let pollTimer: ReturnType<typeof setInterval> | null = null
+onMounted(() => { pollTimer = setInterval(fetchAllInventories, 15000) })
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+})
 
 function selectCompany(company: Company) {
   router.push(`/company/${company.id}`)

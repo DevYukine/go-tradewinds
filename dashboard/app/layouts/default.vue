@@ -31,7 +31,7 @@ onMounted(() => {
   fetchHealth()
   fetchRateLimit()
   healthInterval = setInterval(fetchHealth, 15000)
-  rateLimitInterval = setInterval(fetchRateLimit, 5000)
+  rateLimitInterval = setInterval(fetchRateLimit, 15000)
 })
 
 onUnmounted(() => {
