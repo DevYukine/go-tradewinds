@@ -147,12 +147,18 @@ func (s *Server) handleCompanyDecisions(c fiber.Ctx) error {
 // handleCompanyInventory returns the current in-memory state for a company,
 // including full ship details (location, arrival time, cargo) and warehouses.
 func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
-	companyID := c.Params("id")
+	// The route param is the DB integer id, but runners are keyed by game UUID.
+	var company db.CompanyRecord
+	if err := s.db.First(&company, c.Params("id")).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "company not found",
+		})
+	}
 
-	runner := s.manager.GetRunner(companyID)
+	runner := s.manager.GetRunner(company.GameID)
 	if runner == nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error": "company not found or not running",
+			"error": "company not running",
 		})
 	}
 
@@ -273,7 +279,7 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"company_id":    companyID,
+		"company_id":    company.GameID,
 		"treasury":      state.Treasury,
 		"total_upkeep":  state.TotalUpkeep,
 		"ships":         ships,
