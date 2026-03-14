@@ -150,7 +150,7 @@ const totalCapacity = computed(() =>
             </div>
           </div>
 
-          <!-- Row 2: Location / Route + ETA -->
+          <!-- Row 2: Location / Route -->
           <div class="flex items-center gap-2 text-xs mb-2">
             <!-- Docked -->
             <template v-if="ship.status === 'docked' && ship.port_name">
@@ -158,17 +158,13 @@ const totalCapacity = computed(() =>
               <span class="text-slate-600">at</span>
               <span class="text-slate-300">{{ ship.port_name }}</span>
             </template>
-            <!-- Sailing with route info -->
+            <!-- Traveling with route info -->
             <template v-else-if="ship.status === 'traveling'">
               <span class="text-sky-400 font-medium">Sailing</span>
               <template v-if="ship.from_port_name && ship.to_port_name">
                 <span class="text-slate-400">{{ ship.from_port_name }}</span>
                 <Icon name="lucide:arrow-right" class="text-[10px] text-slate-600" />
                 <span class="text-slate-300">{{ ship.to_port_name }}</span>
-              </template>
-              <template v-if="ship.arriving_at">
-                <span class="text-slate-600">|</span>
-                <span class="text-sky-400 font-mono font-medium">ETA {{ timeUntilArrival(ship.arriving_at) }}</span>
               </template>
             </template>
             <!-- Other status -->
@@ -177,9 +173,17 @@ const totalCapacity = computed(() =>
             </template>
           </div>
 
-          <!-- Sailing progress bar -->
-          <div v-if="ship.status === 'traveling' && ship.arriving_at" class="mb-2">
-            <div class="h-1.5 rounded-full bg-slate-700 overflow-hidden">
+          <!-- ETA countdown + progress bar -->
+          <div v-if="ship.status === 'traveling'" class="mb-2">
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-xs text-slate-500">
+                {{ ship.arriving_at ? 'Arrival in' : 'In transit' }}
+              </span>
+              <span v-if="ship.arriving_at" class="text-sm font-mono font-bold text-sky-400">
+                {{ timeUntilArrival(ship.arriving_at) }}
+              </span>
+            </div>
+            <div v-if="ship.arriving_at" class="h-1.5 rounded-full bg-slate-700 overflow-hidden">
               <div
                 class="h-full rounded-full bg-sky-500 transition-all duration-1000"
                 :style="{ width: `${arrivalProgress(ship.arriving_at, ship.distance)}%` }"
