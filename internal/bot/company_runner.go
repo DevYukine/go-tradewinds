@@ -283,12 +283,30 @@ func (r *CompanyRunner) handleShipDocked(ctx context.Context, data json.RawMessa
 	ship, err := r.client.GetShip(ctx, docked.ShipID)
 	if err != nil {
 		r.logger.Error("failed to refresh ship after docking", zap.Error(err))
+		// Still mark the ship as docked from the event data so it doesn't
+		// stay stuck in "traveling" status forever.
+		r.state.mu.Lock()
+		if ss, ok := r.state.Ships[docked.ShipID]; ok {
+			ss.Ship.Status = "docked"
+			ss.Ship.PortID = &docked.PortID
+			ss.Ship.RouteID = nil
+			ss.Ship.ArrivingAt = nil
+		}
+		r.state.mu.Unlock()
 		return
 	}
 
 	cargo, err := r.client.GetShipInventory(ctx, docked.ShipID)
 	if err != nil {
 		r.logger.Error("failed to fetch ship cargo after docking", zap.Error(err))
+		// Update status from the full ship response even without cargo.
+		r.state.mu.Lock()
+		if ss, ok := r.state.Ships[docked.ShipID]; ok {
+			ss.Ship = *ship
+		} else {
+			r.state.Ships[docked.ShipID] = &ShipState{Ship: *ship}
+		}
+		r.state.mu.Unlock()
 		return
 	}
 
@@ -384,6 +402,10 @@ func (r *CompanyRunner) handleTick(ctx context.Context) {
 	// Record P&L snapshot.
 	r.recordPnLSnapshot()
 
+	// Refresh any ships stuck in "traveling" past their arrival time.
+	// This happens when a ship_docked SSE event is lost or GetShip fails.
+	r.refreshStaleShips(ctx)
+
 	// Delegate to strategy for periodic work (fleet evals, market evals).
 	if err := r.strategy.OnTick(ctx, r.state); err != nil {
 		r.logger.Error("strategy OnTick failed", zap.Error(err))
@@ -391,6 +413,43 @@ func (r *CompanyRunner) handleTick(ctx context.Context) {
 
 	// Dispatch any idle docked ships that SSE events might have missed.
 	r.dispatchIdleShips(ctx)
+}
+
+// refreshStaleShips detects ships stuck in "traveling" status past their
+// ArrivingAt time and refreshes them from the API. This recovers from lost
+// ship_docked SSE events or failed GetShip calls.
+func (r *CompanyRunner) refreshStaleShips(ctx context.Context) {
+	now := time.Now()
+
+	r.state.mu.RLock()
+	var stale []uuid.UUID
+	for id, ss := range r.state.Ships {
+		if ss.Ship.Status == "traveling" && ss.Ship.ArrivingAt != nil && now.After(ss.Ship.ArrivingAt.Add(10*time.Second)) {
+			stale = append(stale, id)
+		}
+	}
+	r.state.mu.RUnlock()
+
+	for _, shipID := range stale {
+		ship, err := r.client.GetShip(ctx, shipID)
+		if err != nil {
+			r.logger.Debug("failed to refresh stale ship", zap.String("ship_id", shipID.String()), zap.Error(err))
+			continue
+		}
+
+		r.state.mu.Lock()
+		if ss, ok := r.state.Ships[shipID]; ok {
+			ss.Ship = *ship
+		}
+		r.state.mu.Unlock()
+
+		if ship.Status == "docked" && ship.PortID != nil {
+			r.logger.Info("recovered stale ship",
+				zap.String("ship", ship.Name),
+				zap.String("ship_id", shipID.String()),
+			)
+		}
+	}
 }
 
 // dispatchIdleShips checks for docked ships and triggers OnShipArrival
