@@ -1,6 +1,8 @@
 package main
 
 import (
+	"time"
+
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
 	"go.uber.org/zap"
@@ -17,6 +19,7 @@ import (
 
 func main() {
 	fx.New(
+		fx.StartTimeout(90*time.Second),
 		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
 			zapLogger := fxevent.ZapLogger{Logger: log}
 			zapLogger.UseLogLevel(zap.DebugLevel)

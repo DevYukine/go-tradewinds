@@ -60,6 +60,8 @@ type RateLimiter struct {
 
 // NewRateLimiter creates a rate limiter enforcing the given requests-per-minute limit.
 // Uses a true sliding window for accurate budget tracking.
+// Starts with a conservative backoff to handle restarts when the server's
+// rate limit window from a previous run may still be active.
 func NewRateLimiter(maxPerMinute int, logger *zap.Logger) *RateLimiter {
 	if maxPerMinute <= 0 {
 		maxPerMinute = defaultMaxPerMinute
@@ -69,6 +71,9 @@ func NewRateLimiter(maxPerMinute int, logger *zap.Logger) *RateLimiter {
 		maxPerMinute: maxPerMinute,
 		timestamps:   make([]time.Time, maxPerMinute),
 		logger:       logger.Named("rate_limiter"),
+		// Start with a short backoff so the first few requests are spaced out,
+		// giving the server's previous window time to drain.
+		backoffUntil: time.Now().Add(2 * time.Second),
 	}
 }
 
