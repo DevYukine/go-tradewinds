@@ -391,3 +391,21 @@ func (m *Manager) PriceCache() *PriceCache {
 func (m *Manager) DB() *gorm.DB {
 	return m.gormDB
 }
+
+// Companies returns a snapshot of all company runners keyed by game ID.
+func (m *Manager) Companies() map[string]*CompanyRunner {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	cp := make(map[string]*CompanyRunner, len(m.companies))
+	for k, v := range m.companies {
+		cp[k] = v
+	}
+	return cp
+}
+
+// CompanyCount returns the number of active company runners.
+func (m *Manager) CompanyCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.companies)
+}

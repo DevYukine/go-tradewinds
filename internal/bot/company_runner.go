@@ -385,3 +385,13 @@ func (r *CompanyRunner) swapStrategy(ctx context.Context, newStrategy Strategy) 
 	// Update DB record.
 	r.gormDB.Model(r.dbRecord).Update("strategy", newStrategy.Name())
 }
+
+// Logger returns the company logger for external consumers (e.g., SSE streaming).
+func (r *CompanyRunner) Logger() *CompanyLogger {
+	return r.logger
+}
+
+// DBRecord returns the database record for this company.
+func (r *CompanyRunner) DBRecord() *db.CompanyRecord {
+	return r.dbRecord
+}
