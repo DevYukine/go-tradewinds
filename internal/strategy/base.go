@@ -432,17 +432,45 @@ func (b *baseStrategy) sendShipToPort(ctx context.Context, ship *bot.ShipState, 
 
 // executeFleetDecision handles ship purchases, ship sales, and warehouse construction.
 func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent.FleetDecision) {
-	// Sell (decommission) ships first to free up upkeep budget.
+	// Sell ships first to free up upkeep budget.
 	for _, shipID := range decision.SellShips {
-		if err := b.ctx.Client.SellShip(ctx, shipID); err != nil {
-			b.logger.Warn("failed to decommission ship (game may not support ship sales)",
+		// Find the ship's current port.
+		ship, err := b.ctx.Client.GetShip(ctx, shipID)
+		if err != nil {
+			b.logger.Warn("failed to get ship for sale",
 				zap.String("ship_id", shipID.String()),
 				zap.Error(err),
 			)
 			continue
 		}
-		b.logger.Trade("decommissioned ship",
+		if ship.PortID == nil {
+			b.logger.Warn("cannot sell ship that is not docked",
+				zap.String("ship_id", shipID.String()),
+				zap.String("status", ship.Status),
+			)
+			continue
+		}
+		// Find shipyard at the ship's port.
+		shipyard, err := b.ctx.Client.FindShipyard(ctx, *ship.PortID)
+		if err != nil || shipyard == nil {
+			b.logger.Warn("no shipyard at ship's port, cannot sell",
+				zap.String("ship_id", shipID.String()),
+				zap.String("port_id", ship.PortID.String()),
+				zap.Error(err),
+			)
+			continue
+		}
+		resp, err := b.ctx.Client.SellShip(ctx, shipyard.ID, shipID)
+		if err != nil {
+			b.logger.Warn("failed to sell ship",
+				zap.String("ship_id", shipID.String()),
+				zap.Error(err),
+			)
+			continue
+		}
+		b.logger.Trade("sold ship",
 			zap.String("ship_id", shipID.String()),
+			zap.Int("price", resp.Price),
 		)
 	}
 

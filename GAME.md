@@ -92,12 +92,14 @@
 | 43 | POST | [`/warehouses/{warehouse_id}/shrink`](#post-warehouseswarehouse_idshrink--downgrade-warehouse) | Downgrade warehouse |
 | 44 | POST | [`/warehouses/{warehouse_id}/transfer-to-ship`](#post-warehouseswarehouse_idtransfer-to-ship--load-ship-from-warehouse) | Load ship from warehouse |
 
-**Shipyards (3)**
+**Shipyards (5)**
 | # | Method | Endpoint | Description |
 |---|--------|----------|-------------|
 | 45 | GET | [`/world/ports/{port_id}/shipyard`](#get-worldportsport_idshipyard--find-shipyard) | Find shipyard at port |
 | 46 | GET | [`/shipyards/{shipyard_id}/inventory`](#get-shipyardsshipyard_idinventory--ships-for-sale) | Ships for sale |
 | 47 | POST | [`/shipyards/{shipyard_id}/purchase`](#post-shipyardsshipyard_idpurchase--buy-a-ship) | Buy a ship |
+| 48 | GET | [`/shipyards/{shipyard_id}/sell-quote`](#get-shipyardsshipyard_idsell-quote--get-sell-price) | Get sell price estimate |
+| 49 | POST | [`/shipyards/{shipyard_id}/sell`](#post-shipyardsshipyard_idsell--sell-a-ship) | Sell a ship |
 
 **Events (2)**
 | # | Method | Endpoint | Description |
@@ -507,6 +509,18 @@ Caravel is the most efficient (highest cap×speed/upkeep ratio).
 - **Response**: Ship object (now owned by your company, docked at the port)
 - **Use**: Deducts cost from treasury. Ship appears docked at the shipyard's port.
 
+#### `GET /shipyards/{shipyard_id}/sell-quote` — Get sell price
+- **Auth**: Bearer + company header
+- **Params**: `ship_id` (query param)
+- **Response**: `{ ship_id, price }`
+- **Use**: Preview how much a ship would sell for without committing. Ship must be docked at the shipyard's port.
+
+#### `POST /shipyards/{shipyard_id}/sell` — Sell a ship
+- **Auth**: Bearer + company header
+- **Body**: `{ ship_id }`
+- **Response**: `{ ship_id, price }`
+- **Use**: Sell a ship back to the shipyard. Ship must be docked at the shipyard's port with no cargo. Sale price is added to treasury.
+
 ---
 
 ### Events (Server-Sent Events)
@@ -716,7 +730,7 @@ These changes mean our bot should be resilient to value changes. Always fetch sh
 4. **Upkeep every ~5 hours** on ships and warehouses.
 5. **Tax on all transactions** (2% regular ports, 5% hub ports).
 6. **Market shocks** change prices dynamically — monitor world SSE for notifications.
-7. **Passengers**: Future feature — `passengers` field on ship types is currently unused.
+7. **Passengers**: Ships can board passengers at ports for revenue.
 
 ---
 

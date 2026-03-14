@@ -103,7 +103,7 @@ type LedgerEntry struct {
 type Port struct {
 	ID             uuid.UUID `json:"id"`
 	Name           string    `json:"name"`
-	Code           string    `json:"code"`
+	Code           string    `json:"shortcode"`
 	IsHub          bool      `json:"is_hub"`
 	TaxRateBps     int       `json:"tax_rate_bps"`
 	CountryID      uuid.UUID `json:"country_id"`
@@ -355,6 +355,14 @@ type ShipyardInventoryItem struct {
 
 type PurchaseShipRequest struct {
 	ShipTypeID uuid.UUID `json:"ship_type_id"`
+}
+
+type SellShipRequest struct {
+	ShipID uuid.UUID `json:"ship_id"`
+}
+
+type SellShipResponse struct {
+	Price int `json:"price"`
 }
 
 // --- Events (SSE) ---

@@ -59,6 +59,12 @@ func (c *Client) ShrinkWarehouse(ctx context.Context, id uuid.UUID) (*Warehouse,
 	return &warehouse, nil
 }
 
+// DeleteWarehouse demolishes an empty warehouse.
+func (c *Client) DeleteWarehouse(ctx context.Context, id uuid.UUID) error {
+	path := fmt.Sprintf("/warehouses/%s", id)
+	return c.do(ctx, http.MethodDelete, path, nil, nil, PriorityNormal)
+}
+
 // TransferToShip loads cargo from a warehouse onto a ship.
 // The ship must be docked at the warehouse's port.
 func (c *Client) TransferToShip(ctx context.Context, warehouseID uuid.UUID, req TransferToShipRequest) error {

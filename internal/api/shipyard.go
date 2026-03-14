@@ -36,3 +36,26 @@ func (c *Client) BuyShip(ctx context.Context, shipyardID, shipTypeID uuid.UUID) 
 	}
 	return &ship, nil
 }
+
+// SellShip sells a ship at a shipyard. The ship must be docked at the
+// shipyard's port with no cargo. Returns the sale price received.
+func (c *Client) SellShip(ctx context.Context, shipyardID, shipID uuid.UUID) (*SellShipResponse, error) {
+	req := SellShipRequest{ShipID: shipID}
+	var resp SellShipResponse
+	path := fmt.Sprintf("/shipyards/%s/sell", shipyardID)
+	if err := c.do(ctx, http.MethodPost, path, req, &resp, PriorityNormal); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// SellQuote returns the estimated sale price for a ship at a shipyard
+// without actually selling it.
+func (c *Client) SellQuote(ctx context.Context, shipyardID, shipID uuid.UUID) (*SellShipResponse, error) {
+	var resp SellShipResponse
+	path := fmt.Sprintf("/shipyards/%s/sell-quote?ship_id=%s", shipyardID, shipID)
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp, PriorityLow); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}

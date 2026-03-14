@@ -34,8 +34,10 @@ HTTP client for the Tradewinds game API using go-resty/v3.
 | `ListWarehouses` | `GET /warehouse` | Normal |
 | `BuyWarehouse` | `POST /warehouse` | Normal |
 | `FindShipyard` | `GET /shipyard` | Normal |
-| `BuyShip` | `POST /shipyard/:id/purchase` | Normal |
-| `SellShip` | `DELETE /fleet/ships/:id` | Normal |
+| `BuyShip` | `POST /shipyards/:id/purchase` | Normal |
+| `SellShip` | `POST /shipyards/:id/sell` | Normal |
+| `SellQuote` | `GET /shipyards/:id/sell-quote` | Low |
+| `DeleteWarehouse` | `DELETE /warehouses/:id` | Normal |
 
 ### Pagination
 `Paginate[T](ctx, path, priority)` — Cursor-based, fetches all pages.
