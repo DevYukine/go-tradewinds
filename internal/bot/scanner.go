@@ -130,10 +130,10 @@ func (s *Scanner) scanPort(ctx context.Context, port *api.Port) {
 	for i, good := range goods {
 		var buyPrice, sellPrice int
 
-		if i < len(buyResults) && buyResults[i].Status == 200 && buyResults[i].Quote != nil {
+		if i < len(buyResults) && buyResults[i].Status == "success" && buyResults[i].Quote != nil {
 			buyPrice = buyResults[i].Quote.UnitPrice
 		}
-		if i < len(sellResults) && sellResults[i].Status == 200 && sellResults[i].Quote != nil {
+		if i < len(sellResults) && sellResults[i].Status == "success" && sellResults[i].Quote != nil {
 			sellPrice = sellResults[i].Quote.UnitPrice
 		}
 

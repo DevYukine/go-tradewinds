@@ -2,35 +2,10 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 )
-
-// FlexInt handles JSON values that may be either a number or a string number.
-type FlexInt int
-
-func (fi *FlexInt) UnmarshalJSON(data []byte) error {
-	// Try number first.
-	var n int
-	if err := json.Unmarshal(data, &n); err == nil {
-		*fi = FlexInt(n)
-		return nil
-	}
-	// Try string.
-	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
-		parsed, err := strconv.Atoi(s)
-		if err != nil {
-			return fmt.Errorf("FlexInt: cannot parse %q as int", s)
-		}
-		*fi = FlexInt(parsed)
-		return nil
-	}
-	return fmt.Errorf("FlexInt: cannot unmarshal %s", string(data))
-}
 
 // --- Generic Envelope ---
 
@@ -216,10 +191,10 @@ type BatchQuoteRequest struct {
 }
 
 type BatchQuoteResult struct {
-	Status  FlexInt `json:"status"`
-	Token   string  `json:"token,omitempty"`
-	Quote   *Quote  `json:"quote,omitempty"`
-	Message string  `json:"message,omitempty"`
+	Status  string `json:"status"` // "success" or "error"
+	Token   string `json:"token,omitempty"`
+	Quote   *Quote `json:"quote,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type BatchExecuteQuoteRequest struct {
@@ -227,7 +202,7 @@ type BatchExecuteQuoteRequest struct {
 }
 
 type BatchExecuteResult struct {
-	Status    FlexInt         `json:"status"`
+	Status    string          `json:"status"` // "success" or "error"
 	Execution *TradeExecution `json:"execution,omitempty"`
 	Message   string          `json:"message,omitempty"`
 }

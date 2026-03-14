@@ -139,7 +139,7 @@ func (b *baseStrategy) executeSells(ctx context.Context, ship *bot.ShipState, se
 	// Execute successful quotes.
 	var execReqs []api.ExecuteQuoteRequest
 	for _, r := range results {
-		if r.Status == 200 && r.Token != "" {
+		if r.Status == "success" && r.Token != "" {
 			execReqs = append(execReqs, api.ExecuteQuoteRequest{
 				Token: r.Token,
 				Destinations: []api.Destination{{
@@ -161,7 +161,7 @@ func (b *baseStrategy) executeSells(ctx context.Context, ship *bot.ShipState, se
 	}
 
 	for _, r := range execResults {
-		if r.Status == 200 && r.Execution != nil {
+		if r.Status == "success" && r.Execution != nil {
 			b.logger.Trade("sold cargo",
 				zap.String("action", r.Execution.Action),
 				zap.Int("quantity", r.Execution.Quantity),
@@ -218,7 +218,7 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 	// Filter quotes that would exceed treasury floor.
 	var execReqs []api.ExecuteQuoteRequest
 	for _, r := range results {
-		if r.Status != 200 || r.Token == "" || r.Quote == nil {
+		if r.Status != "success" || r.Token == "" || r.Quote == nil {
 			continue
 		}
 
@@ -261,7 +261,7 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 	}
 
 	for _, r := range execResults {
-		if r.Status == 200 && r.Execution != nil {
+		if r.Status == "success" && r.Execution != nil {
 			b.logger.Trade("bought cargo",
 				zap.String("action", r.Execution.Action),
 				zap.Int("quantity", r.Execution.Quantity),
