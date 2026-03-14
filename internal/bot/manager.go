@@ -273,6 +273,7 @@ func (m *Manager) setupRunner(
 
 	// Create state.
 	state := NewCompanyState(company.ID)
+	state.SetDBID(dbRecord.ID)
 
 	// Create company logger.
 	companyLogger := NewCompanyLogger(
@@ -369,4 +370,24 @@ func (m *Manager) GetRunner(companyID string) *CompanyRunner {
 // RateLimiter returns the shared rate limiter for external access (e.g., API server).
 func (m *Manager) RateLimiter() *api.RateLimiter {
 	return m.rateLimiter
+}
+
+// BaseClient returns the base API client (for scanner use).
+func (m *Manager) BaseClient() *api.Client {
+	return m.baseClient
+}
+
+// WorldData returns the shared world cache.
+func (m *Manager) WorldData() *WorldCache {
+	return m.worldData
+}
+
+// PriceCache returns the shared price cache.
+func (m *Manager) PriceCache() *PriceCache {
+	return m.priceCache
+}
+
+// DB returns the GORM database connection.
+func (m *Manager) DB() *gorm.DB {
+	return m.gormDB
 }
