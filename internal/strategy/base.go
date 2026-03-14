@@ -769,7 +769,7 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 
 		ship, err := b.ctx.Client.BuyShip(ctx, shipyard.ID, chosenItem.ShipTypeID)
 		if err != nil {
-			b.logger.Error("failed to buy ship",
+			b.logger.Warn("failed to buy ship, trying next port",
 				zap.String("ship_type_id", chosenItem.ShipTypeID.String()),
 				zap.String("port_id", portID.String()),
 				zap.Int("cost", chosenItem.Cost),
