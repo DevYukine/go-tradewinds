@@ -8,6 +8,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/google/uuid"
+
 	"github.com/DevYukine/go-tradewinds/internal/agent"
 	"github.com/DevYukine/go-tradewinds/internal/api"
 	"github.com/DevYukine/go-tradewinds/internal/db"
@@ -281,7 +283,8 @@ func (r *CompanyRunner) handleShipSetSail(data json.RawMessage) {
 	r.state.mu.Unlock()
 }
 
-// handleShipBought updates state when a new ship is purchased.
+// handleShipBought updates state when a new ship is purchased and triggers
+// the first trade if the ship is docked.
 func (r *CompanyRunner) handleShipBought(ctx context.Context, data json.RawMessage) {
 	bought, err := api.ParseShipBoughtEvent(data)
 	if err != nil {
@@ -304,9 +307,15 @@ func (r *CompanyRunner) handleShipBought(ctx context.Context, data json.RawMessa
 	r.state.mu.Lock()
 	r.state.Ships[bought.ShipID] = &ShipState{Ship: *ship}
 	r.state.mu.Unlock()
+
+	// Trigger first trade for newly bought ship if it's docked.
+	if ship.Status == "docked" && ship.PortID != nil {
+		r.dispatchDockedShip(ctx, bought.ShipID)
+	}
 }
 
-// handleTick runs periodic tasks: economy refresh, P&L snapshot, strategy tick.
+// handleTick runs periodic tasks: economy refresh, P&L snapshot, strategy tick,
+// and dispatches idle docked ships that haven't been sent on a trade run.
 func (r *CompanyRunner) handleTick(ctx context.Context) {
 	// Refresh economy.
 	econ, err := r.client.GetEconomy(ctx)
@@ -319,9 +328,65 @@ func (r *CompanyRunner) handleTick(ctx context.Context) {
 	// Record P&L snapshot.
 	r.recordPnLSnapshot()
 
-	// Delegate to strategy for periodic work.
+	// Delegate to strategy for periodic work (fleet evals, market evals).
 	if err := r.strategy.OnTick(ctx, r.state); err != nil {
 		r.logger.Error("strategy OnTick failed", zap.Error(err))
+	}
+
+	// Dispatch any idle docked ships that SSE events might have missed.
+	r.dispatchIdleShips(ctx)
+}
+
+// dispatchIdleShips checks for docked ships and triggers OnShipArrival
+// to ensure ships don't sit idle (e.g., after purchase or missed SSE events).
+func (r *CompanyRunner) dispatchIdleShips(ctx context.Context) {
+	docked := r.state.DockedShips()
+	for _, ship := range docked {
+		if ship.Ship.PortID == nil {
+			continue
+		}
+
+		port := r.world.GetPort(*ship.Ship.PortID)
+		if port == nil {
+			continue
+		}
+
+		r.logger.Debug("dispatching idle docked ship",
+			zap.String("ship", ship.Ship.Name),
+			zap.String("port", port.Name),
+		)
+
+		if err := r.strategy.OnShipArrival(ctx, ship, port); err != nil {
+			r.logger.Warn("idle ship dispatch failed",
+				zap.String("ship_id", ship.Ship.ID.String()),
+				zap.Error(err),
+			)
+		}
+	}
+}
+
+// dispatchDockedShip triggers a trade evaluation for a single docked ship.
+func (r *CompanyRunner) dispatchDockedShip(ctx context.Context, shipID uuid.UUID) {
+	shipState := r.state.GetShip(shipID)
+	if shipState == nil || shipState.Ship.PortID == nil {
+		return
+	}
+
+	port := r.world.GetPort(*shipState.Ship.PortID)
+	if port == nil {
+		return
+	}
+
+	r.logger.Info("dispatching newly purchased ship",
+		zap.String("ship", shipState.Ship.Name),
+		zap.String("port", port.Name),
+	)
+
+	if err := r.strategy.OnShipArrival(ctx, shipState, port); err != nil {
+		r.logger.Warn("new ship dispatch failed",
+			zap.String("ship_id", shipID.String()),
+			zap.Error(err),
+		)
 	}
 }
 
