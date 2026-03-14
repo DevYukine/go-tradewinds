@@ -259,6 +259,8 @@ func (r *CompanyRunner) handleEvent(ctx context.Context, event api.SSEEvent) {
 		r.handleShipSetSail(event.Data)
 	case "ship_bought":
 		r.handleShipBought(ctx, event.Data)
+	case "ledger_entry":
+		// Treasury is refreshed periodically via economy poll; no action needed.
 	default:
 		r.logger.Debug("unhandled SSE event type", zap.String("type", event.Type))
 	}

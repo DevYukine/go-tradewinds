@@ -11,11 +11,14 @@ export function useLogs() {
   const connected = ref(false)
   let eventSource: EventSource | null = null
   let buffer: LogEntry[] = []
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let currentCompanyId: number | null = null
 
   function connectSSE(companyId: number) {
     disconnectSSE()
     logs.value = []
     buffer = []
+    currentCompanyId = companyId
 
     eventSource = new EventSource(`${apiBase}/sse/logs/${companyId}`)
     connected.value = true
@@ -38,11 +41,31 @@ export function useLogs() {
 
     eventSource.onerror = () => {
       connected.value = false
-      console.error('Log SSE connection error')
+      // Close to prevent browser auto-reconnect, then reconnect manually.
+      if (eventSource) {
+        eventSource.close()
+        eventSource = null
+      }
+      scheduleReconnect()
     }
   }
 
+  function scheduleReconnect() {
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      if (currentCompanyId !== null) {
+        connectSSE(currentCompanyId)
+      }
+    }, 3000)
+  }
+
   function disconnectSSE() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+    currentCompanyId = null
     if (eventSource) {
       eventSource.close()
       eventSource = null

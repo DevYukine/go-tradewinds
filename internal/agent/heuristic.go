@@ -515,7 +515,7 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 	// Check if we should sell ships — upkeep is destroying our treasury.
 	// If upkeep exceeds 60% of treasury and we have more than 1 ship, sell the worst.
 	if numShips > 1 && upkeep > 0 && treasury > 0 && treasury < upkeep*5 {
-		sellShips := a.findShipsToSell(req.Ships, req.StrategyHint)
+		sellShips := a.findShipsToSell(req.Ships, req.StrategyHint, req.ShipyardPorts)
 		if len(sellShips) > 0 {
 			a.logger.Info("recommending ship decommission — upkeep too high",
 				zap.Int64("treasury", treasury),
@@ -948,8 +948,13 @@ func (a *HeuristicAgent) findPurchasePort(ships []ShipSnapshot, shipyardPorts []
 // findShipsToSell identifies the least valuable ship to decommission.
 // For arbitrage: sell the slowest ship. For bulk_hauler: sell the smallest.
 // For market_maker: sell the most expensive (highest upkeep).
-// Only considers docked ships with no cargo.
-func (a *HeuristicAgent) findShipsToSell(ships []ShipSnapshot, strategy string) []uuid.UUID {
+// Only considers docked ships with no cargo that are at a port with a shipyard.
+func (a *HeuristicAgent) findShipsToSell(ships []ShipSnapshot, strategy string, shipyardPorts []uuid.UUID) []uuid.UUID {
+	shipyardSet := make(map[uuid.UUID]bool, len(shipyardPorts))
+	for _, pid := range shipyardPorts {
+		shipyardSet[pid] = true
+	}
+
 	type candidate struct {
 		id    uuid.UUID
 		score float64 // lower = more likely to sell
@@ -962,6 +967,10 @@ func (a *HeuristicAgent) findShipsToSell(ships []ShipSnapshot, strategy string) 
 		}
 		// Don't sell ships with cargo — they're actively trading.
 		if len(ship.Cargo) > 0 {
+			continue
+		}
+		// Only consider ships at ports with a shipyard.
+		if ship.PortID == nil || !shipyardSet[*ship.PortID] {
 			continue
 		}
 

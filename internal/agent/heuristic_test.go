@@ -916,7 +916,8 @@ func TestDecideFleetAction_SellShips_HighUpkeep(t *testing.T) {
 			{ID: id(1), Status: "docked", PortID: &portA, Speed: 10, Capacity: 100},
 			{ID: id(2), Status: "docked", PortID: &portA, Speed: 5, Capacity: 200}, // Slower → sell this
 		},
-		ShipTypes: []ShipTypeInfo{{ID: id(1), BasePrice: 500, Upkeep: 50}},
+		ShipTypes:     []ShipTypeInfo{{ID: id(1), BasePrice: 500, Upkeep: 50}},
+		ShipyardPorts: []uuid.UUID{portA},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -940,7 +941,8 @@ func TestDecideFleetAction_SellShips_OnlyDockedEmpty(t *testing.T) {
 			{ID: id(1), Status: "docked", PortID: &portA, Speed: 10, Cargo: []CargoItem{{GoodID: id(10), Quantity: 5}}},
 			{ID: id(2), Status: "traveling", Speed: 5}, // Not docked
 		},
-		ShipTypes: []ShipTypeInfo{{ID: id(1), BasePrice: 500, Upkeep: 50}},
+		ShipTypes:     []ShipTypeInfo{{ID: id(1), BasePrice: 500, Upkeep: 50}},
+		ShipyardPorts: []uuid.UUID{portA},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1128,7 +1130,7 @@ func TestFindShipsToSell_ArbitrageSellsSlowest(t *testing.T) {
 		{ID: id(2), Status: "docked", PortID: &portA, Speed: 3},
 		{ID: id(3), Status: "docked", PortID: &portA, Speed: 8},
 	}
-	result := a.findShipsToSell(ships, "arbitrage")
+	result := a.findShipsToSell(ships, "arbitrage", []uuid.UUID{portA})
 	if len(result) != 1 || result[0] != id(2) {
 		t.Errorf("arbitrage should sell slowest ship (id 2), got %v", result)
 	}
@@ -1142,7 +1144,7 @@ func TestFindShipsToSell_BulkHaulerSellsSmallest(t *testing.T) {
 		{ID: id(2), Status: "docked", PortID: &portA, Capacity: 50},
 		{ID: id(3), Status: "docked", PortID: &portA, Capacity: 150},
 	}
-	result := a.findShipsToSell(ships, "bulk_hauler")
+	result := a.findShipsToSell(ships, "bulk_hauler", []uuid.UUID{portA})
 	if len(result) != 1 || result[0] != id(2) {
 		t.Errorf("bulk_hauler should sell smallest ship (id 2), got %v", result)
 	}
@@ -1156,7 +1158,7 @@ func TestFindShipsToSell_MarketMakerSellsMostExpensive(t *testing.T) {
 		{ID: id(2), Status: "docked", PortID: &portA, Capacity: 200}, // Biggest = most expensive
 		{ID: id(3), Status: "docked", PortID: &portA, Capacity: 100},
 	}
-	result := a.findShipsToSell(ships, "market_maker")
+	result := a.findShipsToSell(ships, "market_maker", []uuid.UUID{portA})
 	if len(result) != 1 || result[0] != id(2) {
 		t.Errorf("market_maker should sell most expensive ship (id 2), got %v", result)
 	}
