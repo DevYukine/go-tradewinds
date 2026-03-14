@@ -13,7 +13,8 @@ import (
 
 const (
 	sseReconnectDelay    = 2 * time.Second
-	sseMaxReconnectDelay = 60 * time.Second
+	sseMaxReconnectDelay = 5 * time.Minute
+	sseMaxRetries        = 10
 )
 
 // EventHandler processes incoming SSE events.
@@ -58,8 +59,11 @@ func (c *Client) SubscribeCompanyEvents(ctx context.Context, handler EventHandle
 }
 
 // runSSELoop manages the SSE connection lifecycle with automatic reconnection.
+// After sseMaxRetries consecutive failures it stops retrying and logs once,
+// falling back to poll-only mode.
 func (c *Client) runSSELoop(ctx context.Context, path string, requiresAuth bool, handler EventHandler) {
 	delay := sseReconnectDelay
+	failures := 0
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -72,11 +76,26 @@ func (c *Client) runSSELoop(ctx context.Context, path string, requiresAuth bool,
 				return // Context cancelled, clean shutdown.
 			}
 
+			failures++
+			if failures >= sseMaxRetries {
+				c.logger.Warn("SSE connection failed repeatedly, giving up — falling back to poll-only mode",
+					zap.String("path", path),
+					zap.Int("attempts", failures),
+					zap.Error(err),
+				)
+				return
+			}
+
 			c.logger.Warn("SSE connection lost, reconnecting",
 				zap.String("path", path),
 				zap.Error(err),
 				zap.Duration("delay", delay),
+				zap.Int("attempt", failures),
 			)
+		} else {
+			// Connection was established then dropped — reset backoff.
+			delay = sseReconnectDelay
+			failures = 0
 		}
 
 		// Wait before reconnecting with exponential backoff.
