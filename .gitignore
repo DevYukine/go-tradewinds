@@ -16,5 +16,11 @@
 .DS_Store
 Thumbs.db
 
+# Node / Dashboard
+node_modules/
+.nuxt/
+.output/
+dist/
+
 # Claude
 .claude/
