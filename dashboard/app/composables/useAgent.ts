@@ -13,7 +13,7 @@ export function useAgent() {
     error.value = null
     try {
       decisions.value = await $fetch<AgentDecision[]>(
-        `${apiBase}/api/companies/${companyId}/agent-decisions`
+        `${apiBase}/api/companies/${companyId}/decisions`
       )
     } catch (e: any) {
       error.value = e.message || 'Failed to fetch agent decisions'

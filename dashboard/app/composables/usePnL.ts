@@ -24,7 +24,7 @@ export function usePnL() {
 
   function connectSSE(companyId: number) {
     disconnectSSE()
-    eventSource = new EventSource(`${apiBase}/api/companies/${companyId}/pnl/stream`)
+    eventSource = new EventSource(`${apiBase}/sse/pnl`)
 
     eventSource.onmessage = (event) => {
       try {

@@ -1,0 +1,9 @@
+onlyBuiltDependencies:
+  - '@parcel/watcher'
+  - a
+  - esbuild
+  - h
+  - maplibre-gl
+  - p
+  - r
+  - s

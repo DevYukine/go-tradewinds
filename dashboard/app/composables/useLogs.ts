@@ -17,7 +17,7 @@ export function useLogs() {
     logs.value = []
     buffer = []
 
-    eventSource = new EventSource(`${apiBase}/api/companies/${companyId}/logs/stream`)
+    eventSource = new EventSource(`${apiBase}/sse/logs/${companyId}`)
     connected.value = true
 
     eventSource.onmessage = (event) => {

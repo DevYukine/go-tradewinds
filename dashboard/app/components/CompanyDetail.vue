@@ -22,10 +22,9 @@ function statusClasses(status: Company['status']): string {
 
 function strategyBadgeClasses(strategy: string): string {
   const colors: Record<string, string> = {
-    aggressive: 'bg-rose-500/20 text-rose-300',
-    conservative: 'bg-blue-500/20 text-blue-300',
-    balanced: 'bg-emerald-500/20 text-emerald-300',
-    opportunistic: 'bg-amber-500/20 text-amber-300',
+    arbitrage: 'bg-emerald-500/20 text-emerald-300',
+    bulk_hauler: 'bg-blue-500/20 text-blue-300',
+    market_maker: 'bg-amber-500/20 text-amber-300',
   }
   return colors[strategy.toLowerCase()] || 'bg-purple-500/20 text-purple-300'
 }

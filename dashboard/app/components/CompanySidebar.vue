@@ -11,10 +11,9 @@ const emit = defineEmits<{
 }>()
 
 const strategyColors: Record<string, string> = {
-  aggressive: 'text-rose-400 border-rose-500',
-  conservative: 'text-blue-400 border-blue-500',
-  balanced: 'text-emerald-400 border-emerald-500',
-  opportunistic: 'text-amber-400 border-amber-500',
+  arbitrage: 'text-emerald-400 border-emerald-500',
+  bulk_hauler: 'text-blue-400 border-blue-500',
+  market_maker: 'text-amber-400 border-amber-500',
   default: 'text-purple-400 border-purple-500',
 }
 
