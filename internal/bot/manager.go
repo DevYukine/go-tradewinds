@@ -225,9 +225,19 @@ func (m *Manager) Stop(ctx context.Context, cancel context.CancelFunc) {
 	// Signal all runners to stop.
 	cancel()
 
-	// Wait for all goroutines (runners, scanner, rate limit persister) to finish.
-	m.wg.Wait()
-	m.logger.Info("all goroutines stopped")
+	// Wait for goroutines with a tight deadline — don't block shutdown.
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		m.logger.Info("all goroutines stopped cleanly")
+	case <-time.After(5 * time.Second):
+		m.logger.Warn("timed out waiting for goroutines, proceeding with shutdown")
+	}
 
 	// Write a final P&L snapshot and mark each company as stopped.
 	m.mu.RLock()
