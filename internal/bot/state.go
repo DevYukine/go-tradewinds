@@ -31,6 +31,9 @@ type CompanyState struct {
 	InitialTreasury   int64 // Treasury at bot start, for upkeep derivation
 	pnlInitialized    bool  // Whether cumulative counters have been seeded from DB.
 
+	// Active P2P market orders placed by this company.
+	Orders map[uuid.UUID]*api.Order
+
 	mu sync.RWMutex
 }
 
@@ -40,6 +43,7 @@ func NewCompanyState(companyID uuid.UUID) *CompanyState {
 		CompanyID:  companyID,
 		Ships:      make(map[uuid.UUID]*ShipState),
 		Warehouses: make(map[uuid.UUID]*WarehouseState),
+		Orders:     make(map[uuid.UUID]*api.Order),
 	}
 }
 
@@ -118,6 +122,39 @@ func (s *CompanyState) SetWarehouseInventory(warehouseID uuid.UUID, items []api.
 	if wh, ok := s.Warehouses[warehouseID]; ok {
 		wh.Inventory = items
 	}
+}
+
+// UpdateOrders replaces the full active order set from an API response.
+func (s *CompanyState) UpdateOrders(orders []api.Order) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	updated := make(map[uuid.UUID]*api.Order, len(orders))
+	for i := range orders {
+		o := &orders[i]
+		updated[o.ID] = o
+	}
+	s.Orders = updated
+}
+
+// RemoveOrder deletes a single order from the tracked set (filled/cancelled/expired).
+func (s *CompanyState) RemoveOrder(orderID uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.Orders, orderID)
+}
+
+// GetOrders returns a snapshot of all active orders.
+func (s *CompanyState) GetOrders() []*api.Order {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]*api.Order, 0, len(s.Orders))
+	for _, o := range s.Orders {
+		cp := *o
+		out = append(out, &cp)
+	}
+	return out
 }
 
 // GetShip returns a copy of a ship's state, or nil if not found.

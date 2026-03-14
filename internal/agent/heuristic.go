@@ -53,9 +53,6 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 			zap.String("port_id", currentPortID.String()),
 			zap.Int("total_routes", len(req.Routes)),
 		)
-		// Fallback: pick any other port from the ports list and sail there.
-		// This prevents ships from getting permanently stuck at a port
-		// whose routes are missing from the cache.
 		var fallbackDest *uuid.UUID
 		for _, p := range req.Ports {
 			if p.ID != currentPortID {
@@ -71,13 +68,19 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 	}
 
 	budget := req.Constraints.MaxSpend
+
+	// Step 1.5: Fill profitable P2P orders at the current port.
+	// This happens before NPC buying since fills can be more profitable.
+	fills, fillCost := a.findProfitableOrderFills(req.PortOrders, req.OwnOrders, priceIndex, currentPortID, budget)
+	budget -= fillCost
+
 	if budget <= 0 {
 		dest := a.closestPort(reachable)
 		passengers := a.selectPassengers(req.AvailablePassengers, req.BoardedPassengers, ship.PassengerCap, &dest, reachable)
 		return &TradeDecision{
-			Action: "sell_and_buy", SellOrders: sells, SailTo: &dest,
+			Action: "sell_and_buy", SellOrders: sells, FillOrders: fills, SailTo: &dest,
 			BoardPassengers: passengers,
-			Reasoning:       "treasury at floor, selling and moving on", Confidence: 0.4,
+			Reasoning:       "treasury at floor, selling cargo and filling orders before moving on", Confidence: 0.4,
 		}, nil
 	}
 
@@ -95,6 +98,9 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 	if err != nil {
 		return decision, err
 	}
+
+	// Attach P2P fills to the decision.
+	decision.FillOrders = fills
 
 	// Step 3: Board passengers heading to our destination (or any reachable port).
 	decision.BoardPassengers = a.selectPassengers(
@@ -893,6 +899,118 @@ func (a *HeuristicAgent) EvaluateStrategy(_ context.Context, req StrategyEvalReq
 	}
 
 	return &StrategyEvaluation{Reasoning: "all strategies performing within acceptable range"}, nil
+}
+
+// ---------------------------------------------------------------------------
+// P2P Order Fill Scanning (used by trade decisions)
+// ---------------------------------------------------------------------------
+
+// findProfitableOrderFills scans P2P orders at the current port for fills
+// that are more profitable than NPC prices. Returns fill instructions and
+// the total cost committed to fills (deducted from the trade budget).
+func (a *HeuristicAgent) findProfitableOrderFills(
+	portOrders []MarketOrder,
+	ownOrders []MarketOrder,
+	priceIndex map[string]PricePoint,
+	currentPortID uuid.UUID,
+	budget int64,
+) ([]FillOrder, int64) {
+	if len(portOrders) == 0 || budget <= 0 {
+		return nil, 0
+	}
+
+	ownOrderIDs := make(map[uuid.UUID]bool, len(ownOrders))
+	for _, o := range ownOrders {
+		ownOrderIDs[o.ID] = true
+	}
+
+	// Score each order by profit margin and sort best-first.
+	type scoredFill struct {
+		orderID uuid.UUID
+		side    string
+		qty     int
+		cost    int64 // how much budget this fill consumes
+		profit  int   // profit per unit
+	}
+	var candidates []scoredFill
+
+	for _, order := range portOrders {
+		if ownOrderIDs[order.ID] || order.Remaining <= 0 {
+			continue
+		}
+		if order.PortID != currentPortID {
+			continue
+		}
+
+		npcPrice, ok := priceIndex[priceKey(order.PortID, order.GoodID)]
+		if !ok {
+			continue
+		}
+
+		switch order.Side {
+		case "sell":
+			// Player selling cheap → we buy (profit = NPC sell price - order price).
+			if npcPrice.SellPrice > 0 && order.Price < npcPrice.SellPrice {
+				profit := npcPrice.SellPrice - order.Price
+				minProfit := npcPrice.SellPrice / 10 // 10% min margin
+				if profit >= minProfit {
+					candidates = append(candidates, scoredFill{
+						orderID: order.ID,
+						side:    "sell",
+						qty:     order.Remaining,
+						cost:    int64(order.Remaining * order.Price),
+						profit:  profit,
+					})
+				}
+			}
+		case "buy":
+			// Player buying expensive → we sell to them (profit = order price - NPC buy price).
+			if npcPrice.BuyPrice > 0 && order.Price > npcPrice.BuyPrice {
+				profit := order.Price - npcPrice.BuyPrice
+				minProfit := npcPrice.BuyPrice / 10
+				if profit >= minProfit {
+					candidates = append(candidates, scoredFill{
+						orderID: order.ID,
+						side:    "buy",
+						qty:     order.Remaining,
+						cost:    int64(order.Remaining * npcPrice.BuyPrice),
+						profit:  profit,
+					})
+				}
+			}
+		}
+	}
+
+	// Sort by profit per unit descending.
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].profit > candidates[j].profit
+	})
+
+	var fills []FillOrder
+	var totalCost int64
+
+	for _, c := range candidates {
+		remaining := budget - totalCost
+		if remaining <= 0 {
+			break
+		}
+		qty := c.qty
+		unitCost := c.cost / int64(c.qty)
+		if unitCost > 0 && int64(qty)*unitCost > remaining {
+			qty = int(remaining / unitCost)
+		}
+		if qty > 0 {
+			fills = append(fills, FillOrder{OrderID: c.orderID, Quantity: qty})
+			totalCost += int64(qty) * unitCost
+			a.logger.Info("trade fill opportunity",
+				zap.String("side", c.side),
+				zap.Int("profit/unit", c.profit),
+				zap.Int("qty", qty),
+			)
+		}
+	}
+
+	return fills, totalCost
 }
 
 // ---------------------------------------------------------------------------

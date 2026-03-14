@@ -110,9 +110,34 @@ func (b *baseStrategy) buildFleetRequest() agent.FleetDecisionRequest {
 }
 
 // buildTradeRequestWithPassengers extends buildTradeRequest by fetching
-// available passengers at the current port and boarded passengers on the ship.
+// available passengers at the current port, boarded passengers on the ship,
+// and P2P market orders at the current port for fill opportunities.
 func (b *baseStrategy) buildTradeRequestWithPassengers(ctx context.Context, ship *bot.ShipState, port *api.Port) agent.TradeDecisionRequest {
 	req := b.buildTradeRequest(ship, port)
+
+	// Fetch P2P orders at this port for fill opportunities.
+	portOrders, err := b.ctx.Client.ListOrders(ctx, api.OrderFilters{
+		PortIDs: []uuid.UUID{port.ID},
+	})
+	if err != nil {
+		b.logger.Debug("failed to fetch port orders", zap.Error(err))
+	} else {
+		companyID := b.ctx.State.CompanyID
+		for _, o := range portOrders {
+			mo := agent.MarketOrder{
+				ID:        o.ID,
+				PortID:    o.PortID,
+				GoodID:    o.GoodID,
+				Side:      o.Side,
+				Price:     o.Price,
+				Remaining: o.Remaining,
+			}
+			req.PortOrders = append(req.PortOrders, mo)
+			if o.CompanyID == companyID {
+				req.OwnOrders = append(req.OwnOrders, mo)
+			}
+		}
+	}
 
 	// Only fetch passengers if the ship type supports them.
 	if req.Ship.PassengerCap <= 0 {
@@ -216,6 +241,27 @@ func (b *baseStrategy) boardPassengers(ctx context.Context, ship *bot.ShipState,
 
 		// Track boarded passenger count on the ship.
 		ship.PassengerCount += passenger.Count
+	}
+}
+
+// --- P2P Order Fills ---
+
+// executeFills fills P2P market orders at the current port.
+func (b *baseStrategy) executeFills(ctx context.Context, fills []agent.FillOrder) {
+	for _, fill := range fills {
+		_, err := b.ctx.Client.FillOrder(ctx, fill.OrderID, fill.Quantity)
+		if err != nil {
+			b.logger.Warn("failed to fill market order",
+				zap.String("order_id", fill.OrderID.String()),
+				zap.Int("quantity", fill.Quantity),
+				zap.Error(err),
+			)
+			continue
+		}
+		b.logger.Trade("filled market order",
+			zap.String("order_id", fill.OrderID.String()),
+			zap.Int("quantity", fill.Quantity),
+		)
 	}
 }
 

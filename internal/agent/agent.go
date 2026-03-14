@@ -240,6 +240,8 @@ type TradeDecisionRequest struct {
 	Constraints         Constraints
 	AvailablePassengers []PassengerInfo // Passengers at the current port looking for transport.
 	BoardedPassengers   []PassengerInfo // Passengers already on this ship.
+	PortOrders          []MarketOrder   // P2P orders at the current port (for filling opportunities).
+	OwnOrders           []MarketOrder   // This company's active orders (to avoid self-fill).
 }
 
 // SellOrder instructs the bot to sell a good at the current port.
@@ -260,6 +262,7 @@ type TradeDecision struct {
 	Action          string      // "buy_and_sail", "sell_and_buy", "wait", "dock"
 	SellOrders      []SellOrder // What to sell at current port.
 	BuyOrders       []BuyOrder  // What to buy before departing.
+	FillOrders      []FillOrder // P2P orders to fill at the current port.
 	BoardPassengers []uuid.UUID // Passenger IDs to board before departing.
 	SailTo          *uuid.UUID  // Destination port (nil = stay docked).
 	Reasoning       string      // Human-readable explanation.

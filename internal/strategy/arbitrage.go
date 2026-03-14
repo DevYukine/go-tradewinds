@@ -73,6 +73,8 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 		if err := a.executeSells(ctx, ship, decision.SellOrders); err != nil {
 			a.logger.Error("sell execution failed", zap.Error(err))
 		}
+		// Fill P2P orders.
+		a.executeFills(ctx, decision.FillOrders)
 		// Then buy.
 		if err := a.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
 			a.logger.Error("buy execution failed", zap.Error(err))

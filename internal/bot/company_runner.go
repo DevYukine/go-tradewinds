@@ -241,6 +241,14 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 	// Strategy is already initialized by the factory in the manager.
 	// No need to re-init here.
 
+	// Fetch active P2P orders.
+	orders, err := r.client.ListOrders(ctx, api.OrderFilters{})
+	if err != nil {
+		r.logger.Warn("failed to fetch initial orders", zap.Error(err))
+	} else {
+		r.state.UpdateOrders(orders)
+	}
+
 	// Capture initial treasury before seeding P&L counters.
 	r.state.mu.Lock()
 	r.state.InitialTreasury = econ.Treasury
@@ -456,6 +464,9 @@ func (r *CompanyRunner) handleTick(ctx context.Context) {
 
 	// Record P&L snapshot.
 	r.recordPnLSnapshot()
+
+	// Refresh active P2P orders & cancel expired ones.
+	r.refreshOrders(ctx)
 
 	// Refresh any ships stuck in "traveling" past their arrival time.
 	// This happens when a ship_docked SSE event is lost or GetShip fails.
@@ -698,6 +709,33 @@ func (r *CompanyRunner) swapStrategy(ctx context.Context, newStrategy Strategy) 
 // Logger returns the company logger for external consumers (e.g., SSE streaming).
 func (r *CompanyRunner) Logger() *CompanyLogger {
 	return r.logger
+}
+
+// refreshOrders fetches active orders, updates state, and auto-cancels expired ones.
+func (r *CompanyRunner) refreshOrders(ctx context.Context) {
+	orders, err := r.client.ListOrders(ctx, api.OrderFilters{})
+	if err != nil {
+		r.logger.Debug("order refresh failed", zap.Error(err))
+		return
+	}
+	r.state.UpdateOrders(orders)
+
+	now := time.Now()
+	for _, o := range orders {
+		if o.ExpiresAt != nil && now.After(*o.ExpiresAt) {
+			if err := r.client.CancelOrder(ctx, o.ID); err != nil {
+				r.logger.Debug("failed to cancel expired order",
+					zap.String("order_id", o.ID.String()),
+					zap.Error(err),
+				)
+			} else {
+				r.state.RemoveOrder(o.ID)
+				r.logger.Info("cancelled expired P2P order",
+					zap.String("order_id", o.ID.String()),
+				)
+			}
+		}
+	}
 }
 
 // DBRecord returns the database record for this company.
