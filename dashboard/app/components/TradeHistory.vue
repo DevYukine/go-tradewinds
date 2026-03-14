@@ -152,9 +152,9 @@ const totalPassengerCount = computed(() =>
           </div>
         </div>
 
-        <div class="overflow-x-auto max-h-72 overflow-y-auto">
+        <div class="max-h-72 overflow-y-auto pr-2">
           <table class="w-full text-sm">
-            <thead class="sticky top-0 bg-slate-800">
+            <thead class="sticky top-0 bg-slate-800 z-10">
               <tr class="text-xs text-slate-500 uppercase tracking-wide border-b border-slate-700">
                 <th class="text-left py-2 pr-2">Time</th>
                 <th class="text-left py-2 pr-2">Action</th>
@@ -230,9 +230,9 @@ const totalPassengerCount = computed(() =>
           </div>
         </div>
 
-        <div class="overflow-x-auto max-h-72 overflow-y-auto">
+        <div class="max-h-72 overflow-y-auto pr-2">
           <table class="w-full text-sm">
-            <thead class="sticky top-0 bg-slate-800">
+            <thead class="sticky top-0 bg-slate-800 z-10">
               <tr class="text-xs text-slate-500 uppercase tracking-wide border-b border-slate-700">
                 <th class="text-left py-2 pr-2">Time</th>
                 <th class="text-right py-2 pr-2">Count</th>

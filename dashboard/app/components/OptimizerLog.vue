@@ -42,7 +42,7 @@ function scoreBorderColor(profit: number): string {
       No optimizer data available
     </div>
 
-    <div v-else class="space-y-3 max-h-72 overflow-y-auto">
+    <div v-else class="space-y-3 max-h-72 overflow-y-auto pr-2">
       <div
         v-for="(m, i) in metrics"
         :key="m.strategy_name"

@@ -79,7 +79,7 @@ function spreadColor(spread: number): string {
       No price data available yet
     </div>
 
-    <div v-else class="max-h-96 overflow-y-auto space-y-4">
+    <div v-else class="max-h-96 overflow-y-auto space-y-4 pr-2">
       <div v-for="(portPrices, portName) in pricesByPort" :key="portName">
         <div class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
           <Icon name="lucide:map-pin" class="text-sky-400" />

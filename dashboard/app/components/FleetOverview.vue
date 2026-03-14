@@ -107,7 +107,7 @@ const totalCapacity = computed(() =>
 
     <template v-else-if="inventory">
       <!-- Summary Stats -->
-      <div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
+      <div class="grid grid-cols-3 lg:grid-cols-5 gap-3 mb-4">
         <div class="bg-slate-900/50 rounded-lg p-2.5">
           <div class="text-[10px] text-slate-500 uppercase tracking-wide">Ships</div>
           <div class="text-base font-bold text-slate-100 font-mono">{{ inventory.ships.length }}</div>
@@ -131,7 +131,7 @@ const totalCapacity = computed(() =>
       </div>
 
       <!-- Ships -->
-      <div v-if="inventory.ships.length > 0" class="space-y-2 max-h-[32rem] overflow-y-auto">
+      <div v-if="inventory.ships.length > 0" class="space-y-2 max-h-[32rem] overflow-y-auto pr-2">
         <div
           v-for="ship in inventory.ships"
           :key="ship.ship_id"
@@ -260,7 +260,7 @@ const totalCapacity = computed(() =>
       <!-- Warehouses -->
       <div v-if="inventory.warehouses.length > 0" class="mt-4">
         <h4 class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Warehouses</h4>
-        <div class="space-y-1.5 max-h-48 overflow-y-auto">
+        <div class="space-y-1.5 max-h-48 overflow-y-auto pr-2">
           <div
             v-for="wh in inventory.warehouses"
             :key="wh.warehouse_id"
