@@ -19,6 +19,7 @@ type CompanyState struct {
 	Warehouses  map[uuid.UUID]*WarehouseState
 	TotalUpkeep int64
 	LastEconomy time.Time
+	dbID        uint // Database record ID for logging.
 	mu          sync.RWMutex
 }
 
@@ -130,6 +131,26 @@ func (s *CompanyState) TreasuryFloor() int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.TotalUpkeep * 2
+}
+
+// SetDBID sets the database record ID for this company.
+func (s *CompanyState) SetDBID(id uint) {
+	s.dbID = id
+}
+
+// CompanyDBID returns the database record ID.
+func (s *CompanyState) CompanyDBID() uint {
+	return s.dbID
+}
+
+// RLock acquires a read lock on the state.
+func (s *CompanyState) RLock() {
+	s.mu.RLock()
+}
+
+// RUnlock releases the read lock on the state.
+func (s *CompanyState) RUnlock() {
+	s.mu.RUnlock()
 }
 
 // ShipState tracks a single ship and its cargo.
