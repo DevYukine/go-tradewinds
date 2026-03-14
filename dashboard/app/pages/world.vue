@@ -8,6 +8,8 @@
       <p class="text-sm text-slate-500 mt-1">Ports, goods, routes, and ship types</p>
     </div>
 
+    <WorldMap />
+
     <WorldInfo />
   </div>
 </template>

@@ -140,6 +140,23 @@ export interface PortInfo {
   is_hub: boolean
   tax_rate: number
   has_shipyard: boolean
+  latitude: number
+  longitude: number
+}
+
+export interface MapShip {
+  ship_id: string
+  ship_name: string
+  company_name: string
+  company_id: string
+  strategy: string
+  status: string
+  port_id?: string
+  from_port_id?: string
+  to_port_id?: string
+  arriving_at?: string
+  cargo_total: number
+  capacity: number
 }
 
 export interface GoodInfo {

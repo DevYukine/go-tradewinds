@@ -134,9 +134,6 @@ function strategyBadge(strategy: string): string {
       </div>
     </div>
 
-    <!-- World Map (full width) -->
-    <WorldMap :company-id="companyId" />
-
     <!-- P&L Charts (Treasury + P&L Breakdown) -->
     <PnLChart :history="history" :loading="pnlLoading" />
 
