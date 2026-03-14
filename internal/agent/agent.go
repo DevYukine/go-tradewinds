@@ -1,0 +1,282 @@
+package agent
+
+import (
+	"context"
+	"time"
+
+	"github.com/google/uuid"
+	"go.uber.org/fx"
+	"go.uber.org/zap"
+
+	"github.com/DevYukine/go-tradewinds/internal/config"
+)
+
+// Module provides the Agent implementation to the fx DI container.
+var Module = fx.Module("agent",
+	fx.Provide(NewAgent),
+)
+
+// Agent makes trading decisions. Implementations can be heuristic-based,
+// LLM-powered, or use custom ML models. The bot's strategy layer calls
+// these methods at each decision point.
+type Agent interface {
+	// Name returns a human-readable identifier for this agent.
+	Name() string
+
+	// DecideTradeAction is called when a ship docks. It receives the full game
+	// state and must return what to buy/sell and where to sail next.
+	DecideTradeAction(ctx context.Context, req TradeDecisionRequest) (*TradeDecision, error)
+
+	// DecideFleetAction is called periodically. It can recommend buying ships,
+	// upgrading warehouses, or other capital decisions.
+	DecideFleetAction(ctx context.Context, req FleetDecisionRequest) (*FleetDecision, error)
+
+	// DecideMarketAction is called when evaluating P2P market opportunities.
+	DecideMarketAction(ctx context.Context, req MarketDecisionRequest) (*MarketDecision, error)
+
+	// EvaluateStrategy is called by the optimizer. Given performance metrics,
+	// the agent can recommend parameter adjustments or strategy switches.
+	EvaluateStrategy(ctx context.Context, req StrategyEvalRequest) (*StrategyEvaluation, error)
+}
+
+// NewAgent creates the appropriate Agent implementation based on config.
+// Additional agent types (LLM, composite) will be added in later steps.
+func NewAgent(cfg *config.Config, logger *zap.Logger) (Agent, error) {
+	switch cfg.Agent.Type {
+	case "heuristic", "":
+		return NewHeuristicAgent(logger), nil
+	default:
+		logger.Warn("unknown agent type, falling back to heuristic",
+			zap.String("configured_type", cfg.Agent.Type),
+		)
+		return NewHeuristicAgent(logger), nil
+	}
+}
+
+// --- Snapshot Types ---
+// These provide a serializable view of game state for agent decision-making.
+
+// CompanySnapshot is a point-in-time view of a company's finances.
+type CompanySnapshot struct {
+	ID          uuid.UUID
+	Treasury    int64
+	Reputation  int64
+	TotalUpkeep int64
+}
+
+// ShipSnapshot is a point-in-time view of a ship's state.
+type ShipSnapshot struct {
+	ID        uuid.UUID
+	Name      string
+	Status    string // "docked" or "traveling"
+	PortID    *uuid.UUID
+	Cargo     []CargoItem
+	Capacity  int
+	Speed     int
+	ArrivesAt *time.Time
+}
+
+// CargoItem represents a quantity of a good on a ship.
+type CargoItem struct {
+	GoodID   uuid.UUID
+	Quantity int
+}
+
+// WarehouseSnapshot is a point-in-time view of a warehouse.
+type WarehouseSnapshot struct {
+	ID       uuid.UUID
+	PortID   uuid.UUID
+	Level    int
+	Capacity int
+	Items    []WarehouseItem
+}
+
+// WarehouseItem represents a quantity of a good in a warehouse.
+type WarehouseItem struct {
+	GoodID   uuid.UUID
+	Quantity int
+}
+
+// PricePoint records observed buy/sell prices for a good at a port.
+type PricePoint struct {
+	PortID     uuid.UUID
+	GoodID     uuid.UUID
+	BuyPrice   int
+	SellPrice  int
+	ObservedAt time.Time
+}
+
+// PortInfo is a simplified port representation for agent decisions.
+type PortInfo struct {
+	ID         uuid.UUID
+	Name       string
+	Code       string
+	IsHub      bool
+	TaxRateBps int
+}
+
+// RouteInfo is a simplified route representation for agent decisions.
+type RouteInfo struct {
+	ID       uuid.UUID
+	FromID   uuid.UUID
+	ToID     uuid.UUID
+	Distance float64
+}
+
+// ShipTypeInfo describes an available ship type for purchase decisions.
+type ShipTypeInfo struct {
+	ID        uuid.UUID
+	Name      string
+	Capacity  int
+	Speed     int
+	Upkeep    int
+	BasePrice int
+}
+
+// TradeLogEntry is a recent trade for context in decision-making.
+type TradeLogEntry struct {
+	Action    string
+	GoodID    uuid.UUID
+	PortID    uuid.UUID
+	Quantity  int
+	UnitPrice int
+	CreatedAt time.Time
+}
+
+// Constraints defines safety boundaries for trading decisions.
+type Constraints struct {
+	TreasuryFloor int64 // Minimum treasury to maintain (2x upkeep).
+	MaxSpend      int64 // Maximum to spend on a single trade.
+}
+
+// --- Trade Decision ---
+
+// TradeDecisionRequest contains everything an agent needs to decide a trade.
+type TradeDecisionRequest struct {
+	Company      CompanySnapshot
+	Ship         ShipSnapshot
+	AllShips     []ShipSnapshot
+	Warehouses   []WarehouseSnapshot
+	PriceCache   []PricePoint
+	Routes       []RouteInfo
+	Ports        []PortInfo
+	RecentTrades []TradeLogEntry
+	Constraints  Constraints
+}
+
+// SellOrder instructs the bot to sell a good at the current port.
+type SellOrder struct {
+	GoodID   uuid.UUID
+	Quantity int
+}
+
+// BuyOrder instructs the bot to buy a good and load it onto a destination.
+type BuyOrder struct {
+	GoodID      uuid.UUID
+	Quantity    int
+	Destination uuid.UUID // Ship or warehouse ID.
+}
+
+// TradeDecision is the agent's response to a trade decision request.
+type TradeDecision struct {
+	Action     string      // "buy_and_sail", "sell_and_buy", "wait", "dock"
+	SellOrders []SellOrder // What to sell at current port.
+	BuyOrders  []BuyOrder  // What to buy before departing.
+	SailTo     *uuid.UUID  // Destination port (nil = stay docked).
+	Reasoning  string      // Human-readable explanation.
+	Confidence float64     // 0.0-1.0, used by optimizer to weight decisions.
+}
+
+// --- Fleet Decision ---
+
+// FleetDecisionRequest contains state needed for capital investment decisions.
+type FleetDecisionRequest struct {
+	Company    CompanySnapshot
+	Ships      []ShipSnapshot
+	Warehouses []WarehouseSnapshot
+	ShipTypes  []ShipTypeInfo
+	PriceCache []PricePoint
+}
+
+// ShipPurchase describes a ship to buy at a specific port.
+type ShipPurchase struct {
+	ShipTypeID uuid.UUID
+	PortID     uuid.UUID
+}
+
+// FleetDecision is the agent's response to a fleet decision request.
+type FleetDecision struct {
+	BuyShips      []ShipPurchase
+	BuyWarehouses []uuid.UUID // Port IDs to build warehouses at.
+	Reasoning     string
+}
+
+// --- Market Decision ---
+
+// MarketDecisionRequest contains state for P2P market decisions.
+type MarketDecisionRequest struct {
+	Company    CompanySnapshot
+	OpenOrders []MarketOrder
+	OwnOrders  []MarketOrder
+	PriceCache []PricePoint
+	Warehouses []WarehouseSnapshot
+}
+
+// MarketOrder represents a P2P market order.
+type MarketOrder struct {
+	ID        uuid.UUID
+	PortID    uuid.UUID
+	GoodID    uuid.UUID
+	Side      string // "buy" or "sell"
+	Price     int
+	Remaining int
+}
+
+// NewMarketOrder describes a new order to post.
+type NewMarketOrder struct {
+	PortID uuid.UUID
+	GoodID uuid.UUID
+	Side   string
+	Price  int
+	Total  int
+}
+
+// FillOrder describes an existing order to fill.
+type FillOrder struct {
+	OrderID  uuid.UUID
+	Quantity int
+}
+
+// MarketDecision is the agent's response to a market decision request.
+type MarketDecision struct {
+	PostOrders   []NewMarketOrder
+	FillOrders   []FillOrder
+	CancelOrders []uuid.UUID
+	Reasoning    string
+}
+
+// --- Strategy Evaluation ---
+
+// StrategyMetrics holds aggregated performance data for a strategy.
+type StrategyMetrics struct {
+	StrategyName   string
+	CompanyCount   int
+	TradesExecuted int
+	TotalProfit    int64
+	TotalLoss      int64
+	WinRate        float64
+	ProfitPerHour  float64
+}
+
+// StrategyEvalRequest provides metrics for the agent to evaluate strategies.
+type StrategyEvalRequest struct {
+	Metrics       []StrategyMetrics
+	CurrentParams map[string]any
+}
+
+// StrategyEvaluation is the agent's recommendation for strategy changes.
+type StrategyEvaluation struct {
+	ParamChanges map[string]any
+	SwitchTo     *string // Recommend switching strategy (nil = keep current).
+	Reasoning    string
+}
