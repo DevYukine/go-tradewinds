@@ -31,7 +31,7 @@ func NewBulkHauler(ctx bot.StrategyContext) (bot.Strategy, error) {
 func (b *BulkHauler) Name() string { return "bulk_hauler" }
 
 func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, port *api.Port) error {
-	b.logger.Info("bulk_hauler: ship arrived, evaluating trade",
+	b.logger.Debug("bulk_hauler: ship arrived, evaluating trade",
 		zap.String("ship", ship.Ship.Name),
 		zap.String("port", port.Name),
 	)
@@ -43,7 +43,7 @@ func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, por
 	latency := time.Since(start)
 
 	if err != nil {
-		b.logger.Error("agent trade decision failed", zap.Error(err))
+		b.logger.Warn("agent trade decision failed", zap.Error(err))
 		return err
 	}
 
@@ -57,20 +57,20 @@ func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, por
 	switch decision.Action {
 	case "sell_and_buy", "buy_and_sail":
 		if err := b.executeSells(ctx, ship, decision.SellOrders); err != nil {
-			b.logger.Error("sell execution failed", zap.Error(err))
+			b.logger.Warn("sell execution failed", zap.Error(err))
 		}
 		b.executeFills(ctx, decision.FillOrders)
 		if err := b.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
-			b.logger.Error("buy execution failed", zap.Error(err))
+			b.logger.Warn("buy execution failed", zap.Error(err))
 		}
 		b.boardPassengers(ctx, ship, decision.BoardPassengers)
 		if decision.SailTo != nil {
 			if err := b.sendShipToPort(ctx, ship, *decision.SailTo); err != nil {
-				b.logger.Error("transit failed", zap.Error(err))
+				b.logger.Warn("transit failed", zap.Error(err))
 			}
 		}
 	case "wait", "dock":
-		b.logger.Info("agent decided to wait",
+		b.logger.Debug("agent decided to wait",
 			zap.String("reasoning", decision.Reasoning),
 		)
 	}
@@ -98,7 +98,7 @@ func (b *BulkHauler) OnTick(ctx context.Context, _ *bot.CompanyState) error {
 	latency := time.Since(start)
 
 	if err != nil {
-		b.logger.Error("agent fleet decision failed", zap.Error(err))
+		b.logger.Warn("agent fleet decision failed", zap.Error(err))
 		return nil
 	}
 

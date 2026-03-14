@@ -101,7 +101,7 @@ func (b *baseStrategy) ensurePortPrices(ctx context.Context, port *api.Port) {
 		}
 	}
 
-	b.logger.Info("on-demand port scan complete",
+	b.logger.Debug("on-demand port scan complete",
 		zap.String("port", port.Name),
 		zap.Int("prices_updated", updated),
 	)
@@ -452,7 +452,7 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 	b.ctx.State.RUnlock()
 
 	if available <= 0 {
-		b.logger.Warn("treasury too low to buy, skipping",
+		b.logger.Debug("treasury too low to buy, skipping",
 			zap.Int64("available", available),
 			zap.Int64("floor", floor),
 		)
@@ -482,7 +482,7 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 		}
 
 		if int64(r.Quote.TotalPrice) > available {
-			b.logger.Warn("skipping buy: would exceed treasury floor",
+			b.logger.Debug("skipping buy: would exceed treasury floor",
 				zap.Int("cost", r.Quote.TotalPrice),
 				zap.Int64("available", available),
 			)
@@ -548,7 +548,7 @@ func (b *baseStrategy) sendShipToPort(ctx context.Context, ship *bot.ShipState, 
 	route := b.ctx.World.FindRoute(*ship.Ship.PortID, destPortID)
 	if route == nil {
 		// Route missing from cache — fetch directly from API.
-		b.logger.Warn("route not in cache, fetching from API",
+		b.logger.Debug("route not in cache, fetching from API",
 			zap.String("from", ship.Ship.PortID.String()),
 			zap.String("to", destPortID.String()),
 		)
@@ -657,7 +657,7 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 	for _, portID := range decision.BuyWarehouses {
 		wh, err := b.ctx.Client.BuyWarehouse(ctx, portID)
 		if err != nil {
-			b.logger.Error("failed to buy warehouse",
+			b.logger.Warn("failed to buy warehouse",
 				zap.String("port_id", portID.String()),
 				zap.Error(err),
 			)
@@ -687,7 +687,7 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 	// Also account for ~5% tax on purchase.
 	maxSpend := treasury - safetyMargin
 	if maxSpend <= 0 {
-		b.logger.Info("treasury too low to buy ship",
+		b.logger.Debug("treasury too low to buy ship",
 			zap.Int64("treasury", treasury),
 			zap.Int64("safety_margin", safetyMargin),
 		)
@@ -748,7 +748,7 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 				costWithTax := int64(float64(inventory[i].Cost) * 1.06)
 				if costWithTax <= maxSpend {
 					chosenItem = &inventory[i]
-					b.logger.Info("desired ship type not in stock or too expensive, using cheapest affordable alternative",
+					b.logger.Debug("desired ship type not in stock or too expensive, using cheapest affordable alternative",
 						zap.String("wanted_type", purchase.ShipTypeID.String()),
 						zap.String("using_type", chosenItem.ShipTypeID.String()),
 						zap.Int("cost", chosenItem.Cost),

@@ -153,7 +153,7 @@ func (rc *RedisCache) LoadRateLimitTimestamps(ctx context.Context) []time.Time {
 		timestamps = append(timestamps, time.UnixMilli(ms))
 	}
 
-	rc.logger.Info("restored rate limit state from Redis",
+	rc.logger.Debug("restored rate limit state from Redis",
 		zap.Int("active_timestamps", len(timestamps)),
 	)
 
@@ -214,7 +214,7 @@ func (rc *RedisCache) LoadPriceCache(ctx context.Context) map[string]PriceCacheE
 		rc.client.HDel(ctx, priceCacheKey, staleKeys...)
 	}
 
-	rc.logger.Info("restored price cache from Redis",
+	rc.logger.Debug("restored price cache from Redis",
 		zap.Int("entries", len(entries)),
 		zap.Int("stale_pruned", len(staleKeys)),
 	)
@@ -238,6 +238,6 @@ func (rc *RedisCache) LoadScannerIndex(ctx context.Context) int {
 		return 0
 	}
 
-	rc.logger.Info("restored scanner position from Redis", zap.Int("port_idx", val))
+	rc.logger.Debug("restored scanner position from Redis", zap.Int("port_idx", val))
 	return val
 }

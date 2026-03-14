@@ -752,7 +752,7 @@ func (a *HeuristicAgent) DecideMarketAction(_ context.Context, req MarketDecisio
 					if qty > 0 {
 						fills = append(fills, FillOrder{OrderID: order.ID, Quantity: qty})
 						totalFillCost += int64(qty * order.Price)
-						a.logger.Info("filling underpriced sell order",
+						a.logger.Debug("filling underpriced sell order",
 							zap.Int("order_price", order.Price),
 							zap.Int("npc_sell", npcPrice.SellPrice),
 							zap.Int("profit/unit", profit),
@@ -776,7 +776,7 @@ func (a *HeuristicAgent) DecideMarketAction(_ context.Context, req MarketDecisio
 					if qty > 0 {
 						fills = append(fills, FillOrder{OrderID: order.ID, Quantity: qty})
 						totalFillCost += int64(qty * npcPrice.BuyPrice)
-						a.logger.Info("filling overpriced buy order",
+						a.logger.Debug("filling overpriced buy order",
 							zap.Int("order_price", order.Price),
 							zap.Int("npc_buy", npcPrice.BuyPrice),
 							zap.Int("profit/unit", profit),
@@ -855,7 +855,7 @@ func (a *HeuristicAgent) DecideMarketAction(_ context.Context, req MarketDecisio
 					Price:  bidPrice,
 					Total:  qty,
 				})
-				a.logger.Info("posting market buy order",
+				a.logger.Debug("posting market buy order",
 					zap.Int("bid", bidPrice),
 					zap.Int("npc_buy", sp.buyPrice),
 					zap.Int("npc_sell", sp.sellPrice),
@@ -1023,7 +1023,7 @@ func (a *HeuristicAgent) findProfitableOrderFills(
 		if qty > 0 {
 			fills = append(fills, FillOrder{OrderID: c.orderID, Quantity: qty})
 			totalCost += int64(qty) * unitCost
-			a.logger.Info("trade fill opportunity",
+			a.logger.Debug("trade fill opportunity",
 				zap.String("side", c.side),
 				zap.Int("profit/unit", c.profit),
 				zap.Int("qty", qty),

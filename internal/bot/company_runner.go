@@ -76,7 +76,7 @@ func NewCompanyRunner(
 
 // Run is the main loop for a company. It blocks until the context is cancelled.
 func (r *CompanyRunner) Run(ctx context.Context) {
-	r.logger.Info("company runner starting",
+	r.logger.Debug("company runner starting",
 		zap.String("strategy", r.strategy.Name()),
 	)
 
@@ -103,7 +103,7 @@ func (r *CompanyRunner) Run(ctx context.Context) {
 	ticker := time.NewTicker(economyRefreshInterval + jitter)
 	defer ticker.Stop()
 
-	r.logger.Info("company runner ready, entering main loop")
+	r.logger.Debug("company runner ready, entering main loop")
 
 	// Immediately dispatch any docked ships — don't wait for the first tick.
 	r.dispatchIdleShips(ctx)
@@ -328,7 +328,7 @@ func (r *CompanyRunner) seedPnLCounters() {
 	r.state.pnlInitialized = true
 	r.state.mu.Unlock()
 
-	r.logger.Info("P&L counters seeded from database",
+	r.logger.Debug("P&L counters seeded from database",
 		zap.Int64("initial_treasury", r.state.InitialTreasury),
 		zap.Int64("trade_rev", totalRev),
 		zap.Int64("trade_costs", totalCosts),
@@ -348,7 +348,7 @@ func (r *CompanyRunner) handleEvent(ctx context.Context, event api.SSEEvent) {
 	case "ledger_entry":
 		// Treasury is refreshed periodically via economy poll; no action needed.
 	default:
-		r.logger.Warn("unhandled SSE event type", zap.String("type", event.Type))
+		r.logger.Debug("unhandled SSE event type", zap.String("type", event.Type))
 	}
 }
 
@@ -368,7 +368,7 @@ func (r *CompanyRunner) handleShipDocked(ctx context.Context, data json.RawMessa
 	// Refresh ship state from API.
 	ship, err := r.client.GetShip(ctx, docked.ShipID)
 	if err != nil {
-		r.logger.Error("failed to refresh ship after docking", zap.Error(err))
+		r.logger.Warn("failed to refresh ship after docking", zap.Error(err))
 		// Still mark the ship as docked from the event data so it doesn't
 		// stay stuck in "traveling" status forever.
 		r.state.mu.Lock()
@@ -385,7 +385,7 @@ func (r *CompanyRunner) handleShipDocked(ctx context.Context, data json.RawMessa
 
 	cargo, err := r.client.GetShipInventory(ctx, docked.ShipID)
 	if err != nil {
-		r.logger.Error("failed to fetch ship cargo after docking", zap.Error(err))
+		r.logger.Warn("failed to fetch ship cargo after docking", zap.Error(err))
 		// Update status from the full ship response even without cargo.
 		r.state.mu.Lock()
 		if ss, ok := r.state.Ships[docked.ShipID]; ok {
@@ -415,7 +415,7 @@ func (r *CompanyRunner) handleShipDocked(ctx context.Context, data json.RawMessa
 
 	port := r.world.GetPort(docked.PortID)
 	if port == nil {
-		r.logger.Error("unknown port in ship_docked event",
+		r.logger.Warn("unknown port in ship_docked event",
 			zap.String("port_id", docked.PortID.String()),
 		)
 		return
@@ -504,7 +504,7 @@ func (r *CompanyRunner) handleTick(ctx context.Context) {
 
 	// Delegate to strategy for periodic work (fleet evals, market evals).
 	if err := r.strategy.OnTick(ctx, r.state); err != nil {
-		r.logger.Error("strategy OnTick failed", zap.Error(err))
+		r.logger.Warn("strategy OnTick failed", zap.Error(err))
 	}
 
 	// Dispatch any idle docked ships that SSE events might have missed.
@@ -598,7 +598,7 @@ func (r *CompanyRunner) dispatchDockedShip(ctx context.Context, shipID uuid.UUID
 		return
 	}
 
-	r.logger.Info("dispatching newly purchased ship",
+	r.logger.Debug("dispatching newly purchased ship",
 		zap.String("ship", shipState.Ship.Name),
 		zap.String("port", port.Name),
 	)

@@ -107,7 +107,7 @@ func (m *Manager) Start(startCtx context.Context, runCtx context.Context) error 
 	if err != nil {
 		return fmt.Errorf("login failed: %w", err)
 	}
-	m.logger.Info("authenticated", zap.Int("token_length", len(token)))
+	m.logger.Debug("authenticated", zap.Int("token_length", len(token)))
 
 	// 2. Verify auth.
 	player, err := m.baseClient.Me(startCtx)
@@ -196,7 +196,7 @@ func (m *Manager) Start(startCtx context.Context, runCtx context.Context) error 
 				r.Run(runCtx)
 			}(runner, startDelay)
 
-			m.logger.Info("company runner spawned",
+			m.logger.Debug("company runner spawned",
 				zap.String("ticker", ticker),
 				zap.String("company_id", company.ID.String()),
 				zap.String("strategy", alloc.Strategy),
@@ -248,14 +248,14 @@ func (m *Manager) Stop(ctx context.Context, cancel context.CancelFunc) {
 			Update("status", "stopped")
 	}
 	m.mu.RUnlock()
-	m.logger.Info("final P&L snapshots written",
+	m.logger.Debug("final P&L snapshots written",
 		zap.Int("companies", len(m.companies)),
 	)
 
 	// Persist rate limiter state to Redis for seamless restart.
 	timestamps := m.rateLimiter.SnapshotTimestamps()
 	m.redis.SaveRateLimitTimestamps(ctx, timestamps)
-	m.logger.Info("rate limiter state saved to Redis",
+	m.logger.Debug("rate limiter state saved to Redis",
 		zap.Int("timestamps", len(timestamps)),
 	)
 

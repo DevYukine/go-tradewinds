@@ -65,7 +65,7 @@ func (s *Scaler) CalculateAllocation(
 		totalRequested += a.Count
 	}
 
-	s.logger.Info("calculating company allocation",
+	s.logger.Debug("calculating company allocation",
 		zap.Int("total_requested", totalRequested),
 		zap.Int("max_companies", maxCompanies),
 		zap.Float64("usable_budget", usableBudget),
@@ -120,7 +120,7 @@ func (s *Scaler) CalculateAllocation(
 	s.assignHomePorts(allocations, ports)
 
 	for _, a := range allocations {
-		s.logger.Info("allocation result",
+		s.logger.Debug("allocation result",
 			zap.String("strategy", a.Strategy),
 			zap.Int("count", a.Count),
 			zap.Int("home_ports", len(a.HomePorts)),

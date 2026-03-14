@@ -58,7 +58,7 @@ func (s *Server) handleSSELogs(c fiber.Ctx) error {
 	return c.SendStreamWriter(func(w *bufio.Writer) {
 		defer runner.Logger().Unsubscribe(subID)
 
-		s.logger.Info("SSE log stream started",
+		s.logger.Debug("SSE log stream started",
 			zap.Uint64("company_id", companyID),
 			zap.Int("sub_id", subID),
 		)
@@ -107,7 +107,7 @@ func (s *Server) handleSSEPnL(c fiber.Ctx) error {
 	}
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
-		s.logger.Info("SSE PnL stream started",
+		s.logger.Debug("SSE PnL stream started",
 			zap.Uint64("company_id", companyID),
 			zap.Uint("since_id", sinceID),
 		)
@@ -162,7 +162,7 @@ func (s *Server) handleSSEEvents(c fiber.Ctx) error {
 	return c.SendStreamWriter(func(w *bufio.Writer) {
 		defer runner.Events().Unsubscribe(subID)
 
-		s.logger.Info("SSE events stream started",
+		s.logger.Debug("SSE events stream started",
 			zap.Uint64("company_id", companyID),
 			zap.Int("sub_id", subID),
 		)

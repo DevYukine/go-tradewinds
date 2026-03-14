@@ -119,7 +119,7 @@ func (e *Engine) run(ctx context.Context) {
 
 // evaluate runs one evaluation cycle: collect metrics, aggregate, score, decide.
 func (e *Engine) evaluate(ctx context.Context) {
-	e.logger.Info("running optimization evaluation")
+	e.logger.Debug("running optimization evaluation")
 
 	since := time.Now().Add(-e.interval)
 
@@ -145,7 +145,7 @@ func (e *Engine) evaluate(ctx context.Context) {
 
 	// 4. Log results.
 	for _, s := range stats {
-		e.logger.Info("strategy performance",
+		e.logger.Debug("strategy performance",
 			zap.String("strategy", s.StrategyName),
 			zap.Int("companies", s.CompanyCount),
 			zap.Int("trades", s.TotalTrades),
@@ -208,7 +208,7 @@ func (e *Engine) checkDynamicScaling(ctx context.Context, stats []strategyStats)
 		maxCompanies := e.manager.Cfg().TotalCompanies()
 		currentCount := e.manager.CompanyCount()
 		if currentCount >= maxCompanies {
-			e.logger.Info("utilization low but already at max configured companies",
+			e.logger.Debug("utilization low but already at max configured companies",
 				zap.Int("current", currentCount),
 				zap.Int("max", maxCompanies),
 			)
@@ -244,7 +244,7 @@ func (e *Engine) checkDynamicScaling(ctx context.Context, stats []strategyStats)
 
 		// Don't scale below minimum viable count.
 		if e.manager.CompanyCount() <= len(stats) {
-			e.logger.Warn("utilization high but already at minimum company count",
+			e.logger.Debug("utilization high but already at minimum company count",
 				zap.Int("count", e.manager.CompanyCount()),
 			)
 			return
@@ -338,7 +338,7 @@ func (e *Engine) checkInactiveCompanies(ctx context.Context, metrics []companyMe
 			continue
 		}
 
-		e.logger.Warn("inactive company detected, triggering strategy swap",
+		e.logger.Info("inactive company detected, triggering strategy swap",
 			zap.Uint("company_id", m.CompanyID),
 			zap.String("current_strategy", m.Strategy),
 			zap.String("swap_to", bestStrategy),
@@ -391,7 +391,7 @@ func (e *Engine) checkReallocations(_ context.Context, stats []strategyStats) {
 	// Check if worst strategy's CI upper bound is below best's CI lower bound.
 	if worst.ConfidenceHigh < best.ConfidenceLow {
 		e.underperformCount[worst.StrategyName]++
-		e.logger.Warn("strategy underperforming",
+		e.logger.Info("strategy underperforming",
 			zap.String("worst", worst.StrategyName),
 			zap.String("best", best.StrategyName),
 			zap.Int("consecutive_periods", e.underperformCount[worst.StrategyName]),
@@ -403,7 +403,7 @@ func (e *Engine) checkReallocations(_ context.Context, stats []strategyStats) {
 			if worst.CompanyCount > minCompaniesPerStrategy {
 				e.executeReallocation(worst, best)
 			} else {
-				e.logger.Warn("would reallocate but strategy at minimum company count",
+				e.logger.Info("would reallocate but strategy at minimum company count",
 					zap.String("strategy", worst.StrategyName),
 					zap.Int("count", worst.CompanyCount),
 				)
@@ -508,7 +508,7 @@ func (e *Engine) agentEvaluation(ctx context.Context, stats []strategyStats) {
 
 	evaluation, err := e.agent.EvaluateStrategy(ctx, req)
 	if err != nil {
-		e.logger.Error("agent strategy evaluation failed", zap.Error(err))
+		e.logger.Warn("agent strategy evaluation failed", zap.Error(err))
 		return
 	}
 
@@ -669,7 +669,7 @@ func (e *Engine) recordStrategyMetrics(stats []strategyStats) {
 		}
 
 		if err := e.gormDB.Create(&metric).Error; err != nil {
-			e.logger.Error("failed to record strategy metric",
+			e.logger.Warn("failed to record strategy metric",
 				zap.String("strategy", s.StrategyName),
 				zap.Error(err),
 			)

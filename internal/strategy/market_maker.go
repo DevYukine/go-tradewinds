@@ -38,7 +38,7 @@ func NewMarketMaker(ctx bot.StrategyContext) (bot.Strategy, error) {
 func (m *MarketMaker) Name() string { return "market_maker" }
 
 func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, port *api.Port) error {
-	m.logger.Info("market_maker: ship arrived, evaluating trade",
+	m.logger.Debug("market_maker: ship arrived, evaluating trade",
 		zap.String("ship", ship.Ship.Name),
 		zap.String("port", port.Name),
 	)
@@ -50,7 +50,7 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 	latency := time.Since(start)
 
 	if err != nil {
-		m.logger.Error("agent trade decision failed", zap.Error(err))
+		m.logger.Warn("agent trade decision failed", zap.Error(err))
 		return err
 	}
 
@@ -63,20 +63,20 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 	switch decision.Action {
 	case "sell_and_buy", "buy_and_sail":
 		if err := m.executeSells(ctx, ship, decision.SellOrders); err != nil {
-			m.logger.Error("sell execution failed", zap.Error(err))
+			m.logger.Warn("sell execution failed", zap.Error(err))
 		}
 		m.executeFills(ctx, decision.FillOrders)
 		if err := m.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
-			m.logger.Error("buy execution failed", zap.Error(err))
+			m.logger.Warn("buy execution failed", zap.Error(err))
 		}
 		m.boardPassengers(ctx, ship, decision.BoardPassengers)
 		if decision.SailTo != nil {
 			if err := m.sendShipToPort(ctx, ship, *decision.SailTo); err != nil {
-				m.logger.Error("transit failed", zap.Error(err))
+				m.logger.Warn("transit failed", zap.Error(err))
 			}
 		}
 	case "wait", "dock":
-		m.logger.Info("agent decided to wait",
+		m.logger.Debug("agent decided to wait",
 			zap.String("reasoning", decision.Reasoning),
 		)
 	}
@@ -167,7 +167,7 @@ func (m *MarketMaker) evaluateMarket(ctx context.Context) {
 	latency := time.Since(start)
 
 	if err != nil {
-		m.logger.Error("agent market decision failed", zap.Error(err))
+		m.logger.Warn("agent market decision failed", zap.Error(err))
 		return
 	}
 
@@ -188,7 +188,7 @@ func (m *MarketMaker) evaluateMarket(ctx context.Context) {
 			Total:  order.Total,
 		})
 		if err != nil {
-			m.logger.Error("failed to post market order", zap.Error(err))
+			m.logger.Warn("failed to post market order", zap.Error(err))
 			continue
 		}
 		m.logger.Trade("posted market order",
@@ -202,7 +202,7 @@ func (m *MarketMaker) evaluateMarket(ctx context.Context) {
 	for _, fill := range decision.FillOrders {
 		_, err := m.ctx.Client.FillOrder(ctx, fill.OrderID, fill.Quantity)
 		if err != nil {
-			m.logger.Error("failed to fill market order",
+			m.logger.Warn("failed to fill market order",
 				zap.String("order_id", fill.OrderID.String()),
 				zap.Error(err),
 			)
@@ -216,7 +216,7 @@ func (m *MarketMaker) evaluateMarket(ctx context.Context) {
 
 	for _, orderID := range decision.CancelOrders {
 		if err := m.ctx.Client.CancelOrder(ctx, orderID); err != nil {
-			m.logger.Error("failed to cancel order",
+			m.logger.Warn("failed to cancel order",
 				zap.String("order_id", orderID.String()),
 				zap.Error(err),
 			)
@@ -236,7 +236,7 @@ func (m *MarketMaker) evaluateFleet(ctx context.Context) {
 	latency := time.Since(start)
 
 	if err != nil {
-		m.logger.Error("agent fleet decision failed", zap.Error(err))
+		m.logger.Warn("agent fleet decision failed", zap.Error(err))
 		return
 	}
 

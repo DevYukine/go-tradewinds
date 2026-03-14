@@ -185,7 +185,7 @@ func (t *ParameterTuner) propagateWin(exp db.ParamExperimentLog) {
 
 	for _, peer := range peers {
 		t.setCompanyParam(peer.ID, exp.ParamName, exp.NewValue)
-		t.logger.Info("propagated winning param to peer",
+		t.logger.Debug("propagated winning param to peer",
 			zap.Uint("peer_id", peer.ID),
 			zap.String("param", exp.ParamName),
 			zap.Float64("value", exp.NewValue),

@@ -38,7 +38,7 @@ func (a *Arbitrage) Name() string { return "arbitrage" }
 // OnShipArrival is called when a ship docks. It gathers state, asks the agent
 // for a trade decision, and executes the result.
 func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port *api.Port) error {
-	a.logger.Info("arbitrage: ship arrived, evaluating trade",
+	a.logger.Debug("arbitrage: ship arrived, evaluating trade",
 		zap.String("ship", ship.Ship.Name),
 		zap.String("port", port.Name),
 	)
@@ -52,7 +52,7 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 	latency := time.Since(start)
 
 	if err != nil {
-		a.logger.Error("agent trade decision failed", zap.Error(err))
+		a.logger.Warn("agent trade decision failed", zap.Error(err))
 		return err
 	}
 
@@ -71,25 +71,25 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 	case "sell_and_buy", "buy_and_sail":
 		// Sell first.
 		if err := a.executeSells(ctx, ship, decision.SellOrders); err != nil {
-			a.logger.Error("sell execution failed", zap.Error(err))
+			a.logger.Warn("sell execution failed", zap.Error(err))
 		}
 		// Fill P2P orders.
 		a.executeFills(ctx, decision.FillOrders)
 		// Then buy.
 		if err := a.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
-			a.logger.Error("buy execution failed", zap.Error(err))
+			a.logger.Warn("buy execution failed", zap.Error(err))
 		}
 		// Board passengers.
 		a.boardPassengers(ctx, ship, decision.BoardPassengers)
 		// Then sail.
 		if decision.SailTo != nil {
 			if err := a.sendShipToPort(ctx, ship, *decision.SailTo); err != nil {
-				a.logger.Error("transit failed", zap.Error(err))
+				a.logger.Warn("transit failed", zap.Error(err))
 			}
 		}
 
 	case "wait", "dock":
-		a.logger.Info("agent decided to wait",
+		a.logger.Debug("agent decided to wait",
 			zap.String("reasoning", decision.Reasoning),
 		)
 
@@ -123,7 +123,7 @@ func (a *Arbitrage) OnTick(ctx context.Context, _ *bot.CompanyState) error {
 	latency := time.Since(start)
 
 	if err != nil {
-		a.logger.Error("agent fleet decision failed", zap.Error(err))
+		a.logger.Warn("agent fleet decision failed", zap.Error(err))
 		return nil
 	}
 
