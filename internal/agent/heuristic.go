@@ -1251,6 +1251,13 @@ func (a *HeuristicAgent) reachablePorts(routes []RouteInfo, from uuid.UUID) map[
 	for _, route := range routes {
 		if route.FromID == from {
 			r[route.ToID] = route.Distance
+		} else if route.ToID == from {
+			// Routes are bidirectional with equal distance; use reverse
+			// direction as fallback when the forward entry is missing
+			// from the cached route set.
+			if _, exists := r[route.FromID]; !exists {
+				r[route.FromID] = route.Distance
+			}
 		}
 	}
 	return r

@@ -365,6 +365,15 @@ func (r *CompanyRunner) handleShipDocked(ctx context.Context, data json.RawMessa
 		zap.String("port_id", docked.PortID.String()),
 	)
 
+	// Ignore events for ships no longer in state (e.g., sold ships whose
+	// stale SSE docked events arrive after the sale completed).
+	if r.state.GetShip(docked.ShipID) == nil {
+		r.logger.Debug("ignoring ship_docked event for unknown/sold ship",
+			zap.String("ship_id", docked.ShipID.String()),
+		)
+		return
+	}
+
 	// Refresh ship state from API.
 	ship, err := r.client.GetShip(ctx, docked.ShipID)
 	if err != nil {

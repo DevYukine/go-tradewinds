@@ -59,7 +59,7 @@ func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, por
 		if err := b.executeSells(ctx, ship, decision.SellOrders); err != nil {
 			b.logger.Warn("sell execution failed", zap.Error(err))
 		}
-		b.executeFills(ctx, decision.FillOrders)
+		b.executeFills(ctx, *ship.Ship.PortID, decision.FillOrders)
 		if err := b.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
 			b.logger.Warn("buy execution failed", zap.Error(err))
 		}

@@ -365,7 +365,32 @@ func (b *baseStrategy) boardPassengers(ctx context.Context, ship *bot.ShipState,
 // --- P2P Order Fills ---
 
 // executeFills fills P2P market orders at the current port.
-func (b *baseStrategy) executeFills(ctx context.Context, fills []agent.FillOrder) {
+// The game API requires a warehouse at the port to fill orders, so we check
+// for one first and skip all fills if none exists.
+func (b *baseStrategy) executeFills(ctx context.Context, portID uuid.UUID, fills []agent.FillOrder) {
+	if len(fills) == 0 {
+		return
+	}
+
+	// Check if the company has a warehouse at this port.
+	hasWarehouse := false
+	b.ctx.State.RLock()
+	for _, w := range b.ctx.State.Warehouses {
+		if w.Warehouse.PortID == portID {
+			hasWarehouse = true
+			break
+		}
+	}
+	b.ctx.State.RUnlock()
+
+	if !hasWarehouse {
+		b.logger.Debug("skipping order fills: no warehouse at port",
+			zap.String("port_id", portID.String()),
+			zap.Int("fills_skipped", len(fills)),
+		)
+		return
+	}
+
 	for _, fill := range fills {
 		_, err := b.ctx.Client.FillOrder(ctx, fill.OrderID, fill.Quantity)
 		if err != nil {
@@ -663,6 +688,13 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 			zap.String("ship_id", shipID.String()),
 			zap.Int("price", resp.Price),
 		)
+
+		// Immediately remove the sold ship from state so dispatchIdleShips
+		// and handleShipDocked don't try to use a ship that no longer exists.
+		b.ctx.State.Lock()
+		delete(b.ctx.State.Ships, shipID)
+		b.ctx.State.Unlock()
+
 		b.ctx.Events.Emit(bot.EventShipSold)
 	}
 
