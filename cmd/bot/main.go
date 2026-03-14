@@ -9,6 +9,7 @@ import (
 	"github.com/DevYukine/go-tradewinds/internal/db"
 	"github.com/DevYukine/go-tradewinds/internal/logging"
 	"github.com/DevYukine/go-tradewinds/internal/optimizer"
+	"github.com/DevYukine/go-tradewinds/internal/server"
 	"github.com/DevYukine/go-tradewinds/internal/strategy"
 )
 
@@ -21,6 +22,6 @@ func main() {
 		strategy.Module,  // Provides bot.Registry
 		bot.Module,       // Provides *Manager, starts company runners
 		optimizer.Module, // Provides *optimizer.Engine, runs periodic evaluation
-		// Step 5 will add: server.Module
+		server.Module,   // Provides API server for dashboard
 	).Run()
 }
