@@ -3,6 +3,7 @@ package strategy
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -336,27 +337,13 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 	}
 
 	for _, purchase := range decision.BuyShips {
-		shipyard, err := b.ctx.Client.FindShipyard(ctx, purchase.PortID)
-		if err != nil || shipyard == nil {
-			b.logger.Warn("no shipyard at port for purchase",
-				zap.String("port_id", purchase.PortID.String()),
+		ship := b.tryBuyShip(ctx, purchase)
+		if ship != nil {
+			b.logger.Info("purchased new ship",
+				zap.String("ship_id", ship.ID.String()),
+				zap.String("name", ship.Name),
 			)
-			continue
 		}
-
-		ship, err := b.ctx.Client.BuyShip(ctx, shipyard.ID, purchase.ShipTypeID)
-		if err != nil {
-			b.logger.Error("failed to buy ship",
-				zap.String("ship_type_id", purchase.ShipTypeID.String()),
-				zap.Error(err),
-			)
-			continue
-		}
-
-		b.logger.Info("purchased new ship",
-			zap.String("ship_id", ship.ID.String()),
-			zap.String("name", ship.Name),
-		)
 	}
 
 	for _, portID := range decision.BuyWarehouses {
@@ -374,6 +361,121 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 			zap.String("port_id", portID.String()),
 		)
 	}
+}
+
+// tryBuyShip attempts to purchase a ship at the given port. It checks the
+// shipyard inventory first and picks the best affordable ship. Falls back to
+// other shipyard ports if the primary port has no affordable stock.
+func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurchase) *api.Ship {
+	// Check how much we can spend (treasury minus safety margin for upkeep).
+	b.ctx.State.RLock()
+	treasury := b.ctx.State.Treasury
+	upkeep := b.ctx.State.TotalUpkeep
+	b.ctx.State.RUnlock()
+
+	// Keep a safety margin of 3x upkeep so we don't go bankrupt.
+	safetyMargin := upkeep * 3
+	// Also account for ~5% tax on purchase.
+	maxSpend := treasury - safetyMargin
+	if maxSpend <= 0 {
+		b.logger.Info("treasury too low to buy ship",
+			zap.Int64("treasury", treasury),
+			zap.Int64("safety_margin", safetyMargin),
+		)
+		return nil
+	}
+
+	// Try the requested port first, then fall back to other shipyard ports.
+	portsToTry := []uuid.UUID{purchase.PortID}
+	for _, portID := range b.ctx.World.ShipyardPorts {
+		if portID != purchase.PortID {
+			portsToTry = append(portsToTry, portID)
+		}
+	}
+
+	for _, portID := range portsToTry {
+		shipyard, err := b.ctx.Client.FindShipyard(ctx, portID)
+		if err != nil || shipyard == nil {
+			continue
+		}
+
+		inventory, err := b.ctx.Client.GetShipyardInventory(ctx, shipyard.ID)
+		if err != nil {
+			b.logger.Warn("failed to fetch shipyard inventory",
+				zap.String("port_id", portID.String()),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		if len(inventory) == 0 {
+			b.logger.Debug("shipyard has no inventory",
+				zap.String("port_id", portID.String()),
+			)
+			continue
+		}
+
+		// Sort inventory by cost (cheapest first) so we pick affordable ships.
+		sort.Slice(inventory, func(i, j int) bool {
+			return inventory[i].Cost < inventory[j].Cost
+		})
+
+		// First try to find the exact requested ship type that we can afford.
+		var chosenItem *api.ShipyardInventoryItem
+		for i := range inventory {
+			if inventory[i].ShipTypeID == purchase.ShipTypeID {
+				// Add ~5% tax buffer to cost check.
+				costWithTax := int64(float64(inventory[i].Cost) * 1.06)
+				if costWithTax <= maxSpend {
+					chosenItem = &inventory[i]
+					break
+				}
+			}
+		}
+
+		// Fall back to the cheapest affordable ship of any type.
+		if chosenItem == nil {
+			for i := range inventory {
+				costWithTax := int64(float64(inventory[i].Cost) * 1.06)
+				if costWithTax <= maxSpend {
+					chosenItem = &inventory[i]
+					b.logger.Info("desired ship type not in stock or too expensive, using cheapest affordable alternative",
+						zap.String("wanted_type", purchase.ShipTypeID.String()),
+						zap.String("using_type", chosenItem.ShipTypeID.String()),
+						zap.Int("cost", chosenItem.Cost),
+					)
+					break
+				}
+			}
+		}
+
+		if chosenItem == nil {
+			b.logger.Debug("no affordable ships at shipyard",
+				zap.String("port_id", portID.String()),
+				zap.Int64("max_spend", maxSpend),
+				zap.Int("cheapest_available", inventory[0].Cost),
+			)
+			continue
+		}
+
+		ship, err := b.ctx.Client.BuyShip(ctx, shipyard.ID, chosenItem.ShipTypeID)
+		if err != nil {
+			b.logger.Error("failed to buy ship",
+				zap.String("ship_type_id", chosenItem.ShipTypeID.String()),
+				zap.String("port_id", portID.String()),
+				zap.Int("cost", chosenItem.Cost),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		return ship
+	}
+
+	b.logger.Warn("could not buy ship at any shipyard port",
+		zap.Int64("max_spend", maxSpend),
+	)
+	return nil
 }
 
 // --- Agent Decision Logging ---

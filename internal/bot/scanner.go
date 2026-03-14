@@ -1,4 +1,4 @@
-package strategy
+package bot
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/DevYukine/go-tradewinds/internal/api"
-	"github.com/DevYukine/go-tradewinds/internal/bot"
 	"github.com/DevYukine/go-tradewinds/internal/db"
 	"gorm.io/gorm"
 )
@@ -25,18 +24,18 @@ const (
 // duplicate API calls. Uses PriorityLow to yield to trade executions.
 type Scanner struct {
 	client     *api.Client
-	world      *bot.WorldCache
-	priceCache *bot.PriceCache
+	world      *WorldCache
+	priceCache *PriceCache
 	limiter    *api.RateLimiter
 	gormDB     *gorm.DB
 	logger     *zap.Logger
 }
 
-// NewScanner creates a new price scanner.
-func NewScanner(
+// newScanner creates a new price scanner.
+func newScanner(
 	client *api.Client,
-	world *bot.WorldCache,
-	priceCache *bot.PriceCache,
+	world *WorldCache,
+	priceCache *PriceCache,
 	limiter *api.RateLimiter,
 	gormDB *gorm.DB,
 	logger *zap.Logger,
@@ -97,7 +96,7 @@ func (s *Scanner) scanPort(ctx context.Context, port *api.Port) {
 
 	buyResults, err := s.client.BatchQuotesWithPriority(ctx, buyReqs, api.PriorityLow)
 	if err != nil {
-		s.logger.Debug("batch buy quote failed for port",
+		s.logger.Warn("batch buy quote failed for port",
 			zap.String("port", port.Name),
 			zap.Error(err),
 		)
@@ -117,7 +116,7 @@ func (s *Scanner) scanPort(ctx context.Context, port *api.Port) {
 
 	sellResults, err := s.client.BatchQuotesWithPriority(ctx, sellReqs, api.PriorityLow)
 	if err != nil {
-		s.logger.Debug("batch sell quote failed for port",
+		s.logger.Warn("batch sell quote failed for port",
 			zap.String("port", port.Name),
 			zap.Error(err),
 		)

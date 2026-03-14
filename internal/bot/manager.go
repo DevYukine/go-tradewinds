@@ -194,6 +194,9 @@ func (m *Manager) Start(startCtx context.Context, runCtx context.Context) error 
 		}
 	}
 
+	// 7. Start the shared price scanner now that world data is loaded.
+	m.startScanner(runCtx)
+
 	m.logger.Info("bot manager started",
 		zap.Int("total_companies", len(m.companies)),
 	)
@@ -359,6 +362,37 @@ func (m *Manager) buildCompanyName(_ string, _ int) string {
 	idx := nameIndex % len(ffxivNames)
 	nameIndex++
 	return ffxivNames[idx].Name
+}
+
+// startScanner launches the shared price scanner goroutine.
+// Must be called after world data is loaded and companies are created.
+func (m *Manager) startScanner(ctx context.Context) {
+	// The scanner needs a company-scoped client because batch quote
+	// endpoints require the tradewinds-company-id header.
+	scannerClient := m.baseClient
+	m.mu.RLock()
+	for companyID := range m.companies {
+		scannerClient = m.baseClient.ForCompany(companyID)
+		break // Any company will do — quotes are the same for all.
+	}
+	m.mu.RUnlock()
+
+	scanner := newScanner(
+		scannerClient,
+		m.worldData,
+		m.priceCache,
+		m.rateLimiter,
+		m.gormDB,
+		m.logger,
+	)
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		scanner.Run(ctx)
+	}()
+
+	m.logger.Info("price scanner started")
 }
 
 // GetRunner returns a company runner by game ID.
