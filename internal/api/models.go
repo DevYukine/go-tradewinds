@@ -248,6 +248,29 @@ type OrderFilters struct {
 	Side    string      `url:"side,omitempty"`
 }
 
+// --- Passengers ---
+
+type Passenger struct {
+	ID                uuid.UUID  `json:"id"`
+	Count             int        `json:"count"`
+	Bid               int        `json:"bid"`
+	Status            string     `json:"status"` // "available" or "boarded"
+	ExpiresAt         time.Time  `json:"expires_at"`
+	OriginPortID      uuid.UUID  `json:"origin_port_id"`
+	DestinationPortID uuid.UUID  `json:"destination_port_id"`
+	ShipID            *uuid.UUID `json:"ship_id,omitempty"`
+}
+
+type BoardPassengerRequest struct {
+	ShipID uuid.UUID `json:"ship_id"`
+}
+
+type PassengerFilters struct {
+	Status string `url:"status,omitempty"`
+	PortID string `url:"port_id,omitempty"`
+	ShipID string `url:"ship_id,omitempty"`
+}
+
 // --- Fleet ---
 
 type Ship struct {
