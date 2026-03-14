@@ -307,7 +307,7 @@ func (r *CompanyRunner) handleEvent(ctx context.Context, event api.SSEEvent) {
 	switch event.Type {
 	case "ship_docked":
 		r.handleShipDocked(ctx, event.Data)
-	case "ship_set_sail":
+	case "ship_set_sail", "ship_transit_started":
 		r.handleShipSetSail(event.Data)
 	case "ship_bought":
 		r.handleShipBought(ctx, event.Data)
