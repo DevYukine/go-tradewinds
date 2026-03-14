@@ -107,16 +107,22 @@ func (m *MarketMaker) evaluateMarket(ctx context.Context) {
 		return
 	}
 
-	// Convert to agent types.
-	agentOrders := make([]agent.MarketOrder, len(openOrders))
-	for i, o := range openOrders {
-		agentOrders[i] = agent.MarketOrder{
+	// Convert to agent types, separating own orders from all open orders.
+	agentOrders := make([]agent.MarketOrder, 0, len(openOrders))
+	ownOrders := make([]agent.MarketOrder, 0)
+	companyID := m.ctx.State.CompanyID
+	for _, o := range openOrders {
+		mo := agent.MarketOrder{
 			ID:        o.ID,
 			PortID:    o.PortID,
 			GoodID:    o.GoodID,
 			Side:      o.Side,
 			Price:     o.Price,
 			Remaining: o.Remaining,
+		}
+		agentOrders = append(agentOrders, mo)
+		if o.CompanyID == companyID {
+			ownOrders = append(ownOrders, mo)
 		}
 	}
 
@@ -135,6 +141,7 @@ func (m *MarketMaker) evaluateMarket(ctx context.Context) {
 			TotalUpkeep: m.ctx.State.TotalUpkeep,
 		},
 		OpenOrders: agentOrders,
+		OwnOrders:  ownOrders,
 		PriceCache: m.ctx.PriceCache.All(),
 		Warehouses: warehouses,
 	}
