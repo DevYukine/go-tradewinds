@@ -624,6 +624,18 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 			continue
 		}
 
+		// Give the ship a fun FFXIV-themed name.
+		name := generateShipName()
+		if renamed, err := b.ctx.Client.RenameShip(ctx, ship.ID, name); err != nil {
+			b.logger.Warn("failed to name ship", zap.Error(err))
+		} else {
+			ship = renamed
+			b.logger.Info("christened new ship",
+				zap.String("name", name),
+				zap.String("ship_id", ship.ID.String()),
+			)
+		}
+
 		// Track ship purchase cost for P&L (includes ~5% port tax).
 		b.ctx.State.AddShipCost(int64(chosenItem.Cost))
 
