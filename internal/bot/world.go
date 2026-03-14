@@ -20,6 +20,9 @@ type WorldCache struct {
 	Routes    []api.Route
 	ShipTypes []api.ShipType
 
+	// ShipyardPorts lists port IDs that have shipyards. Not all ports do.
+	ShipyardPorts []uuid.UUID
+
 	// Indexes for fast lookup.
 	portsByID     map[uuid.UUID]*api.Port
 	goodsByID     map[uuid.UUID]*api.Good
@@ -74,11 +77,27 @@ func LoadWorldData(ctx context.Context, client *api.Client, logger *zap.Logger) 
 		wc.routesByPorts[[2]uuid.UUID{routes[i].FromID, routes[i].ToID}] = &routes[i]
 	}
 
+	// Discover which ports have shipyards. Not all ports do.
+	for _, port := range ports {
+		shipyard, err := client.GetPortShipyard(ctx, port.ID)
+		if err != nil {
+			log.Debug("error checking shipyard at port",
+				zap.String("port", port.Name),
+				zap.Error(err),
+			)
+			continue
+		}
+		if shipyard != nil {
+			wc.ShipyardPorts = append(wc.ShipyardPorts, port.ID)
+		}
+	}
+
 	log.Info("world data loaded",
 		zap.Int("ports", len(ports)),
 		zap.Int("goods", len(goods)),
 		zap.Int("routes", len(routes)),
 		zap.Int("ship_types", len(shipTypes)),
+		zap.Int("shipyard_ports", len(wc.ShipyardPorts)),
 	)
 
 	return wc, nil

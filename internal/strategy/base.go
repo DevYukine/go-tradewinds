@@ -91,17 +91,18 @@ func (b *baseStrategy) buildFleetRequest() agent.FleetDecisionRequest {
 	}
 
 	return agent.FleetDecisionRequest{
-		StrategyHint: b.name,
+		StrategyHint:  b.name,
 		Company: agent.CompanySnapshot{
 			ID:          state.CompanyID,
 			Treasury:    state.Treasury,
 			Reputation:  state.Reputation,
 			TotalUpkeep: state.TotalUpkeep,
 		},
-		Ships:      ships,
-		Warehouses: warehouses,
-		ShipTypes:  b.ctx.World.ToAgentShipTypes(),
-		PriceCache: b.ctx.PriceCache.All(),
+		Ships:         ships,
+		Warehouses:    warehouses,
+		ShipTypes:     b.ctx.World.ToAgentShipTypes(),
+		PriceCache:    b.ctx.PriceCache.All(),
+		ShipyardPorts: b.ctx.World.ShipyardPorts,
 	}
 }
 

@@ -335,8 +335,8 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 		}
 	}
 
-	// Pick a port to buy at.
-	purchasePortID := a.findPurchasePort(req.Ships, req.PriceCache)
+	// Pick a port to buy at (must have a shipyard).
+	purchasePortID := a.findPurchasePort(req.Ships, req.ShipyardPorts)
 	if purchasePortID == uuid.Nil {
 		return &FleetDecision{Reasoning: "no suitable port found for ship purchase"}, nil
 	}
@@ -644,18 +644,26 @@ func (a *HeuristicAgent) calcQuantity(budget int64, unitPrice int, maxQty int) i
 	return maxQty
 }
 
-func (a *HeuristicAgent) findPurchasePort(ships []ShipSnapshot, priceCache []PricePoint) uuid.UUID {
-	// Prefer port where we already have a docked ship.
+func (a *HeuristicAgent) findPurchasePort(ships []ShipSnapshot, shipyardPorts []uuid.UUID) uuid.UUID {
+	if len(shipyardPorts) == 0 {
+		return uuid.Nil
+	}
+
+	// Build shipyard set for fast lookup.
+	shipyardSet := make(map[uuid.UUID]bool, len(shipyardPorts))
+	for _, id := range shipyardPorts {
+		shipyardSet[id] = true
+	}
+
+	// Prefer a shipyard port where we already have a docked ship.
 	for _, ship := range ships {
-		if ship.Status == "docked" && ship.PortID != nil {
+		if ship.Status == "docked" && ship.PortID != nil && shipyardSet[*ship.PortID] {
 			return *ship.PortID
 		}
 	}
-	// Fall back to any port from price cache.
-	if len(priceCache) > 0 {
-		return priceCache[0].PortID
-	}
-	return uuid.Nil
+
+	// Fall back to the first known shipyard port.
+	return shipyardPorts[0]
 }
 
 // findShipsToSell identifies the least valuable ship to decommission.

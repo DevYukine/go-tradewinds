@@ -812,9 +812,10 @@ func TestDecideFleetAction_ArbitragePrefersSpeed(t *testing.T) {
 	a := testAgent()
 	portA := id(1)
 	dec, err := a.DecideFleetAction(context.Background(), FleetDecisionRequest{
-		StrategyHint: "arbitrage",
-		Company:      CompanySnapshot{Treasury: 100000, TotalUpkeep: 100},
-		Ships:        []ShipSnapshot{{Status: "docked", PortID: &portA}},
+		StrategyHint:  "arbitrage",
+		Company:       CompanySnapshot{Treasury: 100000, TotalUpkeep: 100},
+		Ships:         []ShipSnapshot{{Status: "docked", PortID: &portA}},
+		ShipyardPorts: []uuid.UUID{portA},
 		ShipTypes: []ShipTypeInfo{
 			{ID: id(1), Name: "Slow", Speed: 5, Capacity: 200, BasePrice: 500, Upkeep: 50},
 			{ID: id(2), Name: "Fast", Speed: 15, Capacity: 100, BasePrice: 1000, Upkeep: 80},
@@ -835,9 +836,10 @@ func TestDecideFleetAction_BulkHaulerPrefersCapacity(t *testing.T) {
 	a := testAgent()
 	portA := id(1)
 	dec, err := a.DecideFleetAction(context.Background(), FleetDecisionRequest{
-		StrategyHint: "bulk_hauler",
-		Company:      CompanySnapshot{Treasury: 100000, TotalUpkeep: 100},
-		Ships:        []ShipSnapshot{{Status: "docked", PortID: &portA}},
+		StrategyHint:  "bulk_hauler",
+		Company:       CompanySnapshot{Treasury: 100000, TotalUpkeep: 100},
+		Ships:         []ShipSnapshot{{Status: "docked", PortID: &portA}},
+		ShipyardPorts: []uuid.UUID{portA},
 		ShipTypes: []ShipTypeInfo{
 			{ID: id(1), Name: "Small", Speed: 15, Capacity: 100, BasePrice: 500, Upkeep: 50},
 			{ID: id(2), Name: "Big", Speed: 5, Capacity: 300, BasePrice: 1000, Upkeep: 80},
@@ -858,9 +860,10 @@ func TestDecideFleetAction_MarketMakerPrefersCheapest(t *testing.T) {
 	a := testAgent()
 	portA := id(1)
 	dec, err := a.DecideFleetAction(context.Background(), FleetDecisionRequest{
-		StrategyHint: "market_maker",
-		Company:      CompanySnapshot{Treasury: 100000, TotalUpkeep: 100},
-		Ships:        []ShipSnapshot{{Status: "docked", PortID: &portA}},
+		StrategyHint:  "market_maker",
+		Company:       CompanySnapshot{Treasury: 100000, TotalUpkeep: 100},
+		Ships:         []ShipSnapshot{{Status: "docked", PortID: &portA}},
+		ShipyardPorts: []uuid.UUID{portA},
 		ShipTypes: []ShipTypeInfo{
 			{ID: id(1), Name: "Expensive", Speed: 15, Capacity: 200, BasePrice: 5000, Upkeep: 200},
 			{ID: id(2), Name: "Cheap", Speed: 5, Capacity: 100, BasePrice: 500, Upkeep: 30},

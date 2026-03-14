@@ -93,7 +93,7 @@ func (b *BulkHauler) OnTick(ctx context.Context, _ *bot.CompanyState) error {
 		return nil
 	}
 
-	if len(decision.BuyShips) > 0 || len(decision.BuyWarehouses) > 0 {
+	if len(decision.BuyShips) > 0 || len(decision.BuyWarehouses) > 0 || len(decision.SellShips) > 0 {
 		b.logger.Agent("fleet decision",
 			zap.String("reasoning", decision.Reasoning),
 		)

@@ -116,10 +116,11 @@ func (a *Arbitrage) OnTick(ctx context.Context, _ *bot.CompanyState) error {
 		return nil
 	}
 
-	if len(decision.BuyShips) > 0 || len(decision.BuyWarehouses) > 0 {
+	if len(decision.BuyShips) > 0 || len(decision.BuyWarehouses) > 0 || len(decision.SellShips) > 0 {
 		a.logger.Agent("fleet decision",
 			zap.String("reasoning", decision.Reasoning),
 			zap.Int("ships_to_buy", len(decision.BuyShips)),
+			zap.Int("ships_to_sell", len(decision.SellShips)),
 			zap.Int("warehouses_to_buy", len(decision.BuyWarehouses)),
 		)
 		a.logAgentDecision("fleet", req, decision, decision.Reasoning, 0, latency)

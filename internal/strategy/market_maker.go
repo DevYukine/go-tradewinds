@@ -219,7 +219,7 @@ func (m *MarketMaker) evaluateFleet(ctx context.Context) {
 		return
 	}
 
-	if len(decision.BuyShips) > 0 || len(decision.BuyWarehouses) > 0 {
+	if len(decision.BuyShips) > 0 || len(decision.BuyWarehouses) > 0 || len(decision.SellShips) > 0 {
 		m.logger.Agent("fleet decision",
 			zap.String("reasoning", decision.Reasoning),
 		)

@@ -255,12 +255,13 @@ type TradeDecision struct {
 
 // FleetDecisionRequest contains state needed for capital investment decisions.
 type FleetDecisionRequest struct {
-	StrategyHint string // "arbitrage", "bulk_hauler", "market_maker" — guides ship selection.
-	Company      CompanySnapshot
-	Ships        []ShipSnapshot
-	Warehouses   []WarehouseSnapshot
-	ShipTypes    []ShipTypeInfo
-	PriceCache   []PricePoint
+	StrategyHint  string // "arbitrage", "bulk_hauler", "market_maker" — guides ship selection.
+	Company       CompanySnapshot
+	Ships         []ShipSnapshot
+	Warehouses    []WarehouseSnapshot
+	ShipTypes     []ShipTypeInfo
+	PriceCache    []PricePoint
+	ShipyardPorts []uuid.UUID // Port IDs that have shipyards (not all ports do).
 }
 
 // ShipPurchase describes a ship to buy at a specific port.
