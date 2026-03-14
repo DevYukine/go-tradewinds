@@ -636,6 +636,12 @@ func (a *HeuristicAgent) DecideMarketAction(_ context.Context, req MarketDecisio
 
 	priceIndex := a.buildPriceIndex(req.PriceCache)
 
+	// Build warehouse port index so we only fill orders at ports where we have a warehouse.
+	warehousePorts := make(map[uuid.UUID]bool, len(req.Warehouses))
+	for _, w := range req.Warehouses {
+		warehousePorts[w.PortID] = true
+	}
+
 	// Track own order IDs to avoid filling our own orders.
 	ownOrderIDs := make(map[uuid.UUID]bool, len(req.OwnOrders))
 	for _, o := range req.OwnOrders {
@@ -652,6 +658,9 @@ func (a *HeuristicAgent) DecideMarketAction(_ context.Context, req MarketDecisio
 		}
 		if order.Remaining <= 0 {
 			continue
+		}
+		if !warehousePorts[order.PortID] {
+			continue // Need a warehouse at the order's port to fill it.
 		}
 
 		npcPrice, ok := priceIndex[priceKey(order.PortID, order.GoodID)]
@@ -745,6 +754,9 @@ func (a *HeuristicAgent) DecideMarketAction(_ context.Context, req MarketDecisio
 		var spreads []spreadOpp
 
 		for _, pp := range req.PriceCache {
+			if !warehousePorts[pp.PortID] {
+				continue // Need a warehouse at the port to post orders.
+			}
 			if pp.BuyPrice > 0 && pp.SellPrice > 0 && pp.SellPrice > pp.BuyPrice {
 				spread := pp.SellPrice - pp.BuyPrice
 				if spread > pp.BuyPrice/5 { // At least 20% spread.
