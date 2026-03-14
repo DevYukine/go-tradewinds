@@ -908,10 +908,10 @@ func TestDecideFleetAction_TreasuryTooLow(t *testing.T) {
 func TestDecideFleetAction_SellShips_HighUpkeep(t *testing.T) {
 	a := testAgent()
 	portA := id(1)
-	// Treasury 400, upkeep 100. 400 < 100*5 = 500 → should recommend selling.
+	// Treasury 350, upkeep 100. reserveHours(2, "arbitrage")=4, 350 < 100*4=400 → should recommend selling.
 	dec, err := a.DecideFleetAction(context.Background(), FleetDecisionRequest{
 		StrategyHint: "arbitrage",
-		Company:      CompanySnapshot{Treasury: 400, TotalUpkeep: 100},
+		Company:      CompanySnapshot{Treasury: 350, TotalUpkeep: 100},
 		Ships: []ShipSnapshot{
 			{ID: id(1), Status: "docked", PortID: &portA, Speed: 10, Capacity: 100},
 			{ID: id(2), Status: "docked", PortID: &portA, Speed: 5, Capacity: 200}, // Slower → sell this
@@ -936,7 +936,7 @@ func TestDecideFleetAction_SellShips_OnlyDockedEmpty(t *testing.T) {
 	portA := id(1)
 	dec, err := a.DecideFleetAction(context.Background(), FleetDecisionRequest{
 		StrategyHint: "arbitrage",
-		Company:      CompanySnapshot{Treasury: 400, TotalUpkeep: 100},
+		Company:      CompanySnapshot{Treasury: 350, TotalUpkeep: 100},
 		Ships: []ShipSnapshot{
 			{ID: id(1), Status: "docked", PortID: &portA, Speed: 10, Cargo: []CargoItem{{GoodID: id(10), Quantity: 5}}},
 			{ID: id(2), Status: "traveling", Speed: 5}, // Not docked

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
 
@@ -463,20 +464,51 @@ func (a *HeuristicAgent) speculativeTrade(
 // Fleet Decisions
 // ---------------------------------------------------------------------------
 
+// reserveHours calculates how many hours of upkeep buffer the company should
+// maintain after a ship purchase. Grows with fleet size so that companies
+// become progressively more cautious before adding each additional ship.
+//
+//	fleet 1  → 3h   |  fleet 5  → 5h   |  fleet 10 → 7h
+//	fleet 15 → 9h   |  fleet 20 → 11h  |  fleet 30 → 15h
+//
+// The strategy multiplier shifts the curve: bulk_hauler is more conservative
+// (fewer but bigger ships), market_maker is more aggressive (cheap ships).
+func reserveHours(numShips int, strategy string) int64 {
+	base := int64(3)
+	growth := int64(numShips) / 2 // +1 hour of reserve for every 2 ships
+
+	switch strategy {
+	case "bulk_hauler":
+		// More conservative — big ships cost more upkeep, so demand a larger buffer.
+		growth = int64(numShips) // +1 hour per ship
+	case "market_maker":
+		// More aggressive — cheap ships, fast expansion.
+		growth = int64(numShips) / 3 // +1 hour per 3 ships
+	}
+
+	return base + growth
+}
+
 // DecideFleetAction decides whether to buy or sell ships, or buy warehouses.
-// BulkHauler prefers the largest (most cargo capacity) ships.
-// Arbitrage prefers the fastest (best speed) ships.
-// MarketMaker prefers cheap ships to minimize upkeep.
+// Fleet size is governed by economics rather than hard caps: a new ship is
+// purchased only when the treasury can cover the price AND a scaling upkeep
+// reserve that grows with fleet size. This means wealthy companies naturally
+// grow larger fleets while cash-strapped ones hold steady.
+//
+// Ship type preferences by strategy:
+//
+//	BulkHauler  → largest capacity (galleons), conservative growth
+//	Arbitrage   → fastest ships, moderate growth
+//	MarketMaker → cheapest ships, aggressive growth
 func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionRequest) (*FleetDecision, error) {
 	treasury := req.Company.Treasury
 	upkeep := req.Company.TotalUpkeep
 	numShips := len(req.Ships)
 
-	// Warehouse purchase logic: buy at high-activity ports.
+	// --- WAREHOUSE PURCHASE ---
 	// Only consider warehouses when fleet is already at a reasonable size (3+ ships)
 	// and treasury is very healthy.
 	if len(req.Warehouses) < 2 && treasury > upkeep*10 && numShips >= 3 {
-		// Find ports where we have multiple docked ships (proxy for trading activity).
 		portActivity := make(map[uuid.UUID]int)
 		for _, ship := range req.Ships {
 			if ship.Status == "docked" && ship.PortID != nil {
@@ -484,7 +516,6 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 			}
 		}
 
-		// Find busiest port that doesn't already have a warehouse.
 		warehousePorts := make(map[uuid.UUID]bool)
 		for _, w := range req.Warehouses {
 			warehousePorts[w.PortID] = true
@@ -499,7 +530,6 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 			}
 		}
 
-		// Require at least 2 ships docked at the port to indicate real activity.
 		if bestPort != uuid.Nil && bestCount >= 2 {
 			a.logger.Info("recommending warehouse purchase",
 				zap.Int("docked_ships_at_port", bestCount),
@@ -512,19 +542,21 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 		}
 	}
 
-	// Check if we should sell ships — upkeep is destroying our treasury.
-	// If upkeep exceeds 60% of treasury and we have more than 1 ship, sell the worst.
-	if numShips > 1 && upkeep > 0 && treasury > 0 && treasury < upkeep*5 {
+	// --- SHIP SALE ---
+	// Sell if upkeep is unsustainable: treasury can't cover reserveHours of upkeep.
+	reserve := reserveHours(numShips, req.StrategyHint)
+	if numShips > 1 && upkeep > 0 && treasury > 0 && treasury < upkeep*reserve {
 		sellShips := a.findShipsToSell(req.Ships, req.StrategyHint, req.ShipyardPorts)
 		if len(sellShips) > 0 {
 			a.logger.Info("recommending ship decommission — upkeep too high",
 				zap.Int64("treasury", treasury),
 				zap.Int64("upkeep", upkeep),
+				zap.Int64("reserve_hours", reserve),
 				zap.Int("ships_to_sell", len(sellShips)),
 			)
 			return &FleetDecision{
 				SellShips: sellShips,
-				Reasoning: "decommissioning ships: upkeep is unsustainable relative to treasury",
+				Reasoning: fmt.Sprintf("decommissioning: treasury covers only %dh of upkeep (need %dh)", treasury/max(upkeep, 1), reserve),
 			}, nil
 		}
 	}
@@ -533,16 +565,7 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 		return &FleetDecision{Reasoning: "no ship types available"}, nil
 	}
 
-	// Max fleet size depends on strategy.
-	maxShips := 5
-	if req.StrategyHint == "bulk_hauler" {
-		maxShips = 3 // Fewer but bigger ships.
-	}
-	if numShips >= maxShips {
-		return &FleetDecision{Reasoning: "fleet is at maximum size"}, nil
-	}
-
-	// Choose ship type based on strategy.
+	// --- SHIP TYPE SELECTION ---
 	shipTypes := make([]ShipTypeInfo, len(req.ShipTypes))
 	copy(shipTypes, req.ShipTypes)
 
@@ -554,14 +577,6 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 			return shipTypes[i].Capacity > shipTypes[j].Capacity
 		})
 		targetShipType = shipTypes[0]
-		// Fall back to cheaper if can't afford the biggest.
-		newUpkeep := upkeep + int64(targetShipType.Upkeep)
-		if treasury < int64(targetShipType.BasePrice)+newUpkeep*3 {
-			// Try second largest.
-			if len(shipTypes) > 1 {
-				targetShipType = shipTypes[1]
-			}
-		}
 
 	case "arbitrage":
 		// Prefer fastest ships for quick turnover.
@@ -569,14 +584,6 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 			return shipTypes[i].Speed > shipTypes[j].Speed
 		})
 		targetShipType = shipTypes[0]
-		newUpkeep := upkeep + int64(targetShipType.Upkeep)
-		if treasury < int64(targetShipType.BasePrice)+newUpkeep*3 {
-			// Fall back to cheapest.
-			sort.Slice(shipTypes, func(i, j int) bool {
-				return shipTypes[i].BasePrice < shipTypes[j].BasePrice
-			})
-			targetShipType = shipTypes[0]
-		}
 
 	default: // market_maker and others
 		// Prefer cheapest ships to minimize upkeep (more budget for orders).
@@ -586,28 +593,47 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 		targetShipType = shipTypes[0]
 	}
 
-	// Safety check: can we afford it?
-	newUpkeep := upkeep + int64(targetShipType.Upkeep)
-	safetyMargin := newUpkeep * 3
-	if treasury < int64(targetShipType.BasePrice)+safetyMargin {
-		// Last resort: try absolute cheapest ship.
+	// --- AFFORDABILITY CHECK ---
+	// The company must be able to afford the ship price AND still maintain
+	// a reserve of (newTotalUpkeep * reserveHours) afterwards.
+	// reserveHours grows with fleet size, naturally limiting expansion.
+	newReserve := reserveHours(numShips+1, req.StrategyHint)
+	canAfford := func(st ShipTypeInfo) bool {
+		newUpkeep := upkeep + int64(st.Upkeep)
+		required := int64(st.BasePrice) + newUpkeep*newReserve
+		return treasury >= required
+	}
+
+	if !canAfford(targetShipType) {
+		// Preferred type too expensive — try all types sorted cheapest first.
 		sort.Slice(shipTypes, func(i, j int) bool {
 			return shipTypes[i].BasePrice < shipTypes[j].BasePrice
 		})
-		targetShipType = shipTypes[0]
-		newUpkeep = upkeep + int64(targetShipType.Upkeep)
-		safetyMargin = newUpkeep * 3
-		if treasury < int64(targetShipType.BasePrice)+safetyMargin {
-			return &FleetDecision{Reasoning: "treasury too low to safely purchase a ship"}, nil
+		found := false
+		for _, st := range shipTypes {
+			if canAfford(st) {
+				targetShipType = st
+				found = true
+				break
+			}
+		}
+		if !found {
+			newUpkeep := upkeep + int64(shipTypes[0].Upkeep)
+			required := int64(shipTypes[0].BasePrice) + newUpkeep*newReserve
+			return &FleetDecision{
+				Reasoning: fmt.Sprintf("treasury %d too low: cheapest ship needs %d (price %d + %dh reserve of %d/hr upkeep)",
+					treasury, required, shipTypes[0].BasePrice, newReserve, newUpkeep),
+			}, nil
 		}
 	}
 
-	// Pick a port to buy at (must have a shipyard).
+	// --- PURCHASE PORT SELECTION ---
 	purchasePortID := a.findPurchasePort(req.Ships, req.ShipyardPorts)
 	if purchasePortID == uuid.Nil {
 		return &FleetDecision{Reasoning: "no suitable port found for ship purchase"}, nil
 	}
 
+	newUpkeep := upkeep + int64(targetShipType.Upkeep)
 	a.logger.Info("recommending ship purchase",
 		zap.String("strategy", req.StrategyHint),
 		zap.String("ship_type", targetShipType.Name),
@@ -615,6 +641,9 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 		zap.Int("capacity", targetShipType.Capacity),
 		zap.Int("speed", targetShipType.Speed),
 		zap.Int("current_fleet", numShips),
+		zap.Int64("treasury_after", treasury-int64(targetShipType.BasePrice)),
+		zap.Int64("new_upkeep", newUpkeep),
+		zap.Int64("reserve_hours", newReserve),
 	)
 
 	return &FleetDecision{
@@ -622,7 +651,8 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 			ShipTypeID: targetShipType.ID,
 			PortID:     purchasePortID,
 		}},
-		Reasoning: "expanding fleet: " + req.StrategyHint + " strategy",
+		Reasoning: fmt.Sprintf("expanding fleet to %d ships (%s), treasury covers %dh of new upkeep",
+			numShips+1, targetShipType.Name, treasury/max(newUpkeep, 1)),
 	}, nil
 }
 
