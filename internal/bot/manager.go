@@ -338,9 +338,8 @@ func (m *Manager) setupRunner(
 
 	// Load or create CompanyParams to check for agent override.
 	var params db.CompanyParams
-	if err := m.gormDB.Where("company_id = ?", dbRecord.ID).First(&params).Error; err != nil {
-		params = db.CompanyParams{CompanyID: dbRecord.ID}
-		m.gormDB.Create(&params)
+	if err := m.gormDB.Where("company_id = ?", dbRecord.ID).FirstOrCreate(&params, db.CompanyParams{CompanyID: dbRecord.ID}).Error; err != nil {
+		return nil, fmt.Errorf("load company_params: %w", err)
 	}
 
 	// Apply allocation agent hint to CompanyParams if this is a fresh record with default agent.

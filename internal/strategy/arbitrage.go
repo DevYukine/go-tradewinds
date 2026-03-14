@@ -132,6 +132,9 @@ func (a *Arbitrage) OnTick(ctx context.Context, _ *bot.CompanyState) error {
 	if time.Since(a.lastFleetEval) < fleetInterval {
 		return nil
 	}
+	if !a.fleetEvalBackoff.ready() {
+		return nil
+	}
 	a.lastFleetEval = time.Now()
 
 	req := a.buildFleetRequest()
@@ -141,9 +144,14 @@ func (a *Arbitrage) OnTick(ctx context.Context, _ *bot.CompanyState) error {
 	latency := time.Since(start)
 
 	if err != nil {
-		a.logger.Warn("agent fleet decision failed", zap.Error(err))
+		a.fleetEvalBackoff.fail()
+		a.logger.Warn("agent fleet decision failed",
+			zap.Error(err),
+			zap.Duration("backoff", a.fleetEvalBackoff.delay),
+		)
 		return nil
 	}
+	a.fleetEvalBackoff.succeed()
 
 	if len(decision.BuyShips) > 0 || len(decision.BuyWarehouses) > 0 || len(decision.SellShips) > 0 {
 		a.logger.Agent("fleet decision",

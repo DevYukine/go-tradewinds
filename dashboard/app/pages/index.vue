@@ -330,9 +330,14 @@ function companySailingCount(id: number): number {
             <span class="w-2.5 h-2.5 rounded-full mt-1.5 flex-shrink-0" :class="statusDot(company.status)" />
           </div>
 
-          <!-- Strategy badge -->
-          <div class="mb-3">
+          <!-- Strategy + Agent badges -->
+          <div class="flex items-center gap-2 mb-3">
             <span class="text-xs font-medium" :class="strategyColor(company.strategy)">{{ company.strategy }}</span>
+            <span
+              v-if="company.agent_name && company.agent_name !== 'heuristic'"
+              class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 truncate max-w-[140px]"
+              :title="company.agent_name"
+            >{{ company.agent_name }}</span>
           </div>
 
           <!-- Treasury + Bar -->

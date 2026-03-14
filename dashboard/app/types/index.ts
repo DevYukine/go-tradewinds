@@ -8,6 +8,7 @@ export interface Company {
   treasury: number
   reputation: number
   home_port_id: string
+  agent_name: string
 }
 
 export interface PnLPoint {

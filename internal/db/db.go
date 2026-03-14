@@ -32,6 +32,7 @@ func NewConnection(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*go
 	log := logger.Named("db")
 
 	gormLog := zapgorm2.New(log)
+	gormLog.IgnoreRecordNotFoundError = true
 	gormLog.SetAsDefault()
 
 	gormCfg := &gorm.Config{

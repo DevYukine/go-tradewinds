@@ -22,6 +22,46 @@ type baseStrategy struct {
 	ctx    bot.StrategyContext
 	name   string
 	logger *bot.CompanyLogger
+
+	// Exponential backoff trackers.
+	shipBuyBackoff  backoffState // Backs off when all shipyards are out of stock.
+	fleetEvalBackoff backoffState // Backs off when fleet LLM calls fail repeatedly.
+	marketEvalBackoff backoffState // Backs off when market LLM calls fail repeatedly.
+}
+
+// backoffState tracks exponential backoff for a repeatable operation.
+type backoffState struct {
+	nextAttempt time.Time     // Earliest time to retry.
+	delay       time.Duration // Current backoff delay (doubles on each failure).
+}
+
+const (
+	initialBackoff = 30 * time.Second
+	maxBackoff     = 30 * time.Minute
+)
+
+// fail records a failure and increases the backoff delay.
+func (b *backoffState) fail() {
+	if b.delay == 0 {
+		b.delay = initialBackoff
+	} else {
+		b.delay *= 2
+		if b.delay > maxBackoff {
+			b.delay = maxBackoff
+		}
+	}
+	b.nextAttempt = time.Now().Add(b.delay)
+}
+
+// succeed resets the backoff state.
+func (b *backoffState) succeed() {
+	b.delay = 0
+	b.nextAttempt = time.Time{}
+}
+
+// ready returns true if enough time has passed since the last failure.
+func (b *backoffState) ready() bool {
+	return b.nextAttempt.IsZero() || time.Now().After(b.nextAttempt)
 }
 
 func (b *baseStrategy) Init(ctx bot.StrategyContext) error {
@@ -706,12 +746,25 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 	}
 
 	for _, purchase := range decision.BuyShips {
+		if !b.shipBuyBackoff.ready() {
+			b.logger.Debug("skipping ship purchase — backing off after previous failures",
+				zap.Time("retry_at", b.shipBuyBackoff.nextAttempt),
+			)
+			break
+		}
 		ship := b.tryBuyShip(ctx, purchase)
 		if ship != nil {
+			b.shipBuyBackoff.succeed()
 			b.logger.Info("purchased new ship",
 				zap.String("ship_id", ship.ID.String()),
 				zap.String("name", ship.Name),
 			)
+		} else {
+			b.shipBuyBackoff.fail()
+			b.logger.Info("ship purchase failed, backing off",
+				zap.Duration("backoff", b.shipBuyBackoff.delay),
+			)
+			break // Don't try more purchases this cycle.
 		}
 	}
 

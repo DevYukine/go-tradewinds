@@ -107,6 +107,9 @@ func (b *BulkHauler) OnTick(ctx context.Context, _ *bot.CompanyState) error {
 	if time.Since(b.lastFleetEval) < fleetInterval {
 		return nil
 	}
+	if !b.fleetEvalBackoff.ready() {
+		return nil
+	}
 	b.lastFleetEval = time.Now()
 
 	req := b.buildFleetRequest()
@@ -116,9 +119,14 @@ func (b *BulkHauler) OnTick(ctx context.Context, _ *bot.CompanyState) error {
 	latency := time.Since(start)
 
 	if err != nil {
-		b.logger.Warn("agent fleet decision failed", zap.Error(err))
+		b.fleetEvalBackoff.fail()
+		b.logger.Warn("agent fleet decision failed",
+			zap.Error(err),
+			zap.Duration("backoff", b.fleetEvalBackoff.delay),
+		)
 		return nil
 	}
+	b.fleetEvalBackoff.succeed()
 
 	if len(decision.BuyShips) > 0 || len(decision.BuyWarehouses) > 0 || len(decision.SellShips) > 0 {
 		b.logger.Agent("fleet decision",

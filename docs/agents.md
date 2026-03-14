@@ -92,6 +92,7 @@ Order of evaluation:
    - Market maker: cheapest upkeep ship
    - Max fleet: 5 (3 for bulk hauler)
    - Safety: `ship_cost * 1.06 (6% tax) + (current_upkeep + new_upkeep) * 24h`
+   - **Backoff**: When all shipyards are out of stock, exponential backoff (30s→1m→…→30m) before retrying. Shipyard inventory refills ~every 30 minutes.
 
 ### Market Decisions (`DecideMarketAction`)
 - Fill sell orders: only if `orderPrice > NPC_sell_price * 1.10` (10% min margin)
@@ -116,14 +117,17 @@ Order of evaluation:
 
 ## LLM Agent (`internal/agent/llm.go`)
 
-Delegates decisions to an LLM (Claude, OpenAI, or Ollama). Falls back to HeuristicAgent on any error.
+Delegates decisions to an LLM (Claude, OpenAI, or Ollama). Returns errors to the caller on failure (no silent fallback).
 
 - Trade/Fleet/Market/Strategy decisions serialized as JSON → LLM → parsed JSON response
-- System prompts per decision type, fully aligned with heuristic agent features:
-  - **Trade**: Smart selling (hold cargo for >30% better price), P2P order fills (>5% margin), destination-level scoring with strategy-specific formulas, route history bonus, passenger override, global trade intelligence (ProfitAnalyzer), no-empty-sailing, tunable params, tax calculations, minimum margins
-  - **Fleet**: Strategy-specific ship preferences, reserve hours scaling, 24h safety margin, ship decommission by value ratio, warehouse rules
-  - **Market**: Fill margin thresholds (10% sell-side, 7% buy-side), warehouse requirement, self-fill avoidance, max 5 active orders, cancellation of stale orders
-  - **Strategy**: Parameter tuning with valid ranges, switch threshold (1.5x), loss detection
+- **Data-driven prompts**: The LLM receives full game state, game mechanics explanations, data field descriptions, and hard constraints — but reasons autonomously about trade-offs and strategy rather than following prescribed formulas or thresholds
+- System prompts per decision type:
+  - **Trade**: Game mechanics (taxes, routes, passengers, P2P), data dictionary for all input fields, hard constraints (treasury floor, reachability, warehouse requirement, no self-fill), goals (maximize profit across all revenue streams, avoid empty sailing)
+  - **Fleet**: Ship purchase/sell/warehouse mechanics, shipyard port constraint, treasury sustainability goals
+  - **Market**: P2P order mechanics, warehouse requirement, NPC price baseline for comparison
+  - **Strategy**: Available strategies and parameter ranges, performance-based evaluation
+- LLM errors are returned to the strategy layer (no silent heuristic fallback)
+- **Exponential backoff**: Trade dispatch retries 5× (2s→4s→8s→16s), fleet/market eval failures back off 30s→1m→…→30m before retrying
 - Strips markdown code fences from responses
 - Logs every call with action type, latency, success, and response length
 

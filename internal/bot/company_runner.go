@@ -615,9 +615,12 @@ func (r *CompanyRunner) dispatchDockedShip(ctx context.Context, shipID uuid.UUID
 	r.dispatchWithRetry(ctx, shipState, port)
 }
 
-// dispatchWithRetry attempts to dispatch a ship up to 3 times with backoff.
+// dispatchWithRetry attempts to dispatch a ship up to 5 times with exponential backoff.
 func (r *CompanyRunner) dispatchWithRetry(ctx context.Context, ship *ShipState, port *api.Port) {
-	for attempt := 0; attempt < 3; attempt++ {
+	const maxAttempts = 5
+	backoff := 2 * time.Second
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if err := r.strategy.OnShipArrival(ctx, ship, port); err == nil {
 			r.dispatchedShips[ship.Ship.ID] = time.Now()
 			return
@@ -625,15 +628,17 @@ func (r *CompanyRunner) dispatchWithRetry(ctx context.Context, ship *ShipState, 
 			r.logger.Warn("dispatch attempt failed",
 				zap.String("ship_id", ship.Ship.ID.String()),
 				zap.Int("attempt", attempt+1),
+				zap.Duration("next_backoff", backoff),
 				zap.Error(err),
 			)
 		}
-		if attempt < 2 {
+		if attempt < maxAttempts-1 {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(3 * time.Second):
+			case <-time.After(backoff):
 			}
+			backoff *= 2 // 2s → 4s → 8s → 16s
 		}
 	}
 	r.logger.Error("all dispatch attempts failed",
@@ -786,6 +791,11 @@ func (r *CompanyRunner) refreshOrders(ctx context.Context) {
 // DBRecord returns the database record for this company.
 func (r *CompanyRunner) DBRecord() *db.CompanyRecord {
 	return r.dbRecord
+}
+
+// AgentName returns the name of the agent driving this company.
+func (r *CompanyRunner) AgentName() string {
+	return r.agent.Name()
 }
 
 // State returns the in-memory company state for external consumers (e.g., API server).

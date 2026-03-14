@@ -158,113 +158,113 @@ func newLLMProvider(cfg *config.Config) (LLMProvider, error) {
 
 // CompanySnapshot is a point-in-time view of a company's finances.
 type CompanySnapshot struct {
-	ID          uuid.UUID
-	Treasury    int64
-	Reputation  int64
-	TotalUpkeep int64
+	ID          uuid.UUID `json:"id"`
+	Treasury    int64     `json:"treasury"`
+	Reputation  int64     `json:"reputation"`
+	TotalUpkeep int64     `json:"total_upkeep"`
 }
 
 // ShipSnapshot is a point-in-time view of a ship's state.
 type ShipSnapshot struct {
-	ID           uuid.UUID
-	Name         string
-	Status       string // "docked" or "traveling"
-	PortID       *uuid.UUID
-	Cargo        []CargoItem
-	Capacity     int
-	Speed        int
-	PassengerCap int // Max passenger groups from ship type.
-	ArrivesAt    *time.Time
-	IdleTicks    int // Consecutive "wait" ticks while docked.
+	ID           uuid.UUID   `json:"id"`
+	Name         string      `json:"name"`
+	Status       string      `json:"status"` // "docked" or "traveling"
+	PortID       *uuid.UUID  `json:"port_id"`
+	Cargo        []CargoItem `json:"cargo"`
+	Capacity     int         `json:"capacity"`
+	Speed        int         `json:"speed"`
+	PassengerCap int         `json:"passenger_cap"` // Max passenger groups from ship type.
+	ArrivesAt    *time.Time  `json:"arrives_at"`
+	IdleTicks    int         `json:"idle_ticks"` // Consecutive "wait" ticks while docked.
 }
 
 // PassengerInfo describes an available or boarded passenger group.
 type PassengerInfo struct {
-	ID                uuid.UUID
-	Count             int
-	Bid               int // Payment on delivery.
-	OriginPortID      uuid.UUID
-	DestinationPortID uuid.UUID
-	ExpiresAt         time.Time
+	ID                uuid.UUID `json:"id"`
+	Count             int       `json:"count"`
+	Bid               int       `json:"bid"` // Payment on delivery.
+	OriginPortID      uuid.UUID `json:"origin_port_id"`
+	DestinationPortID uuid.UUID `json:"destination_port_id"`
+	ExpiresAt         time.Time `json:"expires_at"`
 }
 
 // CargoItem represents a quantity of a good on a ship.
 type CargoItem struct {
-	GoodID   uuid.UUID
-	Quantity int
+	GoodID   uuid.UUID `json:"good_id"`
+	Quantity int       `json:"quantity"`
 }
 
 // WarehouseSnapshot is a point-in-time view of a warehouse.
 type WarehouseSnapshot struct {
-	ID       uuid.UUID
-	PortID   uuid.UUID
-	Level    int
-	Capacity int
-	Items    []WarehouseItem
+	ID       uuid.UUID       `json:"id"`
+	PortID   uuid.UUID       `json:"port_id"`
+	Level    int             `json:"level"`
+	Capacity int             `json:"capacity"`
+	Items    []WarehouseItem `json:"items"`
 }
 
 // WarehouseItem represents a quantity of a good in a warehouse.
 type WarehouseItem struct {
-	GoodID   uuid.UUID
-	Quantity int
+	GoodID   uuid.UUID `json:"good_id"`
+	Quantity int       `json:"quantity"`
 }
 
 // PricePoint records observed buy/sell prices for a good at a port.
 type PricePoint struct {
-	PortID     uuid.UUID
-	GoodID     uuid.UUID
-	BuyPrice   int
-	SellPrice  int
-	ObservedAt time.Time
+	PortID     uuid.UUID `json:"port_id"`
+	GoodID     uuid.UUID `json:"good_id"`
+	BuyPrice   int       `json:"buy_price"`
+	SellPrice  int       `json:"sell_price"`
+	ObservedAt time.Time `json:"observed_at"`
 }
 
 // PortInfo is a simplified port representation for agent decisions.
 type PortInfo struct {
-	ID         uuid.UUID
-	Name       string
-	Code       string
-	IsHub      bool
-	TaxRateBps int
+	ID         uuid.UUID `json:"id"`
+	Name       string    `json:"name"`
+	Code       string    `json:"code"`
+	IsHub      bool      `json:"is_hub"`
+	TaxRateBps int       `json:"tax_rate_bps"`
 }
 
 // RouteInfo is a simplified route representation for agent decisions.
 type RouteInfo struct {
-	ID       uuid.UUID
-	FromID   uuid.UUID
-	ToID     uuid.UUID
-	Distance float64
+	ID       uuid.UUID `json:"id"`
+	FromID   uuid.UUID `json:"from_id"`
+	ToID     uuid.UUID `json:"to_id"`
+	Distance float64   `json:"distance"`
 }
 
 // ShipTypeInfo describes an available ship type for purchase decisions.
 type ShipTypeInfo struct {
-	ID           uuid.UUID
-	Name         string
-	Capacity     int
-	Speed        int
-	Upkeep       int
-	BasePrice    int
-	PassengerCap int // Maximum number of passenger groups this ship can carry.
+	ID           uuid.UUID `json:"id"`
+	Name         string    `json:"name"`
+	Capacity     int       `json:"capacity"`
+	Speed        int       `json:"speed"`
+	Upkeep       int       `json:"upkeep"`
+	BasePrice    int       `json:"base_price"`
+	PassengerCap int       `json:"passenger_cap"` // Maximum number of passenger groups this ship can carry.
 }
 
 // TradeLogEntry is a recent trade for context in decision-making.
 type TradeLogEntry struct {
-	Action    string
-	GoodID    uuid.UUID
-	PortID    uuid.UUID
-	Quantity  int
-	UnitPrice int
-	CreatedAt time.Time
+	Action    string    `json:"action"`
+	GoodID    uuid.UUID `json:"good_id"`
+	PortID    uuid.UUID `json:"port_id"`
+	Quantity  int       `json:"quantity"`
+	UnitPrice int       `json:"unit_price"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // RoutePerformanceEntry is a historical buy→sell route result used to
 // bias destination scoring toward routes that have been profitable.
 type RoutePerformanceEntry struct {
-	FromPortID uuid.UUID
-	ToPortID   uuid.UUID
-	GoodID     uuid.UUID
-	Profit     int
-	Quantity   int
-	CreatedAt  time.Time
+	FromPortID uuid.UUID `json:"from_port_id"`
+	ToPortID   uuid.UUID `json:"to_port_id"`
+	GoodID     uuid.UUID `json:"good_id"`
+	Profit     int       `json:"profit"`
+	Quantity   int       `json:"quantity"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // TradeOpportunity represents a cross-port trade opportunity discovered by
@@ -282,151 +282,151 @@ type TradeOpportunity struct {
 
 // Constraints defines safety boundaries for trading decisions.
 type Constraints struct {
-	TreasuryFloor int64 // Minimum treasury to maintain (2x upkeep).
-	MaxSpend      int64 // Maximum to spend on a single trade.
+	TreasuryFloor int64 `json:"treasury_floor"` // Minimum treasury to maintain (2x upkeep).
+	MaxSpend      int64 `json:"max_spend"`       // Maximum to spend on a single trade.
 }
 
 // --- Trade Decision ---
 
 // TradeDecisionRequest contains everything an agent needs to decide a trade.
 type TradeDecisionRequest struct {
-	StrategyHint        string // "arbitrage", "bulk_hauler", "market_maker" — guides agent behavior.
-	Company             CompanySnapshot
-	Ship                ShipSnapshot
-	AllShips            []ShipSnapshot
-	Warehouses          []WarehouseSnapshot
-	PriceCache          []PricePoint
-	Routes              []RouteInfo
-	Ports               []PortInfo
-	RecentTrades        []TradeLogEntry
-	RouteHistory        []RoutePerformanceEntry // Recent route performance data for learning.
-	Constraints         Constraints
-	AvailablePassengers []PassengerInfo // Passengers at the current port looking for transport.
-	BoardedPassengers   []PassengerInfo // Passengers already on this ship.
-	PortOrders          []MarketOrder      // P2P orders at the current port (for filling opportunities).
-	OwnOrders           []MarketOrder      // This company's active orders (to avoid self-fill).
-	TopOpportunities    []TradeOpportunity // Top global trade opportunities from ProfitAnalyzer.
-	Params              map[string]float64 // Tunable parameters from optimizer (nil = use defaults).
+	StrategyHint        string               `json:"strategy_hint"`        // "arbitrage", "bulk_hauler", "market_maker" — guides agent behavior.
+	Company             CompanySnapshot         `json:"company"`
+	Ship                ShipSnapshot            `json:"ship"`
+	AllShips            []ShipSnapshot          `json:"all_ships"`
+	Warehouses          []WarehouseSnapshot     `json:"warehouses"`
+	PriceCache          []PricePoint            `json:"price_cache"`
+	Routes              []RouteInfo             `json:"routes"`
+	Ports               []PortInfo              `json:"ports"`
+	RecentTrades        []TradeLogEntry         `json:"recent_trades"`
+	RouteHistory        []RoutePerformanceEntry `json:"route_history"`        // Recent route performance data for learning.
+	Constraints         Constraints             `json:"constraints"`
+	AvailablePassengers []PassengerInfo         `json:"available_passengers"` // Passengers at the current port looking for transport.
+	BoardedPassengers   []PassengerInfo       `json:"boarded_passengers"`   // Passengers already on this ship.
+	PortOrders          []MarketOrder         `json:"port_orders"`          // P2P orders at the current port (for filling opportunities).
+	OwnOrders           []MarketOrder         `json:"own_orders"`           // This company's active orders (to avoid self-fill).
+	TopOpportunities    []TradeOpportunity    `json:"top_opportunities"`    // Top global trade opportunities from ProfitAnalyzer.
+	Params              map[string]float64    `json:"params"`               // Tunable parameters from optimizer (nil = use defaults).
 }
 
 // SellOrder instructs the bot to sell a good at the current port.
 type SellOrder struct {
-	GoodID   uuid.UUID
-	Quantity int
+	GoodID   uuid.UUID `json:"good_id"`
+	Quantity int       `json:"quantity"`
 }
 
 // BuyOrder instructs the bot to buy a good and load it onto a destination.
 type BuyOrder struct {
-	GoodID      uuid.UUID
-	Quantity    int
-	Destination uuid.UUID // Ship or warehouse ID.
+	GoodID      uuid.UUID `json:"good_id"`
+	Quantity    int       `json:"quantity"`
+	Destination uuid.UUID `json:"destination"` // Ship or warehouse ID.
 }
 
 // TradeDecision is the agent's response to a trade decision request.
 type TradeDecision struct {
-	Action          string      // "buy_and_sail", "sell_and_buy", "wait", "dock"
-	SellOrders      []SellOrder // What to sell at current port.
-	BuyOrders       []BuyOrder  // What to buy before departing.
-	FillOrders      []FillOrder // P2P orders to fill at the current port.
-	BoardPassengers []uuid.UUID // Passenger IDs to board before departing.
-	SailTo          *uuid.UUID  // Destination port (nil = stay docked).
-	Reasoning       string      // Human-readable explanation.
-	Confidence      float64     // 0.0-1.0, used by optimizer to weight decisions.
+	Action          string      `json:"action"`           // "buy_and_sail", "sell_and_buy", "wait", "dock"
+	SellOrders      []SellOrder `json:"sell_orders"`      // What to sell at current port.
+	BuyOrders       []BuyOrder  `json:"buy_orders"`       // What to buy before departing.
+	FillOrders      []FillOrder `json:"fill_orders"`      // P2P orders to fill at the current port.
+	BoardPassengers []uuid.UUID `json:"board_passengers"` // Passenger IDs to board before departing.
+	SailTo          *uuid.UUID  `json:"sail_to"`          // Destination port (nil = stay docked).
+	Reasoning       string      `json:"reasoning"`        // Human-readable explanation.
+	Confidence      float64     `json:"confidence"`       // 0.0-1.0, used by optimizer to weight decisions.
 }
 
 // --- Fleet Decision ---
 
 // FleetDecisionRequest contains state needed for capital investment decisions.
 type FleetDecisionRequest struct {
-	StrategyHint  string // "arbitrage", "bulk_hauler", "market_maker" — guides ship selection.
-	Company       CompanySnapshot
-	Ships         []ShipSnapshot
-	Warehouses    []WarehouseSnapshot
-	ShipTypes     []ShipTypeInfo
-	PriceCache    []PricePoint
-	ShipyardPorts []uuid.UUID // Port IDs that have shipyards (not all ports do).
+	StrategyHint  string              `json:"strategy_hint"`  // "arbitrage", "bulk_hauler", "market_maker" — guides ship selection.
+	Company       CompanySnapshot     `json:"company"`
+	Ships         []ShipSnapshot      `json:"ships"`
+	Warehouses    []WarehouseSnapshot `json:"warehouses"`
+	ShipTypes     []ShipTypeInfo      `json:"ship_types"`
+	PriceCache    []PricePoint        `json:"price_cache"`
+	ShipyardPorts []uuid.UUID         `json:"shipyard_ports"` // Port IDs that have shipyards (not all ports do).
 }
 
 // ShipPurchase describes a ship to buy at a specific port.
 type ShipPurchase struct {
-	ShipTypeID uuid.UUID
-	PortID     uuid.UUID
+	ShipTypeID uuid.UUID `json:"ship_type_id"`
+	PortID     uuid.UUID `json:"port_id"`
 }
 
 // FleetDecision is the agent's response to a fleet decision request.
 type FleetDecision struct {
-	BuyShips      []ShipPurchase
-	SellShips     []uuid.UUID // Ship IDs to decommission (sell back to game).
-	BuyWarehouses []uuid.UUID // Port IDs to build warehouses at.
-	Reasoning     string
+	BuyShips      []ShipPurchase `json:"buy_ships"`
+	SellShips     []uuid.UUID   `json:"sell_ships"`     // Ship IDs to decommission (sell back to game).
+	BuyWarehouses []uuid.UUID   `json:"buy_warehouses"` // Port IDs to build warehouses at.
+	Reasoning     string        `json:"reasoning"`
 }
 
 // --- Market Decision ---
 
 // MarketDecisionRequest contains state for P2P market decisions.
 type MarketDecisionRequest struct {
-	Company    CompanySnapshot
-	OpenOrders []MarketOrder
-	OwnOrders  []MarketOrder
-	PriceCache []PricePoint
-	Warehouses []WarehouseSnapshot
+	Company    CompanySnapshot     `json:"company"`
+	OpenOrders []MarketOrder       `json:"open_orders"`
+	OwnOrders  []MarketOrder       `json:"own_orders"`
+	PriceCache []PricePoint        `json:"price_cache"`
+	Warehouses []WarehouseSnapshot `json:"warehouses"`
 }
 
 // MarketOrder represents a P2P market order.
 type MarketOrder struct {
-	ID        uuid.UUID
-	PortID    uuid.UUID
-	GoodID    uuid.UUID
-	Side      string // "buy" or "sell"
-	Price     int
-	Remaining int
+	ID        uuid.UUID `json:"id"`
+	PortID    uuid.UUID `json:"port_id"`
+	GoodID    uuid.UUID `json:"good_id"`
+	Side      string    `json:"side"` // "buy" or "sell"
+	Price     int       `json:"price"`
+	Remaining int       `json:"remaining"`
 }
 
 // NewMarketOrder describes a new order to post.
 type NewMarketOrder struct {
-	PortID uuid.UUID
-	GoodID uuid.UUID
-	Side   string
-	Price  int
-	Total  int
+	PortID uuid.UUID `json:"port_id"`
+	GoodID uuid.UUID `json:"good_id"`
+	Side   string    `json:"side"`
+	Price  int       `json:"price"`
+	Total  int       `json:"total"`
 }
 
 // FillOrder describes an existing order to fill.
 type FillOrder struct {
-	OrderID  uuid.UUID
-	Quantity int
+	OrderID  uuid.UUID `json:"order_id"`
+	Quantity int       `json:"quantity"`
 }
 
 // MarketDecision is the agent's response to a market decision request.
 type MarketDecision struct {
-	PostOrders   []NewMarketOrder
-	FillOrders   []FillOrder
-	CancelOrders []uuid.UUID
-	Reasoning    string
+	PostOrders   []NewMarketOrder `json:"post_orders"`
+	FillOrders   []FillOrder      `json:"fill_orders"`
+	CancelOrders []uuid.UUID      `json:"cancel_orders"`
+	Reasoning    string           `json:"reasoning"`
 }
 
 // --- Strategy Evaluation ---
 
 // StrategyMetrics holds aggregated performance data for a strategy.
 type StrategyMetrics struct {
-	StrategyName   string
-	CompanyCount   int
-	TradesExecuted int
-	TotalProfit    int64
-	TotalLoss      int64
-	WinRate        float64
-	ProfitPerHour  float64
+	StrategyName   string  `json:"strategy_name"`
+	CompanyCount   int     `json:"company_count"`
+	TradesExecuted int     `json:"trades_executed"`
+	TotalProfit    int64   `json:"total_profit"`
+	TotalLoss      int64   `json:"total_loss"`
+	WinRate        float64 `json:"win_rate"`
+	ProfitPerHour  float64 `json:"profit_per_hour"`
 }
 
 // StrategyEvalRequest provides metrics for the agent to evaluate strategies.
 type StrategyEvalRequest struct {
-	Metrics       []StrategyMetrics
-	CurrentParams map[string]any
+	Metrics       []StrategyMetrics `json:"metrics"`
+	CurrentParams map[string]any    `json:"current_params"`
 }
 
 // StrategyEvaluation is the agent's recommendation for strategy changes.
 type StrategyEvaluation struct {
-	ParamChanges map[string]any
-	SwitchTo     *string // Recommend switching strategy (nil = keep current).
-	Reasoning    string
+	ParamChanges map[string]any `json:"param_changes"`
+	SwitchTo     *string        `json:"switch_to"` // Recommend switching strategy (nil = keep current).
+	Reasoning    string         `json:"reasoning"`
 }

@@ -34,8 +34,14 @@ func (s *Server) registerHandlers() {
 	api.Get("/companies/:id/market-orders", s.handleCompanyMarketOrders)
 }
 
+// companyResponse extends CompanyRecord with live-enriched fields.
+type companyResponse struct {
+	db.CompanyRecord
+	AgentName string `json:"agent_name"`
+}
+
 // handleCompanies returns all companies with their current status, treasury, and strategy.
-// Treasury and reputation are enriched from live in-memory state when available.
+// Treasury, reputation, and agent_name are enriched from live in-memory state when available.
 func (s *Server) handleCompanies(c fiber.Ctx) error {
 	var companies []db.CompanyRecord
 	if err := s.db.Order("id ASC").Find(&companies).Error; err != nil {
@@ -44,23 +50,27 @@ func (s *Server) handleCompanies(c fiber.Ctx) error {
 		})
 	}
 
-	// Overlay live treasury/reputation from running companies.
+	// Overlay live treasury/reputation/agent from running companies.
 	runners := s.manager.Companies()
+	resp := make([]companyResponse, len(companies))
 	for i := range companies {
+		resp[i].CompanyRecord = companies[i]
+		resp[i].AgentName = "heuristic" // default
 		for _, runner := range runners {
 			rec := runner.DBRecord()
 			if rec != nil && rec.GameID == companies[i].GameID {
 				state := runner.State()
 				state.RLock()
-				companies[i].Treasury = state.Treasury
-				companies[i].Reputation = state.Reputation
+				resp[i].Treasury = state.Treasury
+				resp[i].Reputation = state.Reputation
 				state.RUnlock()
+				resp[i].AgentName = runner.AgentName()
 				break
 			}
 		}
 	}
 
-	return c.JSON(companies)
+	return c.JSON(resp)
 }
 
 // handleCompanyPnL returns the P&L time series for a company.

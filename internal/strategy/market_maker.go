@@ -118,13 +118,13 @@ func (m *MarketMaker) OnTick(ctx context.Context, _ *bot.CompanyState) error {
 	m.ctx.State.RUnlock()
 
 	// Evaluate market opportunities periodically.
-	if time.Since(m.lastMarketEval) >= marketInterval {
+	if time.Since(m.lastMarketEval) >= marketInterval && m.marketEvalBackoff.ready() {
 		m.lastMarketEval = time.Now()
 		m.evaluateMarket(ctx)
 	}
 
 	// Evaluate fleet decisions less frequently.
-	if time.Since(m.lastFleetEval) >= fleetInterval {
+	if time.Since(m.lastFleetEval) >= fleetInterval && m.fleetEvalBackoff.ready() {
 		m.lastFleetEval = time.Now()
 		m.evaluateFleet(ctx)
 	}
@@ -185,9 +185,14 @@ func (m *MarketMaker) evaluateMarket(ctx context.Context) {
 	latency := time.Since(start)
 
 	if err != nil {
-		m.logger.Warn("agent market decision failed", zap.Error(err))
+		m.marketEvalBackoff.fail()
+		m.logger.Warn("agent market decision failed",
+			zap.Error(err),
+			zap.Duration("backoff", m.marketEvalBackoff.delay),
+		)
 		return
 	}
+	m.marketEvalBackoff.succeed()
 
 	// Only log and execute when there are actual actions to take.
 	if len(decision.FillOrders) == 0 && len(decision.PostOrders) == 0 && len(decision.CancelOrders) == 0 {
@@ -254,9 +259,14 @@ func (m *MarketMaker) evaluateFleet(ctx context.Context) {
 	latency := time.Since(start)
 
 	if err != nil {
-		m.logger.Warn("agent fleet decision failed", zap.Error(err))
+		m.fleetEvalBackoff.fail()
+		m.logger.Warn("agent fleet decision failed",
+			zap.Error(err),
+			zap.Duration("backoff", m.fleetEvalBackoff.delay),
+		)
 		return
 	}
+	m.fleetEvalBackoff.succeed()
 
 	if len(decision.BuyShips) > 0 || len(decision.BuyWarehouses) > 0 || len(decision.SellShips) > 0 {
 		m.logger.Agent("fleet decision",

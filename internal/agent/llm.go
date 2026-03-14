@@ -10,14 +10,12 @@ import (
 )
 
 // LLMAgent delegates trading decisions to a large-language model via an
-// LLMProvider. On any error (timeout, malformed JSON, etc.) it falls back
-// to a HeuristicAgent so the bot never stalls.
+// LLMProvider. Errors are returned to the caller — no silent fallback.
 type LLMAgent struct {
 	provider  LLMProvider
 	model     string
 	maxTokens int
 	logger    *zap.Logger
-	fallback  *HeuristicAgent
 }
 
 // NewLLMAgent creates an LLM-backed agent with the given provider.
@@ -27,7 +25,6 @@ func NewLLMAgent(provider LLMProvider, model string, maxTokens int, logger *zap.
 		model:     model,
 		maxTokens: maxTokens,
 		logger:    logger.Named("llm_agent"),
-		fallback:  NewHeuristicAgent(logger),
 	}
 }
 
@@ -40,10 +37,7 @@ func (a *LLMAgent) Name() string { return "llm:" + a.model }
 func (a *LLMAgent) DecideTradeAction(ctx context.Context, req TradeDecisionRequest) (*TradeDecision, error) {
 	var decision TradeDecision
 	if err := a.callLLM(ctx, "trade", tradeSystemPrompt, req, &decision); err != nil {
-		a.logger.Warn("LLM trade decision failed, falling back to heuristic",
-			zap.Error(err),
-		)
-		return a.fallback.DecideTradeAction(ctx, req)
+		return nil, fmt.Errorf("LLM trade decision: %w", err)
 	}
 	return &decision, nil
 }
@@ -55,10 +49,7 @@ func (a *LLMAgent) DecideTradeAction(ctx context.Context, req TradeDecisionReque
 func (a *LLMAgent) DecideFleetAction(ctx context.Context, req FleetDecisionRequest) (*FleetDecision, error) {
 	var decision FleetDecision
 	if err := a.callLLM(ctx, "fleet", fleetSystemPrompt, req, &decision); err != nil {
-		a.logger.Warn("LLM fleet decision failed, falling back to heuristic",
-			zap.Error(err),
-		)
-		return a.fallback.DecideFleetAction(ctx, req)
+		return nil, fmt.Errorf("LLM fleet decision: %w", err)
 	}
 	return &decision, nil
 }
@@ -70,10 +61,7 @@ func (a *LLMAgent) DecideFleetAction(ctx context.Context, req FleetDecisionReque
 func (a *LLMAgent) DecideMarketAction(ctx context.Context, req MarketDecisionRequest) (*MarketDecision, error) {
 	var decision MarketDecision
 	if err := a.callLLM(ctx, "market", marketSystemPrompt, req, &decision); err != nil {
-		a.logger.Warn("LLM market decision failed, falling back to heuristic",
-			zap.Error(err),
-		)
-		return a.fallback.DecideMarketAction(ctx, req)
+		return nil, fmt.Errorf("LLM market decision: %w", err)
 	}
 	return &decision, nil
 }
@@ -85,10 +73,7 @@ func (a *LLMAgent) DecideMarketAction(ctx context.Context, req MarketDecisionReq
 func (a *LLMAgent) EvaluateStrategy(ctx context.Context, req StrategyEvalRequest) (*StrategyEvaluation, error) {
 	var evaluation StrategyEvaluation
 	if err := a.callLLM(ctx, "strategy", strategySystemPrompt, req, &evaluation); err != nil {
-		a.logger.Warn("LLM strategy evaluation failed, falling back to heuristic",
-			zap.Error(err),
-		)
-		return a.fallback.EvaluateStrategy(ctx, req)
+		return nil, fmt.Errorf("LLM strategy evaluation: %w", err)
 	}
 	return &evaluation, nil
 }
@@ -165,62 +150,58 @@ func stripCodeFences(s string) string {
 // System prompts
 // ---------------------------------------------------------------------------
 
-const tradeSystemPrompt = `You are a trading bot AI for a maritime trading game called Tradewinds.
-A ship has just docked at a port. Given the full game state as JSON, decide what to sell, buy, which P2P orders to fill, which passengers to board, and where to sail next.
+const tradeSystemPrompt = `You are a trading AI for Tradewinds, a maritime trading game. A ship has just docked at a port. You receive the full game state as JSON and must decide what to sell, buy, which P2P orders to fill, which passengers to board, and where to sail next.
 
-## Strategy Behavior
-The "strategy_hint" field tells you which strategy this company uses:
-- "arbitrage": Maximize profit per distance. Score destinations by (profit / distance). Prefer fast ships and quick turnarounds.
-- "bulk_hauler": Maximize absolute profit per trip. Score destinations by total achievable profit regardless of distance. Prefer large-capacity ships.
-- "market_maker": Same NPC trading as arbitrage, but also fills P2P market orders when profitable.
+## Game Mechanics
 
-## Decision Process (follow this order)
+CARGO TRADING: Ships buy goods at one port and sell at another. Both buy and sell transactions are taxed. Tax = price * tax_rate_bps / 10000 (e.g., 500 bps = 5%). Profit = sell_price - buy_price - buy_tax - sell_tax.
 
-### 1. Smart Selling
-Do NOT blindly sell all cargo. For each cargo item, check if a reachable destination offers a significantly better (>30%) net sell price after taxes. If so, HOLD that cargo — do not sell it. Held cargo reduces available capacity for new buys but should be carried to the better port.
-Only sell cargo that is best sold HERE or has no better destination.
+ROUTES & REACHABILITY: Ships can only sail to ports connected by routes from their current port. The "routes" array lists all connections with distances. A ship's travel time depends on distance and speed.
 
-### 2. Fill P2P Orders
-Check "port_orders" for profitable fill opportunities. Ignore orders in "own_orders" (self-fill). Only fill orders where the margin exceeds 5% after taxes. You need a warehouse at this port to fill orders — check "warehouses". Include fills in "fill_orders".
+PASSENGERS: Passenger groups wait at ports wanting transport to a specific destination. They pay their "bid" amount on delivery. You can only deliver a passenger to their exact destination_port_id — it must be reachable. Ships carry up to "passenger_cap" groups.
 
-### 3. Buy Cargo
-Evaluate ALL reachable destinations, not just one. For each destination, simulate filling the remaining ship capacity with profitable goods sorted by profit per unit. A trade is profitable only if:
-  sell_price - buy_price - buy_tax - sell_tax > buy_price * MinMarginPct
-MinMarginPct defaults to 0.15 (15%) but check "params" for overrides.
-Port taxes are in "ports[].tax_rate_bps" (basis points, e.g., 500 = 5%). Tax = price * bps / 10000.
+P2P MARKET: Players post buy/sell orders. Filling an order requires a warehouse at that port. You cannot fill your own company's orders (listed in "own_orders").
 
-### 4. Score Destinations
-For each destination, compute a composite score:
-- Arbitrage: (total_cargo_profit / distance) + (passenger_revenue / distance * PassengerWeight) + (held_cargo_gain / distance) + route_history_bonus
-- Bulk hauler: total_cargo_profit + (passenger_revenue / distance * PassengerWeight) + held_cargo_gain + route_history_bonus
-PassengerWeight defaults to 2.0 but check "params" for overrides.
+SHIP UPKEEP: Ships cost upkeep continuously whether sailing or idle. Empty sailing wastes money.
 
-### 5. Passenger Override
-After choosing a destination, check if passenger revenue alone (weighted by PassengerWeight) exceeds the expected trade PROFIT (not cost) from buy orders. If so, override the destination to the best passenger port. PassengerDestBonus defaults to 3.0 for destination-matching passengers.
+## Data Dictionary
 
-### 6. Route History
-"route_history" contains recent buy→sell results for routes. Compute average profit per trade for each (from_port → to_port) pair and add as a bonus to destination scoring.
+- strategy_hint: Company strategy ("arbitrage", "bulk_hauler", "market_maker") — consider this as guidance for your approach
+- company: Treasury, reputation, total fleet upkeep
+- ship: The docked ship — its cargo, capacity, speed, passenger_cap, idle_ticks
+- all_ships: All company ships (for fleet-wide awareness)
+- warehouses: Company warehouses (port_id, items stored)
+- price_cache: Known buy/sell prices at various ports (may be stale — check observed_at)
+- routes: Connections from current port with distances
+- ports: Port details including tax_rate_bps
+- recent_trades: Company's recent trade history
+- route_history: Historical profit data for port-to-port routes — use as market intelligence
+- constraints: treasury_floor (minimum treasury to maintain), max_spend (spending cap)
+- available_passengers: Passenger groups at this port seeking transport
+- boarded_passengers: Passengers already on this ship (deliver them!)
+- port_orders: P2P market orders at this port (filling opportunities)
+- own_orders: This company's orders (do NOT fill these)
+- top_opportunities: Best cross-port trades discovered by profit analyzer — known profitable routes
+- params: Optional tunable hints (not binding rules)
 
-### 7. No Profitable Trade
-If no trade meets the minimum margin, do NOT buy speculatively. First, sail to the destination with the highest passenger revenue. If no passengers, check "top_opportunities" for a reachable buy port with a known profitable route and sail there. If NOTHING is profitable, return action "wait" — do NOT sail empty.
+## Hard Constraints
 
-## Priority: Passengers First
-Passengers are the highest-priority revenue source. Always maximize passenger boarding and prefer destinations with passenger revenue. A port full of high-paying passengers should NEVER be ignored just because there's no cargo margin.
+- Never spend below treasury_floor or exceed max_spend
+- Only sail to ports reachable via routes from current port
+- Only deliver passengers to their exact destination_port_id
+- P2P fills require a warehouse at this port; never fill own_orders
+- Account for taxes on BOTH buy and sell sides of every trade
 
-## NEVER Sail Empty
-If no trade or passengers exist, return action "wait" instead of sailing empty. Check "top_opportunities" for globally profitable routes — sail to the buy port of the best reachable one if stuck. Empty sailing burns upkeep for zero revenue.
+## Goals
 
-## Global Trade Intelligence
-The "top_opportunities" field contains the best cross-port trades discovered by the profit analyzer. Use these to:
-1. Add scoring bonus to destinations that are sell ports of top opportunities
-2. When idle (no local trades/passengers), sail to the buy port of a top opportunity
-3. Never ignore this data — it represents known profitable routes across the entire world
+Maximize total company profit. You have multiple revenue streams — weigh them against each other:
+- Cargo trading: buy low, sell high across ports
+- Passenger delivery: reliable income, influences destination choice
+- P2P order fills: opportunistic profit when you have warehouse access
 
-## Tunable Parameters (from "params" field, use defaults if absent)
-- MinMarginPct: 0.08 (minimum profit margin as fraction of buy price)
-- PassengerWeight: 5.0 (multiplier for passenger revenue in scoring)
-- PassengerDestBonus: 5.0 (bonus for passengers heading to the chosen destination)
-- SpeculativeTradeEnabled: false (if true, allow buying without guaranteed profit)
+Consider: Is it better to sell cargo here or hold for a better port? Should you chase passengers over cargo? Is an empty trip to a profitable buy port worth the upkeep cost? Use route_history and top_opportunities as market intelligence to inform these decisions.
+
+Avoid sailing empty with no cargo, passengers, or plan. If nothing is profitable, wait at port rather than burn upkeep.
 
 ## Response Schema
 Respond with ONLY a valid JSON object:
@@ -237,26 +218,36 @@ Respond with ONLY a valid JSON object:
 
 Do NOT include any text outside the JSON object.`
 
-const fleetSystemPrompt = `You are a trading bot AI managing a fleet in the Tradewinds maritime game.
-Given the current company state as JSON, decide whether to buy ships, sell ships, or buy warehouses.
+const fleetSystemPrompt = `You are a fleet management AI for Tradewinds, a maritime trading game. You make capital decisions: buying/selling ships and warehouses.
 
-## Ship Buying Rules
-- Only buy if treasury can cover: ship_cost * 1.06 (6% tax) + (current_upkeep + new_ship_upkeep) * 24 hours safety margin
-- Strategy preferences:
-  - "arbitrage": Prefer fastest ships (high speed)
-  - "bulk_hauler": Prefer largest ships (high capacity)
-  - "market_maker": Prefer cheapest upkeep ships
-- Only buy at ports with shipyards ("shipyard_ports" in request)
+## Game Mechanics
 
-## Ship Selling (Decommission) Rules
-- If treasury < (total_upkeep * reserve_hours), sell the worst-performing ship to reduce burn
-- Reserve hours scale with fleet size: small fleets (1-3) need 30h, medium (4-10) need 24h, large (10+) need 20h
-- Sell the ship with the worst value ratio (highest upkeep relative to capacity)
-- Include ship IDs to sell in "sell_ships"
+SHIP PURCHASE: Ships are bought at shipyard ports only (listed in "shipyard_ports"). A ~6% purchase tax applies. Each ship type has different capacity, speed, upkeep, and passenger_cap.
 
-## Warehouse Rules
-- Only buy warehouses if: treasury > 10x hourly upkeep, fleet has 3+ ships, and company has fewer than 2 warehouses
-- Prefer ports where multiple ships frequently dock
+SHIP UPKEEP: Every ship drains treasury continuously via its upkeep cost, whether active or idle. More ships = higher burn rate.
+
+SHIP SELLING: Decommissioning a ship recovers some value and eliminates its upkeep.
+
+WAREHOUSES: A warehouse at a port enables P2P market trading there. Warehouses are a capital investment that unlocks a revenue stream.
+
+## Data Dictionary
+
+- strategy_hint: Company strategy — consider when choosing ship types
+- company: Treasury, reputation, total_upkeep (current fleet burn rate)
+- ships: All company ships with status, capacity, speed, upkeep
+- warehouses: Existing warehouses
+- ship_types: Available ship types with stats and base_price
+- price_cache: Market prices (context for warehouse placement)
+- shipyard_ports: Port IDs where ships can be purchased
+
+## Hard Constraints
+
+- Can only buy ships at ports listed in shipyard_ports
+- Must maintain enough treasury after purchase to keep the fleet operational (cover upkeep)
+
+## Goals
+
+Grow the fleet when the company can sustainably support more ships. Shrink it when treasury is stressed and upkeep is draining faster than revenue. Choose ship types that align with the company's strategy_hint. Consider warehouses when the fleet is established and P2P revenue would be valuable.
 
 ## Response Schema
 Respond with ONLY a valid JSON object:
@@ -269,26 +260,32 @@ Respond with ONLY a valid JSON object:
 
 Do NOT include any text outside the JSON object.`
 
-const marketSystemPrompt = `You are a trading bot AI managing P2P market orders in the Tradewinds game.
-Given the current market state as JSON, decide which orders to fill, post, or cancel.
+const marketSystemPrompt = `You are a P2P market management AI for Tradewinds, a maritime trading game. You manage player-to-player market orders.
 
-## Filling Orders
-- Only fill orders at ports where the company has a warehouse (check "warehouses")
-- Filter out orders in "own_orders" to avoid self-filling
-- Sell-side fills: only fill if order price > NPC sell price * 1.10 (10% min margin)
-- Buy-side fills: only fill if NPC buy price > order price * 1.07 (7% min margin)
-- Account for port taxes (tax_rate_bps) in all profit calculations
+## Game Mechanics
 
-## Posting New Orders
-- Maximum 5 active orders at a time (check "own_orders" count)
-- Only post at ports where the company has a warehouse
-- Sell orders: price should be 20%+ above NPC buy price at that port
-- Buy orders: price should be 20%+ below NPC sell price at that port
-- Spread should be attractive enough to get filled but still profitable
+P2P ORDERS: Players post buy and sell orders at ports. Other players can fill these orders. Filling requires a warehouse at that port. You cannot fill your own company's orders.
 
-## Cancelling Orders
-- Cancel orders where NPC prices have moved past your order price (no longer competitive)
-- Cancel orders that have been sitting unfilled for too long
+NPC PRICES: The "price_cache" shows NPC buy/sell prices at ports. Use these as a baseline to evaluate whether P2P orders are profitable to fill or post.
+
+TAXES: Port taxes (tax_rate_bps) apply to transactions. Factor these into profitability.
+
+## Data Dictionary
+
+- company: Treasury and financial state
+- open_orders: All visible P2P orders on the market
+- own_orders: This company's active orders (do NOT fill these; can cancel them)
+- price_cache: NPC prices at ports — your baseline for comparison
+- warehouses: Company warehouses — you can only fill/post at ports where you have one
+
+## Hard Constraints
+
+- Can only fill orders at ports where the company has a warehouse
+- Cannot fill orders listed in own_orders (self-fill)
+
+## Goals
+
+Fill orders that are profitable compared to NPC prices (after taxes). Post orders at spreads that attract fills while remaining profitable. Cancel orders that are no longer competitive due to NPC price changes.
 
 ## Response Schema
 Respond with ONLY a valid JSON object:
@@ -301,24 +298,29 @@ Respond with ONLY a valid JSON object:
 
 Do NOT include any text outside the JSON object.`
 
-const strategySystemPrompt = `You are a trading bot AI evaluating strategy performance in the Tradewinds game.
-Given performance metrics as JSON, recommend parameter adjustments or strategy switches.
+const strategySystemPrompt = `You are a strategy evaluation AI for Tradewinds, a maritime trading game. Given performance metrics, recommend parameter adjustments or strategy switches.
 
-## Strategy Switch Rules
-- Available strategies: "arbitrage", "bulk_hauler", "market_maker"
-- Switch when the best strategy's profit/hour is 1.5x better than the current one
-- Also switch if the current strategy has negative profit (losing money)
-- Only recommend switching to a strategy that is actually performing well
+## Data
 
-## Parameter Tuning
-Valid tunable parameters and their ranges:
-- MinMarginPct: 0.05 - 0.50 (minimum profit margin, default 0.08)
-- PassengerWeight: 0.5 - 10.0 (passenger revenue weight in scoring, default 5.0)
-- PassengerDestBonus: 1.0 - 10.0 (bonus for destination-matching passengers, default 5.0)
-- FleetEvalIntervalSec: 60 - 600 (seconds between fleet evaluations, default 180)
-- MarketEvalIntervalSec: 30 - 300 (seconds between market evaluations, default 60)
+You receive metrics per strategy: strategy_name, company_count, trades_executed, total_profit, total_loss, win_rate, profit_per_hour. You also receive current_params with active parameter values.
 
-Adjust parameters gradually (10-20% at a time). Do not make dramatic changes.
+## Available Strategies
+
+- "arbitrage": Optimize profit per distance traveled
+- "bulk_hauler": Optimize total profit per trip
+- "market_maker": NPC trading plus P2P market orders
+
+## Available Parameters (and valid ranges)
+
+- MinMarginPct: 0.05–0.50 (minimum profit margin as fraction of buy price)
+- PassengerWeight: 0.5–10.0 (how much to value passenger revenue)
+- PassengerDestBonus: 1.0–10.0 (bonus for destination-matching passengers)
+- FleetEvalIntervalSec: 60–600 (seconds between fleet evaluations)
+- MarketEvalIntervalSec: 30–300 (seconds between market evaluations)
+
+## Goals
+
+Improve underperforming strategies by tuning parameters. Recommend switching strategies when one significantly outperforms another or the current strategy is losing money.
 
 ## Response Schema
 Respond with ONLY a valid JSON object:

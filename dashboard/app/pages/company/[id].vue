@@ -108,6 +108,10 @@ function strategyBadge(strategy: string): string {
           <span class="px-2.5 py-1 rounded-full text-sm font-medium" :class="strategyBadge(company.strategy)">
             {{ company.strategy }}
           </span>
+          <template v-if="company.agent_name && company.agent_name !== 'heuristic'">
+            <span class="text-slate-600">|</span>
+            <span class="px-2 py-0.5 rounded text-xs font-mono bg-violet-500/20 text-violet-300">{{ company.agent_name }}</span>
+          </template>
           <span class="text-slate-600">|</span>
           <span class="text-sm text-slate-500 font-mono">{{ company.game_id }}</span>
         </div>
