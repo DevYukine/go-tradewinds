@@ -95,3 +95,38 @@ The heuristic agent enforces several guards to prevent money-losing trades:
 - **Sell-side tax**: profit calculation includes both buy and sell port taxes
 - **No speculative buying**: when no profitable trade exists, ships sail empty toward passenger revenue (not buying speculative cargo)
 - **P2P fill threshold**: 7% minimum margin for filling player orders
+
+## Smart Selling
+
+Instead of dumping all cargo at the current port, the agent evaluates each cargo
+item against reachable destinations. Cargo is held (not sold) when a destination
+offers >20% better net sell price after taxes. Held cargo:
+- Reduces available ship capacity for new buys
+- Adds a scoring bonus to the destination it should be carried to
+- Is automatically sold when the ship arrives at the better port
+
+## Destination Scoring
+
+Trade decisions evaluate **all** reachable destinations, not just the single
+best individual opportunity. For each destination, the agent simulates filling
+the entire ship with profitable goods and computes a composite score:
+
+| Factor | Arbitrage Weight | Bulk Hauler Weight |
+|--------|------------------|--------------------|
+| Total achievable cargo profit | ÷ distance | absolute |
+| Passenger revenue at destination | ÷ distance × passengerWeight | ÷ distance × passengerWeight |
+| Held cargo profit gain | ÷ distance | absolute |
+| Route history bonus (avg past profit) | ÷ distance | absolute |
+
+### Passenger Override
+
+After choosing a destination, the agent checks if passenger revenue alone
+(weighted by `PassengerWeight`) exceeds the expected trade **profit** from the
+buy orders. If so, the destination is overridden to the best passenger port.
+
+## Route Performance History
+
+The `buildTradeRequestWithPassengers` function loads the last 24h of
+`RoutePerformance` records (up to 50) for the company. The heuristic agent
+uses these to compute an average-profit-per-trade bonus for each destination
+from the current port, biasing decisions toward historically profitable routes.

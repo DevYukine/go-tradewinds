@@ -218,6 +218,17 @@ type TradeLogEntry struct {
 	CreatedAt time.Time
 }
 
+// RoutePerformanceEntry is a historical buy→sell route result used to
+// bias destination scoring toward routes that have been profitable.
+type RoutePerformanceEntry struct {
+	FromPortID uuid.UUID
+	ToPortID   uuid.UUID
+	GoodID     uuid.UUID
+	Profit     int
+	Quantity   int
+	CreatedAt  time.Time
+}
+
 // Constraints defines safety boundaries for trading decisions.
 type Constraints struct {
 	TreasuryFloor int64 // Minimum treasury to maintain (2x upkeep).
@@ -237,6 +248,7 @@ type TradeDecisionRequest struct {
 	Routes              []RouteInfo
 	Ports               []PortInfo
 	RecentTrades        []TradeLogEntry
+	RouteHistory        []RoutePerformanceEntry // Recent route performance data for learning.
 	Constraints         Constraints
 	AvailablePassengers []PassengerInfo // Passengers at the current port looking for transport.
 	BoardedPassengers   []PassengerInfo // Passengers already on this ship.

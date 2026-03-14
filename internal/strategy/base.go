@@ -208,6 +208,28 @@ func (b *baseStrategy) buildTradeRequestWithPassengers(ctx context.Context, ship
 
 	req := b.buildTradeRequest(ship, port)
 
+	// Fetch recent route performance history for destination scoring.
+	var routePerfs []db.RoutePerformance
+	if err := b.ctx.DB.Where("company_id = ? AND created_at > ?",
+		b.ctx.State.CompanyDBID(), time.Now().Add(-24*time.Hour)).
+		Order("created_at DESC").Limit(50).Find(&routePerfs).Error; err != nil {
+		b.logger.Debug("failed to fetch route history", zap.Error(err))
+	} else {
+		for _, rp := range routePerfs {
+			fromID, _ := uuid.Parse(rp.FromPortID)
+			toID, _ := uuid.Parse(rp.ToPortID)
+			goodID, _ := uuid.Parse(rp.GoodID)
+			req.RouteHistory = append(req.RouteHistory, agent.RoutePerformanceEntry{
+				FromPortID: fromID,
+				ToPortID:   toID,
+				GoodID:     goodID,
+				Profit:     rp.Profit,
+				Quantity:   rp.Quantity,
+				CreatedAt:  rp.CreatedAt,
+			})
+		}
+	}
+
 	// Fetch P2P orders at this port for fill opportunities.
 	portOrders, err := b.ctx.Client.ListOrders(ctx, api.OrderFilters{
 		PortIDs: []uuid.UUID{port.ID},
