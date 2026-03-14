@@ -427,6 +427,7 @@ func (r *CompanyRunner) dispatchWithRetry(ctx context.Context, ship *ShipState, 
 func (r *CompanyRunner) recordPnLSnapshot() {
 	r.state.mu.RLock()
 	treasury := r.state.Treasury
+	reputation := r.state.Reputation
 	shipCount := len(r.state.Ships)
 
 	// Compute capacity utilization.
@@ -475,6 +476,12 @@ func (r *CompanyRunner) recordPnLSnapshot() {
 	if err := r.gormDB.Create(&snapshot).Error; err != nil {
 		r.logger.Warn("failed to record P&L snapshot", zap.Error(err))
 	}
+
+	// Keep the CompanyRecord in sync so /api/companies returns fresh values.
+	r.gormDB.Model(r.dbRecord).Updates(map[string]any{
+		"treasury":   treasury,
+		"reputation": reputation,
+	})
 }
 
 // swapStrategy replaces the current strategy with a new one (from the optimizer).
