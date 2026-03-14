@@ -20,6 +20,7 @@ func (s *Server) registerHandlers() {
 	api.Get("/companies/:id/logs", s.handleCompanyLogs)
 	api.Get("/companies/:id/decisions", s.handleCompanyDecisions)
 	api.Get("/companies/:id/inventory", s.handleCompanyInventory)
+	api.Get("/companies/:id/passengers", s.handleCompanyPassengers)
 	api.Get("/strategy-metrics", s.handleStrategyMetrics)
 	api.Get("/optimizer/log", s.handleOptimizerLog)
 	api.Get("/prices", s.handlePrices)
@@ -147,6 +148,32 @@ func (s *Server) handleCompanyDecisions(c fiber.Ctx) error {
 	return c.JSON(decisions)
 }
 
+// handleCompanyPassengers returns the passenger boarding log for a company, paginated.
+// Query params: limit (default 50), offset (default 0).
+func (s *Server) handleCompanyPassengers(c fiber.Ctx) error {
+	companyID, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "invalid company id",
+		})
+	}
+
+	limit := queryInt(c, "limit", 50)
+	offset := queryInt(c, "offset", 0)
+
+	var passengers []db.PassengerLog
+	if err := s.db.Where("company_id = ?", companyID).
+		Order("created_at DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&passengers).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "failed to fetch passenger logs",
+		})
+	}
+	return c.JSON(passengers)
+}
+
 // handleCompanyInventory returns the current in-memory state for a company,
 // including full ship details (location, arrival time, cargo) and warehouses.
 func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
@@ -182,6 +209,7 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 		ShipName     string      `json:"ship_name"`
 		ShipType     string      `json:"ship_type"`
 		Capacity     int         `json:"capacity"`
+		PassengerCap int         `json:"passenger_cap"`
 		Speed        int         `json:"speed"`
 		Upkeep       int         `json:"upkeep"`
 		Status       string      `json:"status"`
@@ -241,6 +269,7 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 			if st := world.GetShipType(ss.Ship.ShipTypeID); st != nil {
 				sd.ShipType = st.Name
 				sd.Capacity = st.Capacity
+				sd.PassengerCap = st.Passengers
 				sd.Speed = st.Speed
 				sd.Upkeep = st.Upkeep
 			}
@@ -488,12 +517,13 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 		Distance     float64 `json:"distance"`
 	}
 	type shipTypeInfo struct {
-		ID        string `json:"id"`
-		Name      string `json:"name"`
-		Capacity  int    `json:"capacity"`
-		Speed     int    `json:"speed"`
-		Upkeep    int    `json:"upkeep"`
-		BasePrice int    `json:"base_price"`
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		Capacity     int    `json:"capacity"`
+		PassengerCap int    `json:"passenger_cap"`
+		Speed        int    `json:"speed"`
+		Upkeep       int    `json:"upkeep"`
+		BasePrice    int    `json:"base_price"`
 	}
 
 	// Build shipyard port set for quick lookup.
@@ -551,12 +581,13 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 	shipTypes := make([]shipTypeInfo, len(world.ShipTypes))
 	for i, st := range world.ShipTypes {
 		shipTypes[i] = shipTypeInfo{
-			ID:        st.ID.String(),
-			Name:      st.Name,
-			Capacity:  st.Capacity,
-			Speed:     st.Speed,
-			Upkeep:    st.Upkeep,
-			BasePrice: st.BasePrice,
+			ID:           st.ID.String(),
+			Name:         st.Name,
+			Capacity:     st.Capacity,
+			PassengerCap: st.Passengers,
+			Speed:        st.Speed,
+			Upkeep:       st.Upkeep,
+			BasePrice:    st.BasePrice,
 		}
 	}
 

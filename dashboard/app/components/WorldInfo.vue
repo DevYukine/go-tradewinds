@@ -166,6 +166,10 @@ function formatCurrency(value: number): string {
                 <span class="text-slate-500">Base Price</span>
                 <div class="font-mono text-slate-300">{{ formatCurrency(st.base_price) }}</div>
               </div>
+              <div v-if="st.passenger_cap > 0" class="col-span-2">
+                <span class="text-slate-500">Passengers</span>
+                <div class="font-mono text-purple-400">{{ st.passenger_cap }}</div>
+              </div>
             </div>
           </div>
         </div>

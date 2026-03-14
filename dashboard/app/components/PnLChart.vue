@@ -16,6 +16,7 @@ const pnlData = computed(() =>
   props.history.map(p => ({
     revenue: p.total_rev,
     costs: -p.total_costs,
+    passenger_rev: p.passenger_rev,
     net_pnl: p.net_pnl,
   }))
 )
@@ -26,6 +27,7 @@ const treasuryCategories = {
 
 const pnlCategories = {
   revenue: { name: 'Revenue', color: '#22c55e' },
+  passenger_rev: { name: 'Passenger Rev', color: '#a855f7' },
   costs: { name: 'Costs', color: '#f43f5e' },
   net_pnl: { name: 'Net P&L', color: '#f59e0b' },
 }

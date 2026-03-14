@@ -176,6 +176,10 @@ func (b *baseStrategy) boardPassengers(ctx context.Context, ship *bot.ShipState,
 			continue
 		}
 
+		originName := passenger.OriginPortID.String()
+		if p := b.ctx.World.GetPort(passenger.OriginPortID); p != nil {
+			originName = p.Name
+		}
 		destName := passenger.DestinationPortID.String()
 		if p := b.ctx.World.GetPort(passenger.DestinationPortID); p != nil {
 			destName = p.Name
@@ -187,6 +191,25 @@ func (b *baseStrategy) boardPassengers(ctx context.Context, ship *bot.ShipState,
 			zap.Int("bid", passenger.Bid),
 			zap.String("destination", destName),
 		)
+
+		// Log passenger boarding to database.
+		plog := db.PassengerLog{
+			CompanyID:           b.ctx.State.CompanyDBID(),
+			PassengerID:         pid.String(),
+			Count:               passenger.Count,
+			Bid:                 passenger.Bid,
+			OriginPortID:        passenger.OriginPortID.String(),
+			OriginPortName:      originName,
+			DestinationPortID:   passenger.DestinationPortID.String(),
+			DestinationPortName: destName,
+			ShipID:              ship.Ship.ID.String(),
+			ShipName:            ship.Ship.Name,
+			Strategy:            b.name,
+			AgentName:           b.ctx.Agent.Name(),
+		}
+		if err := b.ctx.DB.Create(&plog).Error; err != nil {
+			b.logger.Warn("failed to log passenger boarding", zap.Error(err))
+		}
 	}
 }
 

@@ -16,6 +16,7 @@ export interface PnLPoint {
   treasury: number
   total_costs: number
   total_rev: number
+  passenger_rev: number
   net_pnl: number
   ship_count: number
   created_at: string
@@ -95,6 +96,7 @@ export interface ShipDetail {
   ship_name: string
   ship_type: string
   capacity: number
+  passenger_cap: number
   speed: number
   upkeep: number
   status: string
@@ -179,6 +181,7 @@ export interface ShipTypeInfo {
   id: string
   name: string
   capacity: number
+  passenger_cap: number
   speed: number
   upkeep: number
   base_price: number
@@ -189,6 +192,23 @@ export interface WorldData {
   goods: GoodInfo[]
   routes: RouteInfo[]
   ship_types: ShipTypeInfo[]
+}
+
+export interface PassengerLog {
+  id: number
+  company_id: number
+  passenger_id: string
+  count: number
+  bid: number
+  origin_port_id: string
+  origin_port_name: string
+  destination_port_id: string
+  destination_port_name: string
+  ship_id: string
+  ship_name: string
+  strategy: string
+  agent_name: string
+  created_at: string
 }
 
 export interface PriceEntry {

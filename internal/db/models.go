@@ -42,9 +42,10 @@ type PnLSnapshot struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
 	CompanyID  uint      `gorm:"index:idx_pnl_company_time;not null" json:"company_id"`
 	Treasury   int64     `gorm:"not null" json:"treasury"`
-	TotalCosts int64     `json:"total_costs"`
-	TotalRev   int64     `json:"total_rev"`
-	NetPnL     int64     `json:"net_pnl"`
+	TotalCosts   int64     `json:"total_costs"`
+	TotalRev     int64     `json:"total_rev"`
+	PassengerRev int64     `json:"passenger_rev"`
+	NetPnL       int64     `json:"net_pnl"`
 	ShipCount       int       `json:"ship_count"`
 	AvgCapacityUtil float64   `json:"avg_capacity_util"`
 	CreatedAt       time.Time `gorm:"index:idx_pnl_company_time;not null" json:"created_at"`
@@ -129,6 +130,24 @@ type RoutePerformance struct {
 	CreatedAt  time.Time `gorm:"index:idx_route_company_time;not null" json:"created_at"`
 }
 
+// PassengerLog records every passenger boarding executed by the bot.
+type PassengerLog struct {
+	ID                  uint      `gorm:"primaryKey" json:"id"`
+	CompanyID           uint      `gorm:"index:idx_passenger_company_time;not null" json:"company_id"`
+	PassengerID         string    `gorm:"not null" json:"passenger_id"`
+	Count               int       `gorm:"not null" json:"count"`
+	Bid                 int       `gorm:"not null" json:"bid"`
+	OriginPortID        string    `gorm:"not null" json:"origin_port_id"`
+	OriginPortName      string    `gorm:"not null" json:"origin_port_name"`
+	DestinationPortID   string    `gorm:"not null" json:"destination_port_id"`
+	DestinationPortName string    `gorm:"not null" json:"destination_port_name"`
+	ShipID              string    `gorm:"not null" json:"ship_id"`
+	ShipName            string    `gorm:"not null" json:"ship_name"`
+	Strategy            string    `gorm:"not null" json:"strategy"`
+	AgentName           string    `json:"agent_name"`
+	CreatedAt           time.Time `gorm:"index:idx_passenger_company_time;not null" json:"created_at"`
+}
+
 // AllModels returns all GORM models for auto-migration.
 func AllModels() []any {
 	return []any{
@@ -141,5 +160,6 @@ func AllModels() []any {
 		&PriceObservation{},
 		&AgentDecisionLog{},
 		&RoutePerformance{},
+		&PassengerLog{},
 	}
 }

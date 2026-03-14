@@ -455,12 +455,19 @@ func (r *CompanyRunner) recordPnLSnapshot() {
 		Where("company_id = ? AND action = ?", r.dbRecord.ID, "buy").
 		Select("COALESCE(SUM(total_price), 0)").Scan(&totalCosts)
 
+	// Compute cumulative passenger revenue.
+	var passengerRev int64
+	r.gormDB.Model(&db.PassengerLog{}).
+		Where("company_id = ?", r.dbRecord.ID).
+		Select("COALESCE(SUM(bid), 0)").Scan(&passengerRev)
+
 	snapshot := db.PnLSnapshot{
 		CompanyID:       r.dbRecord.ID,
 		Treasury:        treasury,
-		TotalRev:        totalRev,
+		TotalRev:        totalRev + passengerRev,
 		TotalCosts:      totalCosts,
-		NetPnL:          totalRev - totalCosts,
+		PassengerRev:    passengerRev,
+		NetPnL:          totalRev + passengerRev - totalCosts,
 		ShipCount:       shipCount,
 		AvgCapacityUtil: avgCapUtil,
 	}

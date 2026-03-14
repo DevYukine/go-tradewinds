@@ -201,7 +201,7 @@ const totalCapacity = computed(() =>
           </div>
 
           <!-- Row 3: Ship stats (always visible, with labels) -->
-          <div class="grid grid-cols-4 gap-2 mb-2">
+          <div class="grid gap-2 mb-2" :class="ship.passenger_cap > 0 ? 'grid-cols-5' : 'grid-cols-4'">
             <div class="bg-slate-800/50 rounded px-2 py-1">
               <div class="text-[10px] text-slate-500 uppercase">Capacity</div>
               <div class="text-xs font-mono text-slate-300">{{ ship.capacity }}</div>
@@ -218,6 +218,12 @@ const totalCapacity = computed(() =>
               <div class="text-[10px] text-slate-500 uppercase">Cargo</div>
               <div class="text-xs font-mono" :class="ship.cargo_total > 0 ? 'text-violet-400' : 'text-slate-500'">
                 {{ ship.cargo_total }} / {{ ship.capacity }}
+              </div>
+            </div>
+            <div v-if="ship.passenger_cap > 0" class="bg-slate-800/50 rounded px-2 py-1">
+              <div class="text-[10px] text-slate-500 uppercase">Passengers</div>
+              <div class="text-xs font-mono text-purple-400">
+                {{ ship.passenger_cap }}
               </div>
             </div>
           </div>

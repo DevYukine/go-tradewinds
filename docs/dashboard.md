@@ -17,6 +17,7 @@ Fiber web server on `API_PORT` (default 3002).
 | GET | `/api/companies` | All company records |
 | GET | `/api/companies/:id/pnl` | P&L time series (`?since=` timestamp) |
 | GET | `/api/companies/:id/trades` | Trade log (`?limit=&offset=`) |
+| GET | `/api/companies/:id/passengers` | Passenger boarding log (`?limit=&offset=`) |
 | GET | `/api/companies/:id/logs` | Company logs (`?limit=&offset=`) |
 | GET | `/api/companies/:id/decisions` | Agent decision logs (latest 20) |
 | GET | `/api/companies/:id/inventory` | Live ship cargo + warehouse state |
