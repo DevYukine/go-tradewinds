@@ -2,10 +2,10 @@
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div class="space-y-8">
     <div>
-      <h2 class="text-2xl font-bold text-slate-100">Market</h2>
-      <p class="text-sm text-slate-500 mt-1">Prices, strategies, and optimizer performance</p>
+      <h2 class="text-3xl font-bold text-slate-100">Market</h2>
+      <p class="text-sm text-slate-500 mt-1.5">Prices, strategies, and optimizer performance</p>
     </div>
 
     <!-- Global Win/Loss (full width) -->
@@ -15,7 +15,7 @@
     <PriceTable />
 
     <!-- Strategy + Optimizer (side by side) -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
       <StrategyComparison />
       <OptimizerLog />
     </div>
