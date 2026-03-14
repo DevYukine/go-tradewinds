@@ -38,10 +38,25 @@ Periodic treasury snapshots.
 |-------|------|-------|
 | CompanyID | uint | FK |
 | Treasury | int64 | Current balance |
-| TotalCosts, TotalRev | int64 | Cumulative |
+| TotalCosts, TotalRev | int64 | Cumulative (TotalRev includes passenger revenue) |
+| PassengerRev | int64 | Cumulative passenger bid revenue |
 | NetPnL | int64 | Rev - Costs |
 | ShipCount | int | Fleet size |
 | AvgCapacityUtil | float64 | cargo/capacity ratio |
+
+### PassengerLog
+Every passenger boarding executed.
+| Field | Type | Notes |
+|-------|------|-------|
+| CompanyID | uint | FK to CompanyRecord |
+| PassengerID | string | Game-assigned passenger group ID |
+| Count | int | Number of passengers |
+| Bid | int | Revenue earned |
+| OriginPortID, OriginPortName | string | Boarding port |
+| DestinationPortID, DestinationPortName | string | Destination port |
+| ShipID, ShipName | string | Carrying ship |
+| Strategy, AgentName | string | Decision context |
+| Indexed | company_id + created_at |
 
 ### RoutePerformance
 Completed buy→sell cycle profitability.

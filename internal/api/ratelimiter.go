@@ -77,6 +77,65 @@ func NewRateLimiter(maxPerMinute int, logger *zap.Logger) *RateLimiter {
 	}
 }
 
+// RestoreTimestamps populates the sliding window from previously persisted
+// timestamps (e.g., loaded from Redis). This allows the rate limiter to
+// continue where it left off after a restart.
+func (rl *RateLimiter) RestoreTimestamps(timestamps []time.Time) {
+	if len(timestamps) == 0 {
+		return
+	}
+
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-windowDuration)
+
+	// Only restore timestamps still within the sliding window.
+	restored := 0
+	for _, ts := range timestamps {
+		if ts.After(cutoff) && restored < rl.maxPerMinute {
+			rl.timestamps[rl.head] = ts
+			rl.head = (rl.head + 1) % len(rl.timestamps)
+			rl.count++
+			restored++
+		}
+	}
+
+	if restored > 0 {
+		// Set lastRequest to the most recent restored timestamp to maintain spacing.
+		rl.lastRequest = timestamps[len(timestamps)-1]
+		// Clear the startup backoff since we have real data now.
+		rl.backoffUntil = time.Time{}
+	}
+
+	rl.logger.Info("rate limiter state restored",
+		zap.Int("restored", restored),
+		zap.Int("provided", len(timestamps)),
+		zap.Int("count", rl.count),
+	)
+}
+
+// SnapshotTimestamps returns a copy of all valid (non-expired) timestamps in
+// the sliding window. Used for persisting state to Redis.
+func (rl *RateLimiter) SnapshotTimestamps() []time.Time {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	rl.evictExpired(time.Now())
+
+	if rl.count == 0 {
+		return nil
+	}
+
+	result := make([]time.Time, 0, rl.count)
+	for i := 0; i < rl.count; i++ {
+		idx := (rl.head - rl.count + i + len(rl.timestamps)) % len(rl.timestamps)
+		result = append(result, rl.timestamps[idx])
+	}
+	return result
+}
+
 // Acquire blocks until a request slot is available for the given priority,
 // or the context is cancelled. Uses a true sliding window to prevent
 // burst-at-boundary problems.

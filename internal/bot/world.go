@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/DevYukine/go-tradewinds/internal/agent"
 	"github.com/DevYukine/go-tradewinds/internal/api"
+	"github.com/DevYukine/go-tradewinds/internal/cache"
 )
 
 // WorldCache stores static world data (ports, goods, routes, ship types)
@@ -33,26 +35,37 @@ type WorldCache struct {
 }
 
 // LoadWorldData fetches all static world data from the API and builds indexes.
-func LoadWorldData(ctx context.Context, client *api.Client, logger *zap.Logger) (*WorldCache, error) {
+// Uses Redis cache for world data to avoid redundant API calls on restart.
+func LoadWorldData(ctx context.Context, client *api.Client, redis *cache.RedisCache, logger *zap.Logger) (*WorldCache, error) {
 	log := logger.Named("world_cache")
 	log.Info("loading world data")
 
-	ports, err := client.ListPorts(ctx, api.PortFilters{})
+	const worldCacheTTL = 30 * time.Minute
+
+	ports, err := cachedFetch(ctx, redis, "world:ports", worldCacheTTL, func() ([]api.Port, error) {
+		return client.ListPorts(ctx, api.PortFilters{})
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	goods, err := client.ListGoods(ctx, "")
+	goods, err := cachedFetch(ctx, redis, "world:goods", worldCacheTTL, func() ([]api.Good, error) {
+		return client.ListGoods(ctx, "")
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	routes, err := client.ListRoutes(ctx, api.RouteFilters{})
+	routes, err := cachedFetch(ctx, redis, "world:routes", worldCacheTTL, func() ([]api.Route, error) {
+		return client.ListRoutes(ctx, api.RouteFilters{})
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	shipTypes, err := client.ListShipTypes(ctx)
+	shipTypes, err := cachedFetch(ctx, redis, "world:ship_types", worldCacheTTL, func() ([]api.ShipType, error) {
+		return client.ListShipTypes(ctx)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -85,20 +98,28 @@ func LoadWorldData(ctx context.Context, client *api.Client, logger *zap.Logger) 
 		wc.routesByPorts[[2]uuid.UUID{routes[i].FromID, routes[i].ToID}] = &routes[i]
 	}
 
-	// Discover which ports have shipyards. Not all ports do.
-	for _, port := range ports {
-		shipyard, err := client.GetPortShipyard(ctx, port.ID)
-		if err != nil {
-			log.Debug("error checking shipyard at port",
-				zap.String("port", port.Name),
-				zap.Error(err),
-			)
-			continue
+	// Discover which ports have shipyards, using Redis cache.
+	shipyardPortIDs, err := cachedFetch(ctx, redis, "world:shipyard_ports", worldCacheTTL, func() ([]uuid.UUID, error) {
+		var ids []uuid.UUID
+		for _, port := range ports {
+			shipyard, err := client.GetPortShipyard(ctx, port.ID)
+			if err != nil {
+				log.Debug("error checking shipyard at port",
+					zap.String("port", port.Name),
+					zap.Error(err),
+				)
+				continue
+			}
+			if shipyard != nil {
+				ids = append(ids, port.ID)
+			}
 		}
-		if shipyard != nil {
-			wc.ShipyardPorts = append(wc.ShipyardPorts, port.ID)
-		}
+		return ids, nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	wc.ShipyardPorts = shipyardPortIDs
 
 	log.Info("world data loaded",
 		zap.Int("ports", len(ports)),
@@ -109,6 +130,34 @@ func LoadWorldData(ctx context.Context, client *api.Client, logger *zap.Logger) 
 	)
 
 	return wc, nil
+}
+
+// cachedFetch tries to load data from Redis cache first, falling back to the
+// fetch function on cache miss. Results are cached in Redis with the given TTL.
+func cachedFetch[T any](ctx context.Context, rc *cache.RedisCache, key string, ttl time.Duration, fetch func() (T, error)) (T, error) {
+	var zero T
+
+	// Try cache first.
+	if data := rc.CacheGet(ctx, key); data != nil {
+		var result T
+		if err := json.Unmarshal(data, &result); err == nil {
+			return result, nil
+		}
+	}
+
+	// Cache miss — fetch from API.
+	result, err := fetch()
+	if err != nil {
+		return zero, err
+	}
+
+	// Store in cache.
+	data, err := json.Marshal(result)
+	if err == nil {
+		rc.CacheSet(ctx, key, data, ttl)
+	}
+
+	return result, nil
 }
 
 // GetPort returns a port by ID, or nil if not found.
@@ -198,24 +247,63 @@ func (wc *WorldCache) ToAgentShipTypes() []agent.ShipTypeInfo {
 
 // PriceCache stores observed NPC prices across all ports and goods.
 // Shared across all companies; updated by the price scanner goroutine.
+// Backed by Redis for persistence across restarts.
 type PriceCache struct {
 	prices map[string]agent.PricePoint // key: "portID:goodID"
+	redis  *cache.RedisCache
 	mu     sync.RWMutex
 }
 
-// NewPriceCache creates an empty price cache.
-func NewPriceCache() *PriceCache {
-	return &PriceCache{
+// NewPriceCache creates a price cache backed by Redis.
+// Restores cached prices from Redis on creation.
+func NewPriceCache(redis *cache.RedisCache) *PriceCache {
+	pc := &PriceCache{
 		prices: make(map[string]agent.PricePoint),
+		redis:  redis,
 	}
+
+	// Restore prices from Redis.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	entries := redis.LoadPriceCache(ctx)
+	for key, entry := range entries {
+		// Parse portID and goodID from the key.
+		parts := splitPriceCacheKey(key)
+		if len(parts) != 2 {
+			continue
+		}
+		portID, err1 := uuid.Parse(parts[0])
+		goodID, err2 := uuid.Parse(parts[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+
+		pc.prices[key] = agent.PricePoint{
+			PortID:     portID,
+			GoodID:     goodID,
+			BuyPrice:   entry.BuyPrice,
+			SellPrice:  entry.SellPrice,
+			ObservedAt: time.UnixMilli(entry.ObservedAt),
+		}
+	}
+
+	return pc
 }
 
-// Set records a price observation.
+// splitPriceCacheKey splits "portID:goodID" into its two UUID strings.
+func splitPriceCacheKey(key string) []string {
+	// UUIDs are 36 chars. Key format is "uuid:uuid" = 73 chars.
+	if len(key) != 73 || key[36] != ':' {
+		return nil
+	}
+	return []string{key[:36], key[37:]}
+}
+
+// Set records a price observation and persists it to Redis.
 func (pc *PriceCache) Set(portID, goodID uuid.UUID, buyPrice, sellPrice int) {
 	key := portID.String() + ":" + goodID.String()
 	pc.mu.Lock()
-	defer pc.mu.Unlock()
-
 	pc.prices[key] = agent.PricePoint{
 		PortID:     portID,
 		GoodID:     goodID,
@@ -223,6 +311,10 @@ func (pc *PriceCache) Set(portID, goodID uuid.UUID, buyPrice, sellPrice int) {
 		SellPrice:  sellPrice,
 		ObservedAt: time.Now(),
 	}
+	pc.mu.Unlock()
+
+	// Persist to Redis asynchronously.
+	go pc.redis.SavePriceEntry(context.Background(), key, buyPrice, sellPrice)
 }
 
 // Get returns the latest price for a port/good pair, or false if not observed.

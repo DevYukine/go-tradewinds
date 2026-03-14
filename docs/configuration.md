@@ -20,6 +20,13 @@ All configuration via environment variables. Loaded from `.env` file if present.
 | `DB_NAME` | `tradewinds` | Database name |
 | `DB_SSLMODE` | `disable` | SSL mode |
 
+### Redis
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REDIS_URL` | — | **Required.** Redis connection URL (e.g., `redis://localhost:6379/0`) |
+
+Persists rate limiter state, price cache, scanner position, and world data cache across restarts.
+
 ### Bot
 | Variable | Default | Description |
 |----------|---------|-------------|

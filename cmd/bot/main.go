@@ -9,6 +9,7 @@ import (
 
 	"github.com/DevYukine/go-tradewinds/internal/agent"
 	"github.com/DevYukine/go-tradewinds/internal/bot"
+	"github.com/DevYukine/go-tradewinds/internal/cache"
 	"github.com/DevYukine/go-tradewinds/internal/config"
 	"github.com/DevYukine/go-tradewinds/internal/db"
 	"github.com/DevYukine/go-tradewinds/internal/logging"
@@ -28,6 +29,7 @@ func main() {
 		config.Module,    // Provides *Config
 		logging.Module,   // Provides *zap.Logger
 		db.Module,        // Provides *gorm.DB
+		cache.Module,     // Provides *RedisCache for state persistence
 		agent.Module,     // Provides agent.Agent
 		strategy.Module,  // Provides bot.Registry
 		bot.Module,       // Provides *Manager, starts company runners

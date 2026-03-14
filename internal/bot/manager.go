@@ -14,6 +14,7 @@ import (
 
 	"github.com/DevYukine/go-tradewinds/internal/agent"
 	"github.com/DevYukine/go-tradewinds/internal/api"
+	"github.com/DevYukine/go-tradewinds/internal/cache"
 	"github.com/DevYukine/go-tradewinds/internal/config"
 	"github.com/DevYukine/go-tradewinds/internal/db"
 )
@@ -29,6 +30,7 @@ var Module = fx.Module("bot",
 type Manager struct {
 	cfg         *config.Config
 	gormDB      *gorm.DB
+	redis       *cache.RedisCache
 	logger      *zap.Logger
 	baseClient  *api.Client
 	rateLimiter *api.RateLimiter
@@ -46,20 +48,31 @@ type Manager struct {
 func NewManager(
 	cfg *config.Config,
 	gormDB *gorm.DB,
+	redis *cache.RedisCache,
 	logger *zap.Logger,
 	agnt agent.Agent,
 	registry Registry,
 ) *Manager {
 	rateLimiter := api.NewRateLimiter(cfg.RateLimitPerMinute, logger)
+
+	// Restore rate limiter state from Redis so we don't exceed limits after restart.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	timestamps := redis.LoadRateLimitTimestamps(ctx)
+	cancel()
+	if len(timestamps) > 0 {
+		rateLimiter.RestoreTimestamps(timestamps)
+	}
+
 	baseClient := api.NewClient(cfg.BaseURL, rateLimiter, logger)
 
 	return &Manager{
 		cfg:         cfg,
 		gormDB:      gormDB,
+		redis:       redis,
 		logger:      logger.Named("manager"),
 		baseClient:  baseClient,
 		rateLimiter: rateLimiter,
-		priceCache:  NewPriceCache(),
+		priceCache:  NewPriceCache(redis),
 		agent:       agnt,
 		registry:    registry,
 		scaler:      NewScaler(rateLimiter, logger),
@@ -75,9 +88,17 @@ func RegisterManager(lc fx.Lifecycle, m *Manager) {
 		OnStart: func(startCtx context.Context) error {
 			return m.Start(startCtx, ctx)
 		},
-		OnStop: func(_ context.Context) error {
+		OnStop: func(stopCtx context.Context) error {
 			cancel()
 			m.wg.Wait()
+
+			// Persist rate limiter state to Redis for seamless restart.
+			timestamps := m.rateLimiter.SnapshotTimestamps()
+			m.redis.SaveRateLimitTimestamps(stopCtx, timestamps)
+			m.logger.Info("rate limiter state saved to Redis",
+				zap.Int("timestamps", len(timestamps)),
+			)
+
 			m.logger.Info("all company runners stopped")
 			return nil
 		},
@@ -108,8 +129,8 @@ func (m *Manager) Start(startCtx context.Context, runCtx context.Context) error 
 		zap.String("id", player.ID.String()),
 	)
 
-	// 3. Load world data.
-	worldData, err := LoadWorldData(startCtx, m.baseClient, m.logger)
+	// 3. Load world data (uses Redis cache for fast restart).
+	worldData, err := LoadWorldData(startCtx, m.baseClient, m.redis, m.logger)
 	if err != nil {
 		return fmt.Errorf("failed to load world data: %w", err)
 	}
@@ -196,6 +217,9 @@ func (m *Manager) Start(startCtx context.Context, runCtx context.Context) error 
 
 	// 7. Start the shared price scanner now that world data is loaded.
 	m.startScanner(runCtx)
+
+	// 8. Start periodic rate limiter state persistence.
+	m.startRateLimitPersister(runCtx)
 
 	m.logger.Info("bot manager started",
 		zap.Int("total_companies", len(m.companies)),
@@ -382,6 +406,7 @@ func (m *Manager) startScanner(ctx context.Context) {
 		m.worldData,
 		m.priceCache,
 		m.rateLimiter,
+		m.redis,
 		m.gormDB,
 		m.logger,
 	)
@@ -393,6 +418,27 @@ func (m *Manager) startScanner(ctx context.Context) {
 	}()
 
 	m.logger.Info("price scanner started")
+}
+
+// startRateLimitPersister periodically saves rate limiter state to Redis
+// so that a restart within the 60s window doesn't lose budget tracking.
+func (m *Manager) startRateLimitPersister(ctx context.Context) {
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				timestamps := m.rateLimiter.SnapshotTimestamps()
+				m.redis.SaveRateLimitTimestamps(ctx, timestamps)
+			}
+		}
+	}()
 }
 
 // GetRunner returns a company runner by game ID.

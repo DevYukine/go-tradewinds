@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/DevYukine/go-tradewinds/internal/api"
+	"github.com/DevYukine/go-tradewinds/internal/cache"
 	"github.com/DevYukine/go-tradewinds/internal/db"
 	"gorm.io/gorm"
 )
@@ -27,6 +28,7 @@ type Scanner struct {
 	world      *WorldCache
 	priceCache *PriceCache
 	limiter    *api.RateLimiter
+	redis      *cache.RedisCache
 	gormDB     *gorm.DB
 	logger     *zap.Logger
 }
@@ -37,6 +39,7 @@ func newScanner(
 	world *WorldCache,
 	priceCache *PriceCache,
 	limiter *api.RateLimiter,
+	redis *cache.RedisCache,
 	gormDB *gorm.DB,
 	logger *zap.Logger,
 ) *Scanner {
@@ -45,6 +48,7 @@ func newScanner(
 		world:      world,
 		priceCache: priceCache,
 		limiter:    limiter,
+		redis:      redis,
 		gormDB:     gormDB,
 		logger:     logger.Named("scanner"),
 	}
@@ -57,7 +61,9 @@ func (s *Scanner) Run(ctx context.Context) {
 		zap.Int("goods", len(s.world.Goods)),
 	)
 
-	portIdx := 0
+	// Restore scanner position from Redis.
+	portIdx := s.redis.LoadScannerIndex(ctx)
+
 	for {
 		if err := ctx.Err(); err != nil {
 			s.logger.Info("price scanner stopped")
@@ -67,6 +73,9 @@ func (s *Scanner) Run(ctx context.Context) {
 		port := s.world.Ports[portIdx%len(s.world.Ports)]
 		s.scanPort(ctx, &port)
 		portIdx++
+
+		// Persist scanner position to Redis.
+		s.redis.SaveScannerIndex(ctx, portIdx)
 
 		// Adapt scan interval based on rate limit utilization.
 		interval := s.adaptiveInterval()

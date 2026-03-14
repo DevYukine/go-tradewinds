@@ -19,6 +19,7 @@ var Module = fx.Module("config",
 // Config holds all application configuration loaded from environment variables.
 type Config struct {
 	DB                 DBConfig
+	RedisURL           string // Optional: "redis://localhost:6379/0" or "" for no Redis
 	BaseURL            string
 	APIPort            int
 	Env                string // "development" or "production"
@@ -80,6 +81,7 @@ func Load() (*Config, error) {
 			Name:     envOrDefault("DB_NAME", "tradewinds"),
 			SSLMode:  envOrDefault("DB_SSLMODE", "disable"),
 		},
+		RedisURL:           os.Getenv("REDIS_URL"),
 		BaseURL:            envOrDefault("BOT_BASE_URL", "https://tradewinds.fly.dev"),
 		APIPort:            envIntOrDefault("API_PORT", 3002),
 		Env:                envOrDefault("ENV", "development"),
@@ -128,11 +130,16 @@ func (c *Config) TotalCompanies() int {
 
 // ToJSON returns a redacted JSON representation for logging.
 func (c *Config) ToJSON() string {
+	redisStatus := "disabled"
+	if c.RedisURL != "" {
+		redisStatus = "enabled"
+	}
 	redacted := struct {
 		BaseURL            string         `json:"base_url"`
 		APIPort            int            `json:"api_port"`
 		DBHost             string         `json:"db_host"`
 		DBName             string         `json:"db_name"`
+		Redis              string         `json:"redis"`
 		PlayerEmail        string         `json:"player_email"`
 		RateLimitPerMinute int            `json:"rate_limit_per_minute"`
 		AgentType          string         `json:"agent_type"`
@@ -143,6 +150,7 @@ func (c *Config) ToJSON() string {
 		APIPort:            c.APIPort,
 		DBHost:             c.DB.Host,
 		DBName:             c.DB.Name,
+		Redis:              redisStatus,
 		PlayerEmail:        c.PlayerEmail,
 		RateLimitPerMinute: c.RateLimitPerMinute,
 		AgentType:          c.Agent.Type,
