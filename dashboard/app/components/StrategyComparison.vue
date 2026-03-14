@@ -1,26 +1,5 @@
 <script setup lang="ts">
-import type { StrategyMetric } from '~/types'
-
-const config = useRuntimeConfig()
-const apiBase = config.public.apiBase
-
-const metrics = ref<StrategyMetric[]>([])
-const loading = ref(false)
-
-async function fetchMetrics() {
-  loading.value = true
-  try {
-    metrics.value = await $fetch<StrategyMetric[]>(`${apiBase}/api/strategy-metrics`)
-  } catch (e) {
-    console.error('Failed to fetch strategy metrics:', e)
-  } finally {
-    loading.value = false
-  }
-}
-
-onMounted(() => {
-  fetchMetrics()
-})
+const { metrics, loading, fetchMetrics } = useStrategyMetrics()
 
 const chartData = computed(() => ({
   labels: metrics.value.map((m) => m.strategy_name),

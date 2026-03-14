@@ -4,6 +4,7 @@ const props = defineProps<{
 }>()
 
 const { inventory, loading, fetchInventory, startPolling, stopPolling } = useInventory()
+const { now } = useNow()
 
 watch(
   () => props.companyId,
@@ -20,12 +21,21 @@ function formatCurrency(value: number): string {
 }
 
 function timeUntilArrival(arrivingAt: string): string {
-  const diff = new Date(arrivingAt).getTime() - Date.now()
+  const diff = new Date(arrivingAt).getTime() - now.value
   if (diff <= 0) return 'Arriving...'
   const mins = Math.floor(diff / 60000)
   const secs = Math.floor((diff % 60000) / 1000)
   if (mins > 0) return `${mins}m ${secs}s`
   return `${secs}s`
+}
+
+function arrivalProgress(arrivingAt: string, distance?: number): number {
+  if (!distance || !arrivingAt) return 0
+  const arriveTime = new Date(arrivingAt).getTime()
+  const totalMs = distance * 60000
+  const departTime = arriveTime - totalMs
+  const elapsed = now.value - departTime
+  return Math.min(100, Math.max(0, (elapsed / totalMs) * 100))
 }
 
 function statusIcon(status: string): string {
@@ -115,88 +125,92 @@ const totalCapacity = computed(() =>
       </div>
 
       <!-- Ships -->
-      <div v-if="inventory.ships.length > 0" class="space-y-1.5 max-h-96 overflow-y-auto">
+      <div v-if="inventory.ships.length > 0" class="space-y-2 max-h-[32rem] overflow-y-auto">
         <div
           v-for="ship in inventory.ships"
           :key="ship.ship_id"
           class="bg-slate-900/50 rounded-lg border border-slate-700/50 p-3"
         >
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2 min-w-0">
+          <!-- Row 1: Name + Type badge -->
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center gap-2">
               <Icon
                 :name="statusIcon(ship.status)"
                 :class="statusClasses(ship.status)"
                 class="flex-shrink-0"
               />
-              <div class="min-w-0">
-                <div class="flex items-center gap-2">
-                  <span class="text-sm font-medium text-slate-200 truncate">{{ ship.ship_name }}</span>
-                  <span
-                    v-if="ship.ship_type"
-                    class="px-1.5 py-0.5 rounded text-[10px] font-medium"
-                    :class="shipTypeColor(ship.ship_type)"
-                  >
-                    {{ ship.ship_type }}
-                  </span>
-                </div>
-                <div class="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
-                  <!-- Docked -->
-                  <template v-if="ship.status === 'docked' && ship.port_name">
-                    <span class="text-emerald-400">Docked</span>
-                    <span class="text-slate-600">at</span>
-                    <span class="text-slate-300">{{ ship.port_name }}</span>
-                  </template>
-                  <!-- Sailing with route info -->
-                  <template v-else-if="ship.from_port_name && ship.to_port_name">
-                    <span class="text-sky-400">Sailing</span>
-                    <span class="text-slate-400">{{ ship.from_port_name }}</span>
-                    <Icon name="lucide:arrow-right" class="text-[10px] text-slate-600" />
-                    <span class="text-slate-300">{{ ship.to_port_name }}</span>
-                    <template v-if="ship.arriving_at">
-                      <span class="text-slate-600">|</span>
-                      <span class="text-sky-400 font-mono">{{ timeUntilArrival(ship.arriving_at) }}</span>
-                    </template>
-                  </template>
-                  <!-- Sailing without route info -->
-                  <template v-else-if="ship.status !== 'docked'">
-                    <span class="text-sky-400 capitalize">{{ ship.status }}</span>
-                    <template v-if="ship.arriving_at">
-                      <span class="text-slate-600">ETA</span>
-                      <span class="text-sky-400 font-mono">{{ timeUntilArrival(ship.arriving_at) }}</span>
-                    </template>
-                  </template>
-                </div>
-              </div>
-            </div>
-
-            <div class="flex items-center gap-4 flex-shrink-0 text-right">
-              <!-- Ship stats -->
-              <div class="hidden md:flex items-center gap-3 text-[10px] text-slate-500">
-                <span v-if="ship.capacity" title="Capacity">
-                  <Icon name="lucide:package" class="inline text-[10px]" />
-                  {{ ship.capacity }}
-                </span>
-                <span v-if="ship.speed" title="Speed">
-                  <Icon name="lucide:gauge" class="inline text-[10px]" />
-                  {{ ship.speed }}
-                </span>
-                <span v-if="ship.upkeep" title="Upkeep">
-                  <Icon name="lucide:coins" class="inline text-[10px]" />
-                  {{ ship.upkeep }}
-                </span>
-              </div>
-
-              <!-- Cargo summary -->
-              <div v-if="ship.cargo.length > 0" class="text-right">
-                <div class="text-xs text-slate-300 font-mono">{{ ship.cargo_total }} / {{ ship.capacity || '?' }}</div>
-                <div class="text-[10px] text-slate-500">cargo</div>
-              </div>
-              <div v-else class="text-xs text-slate-600 italic">Empty</div>
+              <span class="text-sm font-medium text-slate-200">{{ ship.ship_name }}</span>
+              <span
+                v-if="ship.ship_type"
+                class="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                :class="shipTypeColor(ship.ship_type)"
+              >
+                {{ ship.ship_type }}
+              </span>
             </div>
           </div>
 
-          <!-- Cargo bar -->
-          <div v-if="ship.capacity > 0" class="mt-2">
+          <!-- Row 2: Location / Route + ETA -->
+          <div class="flex items-center gap-2 text-xs mb-2">
+            <!-- Docked -->
+            <template v-if="ship.status === 'docked' && ship.port_name">
+              <span class="text-emerald-400 font-medium">Docked</span>
+              <span class="text-slate-600">at</span>
+              <span class="text-slate-300">{{ ship.port_name }}</span>
+            </template>
+            <!-- Sailing with route info -->
+            <template v-else-if="ship.status === 'sailing'">
+              <span class="text-sky-400 font-medium">Sailing</span>
+              <template v-if="ship.from_port_name && ship.to_port_name">
+                <span class="text-slate-400">{{ ship.from_port_name }}</span>
+                <Icon name="lucide:arrow-right" class="text-[10px] text-slate-600" />
+                <span class="text-slate-300">{{ ship.to_port_name }}</span>
+              </template>
+              <template v-if="ship.arriving_at">
+                <span class="text-slate-600">|</span>
+                <span class="text-sky-400 font-mono font-medium">ETA {{ timeUntilArrival(ship.arriving_at) }}</span>
+              </template>
+            </template>
+            <!-- Other status -->
+            <template v-else>
+              <span class="text-slate-400 capitalize">{{ ship.status }}</span>
+            </template>
+          </div>
+
+          <!-- Sailing progress bar -->
+          <div v-if="ship.status === 'sailing' && ship.arriving_at" class="mb-2">
+            <div class="h-1.5 rounded-full bg-slate-700 overflow-hidden">
+              <div
+                class="h-full rounded-full bg-sky-500 transition-all duration-1000"
+                :style="{ width: `${arrivalProgress(ship.arriving_at, ship.distance)}%` }"
+              />
+            </div>
+          </div>
+
+          <!-- Row 3: Ship stats (always visible, with labels) -->
+          <div class="grid grid-cols-4 gap-2 mb-2">
+            <div class="bg-slate-800/50 rounded px-2 py-1">
+              <div class="text-[10px] text-slate-500 uppercase">Capacity</div>
+              <div class="text-xs font-mono text-slate-300">{{ ship.capacity }}</div>
+            </div>
+            <div class="bg-slate-800/50 rounded px-2 py-1">
+              <div class="text-[10px] text-slate-500 uppercase">Speed</div>
+              <div class="text-xs font-mono text-slate-300">{{ ship.speed }}</div>
+            </div>
+            <div class="bg-slate-800/50 rounded px-2 py-1">
+              <div class="text-[10px] text-slate-500 uppercase">Upkeep</div>
+              <div class="text-xs font-mono text-amber-400">{{ formatCurrency(ship.upkeep) }}/hr</div>
+            </div>
+            <div class="bg-slate-800/50 rounded px-2 py-1">
+              <div class="text-[10px] text-slate-500 uppercase">Cargo</div>
+              <div class="text-xs font-mono" :class="ship.cargo_total > 0 ? 'text-sky-400' : 'text-slate-500'">
+                {{ ship.cargo_total }} / {{ ship.capacity }}
+              </div>
+            </div>
+          </div>
+
+          <!-- Cargo fill bar -->
+          <div v-if="ship.capacity > 0" class="mb-2">
             <div class="h-1 rounded-full bg-slate-700 overflow-hidden">
               <div
                 class="h-full rounded-full transition-all"
@@ -207,7 +221,7 @@ const totalCapacity = computed(() =>
           </div>
 
           <!-- Cargo Details -->
-          <div v-if="ship.cargo.length > 0" class="mt-2 flex flex-wrap gap-1.5">
+          <div v-if="ship.cargo.length > 0" class="flex flex-wrap gap-1.5">
             <span
               v-for="item in ship.cargo"
               :key="item.good_id"

@@ -1,26 +1,5 @@
 <script setup lang="ts">
-import type { StrategyMetric } from '~/types'
-
-const config = useRuntimeConfig()
-const apiBase = config.public.apiBase
-
-const metrics = ref<StrategyMetric[]>([])
-const loading = ref(false)
-
-async function fetchMetrics() {
-  loading.value = true
-  try {
-    metrics.value = await $fetch<StrategyMetric[]>(`${apiBase}/api/strategy-metrics`)
-  } catch (e) {
-    console.error('Failed to fetch optimizer data:', e)
-  } finally {
-    loading.value = false
-  }
-}
-
-onMounted(() => {
-  fetchMetrics()
-})
+const { metrics, loading } = useStrategyMetrics()
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr)

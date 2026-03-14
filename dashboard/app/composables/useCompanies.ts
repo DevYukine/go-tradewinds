@@ -1,13 +1,15 @@
 import type { Company } from '~/types'
 
+// Shared global state so all pages see the same company list.
+const companies = ref<Company[]>([])
+const loading = ref(false)
+const error = ref<string | null>(null)
+let pollTimer: ReturnType<typeof setInterval> | null = null
+let subscribers = 0
+
 export function useCompanies() {
   const config = useRuntimeConfig()
   const apiBase = config.public.apiBase
-
-  const companies = ref<Company[]>([])
-  const selectedCompany = ref<Company | null>(null)
-  const loading = ref(false)
-  const error = ref<string | null>(null)
 
   const companiesByStrategy = computed(() => {
     const grouped: Record<string, Company[]> = {}
@@ -27,28 +29,37 @@ export function useCompanies() {
       companies.value = await $fetch<Company[]>(`${apiBase}/api/companies`)
     } catch (e: any) {
       error.value = e.message || 'Failed to fetch companies'
-      console.error('Failed to fetch companies:', e)
     } finally {
       loading.value = false
     }
   }
 
-  function selectCompany(company: Company) {
-    selectedCompany.value = company
+  function getCompanyById(id: number): Company | undefined {
+    return companies.value.find(c => c.id === id)
   }
 
-  function clearSelection() {
-    selectedCompany.value = null
-  }
+  onMounted(() => {
+    subscribers++
+    if (subscribers === 1) {
+      fetchCompanies()
+      pollTimer = setInterval(fetchCompanies, 10000)
+    }
+  })
+
+  onUnmounted(() => {
+    subscribers--
+    if (subscribers === 0 && pollTimer) {
+      clearInterval(pollTimer)
+      pollTimer = null
+    }
+  })
 
   return {
     companies,
-    selectedCompany,
     companiesByStrategy,
     loading,
     error,
     fetchCompanies,
-    selectCompany,
-    clearSelection,
+    getCompanyById,
   }
 }

@@ -7,16 +7,23 @@ const props = defineProps<{
 
 const { decisions, loading, fetchDecisions } = useAgent()
 const expandedId = ref<number | null>(null)
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 watch(
   () => props.companyId,
   (id) => {
     if (id) {
       fetchDecisions(id)
+      if (pollTimer) clearInterval(pollTimer)
+      pollTimer = setInterval(() => fetchDecisions(id), 15000)
     }
   },
   { immediate: true }
 )
+
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+})
 
 function toggleExpand(id: number) {
   expandedId.value = expandedId.value === id ? null : id
