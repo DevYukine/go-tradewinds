@@ -2,6 +2,7 @@
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import type { MapShip, PortInfo, RouteInfo, WorldData } from '~/types'
+import { computeSeaRoute, interpolateAlongPath, getTrailPath, type SeaPoint } from '~/utils/seaRouting'
 
 const config = useRuntimeConfig()
 const apiBase = config.public.apiBase
@@ -96,11 +97,18 @@ function drawRoutes() {
     const toPort = lookup.get(route.to_port_id)
     if (!fromPort || !toPort) continue
 
-    const fromCoords = portCoords(fromPort)
-    const toCoords = portCoords(toPort)
+    const fromCoords = portCoords(fromPort) as [number, number] | null
+    const toCoords = portCoords(toPort) as [number, number] | null
     if (!fromCoords || !toCoords) continue
 
-    const line = L.polyline([fromCoords, toCoords], {
+    let seaPath: SeaPoint[]
+    try {
+      seaPath = computeSeaRoute(fromCoords, toCoords)
+    } catch {
+      seaPath = [fromCoords, toCoords]
+    }
+
+    const line = L.polyline(seaPath, {
       color: '#475569',
       weight: 1,
       opacity: 0.4,
@@ -148,20 +156,12 @@ function formatTimeRemaining(ms: number): string {
   return `${secs}s`
 }
 
-function interpolateCoords(from: [number, number], to: [number, number], t: number): [number, number] {
-  return [
-    from[0] + (to[0] - from[0]) * t,
-    from[1] + (to[1] - from[1]) * t,
-  ]
-}
-
 // Track Leaflet objects for traveling ships so we can animate them per-second.
 const travelingShipMarkers = new Map<string, {
   marker: L.CircleMarker
   label: L.Marker
   trail: L.Polyline
-  from: [number, number]
-  to: [number, number]
+  path: SeaPoint[]
   ship: MapShip
 }>()
 
@@ -203,11 +203,18 @@ function drawShips() {
       const toPos = portCoords(toPort) as [number, number] | null
       if (!fromPos || !toPos) continue
 
+      let seaPath: SeaPoint[]
+      try {
+        seaPath = computeSeaRoute(fromPos, toPos)
+      } catch {
+        seaPath = [fromPos, toPos]
+      }
       const progress = computeShipProgress(ship, routeLookup, now)
-      const pos = interpolateCoords(fromPos, toPos, progress)
+      const pos = interpolateAlongPath(seaPath, progress)
+      const trailPath = getTrailPath(seaPath, progress)
 
-      // Trail line from origin to current position
-      const trail = L.polyline([fromPos, pos], {
+      // Trail line from origin to current position along sea route
+      const trail = L.polyline(trailPath, {
         color: strategyColor,
         weight: 2,
         opacity: 0.5,
@@ -240,7 +247,7 @@ function drawShips() {
       })
       shipLayer.addLayer(label)
 
-      travelingShipMarkers.set(ship.ship_id, { marker, label, trail, from: fromPos, to: toPos, ship })
+      travelingShipMarkers.set(ship.ship_id, { marker, label, trail, path: seaPath, ship })
     }
   }
 }
@@ -253,12 +260,13 @@ function animateShips() {
 
   for (const [, entry] of travelingShipMarkers) {
     const progress = computeShipProgress(entry.ship, routeLookup, now)
-    const pos = interpolateCoords(entry.from, entry.to, progress)
+    const pos = interpolateAlongPath(entry.path, progress)
+    const trailPath = getTrailPath(entry.path, progress)
     const latLng = L.latLng(pos[0], pos[1])
 
     entry.marker.setLatLng(latLng)
     entry.label.setLatLng(latLng)
-    entry.trail.setLatLngs([entry.from, pos])
+    entry.trail.setLatLngs(trailPath)
 
     const arrivalMs = entry.ship.arriving_at ? new Date(entry.ship.arriving_at).getTime() - now : 0
     const timeText = entry.ship.arriving_at ? formatTimeRemaining(arrivalMs) : 'In transit'
