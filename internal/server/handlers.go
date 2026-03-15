@@ -293,6 +293,7 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 				}
 			}
 			// Look up buy price from price cache to estimate cargo cost basis.
+			// Use minimum known buy price across all ports for a stable, conservative valuation.
 			buyPrice := 0
 			if ss.Ship.PortID != nil {
 				if pp, ok := priceCache.Get(*ss.Ship.PortID, ci.GoodID); ok && pp.BuyPrice > 0 {
@@ -300,11 +301,14 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 				}
 			}
 			if buyPrice == 0 {
-				// Fallback: find any known buy price for this good.
+				// Fallback: use the lowest known buy price across all ports for stability.
+				// Iterating a map has non-deterministic order, so taking "first match"
+				// would produce different values on each request.
 				for _, pp := range priceCache.All() {
 					if pp.GoodID == ci.GoodID && pp.BuyPrice > 0 {
-						buyPrice = pp.BuyPrice
-						break
+						if buyPrice == 0 || pp.BuyPrice < buyPrice {
+							buyPrice = pp.BuyPrice
+						}
 					}
 				}
 			}
