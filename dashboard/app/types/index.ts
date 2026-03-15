@@ -84,6 +84,7 @@ export interface RateLimitStatus {
   current_utilization: number
   used: number
   remaining: number
+  resets_at: string
   active_companies: number
 }
 

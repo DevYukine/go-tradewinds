@@ -47,11 +47,11 @@ Clones client bound to a specific company. Shares token, resty instance, and rat
 
 ## Rate Limiter (`internal/api/ratelimiter.go`)
 
-Sliding window rate limiter with priority-based throttling.
+Fixed window rate limiter with priority-based throttling. The counter resets every 60 seconds, matching the game server's rate limit behavior.
 
 ### Configuration
-- `maxPerMinute = 300` (configurable)
-- Minimum 250ms spacing between requests
+- `maxPerMinute = 900` (configurable via `RATE_LIMIT_PER_MINUTE`)
+- Minimum 60ms spacing between requests
 
 ### Priority Levels
 | Priority | Threshold | Use Case |
@@ -61,11 +61,13 @@ Sliding window rate limiter with priority-based throttling.
 | `PriorityLow` | Blocked at 70% | Price scanning, economy refresh |
 
 ### Implementation
-- Ring buffer of timestamps for sliding window
+- Fixed window counter with `windowStart` timestamp and `count`
+- Resets to 0 when `windowStart + 60s` has elapsed
 - `Acquire(ctx, priority)` — Blocks until slot available
 - `RecordBackoff(duration)` — Emergency pause after 429
 - `Utilization()` — Current usage fraction [0.0, 1.0]
 - `CurrentBudget()` — (used, max) tuple
+- `ResetsAt()` — When the current window expires
 
 ## SSE Events (`internal/api/events.go`)
 

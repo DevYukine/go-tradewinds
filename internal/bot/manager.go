@@ -59,10 +59,10 @@ func NewManager(
 
 	// Restore rate limiter state from Redis so we don't exceed limits after restart.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	timestamps := redis.LoadRateLimitTimestamps(ctx)
+	windowStart, count := redis.LoadRateLimitWindow(ctx)
 	cancel()
-	if len(timestamps) > 0 {
-		rateLimiter.RestoreTimestamps(timestamps)
+	if count > 0 {
+		rateLimiter.RestoreWindow(windowStart, count)
 	}
 
 	baseClient := api.NewClient(cfg.BaseURL, rateLimiter, logger)
@@ -261,10 +261,10 @@ func (m *Manager) Stop(ctx context.Context, cancel context.CancelFunc) {
 	)
 
 	// Persist rate limiter state to Redis for seamless restart.
-	timestamps := m.rateLimiter.SnapshotTimestamps()
-	m.redis.SaveRateLimitTimestamps(ctx, timestamps)
+	windowStart, count := m.rateLimiter.SnapshotWindow()
+	m.redis.SaveRateLimitWindow(ctx, windowStart, count)
 	m.logger.Debug("rate limiter state saved to Redis",
-		zap.Int("timestamps", len(timestamps)),
+		zap.Int("count", count),
 	)
 
 	m.logger.Info("bot manager stopped gracefully")
@@ -552,8 +552,8 @@ func (m *Manager) startRateLimitPersister(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				timestamps := m.rateLimiter.SnapshotTimestamps()
-				m.redis.SaveRateLimitTimestamps(ctx, timestamps)
+				windowStart, count := m.rateLimiter.SnapshotWindow()
+				m.redis.SaveRateLimitWindow(ctx, windowStart, count)
 			}
 		}
 	}()

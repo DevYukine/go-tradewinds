@@ -535,13 +535,15 @@ func (s *Server) handleRateLimit(c fiber.Ctx) error {
 	rl := s.manager.RateLimiter()
 	used, max := rl.CurrentBudget()
 	utilization := rl.Utilization()
+	resetsAt := rl.ResetsAt()
 
 	return c.JSON(fiber.Map{
-		"used":                 used,
-		"max_per_minute":       max,
-		"current_utilization":  utilization,
-		"remaining":            max - used,
-		"active_companies":     s.manager.CompanyCount(),
+		"used":                used,
+		"max_per_minute":      max,
+		"current_utilization": utilization,
+		"remaining":           max - used,
+		"resets_at":           resetsAt,
+		"active_companies":    s.manager.CompanyCount(),
 	})
 }
 

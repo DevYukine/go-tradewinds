@@ -47,6 +47,27 @@ const gaugeColor = computed(() => {
   return '#10b981'
 })
 
+const resetSeconds = ref(0)
+let resetInterval: ReturnType<typeof setInterval>
+
+function updateResetCountdown() {
+  if (!rateLimit.value?.resets_at) {
+    resetSeconds.value = 0
+    return
+  }
+  const remaining = Math.max(0, Math.ceil((new Date(rateLimit.value.resets_at).getTime() - Date.now()) / 1000))
+  resetSeconds.value = remaining
+}
+
+onMounted(() => {
+  updateResetCountdown()
+  resetInterval = setInterval(updateResetCountdown, 1000)
+})
+
+onUnmounted(() => {
+  clearInterval(resetInterval)
+})
+
 function formatUptime(seconds: number): string {
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
@@ -121,7 +142,7 @@ const navItems = [
             </div>
             <div class="text-xs text-slate-500 hidden lg:block leading-tight">
               <div class="font-mono">{{ rateLimit.used }}/{{ rateLimit.max_per_minute }}</div>
-              <div>req/min</div>
+              <div>resets in {{ resetSeconds }}s</div>
             </div>
           </div>
         </div>

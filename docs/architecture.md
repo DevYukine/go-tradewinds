@@ -55,7 +55,7 @@ server (REST + SSE → reads DB + manager state)
 - **PriceScanner** rotates through ports with adaptive interval (8-30s based on rate limit utilization)
 - **Optimizer** runs on its own ticker (15 min eval cycle)
 - **RateLimitPersister** saves rate limiter state to Redis every 10s + on shutdown
-- **Rate Limiter** is shared across all goroutines, uses sliding window (ring buffer) with priority-based throttling; state persisted to Redis
+- **Rate Limiter** is shared across all goroutines, uses fixed window (60s reset) with priority-based throttling; state persisted to Redis
 - **CompanyState** protected by `sync.RWMutex`
 
 ## DI Framework

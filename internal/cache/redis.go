@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -16,7 +15,7 @@ import (
 
 const (
 	keyPrefix     = "tradewinds:"
-	rateLimitKey  = keyPrefix + "ratelimit:timestamps"
+	rateLimitKey  = keyPrefix + "ratelimit:window"
 	priceCacheKey = keyPrefix + "prices"
 	scannerIdxKey = keyPrefix + "scanner:port_idx"
 	rateLimitTTL  = 90 * time.Second // slightly longer than the 60s window
@@ -101,63 +100,56 @@ func (rc *RedisCache) CacheDel(ctx context.Context, key string) {
 
 // --- Rate Limiter Persistence ---
 
-// SaveRateLimitTimestamps persists the sliding window timestamps to Redis
-// as a sorted set (score = unix millisecond, member = index).
-func (rc *RedisCache) SaveRateLimitTimestamps(ctx context.Context, timestamps []time.Time) {
-	pipe := rc.client.Pipeline()
-	pipe.Del(ctx, rateLimitKey)
+// rateLimitWindow is the Redis-persisted state of the fixed window rate limiter.
+type rateLimitWindow struct {
+	WindowStartMs int64 `json:"window_start_ms"`
+	Count         int   `json:"count"`
+}
 
-	if len(timestamps) > 0 {
-		members := make([]redis.Z, 0, len(timestamps))
-		for i, ts := range timestamps {
-			if ts.IsZero() {
-				continue
-			}
-			members = append(members, redis.Z{
-				Score:  float64(ts.UnixMilli()),
-				Member: strconv.Itoa(i),
-			})
-		}
-		if len(members) > 0 {
-			pipe.ZAdd(ctx, rateLimitKey, members...)
-			pipe.Expire(ctx, rateLimitKey, rateLimitTTL)
-		}
+// SaveRateLimitWindow persists the current fixed window state to Redis.
+func (rc *RedisCache) SaveRateLimitWindow(ctx context.Context, windowStart time.Time, count int) {
+	data, err := json.Marshal(rateLimitWindow{
+		WindowStartMs: windowStart.UnixMilli(),
+		Count:         count,
+	})
+	if err != nil {
+		rc.logger.Warn("failed to marshal rate limit window", zap.Error(err))
+		return
 	}
 
-	if _, err := pipe.Exec(ctx); err != nil {
-		rc.logger.Warn("failed to save rate limit timestamps to Redis", zap.Error(err))
+	if err := rc.client.Set(ctx, rateLimitKey, data, rateLimitTTL).Err(); err != nil {
+		rc.logger.Warn("failed to save rate limit window to Redis", zap.Error(err))
 	}
 }
 
-// LoadRateLimitTimestamps restores sliding window timestamps from Redis.
-// Only returns timestamps within the last 60 seconds.
-func (rc *RedisCache) LoadRateLimitTimestamps(ctx context.Context) []time.Time {
-	cutoff := float64(time.Now().Add(-60 * time.Second).UnixMilli())
-
-	zResults, err := rc.client.ZRangeByScoreWithScores(ctx, rateLimitKey, &redis.ZRangeBy{
-		Min: fmt.Sprintf("%.0f", cutoff),
-		Max: "+inf",
-	}).Result()
+// LoadRateLimitWindow restores the fixed window state from Redis.
+// Returns zero values if no state is found or the window has expired.
+func (rc *RedisCache) LoadRateLimitWindow(ctx context.Context) (windowStart time.Time, count int) {
+	data, err := rc.client.Get(ctx, rateLimitKey).Bytes()
 	if err != nil {
-		rc.logger.Warn("failed to load rate limit timestamps from Redis", zap.Error(err))
-		return nil
+		// Key doesn't exist or Redis error — start fresh.
+		return time.Time{}, 0
 	}
 
-	if len(zResults) == 0 {
-		return nil
+	var w rateLimitWindow
+	if err := json.Unmarshal(data, &w); err != nil {
+		rc.logger.Warn("failed to unmarshal rate limit window from Redis", zap.Error(err))
+		return time.Time{}, 0
 	}
 
-	timestamps := make([]time.Time, 0, len(zResults))
-	for _, z := range zResults {
-		ms := int64(z.Score)
-		timestamps = append(timestamps, time.UnixMilli(ms))
+	ws := time.UnixMilli(w.WindowStartMs)
+
+	// Only restore if the window is still active.
+	if time.Since(ws) >= 60*time.Second {
+		return time.Time{}, 0
 	}
 
 	rc.logger.Debug("restored rate limit state from Redis",
-		zap.Int("active_timestamps", len(timestamps)),
+		zap.Int("count", w.Count),
+		zap.Duration("remaining", 60*time.Second-time.Since(ws)),
 	)
 
-	return timestamps
+	return ws, w.Count
 }
 
 // --- Price Cache Persistence ---

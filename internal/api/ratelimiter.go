@@ -33,20 +33,19 @@ const (
 	// Minimum spacing between requests to avoid micro-bursts.
 	minRequestSpacing = 60 * time.Millisecond // ~1000 req/min max throughput (safe margin under 900 limit)
 
-	// windowDuration is the sliding window size.
+	// windowDuration is the fixed window size.
 	windowDuration = 60 * time.Second
 )
 
 // RateLimiter enforces the game's rate limit of 900 requests per 60 seconds per IP.
-// It uses a true sliding window (ring buffer of timestamps) to avoid the burst
-// problem that tumbling windows have at reset boundaries.
+// It uses a fixed window counter that resets every 60 seconds, matching the
+// game server's rate limit behavior.
 type RateLimiter struct {
 	maxPerMinute int
 
-	// Sliding window: circular buffer of request timestamps.
-	timestamps []time.Time
-	head       int // next write position
-	count      int // number of valid entries
+	// Fixed window: counter resets at windowStart + windowDuration.
+	windowStart time.Time
+	count       int
 
 	// lastRequest tracks when the last request was made for spacing.
 	lastRequest time.Time
@@ -59,7 +58,7 @@ type RateLimiter struct {
 }
 
 // NewRateLimiter creates a rate limiter enforcing the given requests-per-minute limit.
-// Uses a true sliding window for accurate budget tracking.
+// Uses a fixed window counter that resets every 60 seconds.
 // Starts with a conservative backoff to handle restarts when the server's
 // rate limit window from a previous run may still be active.
 func NewRateLimiter(maxPerMinute int, logger *zap.Logger) *RateLimiter {
@@ -69,7 +68,7 @@ func NewRateLimiter(maxPerMinute int, logger *zap.Logger) *RateLimiter {
 
 	return &RateLimiter{
 		maxPerMinute: maxPerMinute,
-		timestamps:   make([]time.Time, maxPerMinute),
+		windowStart:  time.Now(),
 		logger:       logger.Named("rate_limiter"),
 		// Start with a short backoff so the first few requests are spaced out,
 		// giving the server's previous window time to drain.
@@ -77,68 +76,43 @@ func NewRateLimiter(maxPerMinute int, logger *zap.Logger) *RateLimiter {
 	}
 }
 
-// RestoreTimestamps populates the sliding window from previously persisted
-// timestamps (e.g., loaded from Redis). This allows the rate limiter to
-// continue where it left off after a restart.
-func (rl *RateLimiter) RestoreTimestamps(timestamps []time.Time) {
-	if len(timestamps) == 0 {
+// RestoreWindow restores a previously persisted window state (e.g., from Redis).
+// This allows the rate limiter to continue where it left off after a restart.
+func (rl *RateLimiter) RestoreWindow(windowStart time.Time, count int) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	// Only restore if the window is still active.
+	if time.Since(windowStart) >= windowDuration {
+		rl.logger.Debug("skipping restore — window already expired",
+			zap.Time("window_start", windowStart),
+		)
 		return
 	}
 
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	now := time.Now()
-	cutoff := now.Add(-windowDuration)
-
-	// Only restore timestamps still within the sliding window.
-	restored := 0
-	for _, ts := range timestamps {
-		if ts.After(cutoff) && restored < rl.maxPerMinute {
-			rl.timestamps[rl.head] = ts
-			rl.head = (rl.head + 1) % len(rl.timestamps)
-			rl.count++
-			restored++
-		}
-	}
-
-	if restored > 0 {
-		// Set lastRequest to the most recent restored timestamp to maintain spacing.
-		rl.lastRequest = timestamps[len(timestamps)-1]
-		// Clear the startup backoff since we have real data now.
-		rl.backoffUntil = time.Time{}
-	}
+	rl.windowStart = windowStart
+	rl.count = count
+	// Clear the startup backoff since we have real data now.
+	rl.backoffUntil = time.Time{}
 
 	rl.logger.Info("rate limiter state restored",
-		zap.Int("restored", restored),
-		zap.Int("provided", len(timestamps)),
-		zap.Int("count", rl.count),
+		zap.Int("count", count),
+		zap.Time("window_start", windowStart),
+		zap.Duration("remaining", windowDuration-time.Since(windowStart)),
 	)
 }
 
-// SnapshotTimestamps returns a copy of all valid (non-expired) timestamps in
-// the sliding window. Used for persisting state to Redis.
-func (rl *RateLimiter) SnapshotTimestamps() []time.Time {
+// SnapshotWindow returns the current window start and count for persistence.
+func (rl *RateLimiter) SnapshotWindow() (windowStart time.Time, count int) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	rl.evictExpired(time.Now())
-
-	if rl.count == 0 {
-		return nil
-	}
-
-	result := make([]time.Time, 0, rl.count)
-	for i := 0; i < rl.count; i++ {
-		idx := (rl.head - rl.count + i + len(rl.timestamps)) % len(rl.timestamps)
-		result = append(result, rl.timestamps[idx])
-	}
-	return result
+	rl.maybeResetWindow(time.Now())
+	return rl.windowStart, rl.count
 }
 
 // Acquire blocks until a request slot is available for the given priority,
-// or the context is cancelled. Uses a true sliding window to prevent
-// burst-at-boundary problems.
+// or the context is cancelled.
 func (rl *RateLimiter) Acquire(ctx context.Context, priority Priority) error {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -171,17 +145,16 @@ func (rl *RateLimiter) tryAcquire(priority Priority) time.Duration {
 		return time.Until(rl.backoffUntil)
 	}
 
-	// Evict expired timestamps.
-	rl.evictExpired(now)
+	// Reset window if expired.
+	rl.maybeResetWindow(now)
 
 	// Check priority-based throttling thresholds.
 	usageRatio := float64(rl.count) / float64(rl.maxPerMinute)
 
 	switch {
 	case rl.count >= rl.maxPerMinute:
-		// At capacity — wait until the oldest timestamp expires.
-		oldest := rl.oldestTimestamp()
-		return time.Until(oldest.Add(windowDuration)) + 10*time.Millisecond
+		// At capacity — wait until the window resets.
+		return time.Until(rl.windowStart.Add(windowDuration)) + 10*time.Millisecond
 	case usageRatio >= thresholdNormalBlock && priority > PriorityHigh:
 		return 100 * time.Millisecond
 	case usageRatio >= thresholdLowBlock && priority > PriorityNormal:
@@ -193,12 +166,8 @@ func (rl *RateLimiter) tryAcquire(priority Priority) time.Duration {
 		return minRequestSpacing - elapsed
 	}
 
-	// Acquired — record this request.
-	rl.timestamps[rl.head] = now
-	rl.head = (rl.head + 1) % len(rl.timestamps)
-	if rl.count < len(rl.timestamps) {
-		rl.count++
-	}
+	// Acquired — increment counter.
+	rl.count++
 	rl.lastRequest = now
 
 	return 0
@@ -217,14 +186,23 @@ func (rl *RateLimiter) RecordBackoff(retryAfter time.Duration) {
 	)
 }
 
-// CurrentBudget returns the number of requests used in the current sliding
-// window and the maximum allowed.
+// CurrentBudget returns the number of requests used in the current window
+// and the maximum allowed.
 func (rl *RateLimiter) CurrentBudget() (used, max int) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	rl.evictExpired(time.Now())
+	rl.maybeResetWindow(time.Now())
 	return rl.count, rl.maxPerMinute
+}
+
+// ResetsAt returns when the current rate limit window resets.
+func (rl *RateLimiter) ResetsAt() time.Time {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	rl.maybeResetWindow(time.Now())
+	return rl.windowStart.Add(windowDuration)
 }
 
 // Utilization returns the current rate limit utilization as a float between 0.0 and 1.0.
@@ -236,33 +214,16 @@ func (rl *RateLimiter) Utilization() float64 {
 	return float64(used) / float64(max)
 }
 
-// evictExpired removes timestamps older than windowDuration from the count.
+// maybeResetWindow resets the counter if the current window has expired.
 // Must be called while holding rl.mu.
-func (rl *RateLimiter) evictExpired(now time.Time) {
-	cutoff := now.Add(-windowDuration)
-	evicted := 0
-
-	// Walk from the tail (oldest) forward and count expired entries.
-	for rl.count > 0 {
-		tail := (rl.head - rl.count + len(rl.timestamps)) % len(rl.timestamps)
-		if rl.timestamps[tail].After(cutoff) {
-			break
+func (rl *RateLimiter) maybeResetWindow(now time.Time) {
+	if now.Sub(rl.windowStart) >= windowDuration {
+		if rl.count > 0 {
+			rl.logger.Debug("rate limit window reset",
+				zap.Int("previous_count", rl.count),
+			)
 		}
-		rl.count--
-		evicted++
+		rl.windowStart = now
+		rl.count = 0
 	}
-
-	if evicted > 20 {
-		rl.logger.Debug("rate limit window eviction",
-			zap.Int("evicted", evicted),
-			zap.Int("remaining", rl.count),
-		)
-	}
-}
-
-// oldestTimestamp returns the oldest non-expired timestamp in the ring buffer.
-// Must be called while holding rl.mu and when count > 0.
-func (rl *RateLimiter) oldestTimestamp() time.Time {
-	tail := (rl.head - rl.count + len(rl.timestamps)) % len(rl.timestamps)
-	return rl.timestamps[tail]
 }

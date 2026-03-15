@@ -24,7 +24,7 @@ Fiber web server on `API_PORT` (default 3002).
 | GET | `/api/strategy-metrics` | Latest metrics per strategy |
 | GET | `/api/optimizer/log` | Strategy metric history (`?limit=&offset=`) |
 | GET | `/api/prices` | Latest NPC prices (deduplicated per port+good) |
-| GET | `/api/ratelimit` | Rate limit status (used, max, utilization, remaining) |
+| GET | `/api/ratelimit` | Rate limit status (used, max, utilization, remaining, resets_at) |
 | GET | `/api/health` | Health check (status, uptime, companies, agent type) |
 | GET | `/api/world` | World data (ports with lat/lng, goods, routes, ship types) — refreshes dynamically |
 | GET | `/api/ships` | All ships across all companies (for world map) |
