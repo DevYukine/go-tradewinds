@@ -662,27 +662,31 @@ func (a *HeuristicAgent) speculativeTrade(
 // Fleet Decisions
 // ---------------------------------------------------------------------------
 
-// reserveHours calculates how many hours of upkeep buffer the company should
-// maintain after a ship purchase. Grows with fleet size so that companies
-// become progressively more cautious before adding each additional ship.
-// The base is 24h so a company must always survive a full day of upkeep
-// before expanding. Growth adds more hours per ship depending on strategy.
+// upkeepCycleHours is the interval at which the game charges upkeep.
+// The API returns per-cycle amounts, so multiply by this to convert to hourly.
+const upkeepCycleHours int64 = 5
+
+// reserveCycles calculates how many upkeep cycles of buffer the company
+// should maintain after a ship purchase. Grows with fleet size so that
+// companies become progressively more cautious before adding each ship.
+// The base is 5 cycles (25 hours) so a company must always survive a full
+// day of upkeep before expanding.
 //
-//	fleet 1  → 24h  |  fleet 5  → 26h  |  fleet 10 → 29h
+//	fleet 1  → 5 cycles (25h)  |  fleet 5  → 6 cycles (30h)  |  fleet 10 → 7 cycles (35h)
 //
 // The strategy multiplier shifts the curve: bulk_hauler is more conservative
 // (fewer but bigger ships), market_maker is more aggressive (cheap ships).
-func reserveHours(numShips int, strategy string) int64 {
-	base := int64(24)
-	growth := int64(numShips) / 2 // +1 hour of reserve for every 2 ships
+func reserveCycles(numShips int, strategy string) int64 {
+	base := int64(5) // 5 cycles = 25 hours
+	growth := int64(numShips) / 4 // +1 cycle (~5h) per 4 ships
 
 	switch strategy {
 	case "bulk_hauler":
 		// More conservative — big ships cost more upkeep, so demand a larger buffer.
-		growth = int64(numShips) // +1 hour per ship
+		growth = int64(numShips) / 2 // +1 cycle per 2 ships
 	case "market_maker":
 		// More aggressive — cheap ships, fast expansion.
-		growth = int64(numShips) / 3 // +1 hour per 3 ships
+		growth = int64(numShips) / 5 // +1 cycle per 5 ships
 	}
 
 	return base + growth
@@ -706,7 +710,7 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 
 	// --- WAREHOUSE PURCHASE ---
 	// Only consider warehouses when fleet is already at a reasonable size (3+ ships)
-	// and treasury is very healthy.
+	// and treasury is very healthy (covers 10+ upkeep cycles = 50 hours).
 	if len(req.Warehouses) < 2 && treasury > upkeep*10 && numShips >= 3 {
 		portActivity := make(map[uuid.UUID]int)
 		for _, ship := range req.Ships {
@@ -742,20 +746,22 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 	}
 
 	// --- SHIP SALE ---
-	// Sell if upkeep is unsustainable: treasury can't cover reserveHours of upkeep.
-	reserve := reserveHours(numShips, req.StrategyHint)
+	// Sell if upkeep is unsustainable: treasury can't cover reserve cycles of upkeep.
+	reserve := reserveCycles(numShips, req.StrategyHint)
 	if numShips > 1 && upkeep > 0 && treasury > 0 && treasury < upkeep*reserve {
 		sellShips := a.findShipsToSell(req.Ships, req.StrategyHint, req.ShipyardPorts)
 		if len(sellShips) > 0 {
+			cyclesCovered := treasury / max(upkeep, 1)
 			a.logger.Info("recommending ship decommission — upkeep too high",
 				zap.Int64("treasury", treasury),
-				zap.Int64("upkeep", upkeep),
-				zap.Int64("reserve_hours", reserve),
+				zap.Int64("upkeep_per_cycle", upkeep),
+				zap.Int64("reserve_cycles", reserve),
+				zap.Int64("hours_covered", cyclesCovered*upkeepCycleHours),
 				zap.Int("ships_to_sell", len(sellShips)),
 			)
 			return &FleetDecision{
 				SellShips: sellShips,
-				Reasoning: fmt.Sprintf("decommissioning: treasury covers only %dh of upkeep (need %dh)", treasury/max(upkeep, 1), reserve),
+				Reasoning: fmt.Sprintf("decommissioning: treasury covers only %dh of upkeep (need %dh)", cyclesCovered*upkeepCycleHours, reserve*upkeepCycleHours),
 			}, nil
 		}
 	}
@@ -794,9 +800,9 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 
 	// --- AFFORDABILITY CHECK ---
 	// The company must be able to afford the ship price AND still maintain
-	// a reserve of (newTotalUpkeep * reserveHours) afterwards.
-	// reserveHours grows with fleet size, naturally limiting expansion.
-	newReserve := reserveHours(numShips+1, req.StrategyHint)
+	// a reserve of (newTotalUpkeep * reserveCycles) afterwards.
+	// reserveCycles grows with fleet size, naturally limiting expansion.
+	newReserve := reserveCycles(numShips+1, req.StrategyHint)
 	canAfford := func(st ShipTypeInfo) bool {
 		newUpkeep := upkeep + int64(st.Upkeep)
 		required := int64(st.BasePrice) + newUpkeep*newReserve
@@ -820,7 +826,7 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 			newUpkeep := upkeep + int64(shipTypes[0].Upkeep)
 			required := int64(shipTypes[0].BasePrice) + newUpkeep*newReserve
 			return &FleetDecision{
-				Reasoning: fmt.Sprintf("treasury %d too low: cheapest ship needs %d (price %d + %dh reserve of %d/hr upkeep)",
+				Reasoning: fmt.Sprintf("treasury %d too low: cheapest ship needs %d (price %d + %d-cycle reserve of %d/cycle upkeep)",
 					treasury, required, shipTypes[0].BasePrice, newReserve, newUpkeep),
 			}, nil
 		}
@@ -841,17 +847,18 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 		zap.Int("speed", targetShipType.Speed),
 		zap.Int("current_fleet", numShips),
 		zap.Int64("treasury_after", treasury-int64(targetShipType.BasePrice)),
-		zap.Int64("new_upkeep", newUpkeep),
-		zap.Int64("reserve_hours", newReserve),
+		zap.Int64("new_upkeep_per_cycle", newUpkeep),
+		zap.Int64("reserve_cycles", newReserve),
 	)
 
+	cyclesCovered := treasury / max(newUpkeep, 1)
 	return &FleetDecision{
 		BuyShips: []ShipPurchase{{
 			ShipTypeID: targetShipType.ID,
 			PortID:     purchasePortID,
 		}},
 		Reasoning: fmt.Sprintf("expanding fleet to %d ships (%s), treasury covers %dh of new upkeep",
-			numShips+1, targetShipType.Name, treasury/max(newUpkeep, 1)),
+			numShips+1, targetShipType.Name, cyclesCovered*upkeepCycleHours),
 	}, nil
 }
 

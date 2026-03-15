@@ -323,7 +323,7 @@ function buildShipPopup(ship: MapShip): string {
         <div style="color:#e2e8f0;font-family:monospace;font-weight:600">${ship.speed || '---'}</div>
       </div>
       <div style="background:#1e293b;border-radius:4px;padding:4px;text-align:center">
-        <div style="font-size:9px;color:#64748b;text-transform:uppercase">Upkeep</div>
+        <div style="font-size:9px;color:#64748b;text-transform:uppercase">Upkeep/cycle</div>
         <div style="color:#e2e8f0;font-family:monospace;font-weight:600">${ship.upkeep ? formatCurrency(ship.upkeep) : '---'}</div>
       </div>
       <div style="background:#1e293b;border-radius:4px;padding:4px;text-align:center">

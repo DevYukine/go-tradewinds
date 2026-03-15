@@ -840,8 +840,8 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 			return inventory[i].Cost < inventory[j].Cost
 		})
 
-		// canAffordShip checks if we can buy a ship and still maintain 24h of
-		// post-purchase upkeep (current upkeep + new ship's upkeep).
+		// canAffordShip checks if we can buy a ship and still maintain 5 upkeep
+		// cycles (~25h) of post-purchase upkeep (current + new ship's upkeep).
 		canAffordShip := func(item *api.ShipyardInventoryItem) bool {
 			costWithTax := int64(float64(item.Cost) * 1.06)
 			// Look up the new ship's upkeep from world data.
@@ -850,7 +850,7 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 				newShipUpkeep = int64(st.Upkeep)
 			}
 			postPurchaseUpkeep := upkeep + newShipUpkeep
-			safetyMargin := postPurchaseUpkeep * 24
+			safetyMargin := postPurchaseUpkeep * 5 // 5 cycles = ~25 hours
 			return treasury >= costWithTax+safetyMargin
 		}
 
@@ -888,7 +888,7 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 			b.logger.Debug("no affordable ships at shipyard",
 				zap.String("port_id", portID.String()),
 				zap.Int64("treasury", treasury),
-				zap.Int64("post_purchase_reserve_needed", (upkeep+newShipUpkeep)*24),
+				zap.Int64("post_purchase_reserve_needed", (upkeep+newShipUpkeep)*5),
 				zap.Int("cheapest_available", inventory[0].Cost),
 			)
 			continue

@@ -84,15 +84,16 @@ Hand-coded rules adapting to strategy hints.
 ### Fleet Decisions (`DecideFleetAction`)
 
 Order of evaluation:
-1. **Warehouse purchase** — Only if `numShips >= 3`, `treasury > upkeep * 10`, `< 2 warehouses`, and a port has `>= 2 docked ships`
-2. **Ship decommission** — If `treasury < totalUpkeep * reserveHours` and `> 1 ship`: sell worst value ship (highest upkeep relative to capacity). Reserve hours scale with fleet size: small (1-3) = 30h, medium (4-10) = 24h, large (10+) = 20h. Sold ships are immediately removed from state to prevent race conditions.
+1. **Warehouse purchase** — Only if `numShips >= 3`, `treasury > upkeep * 10 cycles`, `< 2 warehouses`, and a port has `>= 2 docked ships`
+2. **Ship decommission** — If `treasury < totalUpkeep * reserveCycles` and `> 1 ship`: sell worst value ship (highest upkeep relative to capacity). Reserve cycles scale with fleet size: base 5 cycles (25h), +1 cycle per 4 ships (bulk_hauler: per 2, market_maker: per 5). Sold ships are immediately removed from state to prevent race conditions.
 3. **Ship purchase** — Strategy-specific preference:
    - Arbitrage: fastest ship (high speed)
    - Bulk hauler: largest capacity (max fleet: 3)
    - Market maker: cheapest upkeep ship
    - Max fleet: 5 (3 for bulk hauler)
-   - Safety: `ship_cost * 1.06 (6% tax) + (current_upkeep + new_upkeep) * 24h`
+   - Safety: `ship_cost * 1.06 (6% tax) + (current_upkeep + new_upkeep) * 5 cycles`
    - **Backoff**: When all shipyards are out of stock, exponential backoff (30s→1m→…→30m) before retrying. Shipyard inventory refills ~every 30 minutes.
+   - **Note**: Upkeep is charged per 5-hour cycle, not hourly. All reserve calculations use cycles.
 
 ### Market Decisions (`DecideMarketAction`)
 - Fill sell orders: only if `orderPrice > NPC_sell_price * 1.10` (10% min margin)

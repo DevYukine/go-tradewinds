@@ -160,7 +160,7 @@ function formatCurrency(value: number): string {
               </div>
               <div>
                 <span class="text-slate-500">Upkeep</span>
-                <div class="font-mono text-amber-400">{{ formatCurrency(st.upkeep) }}/hr</div>
+                <div class="font-mono text-amber-400">{{ formatCurrency(st.upkeep) }}/cycle</div>
               </div>
               <div>
                 <span class="text-slate-500">Base Price</span>

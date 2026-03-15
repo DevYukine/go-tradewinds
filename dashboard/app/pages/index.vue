@@ -85,9 +85,11 @@ const fleetValue = computed(() =>
 )
 
 // Runway — how many hours the treasury can sustain current upkeep.
+// Upkeep is charged per 5-hour cycle, so multiply cycles by 5 for hours.
+const UPKEEP_CYCLE_HOURS = 5
 const runwayHours = computed(() => {
   if (totalUpkeep.value === 0) return Infinity
-  return totalTreasury.value / totalUpkeep.value
+  return (totalTreasury.value / totalUpkeep.value) * UPKEEP_CYCLE_HOURS
 })
 
 // Total assets = treasury + fleet value.
@@ -371,7 +373,7 @@ function companySailingCount(id: number): number {
               <span class="text-slate-600">ships</span>
             </div>
             <div v-if="companyUpkeep(company.id)" class="flex items-center gap-1">
-              <span class="text-rose-400 font-mono text-[11px]">({{ formatCurrency(companyUpkeep(company.id)) }}/hr)</span>
+              <span class="text-rose-400 font-mono text-[11px]">({{ formatCurrency(companyUpkeep(company.id)) }}/cycle)</span>
             </div>
           </div>
 

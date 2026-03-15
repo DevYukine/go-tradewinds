@@ -126,7 +126,7 @@ function strategyBadge(strategy: string): string {
           Treasury
         </div>
         <div class="text-xl font-bold text-slate-100 font-mono">{{ formatCurrency(liveTreasury) }}</div>
-        <div v-if="liveUpkeep" class="text-xs text-slate-500 font-mono mt-1">-{{ formatCurrency(liveUpkeep) }}/hr</div>
+        <div v-if="liveUpkeep" class="text-xs text-slate-500 font-mono mt-1">-{{ formatCurrency(liveUpkeep) }}/cycle</div>
       </div>
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-4">
         <div class="flex items-center gap-2 text-slate-400 text-sm mb-1.5">

@@ -114,7 +114,7 @@ const totalCapacity = computed(() =>
           <div class="text-base font-bold text-slate-100 font-mono">{{ inventory.ships.length }}</div>
         </div>
         <div class="bg-slate-900/50 rounded-lg p-2.5">
-          <div class="text-[10px] text-slate-500 uppercase tracking-wide">Upkeep/hr</div>
+          <div class="text-[10px] text-slate-500 uppercase tracking-wide">Upkeep/cycle</div>
           <div class="text-base font-bold text-amber-400 font-mono">{{ formatCurrency(inventory.total_upkeep) }}</div>
         </div>
         <div class="bg-slate-900/50 rounded-lg p-2.5">
@@ -213,7 +213,7 @@ const totalCapacity = computed(() =>
             </div>
             <div class="bg-slate-800/50 rounded px-2 py-1">
               <div class="text-[10px] text-slate-500 uppercase">Upkeep</div>
-              <div class="text-xs font-mono text-amber-400">{{ formatCurrency(ship.upkeep) }}/hr</div>
+              <div class="text-xs font-mono text-amber-400">{{ formatCurrency(ship.upkeep) }}/cycle</div>
             </div>
             <div class="bg-slate-800/50 rounded px-2 py-1">
               <div class="text-[10px] text-slate-500 uppercase">Cargo</div>
