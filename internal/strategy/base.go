@@ -584,10 +584,20 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 		}
 
 		dest := ship.Ship.ID
+		destType := "ship"
 		// Use explicit destination if provided.
 		for _, buy := range buys {
 			if buy.GoodID == r.Quote.GoodID && buy.Destination != uuid.Nil {
 				dest = buy.Destination
+				// Check if destination is a warehouse.
+				b.ctx.State.RLock()
+				for _, w := range b.ctx.State.Warehouses {
+					if w.Warehouse.ID == buy.Destination {
+						destType = "warehouse"
+						break
+					}
+				}
+				b.ctx.State.RUnlock()
 				break
 			}
 		}
@@ -595,7 +605,7 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 		execReqs = append(execReqs, api.ExecuteQuoteRequest{
 			Token: r.Token,
 			Destinations: []api.Destination{{
-				Type:     "ship",
+				Type:     destType,
 				ID:       dest,
 				Quantity: r.Quote.Quantity,
 			}},
@@ -631,6 +641,64 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 	}
 
 	return nil
+}
+
+// executeWarehouseLoads transfers goods from a warehouse onto a ship.
+func (b *baseStrategy) executeWarehouseLoads(ctx context.Context, ship *bot.ShipState, loads []agent.WarehouseTransfer) {
+	for _, load := range loads {
+		err := b.ctx.Client.TransferToShip(ctx, load.WarehouseID, api.TransferToShipRequest{
+			ShipID:   ship.Ship.ID,
+			GoodID:   load.GoodID,
+			Quantity: load.Quantity,
+		})
+		if err != nil {
+			b.logger.Debug("warehouse load failed",
+				zap.String("warehouse_id", load.WarehouseID.String()),
+				zap.Error(err),
+			)
+			continue
+		}
+		goodName := load.GoodID.String()[:8]
+		if g := b.ctx.World.GetGood(load.GoodID); g != nil {
+			goodName = g.Name
+		}
+		b.logger.Trade("loaded from warehouse",
+			zap.String("good", goodName),
+			zap.Int("quantity", load.Quantity),
+		)
+	}
+	if len(loads) > 0 {
+		b.ctx.Events.Emit(bot.EventWarehouse)
+	}
+}
+
+// executeWarehouseStores transfers goods from a ship into a warehouse.
+func (b *baseStrategy) executeWarehouseStores(ctx context.Context, ship *bot.ShipState, stores []agent.WarehouseTransfer) {
+	for _, store := range stores {
+		err := b.ctx.Client.TransferToWarehouse(ctx, ship.Ship.ID, api.TransferToWarehouseRequest{
+			WarehouseID: store.WarehouseID,
+			GoodID:      store.GoodID,
+			Quantity:    store.Quantity,
+		})
+		if err != nil {
+			b.logger.Debug("warehouse store failed",
+				zap.String("warehouse_id", store.WarehouseID.String()),
+				zap.Error(err),
+			)
+			continue
+		}
+		goodName := store.GoodID.String()[:8]
+		if g := b.ctx.World.GetGood(store.GoodID); g != nil {
+			goodName = g.Name
+		}
+		b.logger.Trade("stored in warehouse",
+			zap.String("good", goodName),
+			zap.Int("quantity", store.Quantity),
+		)
+	}
+	if len(stores) > 0 {
+		b.ctx.Events.Emit(bot.EventWarehouse)
+	}
 }
 
 // sendShipToPort sends a ship to the specified destination port.

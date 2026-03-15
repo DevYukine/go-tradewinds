@@ -322,16 +322,25 @@ type BuyOrder struct {
 	Destination uuid.UUID `json:"destination"` // Ship or warehouse ID.
 }
 
+// WarehouseTransfer describes a cargo transfer between a ship and a warehouse.
+type WarehouseTransfer struct {
+	WarehouseID uuid.UUID `json:"warehouse_id"`
+	GoodID      uuid.UUID `json:"good_id"`
+	Quantity    int       `json:"quantity"`
+}
+
 // TradeDecision is the agent's response to a trade decision request.
 type TradeDecision struct {
-	Action          string      `json:"action"`           // "buy_and_sail", "sell_and_buy", "wait", "dock"
-	SellOrders      []SellOrder `json:"sell_orders"`      // What to sell at current port.
-	BuyOrders       []BuyOrder  `json:"buy_orders"`       // What to buy before departing.
-	FillOrders      []FillOrder `json:"fill_orders"`      // P2P orders to fill at the current port.
-	BoardPassengers []uuid.UUID `json:"board_passengers"` // Passenger IDs to board before departing.
-	SailTo          *uuid.UUID  `json:"sail_to"`          // Destination port (nil = stay docked).
-	Reasoning       string      `json:"reasoning"`        // Human-readable explanation.
-	Confidence      float64     `json:"confidence"`       // 0.0-1.0, used by optimizer to weight decisions.
+	Action          string              `json:"action"`           // "buy_and_sail", "sell_and_buy", "wait", "dock"
+	SellOrders      []SellOrder         `json:"sell_orders"`      // What to sell at current port.
+	BuyOrders       []BuyOrder          `json:"buy_orders"`       // What to buy before departing.
+	FillOrders      []FillOrder         `json:"fill_orders"`      // P2P orders to fill at the current port.
+	WarehouseLoads  []WarehouseTransfer `json:"warehouse_loads"`  // Load goods from warehouse onto ship.
+	WarehouseStores []WarehouseTransfer `json:"warehouse_stores"` // Store goods from ship into warehouse.
+	BoardPassengers []uuid.UUID         `json:"board_passengers"` // Passenger IDs to board before departing.
+	SailTo          *uuid.UUID          `json:"sail_to"`          // Destination port (nil = stay docked).
+	Reasoning       string              `json:"reasoning"`        // Human-readable explanation.
+	Confidence      float64             `json:"confidence"`       // 0.0-1.0, used by optimizer to weight decisions.
 }
 
 // --- Fleet Decision ---

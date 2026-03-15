@@ -63,12 +63,14 @@ func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, por
 			b.logger.Warn("sell execution failed", zap.Error(err))
 		}
 		b.executeFills(ctx, port.ID, decision.FillOrders)
+		b.executeWarehouseLoads(ctx, ship, decision.WarehouseLoads)
 		if err := b.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
 			if api.IsBankrupt(err) {
 				return err
 			}
 			b.logger.Warn("buy execution failed", zap.Error(err))
 		}
+		b.executeWarehouseStores(ctx, ship, decision.WarehouseStores)
 		b.boardPassengers(ctx, ship, decision.BoardPassengers)
 		// Reset idle ticks on active trade.
 		b.ctx.State.Lock()
@@ -96,6 +98,8 @@ func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, por
 			b.logger.Warn("sell execution failed", zap.Error(err))
 		}
 		b.executeFills(ctx, port.ID, decision.FillOrders)
+		b.executeWarehouseLoads(ctx, ship, decision.WarehouseLoads)
+		b.executeWarehouseStores(ctx, ship, decision.WarehouseStores)
 		b.boardPassengers(ctx, ship, decision.BoardPassengers)
 		// Track idle ticks.
 		b.ctx.State.Lock()

@@ -129,6 +129,15 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 	// Attach P2P fills to the decision.
 	decision.FillOrders = fills
 
+	// Step 2.4: Warehouse operations.
+	// Load profitable warehouse inventory onto the ship, and store cheap goods
+	// when the ship has spare capacity and no better use for it.
+	if req.StrategyHint != "market_maker" {
+		loads, stores := a.warehouseOps(req, decision, priceIndex, reachable, taxIndex, currentPortID, budget, minMarginPct)
+		decision.WarehouseLoads = loads
+		decision.WarehouseStores = stores
+	}
+
 	// Step 2.5: Passenger-only destination override.
 	// If passenger revenue for the best passenger destination exceeds the
 	// expected trade PROFIT of the chosen destination, switch to the passenger destination.
@@ -1457,6 +1466,242 @@ func (a *HeuristicAgent) findShipsToSell(ships []ShipSnapshot, strategy string, 
 
 	// Sell only 1 ship per evaluation to avoid over-downsizing.
 	return []uuid.UUID{candidates[0].id}
+}
+
+// ---------------------------------------------------------------------------
+// Warehouse Operations
+// ---------------------------------------------------------------------------
+
+// warehouseOps generates warehouse load/store orders for a ship at a port.
+//
+// LOAD: If the warehouse has goods that are profitable to sell at the ship's
+// destination (or any reachable port), load them to fill remaining capacity.
+// This turns dead inventory into active trade profit.
+//
+// STORE: Only during idle/speculative decisions (low confidence), buy cheap
+// goods and store them in the warehouse for future retrieval. This is a
+// low-priority investment — never competes with active profitable trades.
+func (a *HeuristicAgent) warehouseOps(
+	req TradeDecisionRequest,
+	decision *TradeDecision,
+	priceIndex map[string]PricePoint,
+	reachable map[uuid.UUID]float64,
+	taxIndex map[uuid.UUID]int,
+	currentPortID uuid.UUID,
+	budget int64,
+	minMarginPct float64,
+) (loads []WarehouseTransfer, stores []WarehouseTransfer) {
+	// Find warehouse at this port.
+	var wh *WarehouseSnapshot
+	for i := range req.Warehouses {
+		if req.Warehouses[i].PortID == currentPortID {
+			wh = &req.Warehouses[i]
+			break
+		}
+	}
+	if wh == nil {
+		return nil, nil
+	}
+
+	buyTaxBps := taxIndex[currentPortID]
+
+	// --- LOAD: retrieve profitable goods from warehouse ---
+
+	// Calculate remaining ship capacity after buys.
+	cargoUsed := 0
+	for _, c := range req.Ship.Cargo {
+		cargoUsed += c.Quantity
+	}
+	for _, b := range decision.BuyOrders {
+		cargoUsed += b.Quantity
+	}
+	remaining := req.Ship.Capacity - cargoUsed
+
+	if remaining > 0 && len(wh.Items) > 0 {
+		// Determine the destination — either the ship's chosen destination
+		// or find the best destination for warehouse goods.
+		destID := uuid.Nil
+		if decision.SailTo != nil {
+			destID = *decision.SailTo
+		}
+
+		// Score each warehouse item by profitability at the destination (or best dest).
+		type loadCandidate struct {
+			goodID uuid.UUID
+			qty    int
+			profit int // profit per unit
+			destID uuid.UUID
+		}
+		var candidates []loadCandidate
+
+		for _, item := range wh.Items {
+			if item.Quantity <= 0 {
+				continue
+			}
+			// If we have a destination, check profit there.
+			// Otherwise, find the best reachable destination.
+			bestProfit := 0
+			bestDest := uuid.Nil
+
+			checkDest := func(dID uuid.UUID) {
+				dp, ok := priceIndex[priceKey(dID, item.GoodID)]
+				if !ok || dp.SellPrice <= 0 {
+					return
+				}
+				sellTax := dp.SellPrice * taxIndex[dID] / 10000
+				// No buy tax — goods are already in warehouse.
+				profit := dp.SellPrice - sellTax
+				if profit > bestProfit {
+					bestProfit = profit
+					bestDest = dID
+				}
+			}
+
+			if destID != uuid.Nil {
+				checkDest(destID)
+			}
+			// Also check other reachable ports for better options.
+			for portID := range reachable {
+				checkDest(portID)
+			}
+
+			if bestProfit > 0 && bestDest != uuid.Nil {
+				candidates = append(candidates, loadCandidate{
+					goodID: item.GoodID,
+					qty:    item.Quantity,
+					profit: bestProfit,
+					destID: bestDest,
+				})
+			}
+		}
+
+		// Sort by profit descending and fill remaining capacity.
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].profit > candidates[j].profit
+		})
+
+		for _, c := range candidates {
+			if remaining <= 0 {
+				break
+			}
+			qty := c.qty
+			if qty > remaining {
+				qty = remaining
+			}
+			loads = append(loads, WarehouseTransfer{
+				WarehouseID: wh.ID,
+				GoodID:      c.goodID,
+				Quantity:    qty,
+			})
+			remaining -= qty
+
+			// If no destination chosen yet, use the best dest for warehouse goods.
+			if decision.SailTo == nil {
+				decision.SailTo = &c.destID
+				decision.Action = "sell_and_buy"
+				decision.Reasoning += " + loaded warehouse goods for sale"
+			}
+		}
+	}
+
+	// --- STORE: buy cheap goods into warehouse (low-priority, idle only) ---
+
+	// Only store during speculative/idle decisions (confidence <= 0.5) to avoid
+	// competing with profitable trades.
+	if decision.Confidence > 0.5 {
+		return loads, nil
+	}
+
+	// Calculate warehouse free space.
+	warehouseUsed := 0
+	for _, item := range wh.Items {
+		warehouseUsed += item.Quantity
+	}
+	warehouseFree := wh.Capacity - warehouseUsed
+	if warehouseFree <= 0 {
+		return loads, nil
+	}
+
+	// Don't spend more than 25% of available budget on warehouse speculation.
+	storeBudget := budget / 4
+	if storeBudget <= 0 {
+		return loads, nil
+	}
+
+	// Find goods at this port that are cheap relative to their sell price elsewhere.
+	type storeCandidate struct {
+		goodID   uuid.UUID
+		buyPrice int
+		margin   float64 // best sell margin across all reachable ports
+	}
+	var storeCandidates []storeCandidate
+
+	for _, pp := range req.PriceCache {
+		if pp.PortID != currentPortID || pp.BuyPrice <= 0 {
+			continue
+		}
+		buyTaxCost := pp.BuyPrice * buyTaxBps / 10000
+		totalBuyCost := pp.BuyPrice + buyTaxCost
+
+		// Find the best sell price across all known ports (not just reachable).
+		bestMargin := 0.0
+		for _, sp := range req.PriceCache {
+			if sp.PortID == currentPortID || sp.SellPrice <= 0 || sp.GoodID != pp.GoodID {
+				continue
+			}
+			sellTax := sp.SellPrice * taxIndex[sp.PortID] / 10000
+			netSell := sp.SellPrice - sellTax
+			margin := float64(netSell-totalBuyCost) / float64(totalBuyCost)
+			if margin > bestMargin {
+				bestMargin = margin
+			}
+		}
+
+		// Only store if at least 15% margin — this is speculative so be pickier.
+		if bestMargin >= 0.15 {
+			storeCandidates = append(storeCandidates, storeCandidate{
+				goodID:   pp.GoodID,
+				buyPrice: pp.BuyPrice,
+				margin:   bestMargin,
+			})
+		}
+	}
+
+	// Sort by margin descending.
+	sort.Slice(storeCandidates, func(i, j int) bool {
+		return storeCandidates[i].margin > storeCandidates[j].margin
+	})
+
+	// Buy goods directly into the warehouse.
+	for _, sc := range storeCandidates {
+		if warehouseFree <= 0 || storeBudget <= 0 {
+			break
+		}
+		qty := int(storeBudget / int64(sc.buyPrice))
+		if qty <= 0 {
+			continue
+		}
+		if qty > warehouseFree {
+			qty = warehouseFree
+		}
+
+		// Instead of executing a buy here (agent doesn't do API calls),
+		// add a BuyOrder with the warehouse as destination.
+		decision.BuyOrders = append(decision.BuyOrders, BuyOrder{
+			GoodID:      sc.goodID,
+			Quantity:    qty,
+			Destination: wh.ID,
+		})
+		warehouseFree -= qty
+		storeBudget -= int64(qty * sc.buyPrice)
+
+		if decision.Action == "wait" {
+			decision.Action = "sell_and_buy"
+		}
+		decision.Reasoning += fmt.Sprintf(" + storing %d units in warehouse (%.0f%% margin)", qty, sc.margin*100)
+	}
+
+	return loads, nil
 }
 
 func (a *HeuristicAgent) buildPortTaxIndex(ports []PortInfo) map[uuid.UUID]int {

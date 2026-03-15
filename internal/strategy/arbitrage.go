@@ -78,6 +78,8 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 		}
 		// Fill P2P orders.
 		a.executeFills(ctx, port.ID, decision.FillOrders)
+		// Load goods from warehouse onto ship (before buying, to fill capacity).
+		a.executeWarehouseLoads(ctx, ship, decision.WarehouseLoads)
 		// Then buy.
 		if err := a.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
 			if api.IsBankrupt(err) {
@@ -85,6 +87,8 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 			}
 			a.logger.Warn("buy execution failed", zap.Error(err))
 		}
+		// Store goods into warehouse (excess cargo for later).
+		a.executeWarehouseStores(ctx, ship, decision.WarehouseStores)
 		// Board passengers.
 		a.boardPassengers(ctx, ship, decision.BoardPassengers)
 		// Reset idle ticks on active trade.
@@ -115,6 +119,8 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 			a.logger.Warn("sell execution failed", zap.Error(err))
 		}
 		a.executeFills(ctx, port.ID, decision.FillOrders)
+		a.executeWarehouseLoads(ctx, ship, decision.WarehouseLoads)
+		a.executeWarehouseStores(ctx, ship, decision.WarehouseStores)
 		a.boardPassengers(ctx, ship, decision.BoardPassengers)
 		// Track idle ticks for the ship.
 		a.ctx.State.Lock()

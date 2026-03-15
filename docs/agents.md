@@ -69,6 +69,12 @@ Hand-coded rules adapting to strategy hints.
 - Score: `totalCargoProfit + passengerRevenue / distance * PassengerWeight + heldCargoGain + routeHistoryBonus + opportunityBonus`
 - Uses `ship.Capacity` instead of hardcoded limits
 
+#### Warehouse Operations (`warehouseOps`)
+- Integrated into arbitrage and bulk hauler trade decisions (not market_maker)
+- **LOAD (warehouse → ship)**: When docked at a port with a warehouse, check inventory for goods profitable to sell at the destination (or any reachable port). Load onto ship to fill remaining capacity. No buy tax since goods are already owned.
+- **STORE (buy → warehouse)**: Low-priority fallback, only during idle/speculative decisions (confidence ≤ 0.5). Buy cheap goods at the current port and store in warehouse when sell margin ≥ 15% at any known port. Limited to 25% of available budget to avoid over-investing.
+- Store destinations use `BuyOrder.Destination = warehouse_id` with `type: "warehouse"` in the API call
+
 #### Speculative (`speculativeTrade`)
 - Triggered when no profitable trade meets minimum margin
 - Priority: (1) sail to best passenger revenue destination, (2) sail to ProfitAnalyzer opportunity buy port, (3) after 2+ idle ticks → relocate to nearest hub port or opportunity sell port, (4) first tick only → wait briefly for price refresh
@@ -149,7 +155,7 @@ Routes decisions between fast (heuristic) and slow (LLM) agents:
 - `StrategyEvalRequest` — Strategy metrics array
 
 ### Response Types
-- `TradeDecision` — SellOrders, BuyOrders, BoardPassengers, SailTo, Confidence
+- `TradeDecision` — SellOrders, BuyOrders, WarehouseLoads, WarehouseStores, BoardPassengers, SailTo, Confidence
 - `FleetDecision` — BuyShips, SellShips, BuyWarehouses
 - `MarketDecision` — FillOrders, PostOrders, CancelOrders
 - `StrategyEvaluation` — ParamChanges, SwitchTo
