@@ -370,7 +370,7 @@ function companySailingCount(id: number): number {
               v-if="company.agent_name && company.agent_name !== 'heuristic'"
               class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 truncate max-w-[140px]"
               :title="company.agent_name"
-            >{{ company.agent_name }}</span>
+            >{{ company.agent_name.replace(/^llm:/, '') }}</span>
           </div>
 
           <!-- Treasury + Bar -->

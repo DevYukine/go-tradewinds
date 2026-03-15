@@ -396,7 +396,7 @@ function confidenceColor(confidence: number): string {
                 <td class="py-1.5 pr-3 text-xs text-slate-500 font-mono whitespace-nowrap">
                   {{ formatTime(order.created_at) }}
                 </td>
-                <td class="py-1.5 pr-3 text-xs text-slate-300">{{ order.agent_name }}</td>
+                <td class="py-1.5 pr-3 text-xs text-slate-300">{{ order.agent_name.replace(/^llm:/, '') }}</td>
                 <td class="py-1.5 pr-3 text-right font-mono text-xs" :class="confidenceColor(order.confidence)">
                   {{ (order.confidence * 100).toFixed(0) }}%
                 </td>

@@ -219,7 +219,7 @@ function actionLabel(decision: AgentDecision): string | null {
               :name="decisionTypeIcon(decision.decision_type)"
               class="text-slate-400 flex-shrink-0"
             />
-            <span class="text-sm font-medium text-slate-200">{{ decision.agent_name }}</span>
+            <span class="text-sm font-medium text-slate-200">{{ decision.agent_name.replace(/^llm:/, '') }}</span>
             <span
               class="px-1.5 py-0.5 rounded text-[10px] font-medium"
               :class="decisionTypeColor(decision.decision_type)"
