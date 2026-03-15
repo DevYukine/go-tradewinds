@@ -158,6 +158,13 @@ Aggregated per-strategy performance per eval period.
 - **PriceObservation** — NPC prices per port+good
 - **AgentDecisionLog** — Full request/response/reasoning for each decision
 
+## Migrations (`internal/db/db.go`)
+
+SQL migrations via [goose](https://github.com/pressly/goose) with embedded filesystem (`//go:embed migrations/*.sql`).
+- Migrations run automatically on startup via `goose.Up()`
+- Migration files live in `internal/db/migrations/` using `-- +goose Up` / `-- +goose Down` annotations
+- All migrations use `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` for idempotency
+
 ## Retention Pruning (`internal/db/retention.go`)
 
 Background goroutine, checks every 1 hour:
@@ -167,6 +174,4 @@ Background goroutine, checks every 1 hour:
 | PriceObservation | 7 days |
 | AgentDecisionLog | 30 days |
 | QuoteFailureLog | 7 days |
-| All other new tables | permanent (no pruning) |
-
-`AllModels()` returns all models for auto-migration.
+| All other tables | permanent (no pruning) |

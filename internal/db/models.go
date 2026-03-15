@@ -256,24 +256,3 @@ type ParamExperimentLog struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
-// AllModels returns all GORM models for auto-migration.
-func AllModels() []any {
-	return []any{
-		&CompanyRecord{},
-		&TradeLog{},
-		&PnLSnapshot{},
-		&StrategyMetric{},
-		&CompanyLog{},
-		&PriceObservation{},
-		&AgentDecisionLog{},
-		&RoutePerformance{},
-		&PassengerLog{},
-		&CompanyParams{},
-		&ParamExperimentLog{},
-		&ShipEventLog{},
-		&WarehouseEventLog{},
-		&P2POrderLog{},
-		&StrategyChangeLog{},
-		&QuoteFailureLog{},
-	}
-}

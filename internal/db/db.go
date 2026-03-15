@@ -3,8 +3,10 @@ package db
 import (
 	"context"
 	"database/sql"
+	"embed"
 	"time"
 
+	"github.com/pressly/goose/v3"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
@@ -20,13 +22,16 @@ const (
 	connMaxLifetime = 5 * time.Minute
 )
 
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
+
 // Module provides the GORM database connection and retention pruner to the fx DI container.
 var Module = fx.Module("db",
 	fx.Provide(NewConnection),
 	fx.Invoke(RegisterRetentionPruner),
 )
 
-// NewConnection creates a GORM database connection, runs auto-migrations,
+// NewConnection creates a GORM database connection, runs goose migrations,
 // configures connection pooling, and registers lifecycle hooks for clean shutdown.
 func NewConnection(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*gorm.DB, error) {
 	log := logger.Named("db")
@@ -53,8 +58,8 @@ func NewConnection(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*go
 	sqlDB.SetMaxIdleConns(maxIdleConns)
 	sqlDB.SetConnMaxLifetime(connMaxLifetime)
 
-	// Run auto-migrations.
-	if err := db.AutoMigrate(AllModels()...); err != nil {
+	// Run goose migrations.
+	if err := runMigrations(sqlDB, log); err != nil {
 		return nil, err
 	}
 
@@ -71,6 +76,18 @@ func NewConnection(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*go
 	})
 
 	return db, nil
+}
+
+// runMigrations applies pending goose migrations from the embedded filesystem.
+func runMigrations(sqlDB *sql.DB, logger *zap.Logger) error {
+	goose.SetLogger(&gooseLogger{logger: logger.Named("goose")})
+	goose.SetBaseFS(migrationsFS)
+
+	if err := goose.SetDialect("postgres"); err != nil {
+		return err
+	}
+
+	return goose.Up(sqlDB, "migrations")
 }
 
 // closeDB closes the underlying sql.DB connection pool.
