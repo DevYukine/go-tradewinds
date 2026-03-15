@@ -19,5 +19,7 @@ func NewRegistry() bot.Registry {
 		"bulk_hauler":      NewBulkHauler,
 		"market_maker":     NewMarketMaker,
 		"passenger_sniper": NewPassengerSniper,
+		"feeder":           NewFeeder,
+		"harvester":        NewHarvester,
 	}
 }

@@ -23,6 +23,8 @@ Maps names to factory functions:
 - `"bulk_hauler"` → `NewBulkHauler`
 - `"market_maker"` → `NewMarketMaker`
 - `"passenger_sniper"` → `NewPassengerSniper`
+- `"feeder"` → `NewFeeder`
+- `"harvester"` → `NewHarvester`
 
 ## Base Strategy (`internal/strategy/base.go`)
 
@@ -104,6 +106,47 @@ Pure passenger revenue focus — tax-free, low-cost, high frequency.
 - **Coordinator integration**: Uses `Coordinator` for passenger claim coordination across companies to avoid conflicts
 - `OnShipArrival`: Same flow as arbitrage with passenger-optimized scoring
 - `OnTick`: Fleet eval every 3 min (configurable via `FleetEvalIntervalSec` param)
+
+## Feeder Strategy (`internal/strategy/feeder.go`)
+
+Bailout exploitation — drains treasury to trigger bankruptcy bailouts. No agent involvement; all decisions are hardcoded.
+
+- **Purpose**: Spend money as fast as possible by buying and selling goods at the same port (net loss from spread + double tax), then post inflated P2P buy orders for the harvester to fill.
+- **Coordination**: Uses shared `schemeState` (package-level) to coordinate with harvester on target port and stocking status.
+- `OnShipArrival`: If not at target port → sail there. At target port → sell all cargo → buy cheapest goods → check treasury for rotation.
+- `OnTick`:
+  - When `schemeIsStocked()` is true: post P2P buy orders at 1.75x NPC price every 15s (1 per good, budget = treasury / numGoods). Skips goods with existing orders.
+  - Cancel stale orders at non-target ports after rotation.
+  - Fleet eval: buys up to 3 cheap ships for faster treasury drain.
+- **Bankruptcy cycle**: Ships buy → sell back at same port → net loss from spread + double tax → treasury drains → bankrupt → bailed out → repeat.
+
+## Harvester Strategy (`internal/strategy/harvester.go`)
+
+Profit extraction — fills inflated feeder P2P orders from pre-stocked warehouse inventory. No agent involvement.
+
+- **Purpose**: Pre-stock goods at the target port warehouse, then fill feeder buy orders at inflated prices for profit.
+- **Supply chain loop**: Sail to non-target port → buy cheap goods → sail to target → store in warehouse → repeat until stocked.
+- `OnShipArrival`:
+  - Non-target port: sell cargo at NPC prices, buy cheap goods, sail to target port.
+  - Target port: store cargo in warehouse (don't sell to NPC), buy more, store again, then sail to resupply port.
+- `OnTick` (three periodic tasks):
+  - **Order scan (10s)**: When stocked, list buy orders at target port, fill from warehouse stock. Skip own company's orders. Logs estimated profit.
+  - **Stocking check (every tick)**: Count warehouse + docked ship cargo. If ≥ 3 ships' worth → `schemeSetStocked(true)`. If depleted → `schemeSetStocked(false)`.
+  - **Fleet eval (3 min)**: Buy warehouses at target + next port. Buy ships aggressively (target 6+, largest cargo capacity type).
+- **Anti-snipe**: Feeders don't post orders until harvester signals stocked; harvester fills from pre-positioned warehouse inventory within 10s.
+
+### Scheme Coordination (`internal/strategy/scheme.go`)
+
+Shared state for feeder/harvester coordination (package-level, no DB):
+- **Port rotation**: Sorted list of all ports. `schemeAdvancePort()` uses atomic CAS.
+- **Stocking signal**: `schemeStocked` atomic bool. Harvester sets true when stocked; feeders check before posting P2P orders. Resets on port advance.
+- **Phase flow**: Stocking → Extraction → Rotation → repeat.
+
+### Configuration
+
+```
+STRATEGY_ALLOCATION="feeder:6,harvester:1"
+```
 
 ## Configurable Parameters
 
