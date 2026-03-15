@@ -125,7 +125,7 @@ func Load() (*Config, error) {
 			LLMProvider:        os.Getenv("LLM_PROVIDER"),
 			LLMModel:           os.Getenv("LLM_MODEL"),
 			LLMAPIKey:          os.Getenv("LLM_API_KEY"),
-			LLMMaxTokens:       envIntOrDefault("LLM_MAX_TOKENS", 4096),
+			LLMMaxTokens:       envIntOrDefault("LLM_MAX_TOKENS", 8192),
 			CompositeFastAgent: envOrDefault("COMPOSITE_FAST_AGENT", "heuristic"),
 			CompositeSlowAgent: envOrDefault("COMPOSITE_SLOW_AGENT", "llm"),
 			ClaudeAPIKey:       os.Getenv("CLAUDE_API_KEY"),

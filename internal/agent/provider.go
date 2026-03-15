@@ -10,6 +10,14 @@ import (
 	"time"
 )
 
+// truncateBody limits a response body string to maxLen characters for error messages.
+func truncateBody(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "...(truncated)"
+}
+
 // LLMProvider abstracts an LLM backend so the agent can call different
 // services (Anthropic, OpenAI, Ollama) through a uniform interface.
 type LLMProvider interface {
@@ -77,7 +85,7 @@ func (p *ClaudeProvider) Complete(ctx context.Context, systemPrompt, userPrompt 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("claude: HTTP %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("claude: HTTP %d: %s", resp.StatusCode, truncateBody(string(respBody), 500))
 	}
 
 	var result struct {
@@ -93,7 +101,7 @@ func (p *ClaudeProvider) Complete(ctx context.Context, systemPrompt, userPrompt 
 	}
 	content := result.Content[0].Text
 	if content == "" {
-		return "", fmt.Errorf("claude: empty text in response: %s", string(respBody))
+		return "", fmt.Errorf("claude: empty text in response: %s", truncateBody(string(respBody), 500))
 	}
 	return content, nil
 }
@@ -156,15 +164,17 @@ func (p *OpenAIProvider) Complete(ctx context.Context, systemPrompt, userPrompt 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("openai: HTTP %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("openai: HTTP %d: %s", resp.StatusCode, truncateBody(string(respBody), 500))
 	}
 
 	var result struct {
 		Choices []struct {
-			Message struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return "", fmt.Errorf("openai: unmarshal response: %w", err)
@@ -174,7 +184,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, systemPrompt, userPrompt 
 	}
 	content := result.Choices[0].Message.Content
 	if content == "" {
-		return "", fmt.Errorf("openai: empty content in response (finish_reason may be length or refusal): %s", string(respBody))
+		return "", fmt.Errorf("openai: empty content (model=%s, finish_reason=%s)", result.Model, result.Choices[0].FinishReason)
 	}
 	return content, nil
 }
@@ -198,7 +208,7 @@ func NewOpenRouterProvider(apiKey, model string, maxTokens int) *OpenRouterProvi
 		apiKey: apiKey,
 		model:  model,
 		maxTok: maxTokens,
-		client: &http.Client{Timeout: 60 * time.Second},
+		client: &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -210,6 +220,9 @@ func (p *OpenRouterProvider) Complete(ctx context.Context, systemPrompt, userPro
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": userPrompt},
 		},
+		// Disable extended thinking/reasoning for models that support it.
+		// Reasoning models burn tokens on internal CoT, leaving none for content.
+		"reasoning": map[string]any{"effort": "none"},
 	}
 
 	data, err := json.Marshal(body)
@@ -238,15 +251,18 @@ func (p *OpenRouterProvider) Complete(ctx context.Context, systemPrompt, userPro
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("openrouter: HTTP %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("openrouter: HTTP %d: %s", resp.StatusCode, truncateBody(string(respBody), 500))
 	}
 
 	var result struct {
 		Choices []struct {
-			Message struct {
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Model    string `json:"model"`
+		Provider string `json:"provider"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return "", fmt.Errorf("openrouter: unmarshal response: %w", err)
@@ -256,8 +272,7 @@ func (p *OpenRouterProvider) Complete(ctx context.Context, systemPrompt, userPro
 	}
 	content := result.Choices[0].Message.Content
 	if content == "" {
-		// Some models return empty content on max_tokens hit or refusal.
-		return "", fmt.Errorf("openrouter: empty content in response (finish_reason may be length or refusal): %s", string(respBody))
+		return "", fmt.Errorf("openrouter: empty content (model=%s, provider=%s, finish_reason=%s)", result.Model, result.Provider, result.Choices[0].FinishReason)
 	}
 	return content, nil
 }
@@ -315,7 +330,7 @@ func (p *OllamaProvider) Complete(ctx context.Context, systemPrompt, userPrompt 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("ollama: HTTP %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("ollama: HTTP %d: %s", resp.StatusCode, truncateBody(string(respBody), 500))
 	}
 
 	var result struct {
