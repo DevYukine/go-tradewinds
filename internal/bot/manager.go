@@ -436,6 +436,7 @@ var ffxivNames = []struct {
 	Name   string // Company name: "<Character>'s <Venture>"
 	Ticker string // 3-5 char ticker derived from the character
 }{
+	// Scions of the Seventh Dawn
 	{"Alphinaud's Ventures", "ALPHI"},
 	{"Alisaie's Expeditions", "ALISA"},
 	{"Y'shtola's Consortium", "YSHTO"},
@@ -446,16 +447,79 @@ var ffxivNames = []struct {
 	{"Tataru's Goldworks", "TATAR"},
 	{"Krile's Shipments", "KRILE"},
 	{"Minfilia's Commerce", "MINFI"},
+	{"Lyse's Exports", "LYSE"},
+	{"Papalymo's Ledgers", "PAPAL"},
+	{"Ryne's Caravans", "RYNE"},
+
+	// Ishgard & Coerthas
 	{"Haurchefant's Guild", "HAUCH"},
 	{"Aymeric's Holdings", "AYMRC"},
+	{"Lucia's Requisitions", "LUCIA"},
+	{"Francel's Skyworks", "FRNCE"},
+	{"Iceheart's Compact", "YSAYL"},
+	{"Hilda's Brume Trade", "HILDA"},
+
+	// Ala Mhigo & Doma
 	{"Hien's Trade Routes", "HIEN"},
 	{"Yugiri's Supply Co", "YUGIR"},
-	{"Cid's Ironworks", "CID"},
+	{"Fordola's Salvage", "FORDO"},
+	{"Gosetsu's Freight", "GOSET"},
+	{"Cirina's Steppe Co", "CIRIN"},
+	{"Sadu's Warband Trade", "SADU"},
+
+	// Garleans & Antagonists
 	{"Emet-Selch's Legacy", "EMETS"},
-	{"Lyse's Exports", "LYSE"},
 	{"Nero's Machinations", "NERO"},
-	{"Ryne's Caravans", "RYNE"},
+	{"Zenos' Hunting Lodge", "ZENOS"},
+	{"Gaius' Arsenal", "GAIUS"},
+	{"Lahabrea's Pyre", "LAHAB"},
+	{"Elidibus' Covenant", "ELIDI"},
+	{"Varis' Imperial Co", "VARIS"},
+	{"Fandaniel's Follies", "FANDA"},
+
+	// Ancients & Elpis
+	{"Venat's Foresight", "VENAT"},
+	{"Hermes' Elpis Ltd", "HERMS"},
+	{"Hythlodaeus' Curios", "HYTHY"},
+	{"Meteion's Star Trade", "METEI"},
+
+	// ShB & EW Characters
 	{"Lyna's Guard Trade", "LYNA"},
+	{"Ardbert's Resolve", "ARDBT"},
+	{"Ran'jit's Armory", "RANJT"},
+	{"Dulia-Chai's Sweets", "DULIA"},
+	{"Chai-Nuzz's Works", "CHAIN"},
+	{"Vrtra's Hoard", "VRTRA"},
+	{"Varshahn's Exchange", "VARSH"},
+	{"Zero's Void Imports", "ZERO"},
+	{"Wuk Lamat's Bounty", "WUKLA"},
+
+	// Hildibrand & Friends
+	{"Hildibrand's Agency", "HILDI"},
+	{"Godbert's Goldsmith", "GODBT"},
+	{"Nashu's Fireworks", "NASHU"},
+	{"Julyan's Frypan Co", "JULYN"},
+
+	// Crafters & Merchants
+	{"Cid's Ironworks", "CID"},
+	{"Jessie's Supplies", "JESSI"},
+	{"Gerolt's Forgeworks", "GERLT"},
+	{"Rowena's Scrip Shop", "ROWNA"},
+	{"Serendipity's Gems", "SEREN"},
+
+	// Beast Tribe Leaders
+	{"Amalj'aa Flamelord", "AMLJT"},
+	{"Vidofnir's Hatchery", "VIDOF"},
+	{"Ohl Deeh's Lodge", "OHDEE"},
+	{"Feo Ul's Pixie Post", "FEOUL"},
+	{"Giott's Ale Runners", "GIOTT"},
+
+	// City-State Leaders
+	{"Nanamo's Crown Trade", "NANAM"},
+	{"Kan-E-Senna's Grove", "KANES"},
+	{"Merlwyb's Armada", "MERLW"},
+	{"Raubahn's Bull Market", "RAUBN"},
+	{"Lolorito's Syndicate", "LOLRT"},
 }
 
 // nameIndex tracks how many names have been assigned so far.
