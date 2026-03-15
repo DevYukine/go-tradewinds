@@ -41,6 +41,7 @@ type Manager struct {
 	registry    Registry
 	scaler      *Scaler
 	scanner     *Scanner
+	coordinator *Coordinator
 	companies   map[string]*CompanyRunner
 	mu          sync.RWMutex
 	wg          sync.WaitGroup
@@ -78,6 +79,7 @@ func NewManager(
 		agent:       agnt,
 		registry:    registry,
 		scaler:      NewScaler(rateLimiter, logger),
+		coordinator: NewCoordinator(),
 		companies:   make(map[string]*CompanyRunner),
 	}
 }
@@ -415,6 +417,7 @@ func (m *Manager) setupRunner(
 		World:          m.worldData,
 		PriceCache:     m.priceCache,
 		ProfitAnalyzer: m.profitAnalyzer,
+		Coordinator:    m.coordinator,
 		Agent:          companyAgent,
 		Logger:         companyLogger,
 		Events:         events,
@@ -437,6 +440,7 @@ func (m *Manager) setupRunner(
 		companyLogger,
 		dbRecord,
 		events,
+		m.coordinator,
 	), nil
 }
 
@@ -599,6 +603,8 @@ func (m *Manager) startWorldRefresher(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				// Periodically clean up expired coordinator claims.
+				m.coordinator.Cleanup()
 				newPorts := m.worldData.RefreshWorldData(ctx, m.baseClient, m.logger)
 				// Immediately scan prices for newly discovered ports so the
 				// agent can evaluate them as destinations right away.

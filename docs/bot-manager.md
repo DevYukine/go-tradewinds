@@ -9,6 +9,7 @@ Orchestrates all company runners with shared resources.
 - **rateLimiter** — Fixed window (60s reset), 900 req/min, priority-based
 - **worldData** — `WorldCache` with ports, goods, routes, ship types
 - **priceCache** — `PriceCache` with NPC buy/sell prices (updated by scanner)
+- **coordinator** — `Coordinator` for route deconfliction and passenger claiming across companies
 - **agent** — AI decision agent (heuristic/LLM/composite)
 - **registry** — Strategy factories
 
@@ -29,7 +30,7 @@ Orchestrates all company runners with shared resources.
 
 ## CompanyRunner (`internal/bot/company_runner.go`)
 
-Manages the lifecycle of a single company.
+Manages the lifecycle of a single company. Receives the shared `Coordinator` for passenger claim coordination.
 
 ### Main Loop (`Run`)
 ```
@@ -83,6 +84,7 @@ Thread-safe in-memory state per company.
 - `DockedShips()` — All ships with status "docked"
 - `TreasuryFloor()` — `TotalUpkeep * 2`
 - `ShipState.UsedCapacity()` — Sum of cargo quantities
+- `RemoveWarehouse(id)` — Remove a demolished warehouse from state
 
 ## Scaler (`internal/bot/scaler.go`)
 
@@ -93,6 +95,15 @@ Calculates safe company counts based on rate limit budget.
 - `targetUtilization = 0.80` — 20% headroom
 - Min 2 companies per strategy for statistical comparison
 - Assigns diversified home ports (round-robin)
+
+## Coordinator (`internal/bot/coordinator.go`)
+
+Route deconfliction and passenger claiming across all companies.
+
+- **Route deconfliction**: Filters claimed routes from trade requests so companies don't compete with each other on the same routes
+- **Passenger claiming**: Coordinates passenger sniping across companies to avoid multiple companies racing for the same passenger group
+- **ClaimedRoutes**: Exposed via `TradeDecisionRequest.ClaimedRoutes` so agents can avoid self-competition
+- Shared by all `CompanyRunner` instances via the `StrategyContext`
 
 ## Scanner (`internal/bot/scanner.go`)
 

@@ -14,7 +14,7 @@ type Strategy interface {
 }
 ```
 
-`StrategyContext` provides: Client, State, World, PriceCache, ProfitAnalyzer, Agent, Logger, Events, DB.
+`StrategyContext` provides: Client, State, World, PriceCache, ProfitAnalyzer, Agent, Logger, Events, DB, Coordinator.
 
 ## Registry (`internal/strategy/registry.go`)
 
@@ -22,13 +22,14 @@ Maps names to factory functions:
 - `"arbitrage"` → `NewArbitrage`
 - `"bulk_hauler"` → `NewBulkHauler`
 - `"market_maker"` → `NewMarketMaker`
+- `"passenger_sniper"` → `NewPassengerSniper`
 
 ## Base Strategy (`internal/strategy/base.go`)
 
 Shared logic used by all strategies.
 
 ### On-Demand Price Scanning
-- `ensurePortPrices(ctx, port)` — Checks if port prices are stale (>3 min) or missing, fetches fresh buy/sell quotes on demand using `PriorityNormal`. Called automatically by `buildTradeRequestWithPassengers` so ships never make trade decisions with missing price data.
+- `ensurePortPrices(ctx, port)` — Checks if port prices are stale (>90s) or missing, fetches fresh buy/sell quotes on demand using `PriorityNormal`. Called automatically by `buildTradeRequestWithPassengers` so ships never make trade decisions with missing price data.
 
 ### Request Builders
 - `buildTradeRequest(ship, port)` — Assembles TradeDecisionRequest from state, includes `Params` map from `CompanyState.Params`
@@ -41,7 +42,7 @@ Shared logic used by all strategies.
 - `sendShipToPort(ctx, ship, destPortID)` — Find route, send transit, update local state immediately
 
 ### Fleet Execution
-- `executeFleetDecision(ctx, decision)` — Sell ships, buy ships (with fallback), buy warehouses
+- `executeFleetDecision(ctx, decision)` — Sell ships, buy ships (with fallback), buy warehouses, execute warehouse actions (grow/shrink/demolish)
 - `tryBuyShip(ctx, purchase)` — Check shipyard inventory, try exact type then cheapest, try multiple ports
 
 ### Logging
@@ -88,11 +89,21 @@ High-volume trading with large ships.
 
 ## Market Maker Strategy (`internal/strategy/market_maker.go`)
 
-P2P market trading + NPC trading.
+P2P market trading + NPC trading. Not included in default allocation but still available.
 
 - `OnShipArrival`: Same NPC trade flow as arbitrage
 - `OnTick`: Fleet eval (3 min) + market eval (1 min) — both configurable via params
 - `evaluateMarket`: Fetch all open orders + own orders → agent decides → fill orders, post new orders, cancel stale orders
+
+## Passenger Sniper Strategy (`internal/strategy/passenger_sniper.go`)
+
+Pure passenger revenue focus — tax-free, low-cost, high frequency.
+
+- **Ship preference**: Cheapest ships with passenger slots, max fleet 12. Sells highest-upkeep ships when decommissioning.
+- **Geographic spreading**: Ships spread across ports for maximum passenger coverage
+- **Coordinator integration**: Uses `Coordinator` for passenger claim coordination across companies to avoid conflicts
+- `OnShipArrival`: Same flow as arbitrage with passenger-optimized scoring
+- `OnTick`: Fleet eval every 3 min (configurable via `FleetEvalIntervalSec` param)
 
 ## Configurable Parameters
 
@@ -102,7 +113,7 @@ All strategies read timing intervals from `CompanyState.Params` (set by the opti
 |-----------|---------|---------|
 | `FleetEvalIntervalSec` | 180 (3 min) | All strategies |
 | `MarketEvalIntervalSec` | 60 (1 min) | Market Maker |
-| `MinMarginPct` | 0.05 (5%) | Heuristic agent trade decisions |
+| `MinMarginPct` | 0.08 (8%) | Heuristic agent trade decisions |
 | `PassengerWeight` | 5.0 | Heuristic agent destination scoring |
 | `PassengerDestBonus` | 5.0 | Heuristic agent passenger selection |
 | `SpeculativeTradeEnabled` | true | Heuristic agent fallback behavior |
@@ -110,7 +121,7 @@ All strategies read timing intervals from `CompanyState.Params` (set by the opti
 ## Profitability Guards
 
 The heuristic agent enforces several guards to prevent money-losing trades:
-- **Minimum margin**: trades must exceed `MinMarginPct` (default 5%) of buy price
+- **Minimum margin**: trades must exceed `MinMarginPct` (default 8%) of buy price
 - **Sell-side tax**: profit calculation includes both buy and sell port taxes
 - **Idle relocation**: after 2+ idle ticks (~60s), ships relocate to the nearest hub port or opportunity port instead of sitting idle. Hub ports are preferred because they have more trade variety.
 - **Speculative sailing**: when enabled (default), ships sail to opportunity buy ports from the ProfitAnalyzer when no local trade is profitable
@@ -142,12 +153,18 @@ Trade decisions evaluate **all** reachable destinations, not just the single
 best individual opportunity. For each destination, the agent simulates filling
 the entire ship with profitable goods and computes a composite score:
 
-| Factor | Arbitrage Weight | Bulk Hauler Weight |
-|--------|------------------|--------------------|
-| Total achievable cargo profit | ÷ distance | absolute |
-| Passenger revenue at destination | ÷ distance × passengerWeight | ÷ distance × passengerWeight |
-| Held cargo profit gain | ÷ distance | absolute |
-| Route history bonus (avg past profit) | ÷ distance | absolute |
+All strategies now use **profit-per-minute** scoring:
+```
+score = (cargoProfit - travelUpkeep) / totalTripMinutes
+totalTripMinutes = distance / speed + 2
+```
+
+| Factor | Weight |
+|--------|--------|
+| Total achievable cargo profit minus travel upkeep | ÷ totalTripMinutes |
+| Passenger revenue at destination | ÷ totalTripMinutes × passengerWeight |
+| Held cargo profit gain | ÷ totalTripMinutes |
+| Route history bonus (avg past profit) | ÷ totalTripMinutes |
 
 ### Passenger Override
 

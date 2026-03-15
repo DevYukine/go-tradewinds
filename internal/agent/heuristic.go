@@ -113,7 +113,7 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 	// Read tunable params with defaults.
 	passengerWeight := getParam(req.Params, "passengerWeight", 8.0)
 	passengerDestBonus := getParam(req.Params, "passengerDestBonus", 8.0)
-	minMarginPct := getParam(req.Params, "minMarginPct", 0.03)
+	minMarginPct := getParam(req.Params, "minMarginPct", 0.08)
 	speculativeEnabled := getParam(req.Params, "speculativeTradeEnabled", 0.0) > 0.5
 
 	// Build route history bonus index for destination scoring.
@@ -315,6 +315,12 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 	now := time.Now()
 	speed := math.Max(float64(req.Ship.Speed), 1.0)
 
+	// Build claimed route set for anti-self-competition filtering.
+	claimedSet := make(map[string]bool, len(req.ClaimedRoutes))
+	for _, key := range req.ClaimedRoutes {
+		claimedSet[key] = true
+	}
+
 	// Build passenger revenue index for destination scoring.
 	// Include both available passengers (can board) and boarded passengers
 	// (already on ship, must be delivered). Filter out passengers that
@@ -385,6 +391,11 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 			if !ok || dp.SellPrice <= 0 {
 				continue
 			}
+			// Skip routes claimed by other ships (anti-self-competition).
+			rk := currentPortID.String() + ":" + destID.String() + ":" + pp.GoodID.String()
+			if claimedSet[rk] {
+				continue
+			}
 			sellTaxCost := dp.SellPrice * taxIndex[destID] / 10000
 			profit := dp.SellPrice - pp.BuyPrice - buyTaxCost - sellTaxCost
 			if profit < int(float64(pp.BuyPrice)*minMarginPct) {
@@ -443,19 +454,21 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 		}
 
 		dist := math.Max(reachable[destID], 1.0)
-		// Subtract travel upkeep cost: travel time = distance / speed (in minutes).
+		// Score by profit-per-minute instead of profit-per-distance.
+		// totalTripMinutes = travel time + 2 min overhead for trade execution.
 		travelMins := dist / speed
-		travelUpkeep := upkeepPerMin * travelMins
+		totalTripMins := travelMins + 2.0
+		travelUpkeep := upkeepPerMin * totalTripMins
 		adjustedProfit := float64(totalProfit) - travelUpkeep
 
-		score := adjustedProfit / dist
-		score += float64(passengerRevByDest[destID]) / dist * passengerWeight
-		score += float64(heldProfitByDest[destID]) / dist
-		// Use sqrt(distance) for route and exploration bonuses so that
+		score := adjustedProfit / totalTripMins
+		score += float64(passengerRevByDest[destID]) / totalTripMins * passengerWeight
+		score += float64(heldProfitByDest[destID]) / totalTripMins
+		// Use sqrt(trip time) for route and exploration bonuses so that
 		// far-away ports aren't as harshly penalized for these components.
-		sqrtDist := math.Sqrt(dist)
-		score += routeBonus[destID] / sqrtDist
-		score += explorationBonus[destID] / sqrtDist
+		sqrtTrip := math.Sqrt(totalTripMins)
+		score += routeBonus[destID] / sqrtTrip
+		score += explorationBonus[destID] / sqrtTrip
 
 		candidates = append(candidates, destCandidate{destID, score, unique})
 	}
@@ -474,11 +487,12 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 			continue
 		}
 		dist := math.Max(reachable[destID], 1.0)
-		sqrtDist := math.Sqrt(dist)
-		score := float64(passRev) / dist * passengerWeight
-		score += float64(heldProfitByDest[destID]) / dist
-		score += routeBonus[destID] / sqrtDist
-		score += explorationBonus[destID] / sqrtDist
+		totalTripMins := dist/speed + 2.0
+		sqrtTrip := math.Sqrt(totalTripMins)
+		score := float64(passRev) / totalTripMins * passengerWeight
+		score += float64(heldProfitByDest[destID]) / totalTripMins
+		score += routeBonus[destID] / sqrtTrip
+		score += explorationBonus[destID] / sqrtTrip
 		candidates = append(candidates, destCandidate{destID, score, nil})
 	}
 
@@ -559,6 +573,12 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 	now := time.Now()
 	speed := math.Max(float64(req.Ship.Speed), 1.0)
 
+	// Build claimed route set for anti-self-competition filtering.
+	claimedSet := make(map[string]bool, len(req.ClaimedRoutes))
+	for _, key := range req.ClaimedRoutes {
+		claimedSet[key] = true
+	}
+
 	// Build passenger revenue index for destination scoring.
 	// Include both available passengers (can board) and boarded passengers
 	// (already on ship, must be delivered). Filter out passengers that
@@ -626,6 +646,11 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 			if !ok || dp.SellPrice <= 0 {
 				continue
 			}
+			// Skip routes claimed by other ships (anti-self-competition).
+			rk := currentPortID.String() + ":" + destID.String() + ":" + pp.GoodID.String()
+			if claimedSet[rk] {
+				continue
+			}
 			sellTaxCost := dp.SellPrice * taxIndex[destID] / 10000
 			profit := dp.SellPrice - pp.BuyPrice - buyTaxCost - sellTaxCost
 			if profit < int(float64(pp.BuyPrice)*minMarginPct) {
@@ -684,17 +709,19 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 		}
 
 		dist := math.Max(reachable[destID], 1.0)
-		// Subtract travel upkeep cost from profit.
+		// Score by profit-per-minute. Bulk hauler still favors absolute profit
+		// but normalizes by trip time to penalize slow routes.
 		travelMins := dist / speed
-		travelUpkeep := upkeepPerMin * travelMins
+		totalTripMins := travelMins + 2.0
+		travelUpkeep := upkeepPerMin * totalTripMins
 		adjustedProfit := float64(totalProfit) - travelUpkeep
 
-		// Bulk hauler: absolute profit, not per-distance.
-		score := adjustedProfit
-		score += float64(passengerRevByDest[destID]) / dist * passengerWeight
-		score += float64(heldProfitByDest[destID])
-		score += routeBonus[destID]
-		score += explorationBonus[destID]
+		// Bulk hauler: profit per minute (not per distance) to favor fast high-value routes.
+		score := adjustedProfit / totalTripMins
+		score += float64(passengerRevByDest[destID]) / totalTripMins * passengerWeight
+		score += float64(heldProfitByDest[destID]) / totalTripMins
+		score += routeBonus[destID] / math.Sqrt(totalTripMins)
+		score += explorationBonus[destID] / math.Sqrt(totalTripMins)
 
 		candidates = append(candidates, destCandidate{destID, score, unique})
 	}
@@ -713,10 +740,12 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 			continue
 		}
 		dist := math.Max(reachable[destID], 1.0)
-		score := float64(passRev) / dist * passengerWeight
-		score += float64(heldProfitByDest[destID])
-		score += routeBonus[destID]
-		score += explorationBonus[destID]
+		totalTripMins := dist/speed + 2.0
+		sqrtTrip := math.Sqrt(totalTripMins)
+		score := float64(passRev) / totalTripMins * passengerWeight
+		score += float64(heldProfitByDest[destID]) / totalTripMins
+		score += routeBonus[destID] / sqrtTrip
+		score += explorationBonus[destID] / sqrtTrip
 		candidates = append(candidates, destCandidate{destID, score, nil})
 	}
 
@@ -951,95 +980,100 @@ func (a *HeuristicAgent) speculativeBuys(
 // The API returns per-cycle amounts, so multiply by this to convert to hourly.
 const upkeepCycleHours int64 = 5
 
-// reserveCycles calculates how many upkeep cycles of buffer the company
-// should maintain after a ship purchase. Grows with fleet size so that
-// companies become progressively more cautious before adding each ship.
-// The base is 5 cycles (25 hours) so a company must always survive a full
-// day of upkeep before expanding.
-//
-//	fleet 1  → 5 cycles (25h)  |  fleet 5  → 6 cycles (30h)  |  fleet 10 → 7 cycles (35h)
-//
-// The strategy multiplier shifts the curve: bulk_hauler is more conservative
-// (fewer but bigger ships), market_maker is more aggressive (cheap ships).
-func reserveCycles(numShips int, strategy string) int64 {
-	base := int64(5) // 5 cycles = 25 hours
-	growth := int64(numShips) / 4 // +1 cycle (~5h) per 4 ships
+// reserveCycles returns a flat 3-cycle (15h) reserve for all strategies.
+// V2 scales aggressively — revenue tracking handles safety instead of
+// conservative reserves that cap fleet growth.
+func reserveCycles(_ int, _ string) int64 {
+	return 3
+}
 
+// maxFleetSize returns the hard fleet cap per strategy.
+func maxFleetSize(strategy string) int {
 	switch strategy {
 	case "bulk_hauler":
-		// More conservative — big ships cost more upkeep, so demand a larger buffer.
-		growth = int64(numShips) / 2 // +1 cycle per 2 ships
-	case "market_maker":
-		// More aggressive — cheap ships, fast expansion.
-		growth = int64(numShips) / 5 // +1 cycle per 5 ships
+		return 10
+	case "passenger_sniper":
+		return 12
+	default: // arbitrage
+		return 15
 	}
-
-	return base + growth
 }
 
 // DecideFleetAction decides whether to buy or sell ships, or buy warehouses.
-// Fleet size is governed by economics rather than hard caps: a new ship is
-// purchased only when the treasury can cover the price AND a scaling upkeep
-// reserve that grows with fleet size. This means wealthy companies naturally
-// grow larger fleets while cash-strapped ones hold steady.
+// V2: aggressive scaling with flat 3-cycle reserve, multi-ship purchases,
+// strategy-specific fleet caps, and warehouse scaling (grow/shrink/demolish).
 //
 // Ship type preferences by strategy:
 //
-//	BulkHauler  → largest capacity (galleons), conservative growth
-//	Arbitrage   → fastest ships, moderate growth
-//	MarketMaker → cheapest ships, aggressive growth
+//	Arbitrage        → fastest ships with passenger slots, max 15
+//	BulkHauler       → largest capacity, max 10
+//	PassengerSniper  → cheapest with passenger slots, max 12
 func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionRequest) (*FleetDecision, error) {
 	treasury := req.Company.Treasury
 	upkeep := req.Company.TotalUpkeep
 	numShips := len(req.Ships)
+	fleetCap := maxFleetSize(req.StrategyHint)
 
-	// --- WAREHOUSE PURCHASE ---
-	// Only consider warehouses when fleet is already at a reasonable size (3+ ships)
-	// and treasury is very healthy (covers 10+ upkeep cycles = 50 hours).
-	if len(req.Warehouses) < 2 && treasury > upkeep*10 && numShips >= 3 {
-		// Score ports by activity: currently docked ships + route history visits.
-		portActivity := make(map[uuid.UUID]int)
-		for _, ship := range req.Ships {
-			if ship.Status == "docked" && ship.PortID != nil {
-				portActivity[*ship.PortID]++
-			}
-		}
-		// Route history gives a much better picture of frequently visited ports
-		// than the snapshot of currently docked ships.
-		for _, entry := range req.RouteHistory {
-			portActivity[entry.FromPortID]++
-			portActivity[entry.ToPortID]++
-		}
-
-		warehousePorts := make(map[uuid.UUID]bool)
-		for _, w := range req.Warehouses {
-			warehousePorts[w.PortID] = true
-		}
-
-		var bestPort uuid.UUID
-		bestCount := 0
-		for portID, count := range portActivity {
-			if !warehousePorts[portID] && count > bestCount {
-				bestCount = count
-				bestPort = portID
-			}
-		}
-
-		// Threshold: 2+ activity score (e.g. 2 docked ships, or 1 docked + route visits).
-		if bestPort != uuid.Nil && bestCount >= 2 {
-			a.logger.Info("recommending warehouse purchase",
-				zap.Int("port_activity_score", bestCount),
-				zap.Int("existing_warehouses", len(req.Warehouses)),
-			)
+	// --- WAREHOUSE SCALING (grow/shrink/demolish) ---
+	// Only for non-passenger strategies with 3+ ships and profitable history.
+	if req.StrategyHint != "passenger_sniper" && numShips >= 3 && len(req.Warehouses) > 0 {
+		actions := a.evaluateWarehouseScaling(req)
+		if len(actions) > 0 {
 			return &FleetDecision{
-				BuyWarehouses: []uuid.UUID{bestPort},
-				Reasoning:     "buying warehouse at high-activity port",
+				WarehouseActions: actions,
+				Reasoning:        "warehouse scaling based on utilization and trade activity",
 			}, nil
 		}
 	}
 
+	// --- WAREHOUSE PURCHASE ---
+	// Buy at high-traffic ports. Max 3 warehouses per company.
+	// Never buy for passenger_sniper.
+	if req.StrategyHint != "passenger_sniper" && len(req.Warehouses) < 3 && numShips >= 3 {
+		// Check that total warehouse upkeep < 15% of trailing revenue
+		// (approximated by treasury health).
+		warehouseAffordable := treasury > upkeep*5
+		if warehouseAffordable {
+			portActivity := make(map[uuid.UUID]int)
+			for _, ship := range req.Ships {
+				if ship.Status == "docked" && ship.PortID != nil {
+					portActivity[*ship.PortID]++
+				}
+			}
+			for _, entry := range req.RouteHistory {
+				portActivity[entry.FromPortID]++
+				portActivity[entry.ToPortID]++
+			}
+
+			warehousePorts := make(map[uuid.UUID]bool)
+			for _, w := range req.Warehouses {
+				warehousePorts[w.PortID] = true
+			}
+
+			var bestPort uuid.UUID
+			bestCount := 0
+			for portID, count := range portActivity {
+				if !warehousePorts[portID] && count > bestCount {
+					bestCount = count
+					bestPort = portID
+				}
+			}
+
+			if bestPort != uuid.Nil && bestCount >= 2 {
+				a.logger.Info("recommending warehouse purchase",
+					zap.Int("port_activity_score", bestCount),
+					zap.Int("existing_warehouses", len(req.Warehouses)),
+				)
+				return &FleetDecision{
+					BuyWarehouses: []uuid.UUID{bestPort},
+					Reasoning:     "buying warehouse at high-activity port",
+				}, nil
+			}
+		}
+	}
+
 	// --- SHIP SALE ---
-	// Sell if upkeep is unsustainable: treasury can't cover reserve cycles of upkeep.
+	// Emergency downsize: treasury < 2 cycles of upkeep.
 	reserve := reserveCycles(numShips, req.StrategyHint)
 	if numShips > 1 && upkeep > 0 && treasury > 0 && treasury < upkeep*reserve {
 		sellShips := a.findShipsToSell(req.Ships, req.StrategyHint, req.ShipyardPorts)
@@ -1059,6 +1093,13 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 		}
 	}
 
+	// --- FLEET CAP CHECK ---
+	if numShips >= fleetCap {
+		return &FleetDecision{
+			Reasoning: fmt.Sprintf("fleet at cap (%d/%d ships)", numShips, fleetCap),
+		}, nil
+	}
+
 	if len(req.ShipTypes) == 0 {
 		return &FleetDecision{Reasoning: "no ship types available"}, nil
 	}
@@ -1070,7 +1111,6 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 	var targetShipType ShipTypeInfo
 	switch req.StrategyHint {
 	case "bulk_hauler":
-		// Prefer largest capacity ships, with passenger capacity as tiebreaker.
 		sort.Slice(shipTypes, func(i, j int) bool {
 			if shipTypes[i].Capacity != shipTypes[j].Capacity {
 				return shipTypes[i].Capacity > shipTypes[j].Capacity
@@ -1079,10 +1119,19 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 		})
 		targetShipType = shipTypes[0]
 
+	case "passenger_sniper":
+		// Cheapest ships with passenger slots — minimize upkeep.
+		sort.Slice(shipTypes, func(i, j int) bool {
+			iPax := shipTypes[i].PassengerCap > 0
+			jPax := shipTypes[j].PassengerCap > 0
+			if iPax != jPax {
+				return iPax // passenger-capable first
+			}
+			return shipTypes[i].Upkeep < shipTypes[j].Upkeep
+		})
+		targetShipType = shipTypes[0]
+
 	case "arbitrage":
-		// Prefer fast ships with passenger capacity — passengers are the top
-		// revenue stream, so a slightly slower ship with passengers beats a
-		// faster ship without. Score = speed + passengerCap/5.
 		sort.Slice(shipTypes, func(i, j int) bool {
 			si := float64(shipTypes[i].Speed) + float64(shipTypes[i].PassengerCap)/5.0
 			sj := float64(shipTypes[j].Speed) + float64(shipTypes[j].PassengerCap)/5.0
@@ -1090,8 +1139,7 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 		})
 		targetShipType = shipTypes[0]
 
-	default: // market_maker and others
-		// Prefer cheapest ships to minimize upkeep (more budget for orders).
+	default:
 		sort.Slice(shipTypes, func(i, j int) bool {
 			return shipTypes[i].BasePrice < shipTypes[j].BasePrice
 		})
@@ -1099,12 +1147,8 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 	}
 
 	// --- AFFORDABILITY CHECK ---
-	// The company must be able to afford the ship price (including port purchase
-	// tax) AND still maintain a reserve of (newTotalUpkeep * reserveCycles).
-	// reserveCycles grows with fleet size, naturally limiting expansion.
 	newReserve := reserveCycles(numShips+1, req.StrategyHint)
 
-	// Build port tax index for purchase cost calculation.
 	portTaxIndex := make(map[uuid.UUID]int, len(req.Ports))
 	for _, p := range req.Ports {
 		portTaxIndex[p.ID] = p.TaxRateBps
@@ -1112,21 +1156,23 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 	purchasePortID := a.findPurchasePort(req.Ships, req.ShipyardPorts)
 	purchaseTaxBps := portTaxIndex[purchasePortID]
 
-	canAfford := func(st ShipTypeInfo) bool {
-		newUpkeep := upkeep + int64(st.Upkeep)
-		shipCost := int64(st.BasePrice) + int64(st.BasePrice)*int64(purchaseTaxBps)/10000
-		required := shipCost + newUpkeep*newReserve
+	canAfford := func(st ShipTypeInfo, nShips int) bool {
+		totalNewUpkeep := upkeep
+		for k := 0; k < nShips; k++ {
+			totalNewUpkeep += int64(st.Upkeep)
+		}
+		totalShipCost := int64(nShips) * (int64(st.BasePrice) + int64(st.BasePrice)*int64(purchaseTaxBps)/10000)
+		required := totalShipCost + totalNewUpkeep*newReserve
 		return treasury >= required
 	}
 
-	if !canAfford(targetShipType) {
-		// Preferred type too expensive — try all types sorted cheapest first.
+	if !canAfford(targetShipType, 1) {
 		sort.Slice(shipTypes, func(i, j int) bool {
 			return shipTypes[i].BasePrice < shipTypes[j].BasePrice
 		})
 		found := false
 		for _, st := range shipTypes {
-			if canAfford(st) {
+			if canAfford(st, 1) {
 				targetShipType = st
 				found = true
 				break
@@ -1142,37 +1188,107 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 		}
 	}
 
-	// --- PURCHASE PORT SELECTION ---
-	// purchasePortID already resolved above for tax calculation; verify it's valid.
 	if purchasePortID == uuid.Nil {
 		return &FleetDecision{Reasoning: "no suitable port found for ship purchase"}, nil
 	}
 
-	newUpkeep := upkeep + int64(targetShipType.Upkeep)
-	shipCost := int64(targetShipType.BasePrice) + int64(targetShipType.BasePrice)*int64(purchaseTaxBps)/10000
+	// --- MULTI-SHIP PURCHASE ---
+	// Buy up to 3 ships per eval (startup) or 2 (growth), respecting fleet cap.
+	maxBuy := 2
+	if numShips < 5 {
+		maxBuy = 3 // Rapid scaling during startup
+	}
+	remaining := fleetCap - numShips
+	if maxBuy > remaining {
+		maxBuy = remaining
+	}
+
+	var purchases []ShipPurchase
+	for i := 0; i < maxBuy; i++ {
+		if !canAfford(targetShipType, i+1) {
+			break
+		}
+		purchases = append(purchases, ShipPurchase{
+			ShipTypeID: targetShipType.ID,
+			PortID:     purchasePortID,
+		})
+	}
+
+	if len(purchases) == 0 {
+		return &FleetDecision{Reasoning: "cannot afford any ships after reserve"}, nil
+	}
+
+	newUpkeep := upkeep + int64(len(purchases))*int64(targetShipType.Upkeep)
+	totalCost := int64(len(purchases)) * (int64(targetShipType.BasePrice) + int64(targetShipType.BasePrice)*int64(purchaseTaxBps)/10000)
+	cyclesCovered := (treasury - totalCost) / max(newUpkeep, 1)
+
 	a.logger.Info("recommending ship purchase",
 		zap.String("strategy", req.StrategyHint),
 		zap.String("ship_type", targetShipType.Name),
-		zap.Int("price", targetShipType.BasePrice),
-		zap.Int("tax_bps", purchaseTaxBps),
-		zap.Int64("total_cost", shipCost),
-		zap.Int("capacity", targetShipType.Capacity),
-		zap.Int("speed", targetShipType.Speed),
+		zap.Int("quantity", len(purchases)),
+		zap.Int("price_each", targetShipType.BasePrice),
 		zap.Int("current_fleet", numShips),
-		zap.Int64("treasury_after", treasury-shipCost),
+		zap.Int("fleet_cap", fleetCap),
+		zap.Int64("treasury_after", treasury-totalCost),
 		zap.Int64("new_upkeep_per_cycle", newUpkeep),
-		zap.Int64("reserve_cycles", newReserve),
 	)
 
-	cyclesCovered := treasury / max(newUpkeep, 1)
 	return &FleetDecision{
-		BuyShips: []ShipPurchase{{
-			ShipTypeID: targetShipType.ID,
-			PortID:     purchasePortID,
-		}},
-		Reasoning: fmt.Sprintf("expanding fleet to %d ships (%s), treasury covers %dh of new upkeep",
-			numShips+1, targetShipType.Name, cyclesCovered*upkeepCycleHours),
+		BuyShips:  purchases,
+		Reasoning: fmt.Sprintf("expanding fleet %d→%d ships (%dx %s), treasury covers %dh of new upkeep",
+			numShips, numShips+len(purchases), len(purchases), targetShipType.Name, cyclesCovered*upkeepCycleHours),
 	}, nil
+}
+
+// evaluateWarehouseScaling checks existing warehouses for grow/shrink/demolish actions.
+func (a *HeuristicAgent) evaluateWarehouseScaling(req FleetDecisionRequest) []WarehouseAction {
+	if len(req.Warehouses) == 0 {
+		return nil
+	}
+
+	// Build port trade frequency from route history.
+	portTradeCount := make(map[uuid.UUID]int)
+	for _, entry := range req.RouteHistory {
+		portTradeCount[entry.FromPortID]++
+		portTradeCount[entry.ToPortID]++
+	}
+
+	var actions []WarehouseAction
+	for _, wh := range req.Warehouses {
+		trades := portTradeCount[wh.PortID]
+
+		// Demolish: no trades at this port in route history and warehouse is empty.
+		totalItems := 0
+		for _, item := range wh.Items {
+			totalItems += item.Quantity
+		}
+		if trades == 0 && totalItems == 0 {
+			actions = append(actions, WarehouseAction{
+				WarehouseID: wh.ID,
+				Action:      "demolish",
+			})
+			continue
+		}
+
+		// Grow: high utilization + active port.
+		utilization := float64(totalItems) / math.Max(float64(wh.Capacity), 1.0)
+		if utilization > 0.7 && trades >= 5 {
+			actions = append(actions, WarehouseAction{
+				WarehouseID: wh.ID,
+				Action:      "grow",
+			})
+		}
+
+		// Shrink: very low utilization at inactive port.
+		if utilization < 0.2 && trades <= 2 && wh.Level > 1 {
+			actions = append(actions, WarehouseAction{
+				WarehouseID: wh.ID,
+				Action:      "shrink",
+			})
+		}
+	}
+
+	return actions
 }
 
 // ---------------------------------------------------------------------------
@@ -1831,9 +1947,11 @@ func (a *HeuristicAgent) findShipsToSell(ships []ShipSnapshot, strategy string, 
 			score = float64(ship.Speed) // Keep fast ships, sell slow ones.
 		case "bulk_hauler":
 			score = float64(ship.Capacity) // Keep big ships, sell small ones.
+		case "passenger_sniper":
+			// Keep ships with lowest upkeep, sell expensive ones.
+			score = -float64(ship.Upkeep)
 		default:
 			// Market maker: keep cheap ships, sell expensive ones.
-			// Use negative capacity as proxy for cost (bigger = more upkeep).
 			score = -float64(ship.Capacity)
 		}
 		candidates = append(candidates, candidate{id: ship.ID, score: score})

@@ -78,7 +78,7 @@ func (b *baseStrategy) Shutdown() error { return nil }
 // and fetches fresh buy/sell quotes on demand. This prevents ships from
 // arriving at unscanned ports and finding no profitable trades.
 func (b *baseStrategy) ensurePortPrices(ctx context.Context, port *api.Port) {
-	const stalePriceThreshold = 2 * time.Minute
+	const stalePriceThreshold = 90 * time.Second
 
 	age := b.ctx.PriceCache.PortAge(port.ID)
 	if age < stalePriceThreshold {
@@ -190,6 +190,12 @@ func (b *baseStrategy) buildTradeRequest(ship *bot.ShipState, port *api.Port) ag
 		topOpps = b.ctx.ProfitAnalyzer.ToAgentOpportunities()
 	}
 
+	// Collect claimed routes from coordinator.
+	var claimedRoutes []string
+	if b.ctx.Coordinator != nil {
+		claimedRoutes = b.ctx.Coordinator.ClaimedRoutes()
+	}
+
 	return agent.TradeDecisionRequest{
 		StrategyHint: b.name,
 		Company: agent.CompanySnapshot{
@@ -205,6 +211,7 @@ func (b *baseStrategy) buildTradeRequest(ship *bot.ShipState, port *api.Port) ag
 		Routes:           world.ToAgentRoutes(),
 		Ports:            world.ToAgentPorts(),
 		TopOpportunities: topOpps,
+		ClaimedRoutes:    claimedRoutes,
 		Params:           params,
 		Constraints: agent.Constraints{
 			TreasuryFloor: state.TotalUpkeep * 2,
@@ -1016,6 +1023,78 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 		// and the dashboard see it immediately.
 		b.ctx.State.AddWarehouse(*wh)
 		b.ctx.Events.Emit(bot.EventWarehouse)
+	}
+
+	// Execute warehouse scaling actions (grow/shrink/demolish).
+	for _, action := range decision.WarehouseActions {
+		switch action.Action {
+		case "grow":
+			wh, err := b.ctx.Client.GrowWarehouse(ctx, action.WarehouseID)
+			if err != nil {
+				b.logger.Warn("failed to grow warehouse",
+					zap.String("warehouse_id", action.WarehouseID.String()),
+					zap.Error(err),
+				)
+				continue
+			}
+			b.logger.Info("grew warehouse",
+				zap.String("warehouse_id", action.WarehouseID.String()),
+				zap.Int("new_level", wh.Level),
+			)
+			b.ctx.DB.Create(&db.WarehouseEventLog{
+				CompanyID:   b.ctx.State.CompanyDBID(),
+				WarehouseID: action.WarehouseID.String(),
+				EventType:   "grow",
+				Level:       wh.Level,
+				Strategy:    b.name,
+				AgentName:   b.ctx.Agent.Name(),
+			})
+
+		case "shrink":
+			wh, err := b.ctx.Client.ShrinkWarehouse(ctx, action.WarehouseID)
+			if err != nil {
+				b.logger.Warn("failed to shrink warehouse",
+					zap.String("warehouse_id", action.WarehouseID.String()),
+					zap.Error(err),
+				)
+				continue
+			}
+			b.logger.Info("shrunk warehouse",
+				zap.String("warehouse_id", action.WarehouseID.String()),
+				zap.Int("new_level", wh.Level),
+			)
+			b.ctx.DB.Create(&db.WarehouseEventLog{
+				CompanyID:   b.ctx.State.CompanyDBID(),
+				WarehouseID: action.WarehouseID.String(),
+				EventType:   "shrink",
+				Level:       wh.Level,
+				Strategy:    b.name,
+				AgentName:   b.ctx.Agent.Name(),
+			})
+
+		case "demolish":
+			err := b.ctx.Client.DeleteWarehouse(ctx, action.WarehouseID)
+			if err != nil {
+				b.logger.Warn("failed to demolish warehouse",
+					zap.String("warehouse_id", action.WarehouseID.String()),
+					zap.Error(err),
+				)
+				continue
+			}
+			b.logger.Info("demolished warehouse",
+				zap.String("warehouse_id", action.WarehouseID.String()),
+			)
+			b.ctx.DB.Create(&db.WarehouseEventLog{
+				CompanyID:   b.ctx.State.CompanyDBID(),
+				WarehouseID: action.WarehouseID.String(),
+				EventType:   "demolish",
+				Strategy:    b.name,
+				AgentName:   b.ctx.Agent.Name(),
+			})
+			// Remove from in-memory state.
+			b.ctx.State.RemoveWarehouse(action.WarehouseID)
+			b.ctx.Events.Emit(bot.EventWarehouse)
+		}
 	}
 }
 

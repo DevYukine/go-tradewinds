@@ -308,6 +308,7 @@ type TradeDecisionRequest struct {
 	PortOrders          []MarketOrder         `json:"port_orders"`          // P2P orders at the current port (for filling opportunities).
 	OwnOrders           []MarketOrder         `json:"own_orders"`           // This company's active orders (to avoid self-fill).
 	TopOpportunities    []TradeOpportunity    `json:"top_opportunities"`    // Top global trade opportunities from ProfitAnalyzer.
+	ClaimedRoutes       []string              `json:"claimed_routes"`       // Routes claimed by other ships via Coordinator.
 	Params              map[string]float64    `json:"params"`               // Tunable parameters from optimizer (nil = use defaults).
 }
 
@@ -366,12 +367,19 @@ type ShipPurchase struct {
 	PortID     uuid.UUID `json:"port_id"`
 }
 
+// WarehouseAction describes a scaling action for an existing warehouse.
+type WarehouseAction struct {
+	WarehouseID uuid.UUID `json:"warehouse_id"`
+	Action      string    `json:"action"` // "grow", "shrink", "demolish"
+}
+
 // FleetDecision is the agent's response to a fleet decision request.
 type FleetDecision struct {
-	BuyShips      []ShipPurchase `json:"buy_ships"`
-	SellShips     []uuid.UUID   `json:"sell_ships"`     // Ship IDs to decommission (sell back to game).
-	BuyWarehouses []uuid.UUID   `json:"buy_warehouses"` // Port IDs to build warehouses at.
-	Reasoning     string        `json:"reasoning"`
+	BuyShips         []ShipPurchase   `json:"buy_ships"`
+	SellShips        []uuid.UUID      `json:"sell_ships"`         // Ship IDs to decommission (sell back to game).
+	BuyWarehouses    []uuid.UUID      `json:"buy_warehouses"`     // Port IDs to build warehouses at.
+	WarehouseActions []WarehouseAction `json:"warehouse_actions"`  // Grow/shrink/demolish existing warehouses.
+	Reasoning        string           `json:"reasoning"`
 }
 
 // --- Market Decision ---

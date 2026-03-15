@@ -36,15 +36,16 @@ const (
 // CompanyRunner manages the lifecycle of a single company: subscribing to
 // events, running the strategy loop, and recording metrics.
 type CompanyRunner struct {
-	client     *api.Client
-	gormDB     *gorm.DB
-	world      *WorldCache
-	priceCache *PriceCache
-	state      *CompanyState
-	strategy   Strategy
-	agent      agent.Agent
-	logger     *CompanyLogger
-	dbRecord   *db.CompanyRecord
+	client      *api.Client
+	gormDB      *gorm.DB
+	world       *WorldCache
+	priceCache  *PriceCache
+	state       *CompanyState
+	strategy    Strategy
+	agent       agent.Agent
+	logger      *CompanyLogger
+	dbRecord    *db.CompanyRecord
+	coordinator *Coordinator
 
 	events          *EventBroadcaster
 	strategyCh      chan strategySwap       // Receives new strategy assignments from the optimizer.
@@ -70,6 +71,7 @@ func NewCompanyRunner(
 	logger *CompanyLogger,
 	dbRecord *db.CompanyRecord,
 	events *EventBroadcaster,
+	coordinator *Coordinator,
 ) *CompanyRunner {
 	return &CompanyRunner{
 		client:          client,
@@ -81,6 +83,7 @@ func NewCompanyRunner(
 		agent:           ag,
 		logger:          logger,
 		dbRecord:        dbRecord,
+		coordinator:     coordinator,
 		events:          events,
 		strategyCh:      make(chan strategySwap, 1),
 		dispatchedShips: make(map[uuid.UUID]time.Time),
@@ -637,6 +640,11 @@ func (r *CompanyRunner) handlePassengerCreated(ctx context.Context, data json.Ra
 
 	port := r.world.GetPort(pax.OriginPortID)
 	if port == nil {
+		return
+	}
+
+	// Check coordinator to avoid multiple companies chasing same passenger.
+	if r.coordinator != nil && !r.coordinator.ClaimPassenger(pax.ID, r.state.CompanyID.String()) {
 		return
 	}
 

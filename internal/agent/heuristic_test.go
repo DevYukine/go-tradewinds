@@ -844,8 +844,8 @@ func TestDecideFleetAction_ArbitragePrefersSpeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dec.BuyShips) != 1 {
-		t.Fatal("expected 1 ship purchase")
+	if len(dec.BuyShips) == 0 {
+		t.Fatal("expected at least 1 ship purchase")
 	}
 	if dec.BuyShips[0].ShipTypeID != id(2) {
 		t.Error("arbitrage should prefer fastest ship")
@@ -868,8 +868,8 @@ func TestDecideFleetAction_BulkHaulerPrefersCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dec.BuyShips) != 1 {
-		t.Fatal("expected 1 ship purchase")
+	if len(dec.BuyShips) == 0 {
+		t.Fatal("expected at least 1 ship purchase")
 	}
 	if dec.BuyShips[0].ShipTypeID != id(2) {
 		t.Error("bulk_hauler should prefer largest capacity")
@@ -892,8 +892,8 @@ func TestDecideFleetAction_MarketMakerPrefersCheapest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dec.BuyShips) != 1 {
-		t.Fatal("expected 1 ship purchase")
+	if len(dec.BuyShips) == 0 {
+		t.Fatal("expected at least 1 ship purchase")
 	}
 	if dec.BuyShips[0].ShipTypeID != id(2) {
 		t.Error("market_maker should prefer cheapest ship")
@@ -917,10 +917,10 @@ func TestDecideFleetAction_TreasuryTooLow(t *testing.T) {
 func TestDecideFleetAction_SellShips_HighUpkeep(t *testing.T) {
 	a := testAgent()
 	portA := id(1)
-	// Treasury 350, upkeep 100. reserveHours(2, "arbitrage")=4, 350 < 100*4=400 → should recommend selling.
+	// Treasury 250, upkeep 100. reserveCycles=3, 250 < 100*3=300 → should recommend selling.
 	dec, err := a.DecideFleetAction(context.Background(), FleetDecisionRequest{
 		StrategyHint: "arbitrage",
-		Company:      CompanySnapshot{Treasury: 350, TotalUpkeep: 100},
+		Company:      CompanySnapshot{Treasury: 250, TotalUpkeep: 100},
 		Ships: []ShipSnapshot{
 			{ID: id(1), Status: "docked", PortID: &portA, Speed: 10, Capacity: 100},
 			{ID: id(2), Status: "docked", PortID: &portA, Speed: 5, Capacity: 200}, // Slower → sell this
@@ -943,9 +943,10 @@ func TestDecideFleetAction_SellShips_HighUpkeep(t *testing.T) {
 func TestDecideFleetAction_SellShips_OnlyDockedEmpty(t *testing.T) {
 	a := testAgent()
 	portA := id(1)
+	// Treasury 250 < upkeep 100 * 3 reserve = 300 → enters sell branch.
 	dec, err := a.DecideFleetAction(context.Background(), FleetDecisionRequest{
 		StrategyHint: "arbitrage",
-		Company:      CompanySnapshot{Treasury: 350, TotalUpkeep: 100},
+		Company:      CompanySnapshot{Treasury: 250, TotalUpkeep: 100},
 		Ships: []ShipSnapshot{
 			{ID: id(1), Status: "docked", PortID: &portA, Speed: 10, Cargo: []CargoItem{{GoodID: id(10), Quantity: 5}}},
 			{ID: id(2), Status: "traveling", Speed: 5}, // Not docked

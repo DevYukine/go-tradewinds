@@ -15,8 +15,9 @@ var Module = fx.Module("strategy",
 // NewRegistry creates the strategy registry with all available strategy factories.
 func NewRegistry() bot.Registry {
 	return bot.Registry{
-		"arbitrage":    NewArbitrage,
-		"bulk_hauler":  NewBulkHauler,
-		"market_maker": NewMarketMaker,
+		"arbitrage":        NewArbitrage,
+		"bulk_hauler":      NewBulkHauler,
+		"market_maker":     NewMarketMaker,
+		"passenger_sniper": NewPassengerSniper,
 	}
 }

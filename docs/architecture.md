@@ -19,9 +19,9 @@ Config → Manager → CompanyRunners (1 per company)
 | `cache` | `internal/cache/` | Redis-backed state persistence (rate limits, prices, world data) |
 | `api` | `internal/api/` | HTTP client, rate limiter, SSE events |
 | `db` | `internal/db/` | GORM models, migrations, retention pruning |
-| `bot` | `internal/bot/` | Manager, CompanyRunner, state, scanner, scaler |
+| `bot` | `internal/bot/` | Manager, CompanyRunner, Coordinator, state, scanner, scaler |
 | `agent` | `internal/agent/` | Decision-making agents (heuristic, LLM, composite) |
-| `strategy` | `internal/strategy/` | Strategy implementations (arbitrage, bulk_hauler, market_maker) |
+| `strategy` | `internal/strategy/` | Strategy implementations (arbitrage, bulk_hauler, market_maker, passenger_sniper) |
 | `optimizer` | `internal/optimizer/` | Strategy evaluation, reallocation, scaling |
 | `server` | `internal/server/` | Dashboard REST API + SSE streaming |
 | `logging` | `internal/logging/` | Zap logger initialization |
@@ -37,11 +37,11 @@ api (client, rate limiter, events)
   ↓
 db (models, connection, retention)
   ↓
-bot (manager, runner, state, scanner, world cache, price cache)
+bot (manager, runner, state, scanner, coordinator, world cache, price cache)
   ↓
 agent (heuristic, LLM, composite)
   ↓
-strategy (arbitrage, bulk_hauler, market_maker → uses agent + base)
+strategy (arbitrage, bulk_hauler, market_maker, passenger_sniper → uses agent + base)
   ↓
 optimizer (engine, metrics → reads DB, swaps strategies on runners)
   ↓

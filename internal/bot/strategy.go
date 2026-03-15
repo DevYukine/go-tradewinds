@@ -38,6 +38,7 @@ type StrategyContext struct {
 	World           *WorldCache
 	PriceCache      *PriceCache
 	ProfitAnalyzer  *ProfitAnalyzer
+	Coordinator     *Coordinator
 	Agent           agent.Agent
 	Logger          *CompanyLogger
 	Events          *EventBroadcaster

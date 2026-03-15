@@ -35,7 +35,7 @@ Persists rate limiter state, price cache, scanner position, and world data cache
 | `ENV` | `development` | Environment |
 | `LOG_LEVEL` | `debug` | Log level |
 | `RATE_LIMIT_PER_MINUTE` | `900` | API rate budget |
-| `STRATEGY_ALLOCATION` | `arbitrage:3,bulk_hauler:2,market_maker:2` | Strategy distribution |
+| `STRATEGY_ALLOCATION` | `arbitrage:3,bulk_hauler:1,passenger_sniper:1` | Strategy distribution |
 
 ### Agent
 | Variable | Default | Description |
@@ -52,7 +52,7 @@ Persists rate limiter state, price cache, scanner position, and world data cache
 
 Comma-separated `name:count` pairs:
 ```
-STRATEGY_ALLOCATION=arbitrage:3,bulk_hauler:2,market_maker:2
+STRATEGY_ALLOCATION=arbitrage:3,bulk_hauler:1,passenger_sniper:1
 ```
 
 Total companies = sum of counts. Scaler may reduce if rate limit budget is insufficient.

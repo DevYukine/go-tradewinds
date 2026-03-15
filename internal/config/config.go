@@ -135,7 +135,7 @@ func Load() (*Config, error) {
 	}
 
 	// Parse strategy allocation.
-	allocStr := envOrDefault("STRATEGY_ALLOCATION", "arbitrage:3,bulk_hauler:2,market_maker:2")
+	allocStr := envOrDefault("STRATEGY_ALLOCATION", "arbitrage:3,bulk_hauler:1,passenger_sniper:1")
 	allocs, err := parseStrategyAllocation(allocStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid STRATEGY_ALLOCATION: %w", err)

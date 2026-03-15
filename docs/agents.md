@@ -23,10 +23,10 @@ Each company can use a different agent via `CompanyParams` fields (`agent_type`,
 **Strategy allocation format** supports agent hints:
 ```
 # Default (heuristic agent):
-STRATEGY_ALLOCATION=arbitrage:3,bulk_hauler:2,market_maker:2
+STRATEGY_ALLOCATION=arbitrage:3,bulk_hauler:1,passenger_sniper:1
 
 # Mixed heuristic + LLM companies:
-STRATEGY_ALLOCATION=arbitrage:3,bulk_hauler:2,market_maker:2,arbitrage/llm-openrouter:1,bulk_hauler/llm-openrouter:1,market_maker/llm-openrouter:1
+STRATEGY_ALLOCATION=arbitrage:3,bulk_hauler:1,passenger_sniper:1,arbitrage/llm-openrouter:1,bulk_hauler/llm-openrouter:1
 ```
 
 **Per-provider API keys** (env vars):
@@ -59,14 +59,14 @@ Hand-coded rules adapting to strategy hints.
 - **Passenger-only destinations**: Ports with passenger revenue but no cargo profit are also scored as candidates
 - **Opportunity sell-port bonus**: Destinations that are sell ports of top ProfitAnalyzer opportunities get a scoring bonus
 - Profit calculation: `sellPrice - buyPrice - buyTax - sellTax` (both sides taxed)
-- Minimum margin: `profit >= buyPrice * MinMarginPct` (default 5%)
-- Score: `totalCargoProfit / distance + passengerRevenue / distance * PassengerWeight + heldCargoGain / distance + routeHistoryBonus + opportunityBonus`
+- Minimum margin: `profit >= buyPrice * MinMarginPct` (default 8%)
+- Score: `(cargoProfit - travelUpkeep) / totalTripMinutes + passengerRevenue / totalTripMinutes * PassengerWeight + heldCargoGain / totalTripMinutes + routeHistoryBonus + opportunityBonus` where `totalTripMinutes = distance/speed + 2`
 - PassengerWeight default: 8.0, PassengerDestBonus default: 8.0
 
 #### Bulk Hauler (`decideBulkHaulerTrade`)
 - Same destination-level simulation as arbitrage
 - Same passenger-only destinations and opportunity sell-port bonus
-- Score: `totalCargoProfit + passengerRevenue / distance * PassengerWeight + heldCargoGain + routeHistoryBonus + opportunityBonus`
+- Score: `(cargoProfit - travelUpkeep) / totalTripMinutes + passengerRevenue / totalTripMinutes * PassengerWeight + heldCargoGain / totalTripMinutes + routeHistoryBonus + opportunityBonus` (same profit-per-minute formula as arbitrage)
 - Uses `ship.Capacity` instead of hardcoded limits
 
 #### Warehouse Operations (`warehouseOps`)
@@ -98,12 +98,14 @@ Hand-coded rules adapting to strategy hints.
 
 Order of evaluation:
 1. **Warehouse purchase** — Only if `numShips >= 3`, `treasury > upkeep * 10 cycles`, `< 2 warehouses`, and a port has `>= 2 docked ships`
-2. **Ship decommission** — If `treasury < totalUpkeep * reserveCycles` and `> 1 ship`: sell worst value ship (highest upkeep relative to capacity). Reserve cycles scale with fleet size: base 5 cycles (25h), +1 cycle per 4 ships (bulk_hauler: per 2, market_maker: per 5). Sold ships are immediately removed from state to prevent race conditions. Ship must have empty cargo hold (checked via API) before selling.
-3. **Ship purchase** — Strategy-specific preference:
-   - Arbitrage: fastest ship with passenger capacity bonus (`speed + passengerCap/5`)
-   - Bulk hauler: largest capacity, passenger capacity as tiebreaker (max fleet: 3)
+2. **Warehouse scaling** — Grow, shrink, or demolish warehouses based on utilization and trade activity. Uses `WarehouseAction` type in `FleetDecision` for grow/shrink/demolish operations. `CompanyState.RemoveWarehouse()` removes demolished warehouses from state.
+3. **Ship decommission** — If `treasury < totalUpkeep * reserveCycles` and `> 1 ship`: sell worst value ship (highest upkeep relative to capacity). Reserve cycles: flat 3 cycles (15h) for all strategies. Sold ships are immediately removed from state to prevent race conditions. Ship must have empty cargo hold (checked via API) before selling.
+4. **Ship purchase** — Strategy-specific preference:
+   - Arbitrage: fastest ship with passenger capacity bonus (`speed + passengerCap/5`), max fleet 15
+   - Bulk hauler: largest capacity, passenger capacity as tiebreaker, max fleet 10
    - Market maker: cheapest upkeep ship
-   - Max fleet: 5 (3 for bulk hauler)
+   - Passenger sniper: cheapest ship with passenger slots, sells highest-upkeep ships, max fleet 12
+   - **Multi-ship purchase**: Up to 3 ships per eval during startup (<5 ships), 2 during growth phase
    - Safety: `ship_cost * (1 + port_tax_rate) + (current_upkeep + new_upkeep) * 5 cycles` (tax from port's `tax_rate_bps`)
    - **Backoff**: When all shipyards are out of stock, exponential backoff (30s→1m→…→30m) before retrying. Shipyard inventory refills ~every 30 minutes.
    - **Note**: Upkeep is charged per 5-hour cycle, not hourly. All reserve calculations use cycles.
@@ -122,7 +124,7 @@ Order of evaluation:
 - Only recommend switching to a strategy that is actually performing well
 
 ### Tunable Parameters (from `CompanyParams` / request `params` field)
-- `MinMarginPct`: 0.03–0.50 (default 0.05) — minimum profit margin as fraction of buy price
+- `MinMarginPct`: 0.03–0.50 (default 0.08) — minimum profit margin as fraction of buy price (8% hard floor after all taxes)
 - `PassengerWeight`: 0.5–20.0 (default 8.0) — passenger revenue weight in destination scoring
 - `PassengerDestBonus`: 1.0–20.0 (default 8.0) — bonus for destination-matching passengers
 - `FleetEvalIntervalSec`: 60–600 (default 180)
@@ -159,14 +161,14 @@ Routes decisions between fast (heuristic) and slow (LLM) agents:
 ## Key Types
 
 ### Request Types
-- `TradeDecisionRequest` — Ship, company, price cache, routes, ports (with TaxRateBps), constraints, passengers, TopOpportunities (from ProfitAnalyzer)
+- `TradeDecisionRequest` — Ship, company, price cache, routes, ports (with TaxRateBps), constraints, passengers, TopOpportunities (from ProfitAnalyzer), ClaimedRoutes (from Coordinator)
 - `FleetDecisionRequest` — Ships, warehouses, ship types, shipyard ports
 - `MarketDecisionRequest` — Open/own orders, price cache, warehouses
 - `StrategyEvalRequest` — Strategy metrics array
 
 ### Response Types
 - `TradeDecision` — SellOrders, BuyOrders, WarehouseLoads, WarehouseStores, BoardPassengers, SailTo, Confidence
-- `FleetDecision` — BuyShips, SellShips, BuyWarehouses
+- `FleetDecision` — BuyShips, SellShips, BuyWarehouses, WarehouseActions (grow/shrink/demolish via `WarehouseAction` type)
 - `MarketDecision` — FillOrders, PostOrders, CancelOrders
 - `StrategyEvaluation` — ParamChanges, SwitchTo
 

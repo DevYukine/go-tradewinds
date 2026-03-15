@@ -137,6 +137,14 @@ func (s *CompanyState) AddWarehouse(wh api.Warehouse) {
 	s.Warehouses[wh.ID] = &WarehouseState{Warehouse: wh}
 }
 
+// RemoveWarehouse removes a demolished warehouse from the in-memory state.
+func (s *CompanyState) RemoveWarehouse(id uuid.UUID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.Warehouses, id)
+}
+
 // UpdateOrders replaces the full active order set from an API response.
 func (s *CompanyState) UpdateOrders(orders []api.Order) {
 	s.mu.Lock()

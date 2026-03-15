@@ -857,12 +857,12 @@ func TestP2PFills_DoesNotSelfFill(t *testing.T) {
 func TestFleet_DoesNotBuyWhenCannotAffordReserve(t *testing.T) {
 	a := newTestAgent()
 
-	// Treasury 1000, upkeep 100, ship costs 500.
-	// After purchase: new upkeep 150, reserve = 5 cycles * 150 = 750.
-	// Remaining treasury = 1000 - 500 = 500 < 750 → can't afford.
+	// Treasury 900, upkeep 100, ship costs 500, ship upkeep 50.
+	// After purchase: new upkeep 150, reserve = 3 cycles * 150 = 450.
+	// Required = 500 + 450 = 950. Treasury 900 < 950 → can't afford.
 	dec, err := a.DecideFleetAction(context.Background(), FleetDecisionRequest{
 		StrategyHint:  "arbitrage",
-		Company:       CompanySnapshot{Treasury: 1000, TotalUpkeep: 100},
+		Company:       CompanySnapshot{Treasury: 900, TotalUpkeep: 100},
 		Ships:         []ShipSnapshot{{Status: "docked", PortID: ptr(uid(1))}},
 		ShipyardPorts: []uuid.UUID{uid(1)},
 		ShipTypes: []ShipTypeInfo{
@@ -896,7 +896,7 @@ func TestFleet_BuysWhenWealthyEnough(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(dec.BuyShips) != 1 {
+	if len(dec.BuyShips) == 0 {
 		t.Error("should buy ship when treasury is abundant")
 	}
 }
@@ -996,26 +996,26 @@ func TestFleet_NoWarehouseWhenTooFewShips(t *testing.T) {
 	}
 }
 
-func TestFleet_ReserveCyclesGrowsWithFleetSize(t *testing.T) {
+func TestFleet_ReserveCyclesFlat(t *testing.T) {
+	// V2: flat 3-cycle reserve for all strategies.
 	tests := []struct {
 		ships    int
 		strategy string
-		minCycles int64
 	}{
-		{1, "arbitrage", 5},
-		{4, "arbitrage", 6},
-		{8, "arbitrage", 7},
-		{2, "bulk_hauler", 6},
-		{4, "bulk_hauler", 7},
-		{5, "market_maker", 6},
-		{10, "market_maker", 7},
+		{1, "arbitrage"},
+		{4, "arbitrage"},
+		{8, "arbitrage"},
+		{2, "bulk_hauler"},
+		{4, "bulk_hauler"},
+		{5, "passenger_sniper"},
+		{10, "passenger_sniper"},
 	}
 
 	for _, tc := range tests {
 		cycles := reserveCycles(tc.ships, tc.strategy)
-		if cycles < tc.minCycles {
-			t.Errorf("reserveCycles(%d, %q) = %d, want >= %d",
-				tc.ships, tc.strategy, cycles, tc.minCycles)
+		if cycles != 3 {
+			t.Errorf("reserveCycles(%d, %q) = %d, want 3",
+				tc.ships, tc.strategy, cycles)
 		}
 	}
 }
