@@ -240,6 +240,7 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 		GoodID   string `json:"good_id"`
 		GoodName string `json:"good_name"`
 		Quantity int    `json:"quantity"`
+		BuyPrice int    `json:"buy_price"`
 	}
 	type shipDetail struct {
 		ShipID         string      `json:"ship_id"`
@@ -260,6 +261,7 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 		ArrivingAt     *time.Time  `json:"arriving_at,omitempty"`
 		Cargo          []cargoItem `json:"cargo"`
 		CargoTotal     int         `json:"cargo_total"`
+		CargoValue     int64       `json:"cargo_value"`
 	}
 	type warehouseItem struct {
 		GoodID   string `json:"good_id"`
@@ -275,10 +277,14 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 		Items       []warehouseItem `json:"items"`
 	}
 
+	priceCache := s.manager.PriceCache()
+
 	ships := make([]shipDetail, 0, len(state.Ships))
+	var totalCargoValue int64
 	for _, ss := range state.Ships {
 		cargo := make([]cargoItem, len(ss.Cargo))
 		cargoTotal := 0
+		var shipCargoValue int64
 		for i, ci := range ss.Cargo {
 			goodName := ci.GoodID.String()
 			if world != nil {
@@ -286,12 +292,30 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 					goodName = g.Name
 				}
 			}
+			// Look up buy price from price cache to estimate cargo cost basis.
+			buyPrice := 0
+			if ss.Ship.PortID != nil {
+				if pp, ok := priceCache.Get(*ss.Ship.PortID, ci.GoodID); ok && pp.BuyPrice > 0 {
+					buyPrice = pp.BuyPrice
+				}
+			}
+			if buyPrice == 0 {
+				// Fallback: find any known buy price for this good.
+				for _, pp := range priceCache.All() {
+					if pp.GoodID == ci.GoodID && pp.BuyPrice > 0 {
+						buyPrice = pp.BuyPrice
+						break
+					}
+				}
+			}
 			cargo[i] = cargoItem{
 				GoodID:   ci.GoodID.String(),
 				GoodName: goodName,
 				Quantity: ci.Quantity,
+				BuyPrice: buyPrice,
 			}
 			cargoTotal += ci.Quantity
+			shipCargoValue += int64(buyPrice) * int64(ci.Quantity)
 		}
 
 		sd := shipDetail{
@@ -300,8 +324,10 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 			Status:         ss.Ship.Status,
 			Cargo:          cargo,
 			CargoTotal:     cargoTotal,
+			CargoValue:     shipCargoValue,
 			PassengerCount: ss.PassengerCount,
 		}
+		totalCargoValue += shipCargoValue
 
 		// Resolve ship type details.
 		if world != nil {
@@ -389,6 +415,7 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 		"company_id":    company.GameID,
 		"treasury":      treasury,
 		"total_upkeep":  state.TotalUpkeep,
+		"cargo_value":   totalCargoValue,
 		"ships":         ships,
 		"warehouses":    warehouses,
 	})

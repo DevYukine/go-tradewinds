@@ -64,7 +64,10 @@ const statusCounts = computed(() => {
   return c
 })
 
-// Cargo value estimate — sum of all cargo quantities across all ships (rough proxy).
+// Cargo value — sum of buy-price-based cargo valuations across all ships.
+const totalCargoValue = computed(() =>
+  allInventories.value.reduce((s, i) => s + (i.cargo_value ?? 0), 0)
+)
 const totalCargoItems = computed(() =>
   allInventories.value.reduce((s, i) => s + i.ships.reduce((ss, sh) => ss + sh.cargo_total, 0), 0)
 )
@@ -92,17 +95,19 @@ const runwayHours = computed(() => {
   return (totalTreasury.value / totalUpkeep.value) * UPKEEP_CYCLE_HOURS
 })
 
-// Total assets = treasury + fleet value.
-const totalAssets = computed(() => totalTreasury.value + fleetValue.value)
+// Total assets = treasury + fleet value + cargo value.
+const totalAssets = computed(() => totalTreasury.value + fleetValue.value + totalCargoValue.value)
 
 // Financial overview bar segments.
 const barSegments = computed(() => {
   const total = totalAssets.value || 1
   const treasury = totalTreasury.value
   const fleet = fleetValue.value
+  const cargo = totalCargoValue.value
   return {
     treasury: (treasury / total) * 100,
     fleet: (fleet / total) * 100,
+    cargo: (cargo / total) * 100,
   }
 })
 
@@ -145,7 +150,7 @@ function formatRunway(hours: number): string {
 }
 
 function statusDot(status: string): string {
-  const m: Record<string, string> = { running: 'bg-emerald-500', paused: 'bg-yellow-500', error: 'bg-rose-500', bankrupt: 'bg-gray-500' }
+  const m: Record<string, string> = { running: 'bg-emerald-500', paused: 'bg-yellow-500', error: 'bg-rose-500', bankrupt: 'bg-rose-600 animate-pulse' }
   return m[status] || 'bg-gray-500'
 }
 
@@ -202,6 +207,10 @@ function companySailingCount(id: number): number {
           :style="{ width: barSegments.treasury + '%' }"
         />
         <div
+          class="h-full bg-amber-500 transition-all duration-500"
+          :style="{ width: barSegments.cargo + '%' }"
+        />
+        <div
           class="h-full bg-slate-500 transition-all duration-500"
           :style="{ width: barSegments.fleet + '%' }"
         />
@@ -212,6 +221,10 @@ function companySailingCount(id: number): number {
         <span class="flex items-center gap-1.5">
           <span class="w-2.5 h-2.5 rounded-full bg-sky-500" />
           Cash
+        </span>
+        <span class="flex items-center gap-1.5">
+          <span class="w-2.5 h-2.5 rounded-full bg-amber-500" />
+          Cargo
         </span>
         <span class="flex items-center gap-1.5">
           <span class="w-2.5 h-2.5 rounded-full bg-slate-500" />
@@ -231,9 +244,9 @@ function companySailingCount(id: number): number {
           <div class="text-[10px] text-slate-600">{{ totalShips }} ships</div>
         </div>
         <div class="text-center">
-          <div class="text-xs text-slate-500 mb-1">Cargo in Transit</div>
-          <div class="text-xl font-bold text-amber-400 font-mono">{{ formatFull(totalCargoItems) }}</div>
-          <div class="text-[10px] text-slate-600">items aboard</div>
+          <div class="text-xs text-slate-500 mb-1">Cargo Value</div>
+          <div class="text-xl font-bold text-amber-400 font-mono">{{ formatFull(totalCargoValue) }}g</div>
+          <div class="text-[10px] text-slate-600">{{ formatFull(totalCargoItems) }} items aboard</div>
         </div>
         <div class="text-center">
           <div class="text-xs text-slate-500 mb-1">Upkeep / Hour</div>
@@ -329,13 +342,22 @@ function companySailingCount(id: number): number {
         <button
           v-for="company in companies"
           :key="company.id"
-          class="bg-slate-800 rounded-xl border border-slate-700 p-5 text-left hover:border-slate-500 transition-all group"
+          class="relative bg-slate-800 rounded-xl border p-5 text-left hover:border-slate-500 transition-all group"
+          :class="company.status === 'bankrupt' ? 'border-rose-900/60 opacity-75' : 'border-slate-700'"
           @click="selectCompany(company)"
         >
+          <!-- Bankruptcy overlay label -->
+          <div
+            v-if="company.status === 'bankrupt'"
+            class="absolute top-0 right-0 bg-rose-600 text-white text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-bl-lg rounded-tr-xl"
+          >
+            Bankrupt
+          </div>
+
           <!-- Name + Status -->
           <div class="flex items-start justify-between mb-1">
             <div>
-              <div class="text-base font-semibold text-slate-200 group-hover:text-slate-100">{{ company.name }}</div>
+              <div class="text-base font-semibold group-hover:text-slate-100" :class="company.status === 'bankrupt' ? 'text-slate-400' : 'text-slate-200'">{{ company.name }}</div>
               <div class="text-xs text-slate-500 font-mono">{{ company.ticker }}</div>
             </div>
             <span class="w-2.5 h-2.5 rounded-full mt-1.5 flex-shrink-0" :class="statusDot(company.status)" />
@@ -355,11 +377,12 @@ function companySailingCount(id: number): number {
           <div class="mb-3">
             <div class="flex items-center justify-between mb-1.5">
               <span class="text-xs text-slate-500">Treasury</span>
-              <span class="text-sm font-bold text-amber-400 font-mono">{{ formatCurrency(companyTreasury(company)) }}</span>
+              <span class="text-sm font-bold font-mono" :class="company.status === 'bankrupt' ? 'text-rose-400' : 'text-amber-400'">{{ formatCurrency(companyTreasury(company)) }}</span>
             </div>
             <div class="w-full h-1.5 rounded-full bg-slate-700 overflow-hidden">
               <div
-                class="h-full bg-sky-500 rounded-full transition-all duration-500"
+                class="h-full rounded-full transition-all duration-500"
+                :class="company.status === 'bankrupt' ? 'bg-rose-500' : 'bg-sky-500'"
                 :style="{ width: treasuryBarPct(company) + '%' }"
               />
             </div>

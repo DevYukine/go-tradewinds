@@ -91,6 +91,7 @@ export interface CargoItem {
   good_id: string
   good_name: string
   quantity: number
+  buy_price: number
 }
 
 export interface ShipDetail {
@@ -112,6 +113,7 @@ export interface ShipDetail {
   arriving_at?: string
   cargo: CargoItem[]
   cargo_total: number
+  cargo_value: number
 }
 
 export interface WarehouseItem {
@@ -133,6 +135,7 @@ export interface CompanyInventory {
   company_id: string
   treasury: number
   total_upkeep: number
+  cargo_value: number
   ships: ShipDetail[]
   warehouses: WarehouseDetail[]
 }
