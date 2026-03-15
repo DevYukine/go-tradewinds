@@ -220,9 +220,6 @@ func (p *OpenRouterProvider) Complete(ctx context.Context, systemPrompt, userPro
 			{"role": "system", "content": systemPrompt},
 			{"role": "user", "content": userPrompt},
 		},
-		// Disable extended thinking/reasoning for models that support it.
-		// Reasoning models burn tokens on internal CoT, leaving none for content.
-		"reasoning": map[string]any{"effort": "none"},
 	}
 
 	data, err := json.Marshal(body)
