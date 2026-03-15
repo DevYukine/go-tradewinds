@@ -71,12 +71,18 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 	case "sell_and_buy", "buy_and_sail":
 		// Sell first.
 		if err := a.executeSells(ctx, ship, decision.SellOrders); err != nil {
+			if api.IsBankrupt(err) {
+				return err
+			}
 			a.logger.Warn("sell execution failed", zap.Error(err))
 		}
 		// Fill P2P orders.
 		a.executeFills(ctx, port.ID, decision.FillOrders)
 		// Then buy.
 		if err := a.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
+			if api.IsBankrupt(err) {
+				return err
+			}
 			a.logger.Warn("buy execution failed", zap.Error(err))
 		}
 		// Board passengers.
@@ -90,6 +96,9 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 		// Then sail.
 		if decision.SailTo != nil {
 			if err := a.sendShipToPort(ctx, ship, *decision.SailTo); err != nil {
+				if api.IsBankrupt(err) {
+					return err
+				}
 				a.logger.Warn("transit failed", zap.Error(err))
 			}
 		}
@@ -100,6 +109,9 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 		)
 		// Execute any sells even when waiting.
 		if err := a.executeSells(ctx, ship, decision.SellOrders); err != nil {
+			if api.IsBankrupt(err) {
+				return err
+			}
 			a.logger.Warn("sell execution failed", zap.Error(err))
 		}
 		a.executeFills(ctx, port.ID, decision.FillOrders)

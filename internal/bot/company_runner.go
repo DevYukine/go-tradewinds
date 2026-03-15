@@ -43,6 +43,7 @@ type CompanyRunner struct {
 	events          *EventBroadcaster
 	strategyCh      chan Strategy          // Receives new strategy assignments from the optimizer.
 	dispatchedShips map[uuid.UUID]time.Time // Tracks recently dispatched ships.
+	bankrupt        bool                   // True when the game API reports the company as bankrupt.
 }
 
 // NewCompanyRunner creates a runner for a single company.
@@ -81,8 +82,13 @@ func (r *CompanyRunner) Run(ctx context.Context) {
 	)
 
 	if err := r.initState(ctx); err != nil {
-		r.logger.Error("failed to initialize company state", zap.Error(err))
-		return
+		if api.IsBankrupt(err) {
+			r.enterBankruptcy()
+			// Continue to main loop — ticker will poll for recovery.
+		} else {
+			r.logger.Error("failed to initialize company state", zap.Error(err))
+			return
+		}
 	}
 
 	// Subscribe to company SSE events (long-lived, no rate limit cost).
@@ -106,7 +112,9 @@ func (r *CompanyRunner) Run(ctx context.Context) {
 	r.logger.Debug("company runner ready, entering main loop")
 
 	// Immediately dispatch any docked ships — don't wait for the first tick.
-	r.dispatchIdleShips(ctx)
+	if !r.bankrupt {
+		r.dispatchIdleShips(ctx)
+	}
 
 	for {
 		select {
@@ -379,6 +387,11 @@ func (r *CompanyRunner) seedPnLCounters() {
 
 // handleEvent processes an SSE event from the company event stream.
 func (r *CompanyRunner) handleEvent(ctx context.Context, event api.SSEEvent) {
+	// While bankrupt, ignore events — all API calls would fail with 401.
+	if r.bankrupt {
+		return
+	}
+
 	switch event.Type {
 	case "ship_docked":
 		r.handleShipDocked(ctx, event.Data)
@@ -536,10 +549,24 @@ func (r *CompanyRunner) handleTick(ctx context.Context) {
 	// Refresh economy.
 	econ, err := r.client.GetEconomy(ctx)
 	if err != nil {
+		if api.IsBankrupt(err) {
+			r.enterBankruptcy()
+			return
+		}
 		r.logger.Warn("economy refresh failed", zap.Error(err))
 	} else {
+		// If we were bankrupt and the economy call succeeded, the admin
+		// has bailed us out — resume normal operations.
+		if r.bankrupt {
+			r.exitBankruptcy(econ)
+		}
 		r.state.UpdateEconomy(econ)
 		r.events.Emit(EventEconomyTick)
+	}
+
+	// While bankrupt, only poll for recovery — skip all trading activity.
+	if r.bankrupt {
+		return
 	}
 
 	// Record P&L snapshot.
@@ -559,6 +586,46 @@ func (r *CompanyRunner) handleTick(ctx context.Context) {
 
 	// Dispatch any idle docked ships that SSE events might have missed.
 	r.dispatchIdleShips(ctx)
+}
+
+// enterBankruptcy marks the company as bankrupt and stops all trading.
+// The runner continues polling GetEconomy to detect an admin bailout.
+func (r *CompanyRunner) enterBankruptcy() {
+	if r.bankrupt {
+		// Already bankrupt — just log a periodic reminder.
+		r.logger.Warn("company is BANKRUPT — waiting for admin bailout (treasury injection needed)",
+			zap.String("company", r.dbRecord.Name),
+			zap.Int64("last_known_treasury", r.state.Treasury),
+		)
+		return
+	}
+
+	r.bankrupt = true
+	r.logger.Error("BANKRUPTCY DETECTED — company has gone bankrupt, all trading suspended",
+		zap.String("company", r.dbRecord.Name),
+		zap.String("ticker", r.dbRecord.Ticker),
+		zap.Int64("last_known_treasury", r.state.Treasury),
+	)
+	r.logger.Warn("admin must inject funds via game admin panel to resume operations")
+
+	// Update DB status so the dashboard shows bankruptcy.
+	r.gormDB.Model(r.dbRecord).Update("status", "bankrupt")
+	r.events.Emit(EventEconomyTick)
+}
+
+// exitBankruptcy restores a bankrupt company to normal operations after
+// an admin bailout (treasury injection).
+func (r *CompanyRunner) exitBankruptcy(econ *api.CompanyEconomy) {
+	r.bankrupt = false
+	r.logger.Info("BANKRUPTCY RECOVERED — admin bailout detected, resuming trading",
+		zap.String("company", r.dbRecord.Name),
+		zap.Int64("new_treasury", econ.Treasury),
+	)
+
+	// Restore DB status.
+	r.gormDB.Model(r.dbRecord).Update("status", "running")
+	r.state.UpdateEconomy(econ)
+	r.events.Emit(EventEconomyTick)
 }
 
 // refreshStaleShips detects ships stuck in "traveling" status past their
@@ -666,6 +733,12 @@ func (r *CompanyRunner) dispatchWithRetry(ctx context.Context, ship *ShipState, 
 			r.dispatchedShips[ship.Ship.ID] = time.Now()
 			return
 		} else {
+			// If the error is a bankruptcy signal, enter bankruptcy immediately
+			// and stop retrying — all further API calls will also fail.
+			if api.IsBankrupt(err) {
+				r.enterBankruptcy()
+				return
+			}
 			r.logger.Warn("dispatch attempt failed",
 				zap.String("ship_id", ship.Ship.ID.String()),
 				zap.Int("attempt", attempt+1),

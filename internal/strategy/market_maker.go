@@ -63,10 +63,16 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 	switch decision.Action {
 	case "sell_and_buy", "buy_and_sail":
 		if err := m.executeSells(ctx, ship, decision.SellOrders); err != nil {
+			if api.IsBankrupt(err) {
+				return err
+			}
 			m.logger.Warn("sell execution failed", zap.Error(err))
 		}
 		m.executeFills(ctx, port.ID, decision.FillOrders)
 		if err := m.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
+			if api.IsBankrupt(err) {
+				return err
+			}
 			m.logger.Warn("buy execution failed", zap.Error(err))
 		}
 		m.boardPassengers(ctx, ship, decision.BoardPassengers)
@@ -78,6 +84,9 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 		m.ctx.State.Unlock()
 		if decision.SailTo != nil {
 			if err := m.sendShipToPort(ctx, ship, *decision.SailTo); err != nil {
+				if api.IsBankrupt(err) {
+					return err
+				}
 				m.logger.Warn("transit failed", zap.Error(err))
 			}
 		}
@@ -87,6 +96,9 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 		)
 		// Execute sells/fills/passengers even when waiting.
 		if err := m.executeSells(ctx, ship, decision.SellOrders); err != nil {
+			if api.IsBankrupt(err) {
+				return err
+			}
 			m.logger.Warn("sell execution failed", zap.Error(err))
 		}
 		m.executeFills(ctx, port.ID, decision.FillOrders)

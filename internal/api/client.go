@@ -317,6 +317,23 @@ func newRequestError(resp *resty.Response) *requestError {
 	return reqErr
 }
 
+// IsBankrupt returns true if the error indicates the company is bankrupt
+// (game API returns 401 Unauthorized with "bankrupt" in the message).
+func IsBankrupt(err error) bool {
+	if err == nil {
+		return false
+	}
+	reqErr, ok := err.(*requestError)
+	if !ok {
+		return false
+	}
+	if reqErr.statusCode != 401 {
+		return false
+	}
+	msg := reqErr.Error()
+	return strings.Contains(strings.ToLower(msg), "bankrupt")
+}
+
 // parseRetryAfter extracts the retry delay from the Retry-After header value.
 // Falls back to 5 seconds if no valid value is found.
 func parseRetryAfter(headerVal string) time.Duration {

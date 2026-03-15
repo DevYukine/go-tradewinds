@@ -16,7 +16,7 @@ Bot-managed company state.
 | Name, Ticker | string | Company identity |
 | HomePortID | string | Starting port |
 | Strategy | string | Current strategy name |
-| Status | string | "running" or "paused" |
+| Status | string | "running", "paused", "bankrupt", or "stopped" |
 | Treasury, Reputation | int64 | Latest known values |
 
 ### TradeLog
