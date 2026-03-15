@@ -242,6 +242,27 @@ func (b *baseStrategy) buildFleetRequest() agent.FleetDecisionRequest {
 		})
 	}
 
+	// Fetch route history for warehouse placement decisions.
+	var routeHistory []agent.RoutePerformanceEntry
+	var routePerfs []db.RoutePerformance
+	if err := b.ctx.DB.Where("company_id = ? AND created_at > ?",
+		state.CompanyDBID(), time.Now().Add(-24*time.Hour)).
+		Order("created_at DESC").Limit(50).Find(&routePerfs).Error; err == nil {
+		for _, rp := range routePerfs {
+			fromID, _ := uuid.Parse(rp.FromPortID)
+			toID, _ := uuid.Parse(rp.ToPortID)
+			goodID, _ := uuid.Parse(rp.GoodID)
+			routeHistory = append(routeHistory, agent.RoutePerformanceEntry{
+				FromPortID: fromID,
+				ToPortID:   toID,
+				GoodID:     goodID,
+				Profit:     rp.Profit,
+				Quantity:   rp.Quantity,
+				CreatedAt:  rp.CreatedAt,
+			})
+		}
+	}
+
 	return agent.FleetDecisionRequest{
 		StrategyHint:  b.name,
 		Company: agent.CompanySnapshot{
@@ -256,6 +277,7 @@ func (b *baseStrategy) buildFleetRequest() agent.FleetDecisionRequest {
 		PriceCache:    b.ctx.PriceCache.All(),
 		ShipyardPorts: b.ctx.World.ShipyardPorts,
 		Ports:         ports,
+		RouteHistory:  routeHistory,
 	}
 }
 

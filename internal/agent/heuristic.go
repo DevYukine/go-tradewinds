@@ -89,7 +89,7 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 
 	// Step 1.5: Fill profitable P2P orders at the current port.
 	// This happens before NPC buying since fills can be more profitable.
-	fills, fillCost := a.findProfitableOrderFills(req.PortOrders, req.OwnOrders, priceIndex, currentPortID, budget)
+	fills, fillCost := a.findProfitableOrderFills(req.PortOrders, req.OwnOrders, priceIndex, taxIndex, currentPortID, budget)
 	budget -= fillCost
 
 	if budget <= 0 {
@@ -138,7 +138,9 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 	// Step 2.4: Warehouse operations.
 	// Load profitable warehouse inventory onto the ship, and store cheap goods
 	// when the ship has spare capacity and no better use for it.
-	if req.StrategyHint != "market_maker" {
+	// All strategies benefit from warehouse ops — market_makers especially since
+	// they're most likely to have warehouses.
+	{
 		loads, stores := a.warehouseOps(req, decision, priceIndex, reachable, taxIndex, currentPortID, budget, minMarginPct)
 		decision.WarehouseLoads = loads
 		decision.WarehouseStores = stores
@@ -274,9 +276,15 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 	buyTaxBps := taxIndex[currentPortID]
 
 	// Build passenger revenue index for destination scoring.
+	// Include both available passengers (can board) and boarded passengers
+	// (already on ship, must be delivered).
 	passengerRevByDest := make(map[uuid.UUID]int)
 	for _, p := range req.AvailablePassengers {
 		passengerRevByDest[p.DestinationPortID] += p.Bid
+	}
+	for _, p := range req.BoardedPassengers {
+		// Boarded passengers are committed revenue — weight them heavily.
+		passengerRevByDest[p.DestinationPortID] += p.Bid * 2
 	}
 
 	// Build held cargo bonus by destination.
@@ -410,12 +418,17 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 		best := candidates[0]
 
 		// Build buy orders for the winning destination.
+		// Only buy goods with positive profit — skip loss-making cargo even if
+		// the destination was chosen for passengers or other bonuses.
 		remaining := buyCapacity
 		remainBudget := budget
 		var buys []BuyOrder
 		for _, g := range best.goods {
 			if remaining <= 0 || remainBudget <= 0 {
 				break
+			}
+			if g.profit <= 0 {
+				continue // Don't buy cargo that loses money.
 			}
 			qty := a.calcQuantity(remainBudget, g.buyPrice, buyTaxBps, remaining)
 			if qty > 0 {
@@ -442,7 +455,7 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 		}, nil
 	}
 
-	return a.speculativeTrade(req, sells, reachable, currentPortID, budget, speculativeEnabled, passengerWeight)
+	return a.speculativeTrade(req, sells, priceIndex, reachable, taxIndex, currentPortID, budget, speculativeEnabled, passengerWeight)
 }
 
 // decideBulkHaulerTrade scores destinations by total achievable profit
@@ -466,9 +479,14 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 	capacity := req.Ship.Capacity
 
 	// Build passenger revenue index for destination scoring.
+	// Include both available passengers (can board) and boarded passengers
+	// (already on ship, must be delivered).
 	passengerRevByDest := make(map[uuid.UUID]int)
 	for _, p := range req.AvailablePassengers {
 		passengerRevByDest[p.DestinationPortID] += p.Bid
+	}
+	for _, p := range req.BoardedPassengers {
+		passengerRevByDest[p.DestinationPortID] += p.Bid * 2
 	}
 
 	// Build held cargo bonus by destination.
@@ -603,12 +621,16 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 		best := candidates[0]
 
 		// Build buy orders for the winning destination.
+		// Only buy goods with positive profit — skip loss-making cargo.
 		remaining := buyCapacity
 		remainBudget := budget
 		var buys []BuyOrder
 		for _, g := range best.goods {
 			if remaining <= 0 || remainBudget <= 0 {
 				break
+			}
+			if g.profit <= 0 {
+				continue
 			}
 			qty := a.calcQuantity(remainBudget, g.buyPrice, buyTaxBps, remaining)
 			if qty > 0 {
@@ -635,7 +657,7 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 		}, nil
 	}
 
-	return a.speculativeTrade(req, sells, reachable, currentPortID, budget, speculativeEnabled, passengerWeight)
+	return a.speculativeTrade(req, sells, priceIndex, reachable, taxIndex, currentPortID, budget, speculativeEnabled, passengerWeight)
 }
 
 // speculativeTrade handles the fallback when no clear arbitrage exists.
@@ -643,34 +665,45 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 // ships check the ProfitAnalyzer for reachable buy ports with known profitable
 // routes. After 2+ idle ticks, ships forcibly relocate to a hub port rather
 // than sitting idle indefinitely.
+//
+// When sailing to any destination, the ship tries to buy goods at the current
+// port that can be sold profitably at the destination — avoiding empty-sailing.
 func (a *HeuristicAgent) speculativeTrade(
 	req TradeDecisionRequest,
 	sells []SellOrder,
+	priceIndex map[string]PricePoint,
 	reachable map[uuid.UUID]float64,
+	taxIndex map[uuid.UUID]int,
 	currentPortID uuid.UUID,
 	budget int64,
 	speculativeEnabled bool,
 	passengerWeight float64,
 ) (*TradeDecision, error) {
+	buyTaxBps := taxIndex[currentPortID]
+
 	// Try to sail toward the best passenger revenue destination.
 	bestPassDest, bestPassRev := a.bestPassengerDestination(req.AvailablePassengers, reachable)
 	if bestPassRev > 0 {
+		buys := a.speculativeBuys(req.Ship, priceIndex, taxIndex, currentPortID, bestPassDest, budget, buyTaxBps)
 		a.logger.Info("no profitable trade, sailing toward passenger revenue",
 			zap.Int("passenger_revenue", bestPassRev),
+			zap.Int("speculative_buys", len(buys)),
 		)
 		return &TradeDecision{
-			Action: "sell_and_buy", SellOrders: sells, SailTo: &bestPassDest,
+			Action: "sell_and_buy", SellOrders: sells, BuyOrders: buys, SailTo: &bestPassDest,
 			Reasoning: "no profitable trade, sailing to best passenger destination", Confidence: 0.5,
 		}, nil
 	}
 
 	// Check ProfitAnalyzer: is there a reachable buy port with a profitable route?
 	if dest, ok := a.findOpportunityBuyPort(req.TopOpportunities, reachable, currentPortID); ok {
+		buys := a.speculativeBuys(req.Ship, priceIndex, taxIndex, currentPortID, dest, budget, buyTaxBps)
 		a.logger.Info("no local trade, sailing to opportunity buy port",
 			zap.String("dest_port", dest.String()),
+			zap.Int("speculative_buys", len(buys)),
 		)
 		return &TradeDecision{
-			Action: "sell_and_buy", SellOrders: sells, SailTo: &dest,
+			Action: "sell_and_buy", SellOrders: sells, BuyOrders: buys, SailTo: &dest,
 			Reasoning: "sailing to opportunity buy port from profit analyzer", Confidence: 0.5,
 		}, nil
 	}
@@ -679,12 +712,14 @@ func (a *HeuristicAgent) speculativeTrade(
 	// Prefer hub ports (more trade variety) > opportunity sell ports > closest port.
 	if req.Ship.IdleTicks >= 2 {
 		if dest, ok := a.findRelocationPort(req.Ports, req.TopOpportunities, reachable, currentPortID); ok {
+			buys := a.speculativeBuys(req.Ship, priceIndex, taxIndex, currentPortID, dest, budget, buyTaxBps)
 			a.logger.Info("ship idle, relocating to better port",
 				zap.Int("idle_ticks", req.Ship.IdleTicks),
 				zap.String("dest_port", dest.String()),
+				zap.Int("speculative_buys", len(buys)),
 			)
 			return &TradeDecision{
-				Action: "sell_and_buy", SellOrders: sells, SailTo: &dest,
+				Action: "sell_and_buy", SellOrders: sells, BuyOrders: buys, SailTo: &dest,
 				Reasoning: fmt.Sprintf("idle %d ticks, relocating to port with more opportunities", req.Ship.IdleTicks),
 				Confidence: 0.4,
 			}, nil
@@ -697,6 +732,82 @@ func (a *HeuristicAgent) speculativeTrade(
 		Action: "wait", SellOrders: sells,
 		Reasoning: "no profitable trade — waiting briefly before relocating", Confidence: 0.3,
 	}, nil
+}
+
+// speculativeBuys finds goods at the current port that sell profitably at
+// the given destination. This prevents ships from sailing empty when
+// relocating or chasing passengers/opportunities.
+func (a *HeuristicAgent) speculativeBuys(
+	ship ShipSnapshot,
+	priceIndex map[string]PricePoint,
+	taxIndex map[uuid.UUID]int,
+	currentPortID, destID uuid.UUID,
+	budget int64,
+	buyTaxBps int,
+) []BuyOrder {
+	// Calculate remaining capacity.
+	cargoUsed := 0
+	for _, c := range ship.Cargo {
+		cargoUsed += c.Quantity
+	}
+	remaining := ship.Capacity - cargoUsed
+	if remaining <= 0 || budget <= 0 {
+		return nil
+	}
+
+	destTaxBps := taxIndex[destID]
+
+	// Find all goods available here that sell at a profit at the destination.
+	type candidate struct {
+		goodID uuid.UUID
+		profit int // net profit per unit
+		cost   int // effective buy cost per unit (with tax)
+	}
+	var candidates []candidate
+
+	for _, pp := range priceIndex {
+		if pp.PortID != currentPortID || pp.BuyPrice <= 0 {
+			continue
+		}
+		dp, ok := priceIndex[priceKey(destID, pp.GoodID)]
+		if !ok || dp.SellPrice <= 0 {
+			continue
+		}
+		buyCost := pp.BuyPrice + pp.BuyPrice*buyTaxBps/10000
+		sellNet := dp.SellPrice - dp.SellPrice*destTaxBps/10000
+		profit := sellNet - buyCost
+		if profit > 0 {
+			candidates = append(candidates, candidate{
+				goodID: pp.GoodID,
+				profit: profit,
+				cost:   buyCost,
+			})
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// Sort by profit descending.
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].profit > candidates[j].profit
+	})
+
+	var buys []BuyOrder
+	for _, c := range candidates {
+		if remaining <= 0 || budget <= 0 {
+			break
+		}
+		qty := a.calcQuantity(budget, c.cost, 0, remaining) // tax already in cost
+		if qty <= 0 {
+			continue
+		}
+		buys = append(buys, BuyOrder{GoodID: c.goodID, Quantity: qty})
+		remaining -= qty
+		budget -= int64(qty) * int64(c.cost)
+	}
+	return buys
 }
 
 // ---------------------------------------------------------------------------
@@ -753,11 +864,18 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 	// Only consider warehouses when fleet is already at a reasonable size (3+ ships)
 	// and treasury is very healthy (covers 10+ upkeep cycles = 50 hours).
 	if len(req.Warehouses) < 2 && treasury > upkeep*10 && numShips >= 3 {
+		// Score ports by activity: currently docked ships + route history visits.
 		portActivity := make(map[uuid.UUID]int)
 		for _, ship := range req.Ships {
 			if ship.Status == "docked" && ship.PortID != nil {
 				portActivity[*ship.PortID]++
 			}
+		}
+		// Route history gives a much better picture of frequently visited ports
+		// than the snapshot of currently docked ships.
+		for _, entry := range req.RouteHistory {
+			portActivity[entry.FromPortID]++
+			portActivity[entry.ToPortID]++
 		}
 
 		warehousePorts := make(map[uuid.UUID]bool)
@@ -774,9 +892,10 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 			}
 		}
 
+		// Threshold: 2+ activity score (e.g. 2 docked ships, or 1 docked + route visits).
 		if bestPort != uuid.Nil && bestCount >= 2 {
 			a.logger.Info("recommending warehouse purchase",
-				zap.Int("docked_ships_at_port", bestCount),
+				zap.Int("port_activity_score", bestCount),
 				zap.Int("existing_warehouses", len(req.Warehouses)),
 			)
 			return &FleetDecision{
@@ -1185,6 +1304,7 @@ func (a *HeuristicAgent) findProfitableOrderFills(
 	portOrders []MarketOrder,
 	ownOrders []MarketOrder,
 	priceIndex map[string]PricePoint,
+	taxIndex map[uuid.UUID]int,
 	currentPortID uuid.UUID,
 	budget int64,
 ) ([]FillOrder, int64) {
@@ -1207,6 +1327,8 @@ func (a *HeuristicAgent) findProfitableOrderFills(
 	}
 	var candidates []scoredFill
 
+	portTaxBps := taxIndex[currentPortID]
+
 	for _, order := range portOrders {
 		if ownOrderIDs[order.ID] || order.Remaining <= 0 {
 			continue
@@ -1222,9 +1344,11 @@ func (a *HeuristicAgent) findProfitableOrderFills(
 
 		switch order.Side {
 		case "sell":
-			// Player selling cheap → we buy (profit = NPC sell price - order price).
+			// Player selling cheap → we buy from them, then sell to NPC.
+			// Profit = NPC sell price - order price - sell tax (we pay tax when selling to NPC).
 			if npcPrice.SellPrice > 0 && order.Price < npcPrice.SellPrice {
-				profit := npcPrice.SellPrice - order.Price
+				sellTax := npcPrice.SellPrice * portTaxBps / 10000
+				profit := npcPrice.SellPrice - order.Price - sellTax
 				minProfit := npcPrice.SellPrice * 5 / 100 // 5% min margin
 				if profit >= minProfit {
 					candidates = append(candidates, scoredFill{
@@ -1237,16 +1361,18 @@ func (a *HeuristicAgent) findProfitableOrderFills(
 				}
 			}
 		case "buy":
-			// Player buying expensive → we sell to them (profit = order price - NPC buy price).
+			// Player buying expensive → we buy from NPC, sell to them.
+			// Profit = order price - NPC buy price - buy tax (we pay tax when buying from NPC).
 			if npcPrice.BuyPrice > 0 && order.Price > npcPrice.BuyPrice {
-				profit := order.Price - npcPrice.BuyPrice
+				buyTax := npcPrice.BuyPrice * portTaxBps / 10000
+				profit := order.Price - npcPrice.BuyPrice - buyTax
 				minProfit := npcPrice.BuyPrice * 5 / 100 // 5% min margin
 				if profit >= minProfit {
 					candidates = append(candidates, scoredFill{
 						orderID: order.ID,
 						side:    "buy",
 						qty:     order.Remaining,
-						cost:    int64(order.Remaining * npcPrice.BuyPrice),
+						cost:    int64(order.Remaining * (npcPrice.BuyPrice + buyTax)),
 						profit:  profit,
 					})
 				}
@@ -1336,17 +1462,28 @@ func (a *HeuristicAgent) buildSmartSellOrders(
 			}
 		}
 
-		// Hold if a destination offers >20% better net price. The ship is already
-		// sailing somewhere, so holding costs nothing extra — the cargo rides along
-		// and earns the price difference at the next stop.
-		if currentNet > 0 && bestDestNet > currentNet*120/100 && bestDestID != uuid.Nil {
-			held = append(held, heldCargo{
-				goodID:     cargo.GoodID,
-				quantity:   cargo.Quantity,
-				bestDestID: bestDestID,
-				profitGain: (bestDestNet - currentNet) * cargo.Quantity,
-			})
-			continue
+		// Hold if a destination offers >20% better net price AFTER subtracting
+		// travel upkeep cost. Without this, ships hold cargo for far-away ports
+		// where the upkeep to get there eats all the price improvement.
+		if currentNet > 0 && bestDestNet > currentNet && bestDestID != uuid.Nil {
+			gainPerUnit := bestDestNet - currentNet
+			// Subtract travel upkeep from the total hold gain estimate.
+			travelUpkeep := 0
+			if dist, ok := reachable[bestDestID]; ok && ship.Speed > 0 && ship.Upkeep > 0 {
+				travelMins := dist / float64(ship.Speed)
+				travelUpkeep = int(float64(ship.Upkeep) / 300.0 * travelMins)
+			}
+			totalGain := gainPerUnit*cargo.Quantity - travelUpkeep
+			// Only hold if the net gain (after upkeep) exceeds 20% of selling now.
+			if totalGain > currentNet*cargo.Quantity*20/100 {
+				held = append(held, heldCargo{
+					goodID:     cargo.GoodID,
+					quantity:   cargo.Quantity,
+					bestDestID: bestDestID,
+					profitGain: totalGain,
+				})
+				continue
+			}
 		}
 
 		// Sell at current port (includes cargo with no sell price — execution layer handles it).
@@ -1682,10 +1819,11 @@ func (a *HeuristicAgent) warehouseOps(
 		}
 	}
 
-	// --- STORE: buy cheap goods into warehouse (low-priority, idle only) ---
+	// --- STORE: buy cheap goods into warehouse ---
 
-	// Only store during speculative/idle decisions (confidence <= 0.5) to avoid
-	// competing with profitable trades.
+	// Only store goods when idle/speculative (low confidence). High-confidence
+	// trades mean we have profitable work to do — don't waste budget on
+	// warehouse speculation.
 	if decision.Confidence > 0.5 {
 		return loads, nil
 	}

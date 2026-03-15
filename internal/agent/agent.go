@@ -355,8 +355,9 @@ type FleetDecisionRequest struct {
 	Warehouses    []WarehouseSnapshot `json:"warehouses"`
 	ShipTypes     []ShipTypeInfo      `json:"ship_types"`
 	PriceCache    []PricePoint        `json:"price_cache"`
-	ShipyardPorts []uuid.UUID         `json:"shipyard_ports"` // Port IDs that have shipyards (not all ports do).
-	Ports         []PortInfo          `json:"ports"`          // Port details including tax rates for purchase cost calculation.
+	ShipyardPorts []uuid.UUID              `json:"shipyard_ports"` // Port IDs that have shipyards (not all ports do).
+	Ports         []PortInfo               `json:"ports"`          // Port details including tax rates for purchase cost calculation.
+	RouteHistory  []RoutePerformanceEntry  `json:"route_history"`  // Recent route performance for warehouse placement.
 }
 
 // ShipPurchase describes a ship to buy at a specific port.
