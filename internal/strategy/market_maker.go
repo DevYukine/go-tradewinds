@@ -266,7 +266,31 @@ func (m *MarketMaker) evaluateMarket(ctx context.Context) {
 		})
 	}
 
+	// Build a set of ports where the company has warehouses for fill eligibility.
+	warehousePorts := make(map[string]bool)
+	m.ctx.State.RLock()
+	for _, w := range m.ctx.State.Warehouses {
+		warehousePorts[w.Warehouse.PortID.String()] = true
+	}
+	m.ctx.State.RUnlock()
+
 	for _, fill := range decision.FillOrders {
+		// Look up the order's port to check warehouse requirement.
+		var orderPortID string
+		for _, o := range openOrders {
+			if o.ID == fill.OrderID {
+				orderPortID = o.PortID.String()
+				break
+			}
+		}
+		if orderPortID != "" && !warehousePorts[orderPortID] {
+			m.logger.Debug("skipping market fill: no warehouse at order port",
+				zap.String("order_id", fill.OrderID.String()),
+				zap.String("port_id", orderPortID),
+			)
+			continue
+		}
+
 		_, err := m.ctx.Client.FillOrder(ctx, fill.OrderID, fill.Quantity)
 		if err != nil {
 			m.logger.Warn("failed to fill market order",
