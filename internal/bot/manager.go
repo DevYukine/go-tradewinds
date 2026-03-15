@@ -40,6 +40,7 @@ type Manager struct {
 	agent           agent.Agent
 	registry    Registry
 	scaler      *Scaler
+	scanner     *Scanner
 	companies   map[string]*CompanyRunner
 	mu          sync.RWMutex
 	wg          sync.WaitGroup
@@ -488,7 +489,7 @@ func (m *Manager) startScanner(ctx context.Context) {
 	}
 	m.mu.RUnlock()
 
-	scanner := newScanner(
+	m.scanner = newScanner(
 		scannerClient,
 		m.worldData,
 		m.priceCache,
@@ -502,7 +503,7 @@ func (m *Manager) startScanner(ctx context.Context) {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		scanner.Run(ctx)
+		m.scanner.Run(ctx)
 	}()
 
 	m.logger.Info("price scanner started")
@@ -524,7 +525,12 @@ func (m *Manager) startWorldRefresher(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				m.worldData.RefreshWorldData(ctx, m.baseClient, m.logger)
+				newPorts := m.worldData.RefreshWorldData(ctx, m.baseClient, m.logger)
+				// Immediately scan prices for newly discovered ports so the
+				// agent can evaluate them as destinations right away.
+				if len(newPorts) > 0 && m.scanner != nil {
+					m.scanner.ScanPorts(ctx, newPorts)
+				}
 			}
 		}
 	}()

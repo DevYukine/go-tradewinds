@@ -187,6 +187,25 @@ func (s *Scanner) scanPort(ctx context.Context, port *api.Port) {
 	)
 }
 
+// ScanPorts scans prices for the given ports immediately (on-demand).
+// Used to populate price data for newly discovered ports so the agent
+// can evaluate them as destinations without waiting for the regular scan cycle.
+func (s *Scanner) ScanPorts(ctx context.Context, ports []api.Port) {
+	for i := range ports {
+		if ctx.Err() != nil {
+			return
+		}
+		s.logger.Info("on-demand scan for newly discovered port",
+			zap.String("port", ports[i].Name),
+		)
+		s.scanPort(ctx, &ports[i])
+	}
+	// Recompute opportunities so new ports appear in trade analysis.
+	if s.profitAnalyzer != nil && len(ports) > 0 {
+		s.profitAnalyzer.Recompute()
+	}
+}
+
 // adaptiveInterval returns the scan interval based on current rate limit pressure.
 func (s *Scanner) adaptiveInterval() time.Duration {
 	utilization := s.limiter.Utilization()

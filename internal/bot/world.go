@@ -224,35 +224,36 @@ func (wc *WorldCache) AddRoute(r api.Route) {
 // RefreshWorldData fetches ports, routes, and goods from the API and merges
 // any new entries into the cache. Existing entries are not modified.
 // Called periodically so the bot discovers new ports/routes at runtime.
-func (wc *WorldCache) RefreshWorldData(ctx context.Context, client *api.Client, logger *zap.Logger) {
+// Returns the list of newly discovered ports (empty if no new ports found).
+func (wc *WorldCache) RefreshWorldData(ctx context.Context, client *api.Client, logger *zap.Logger) []api.Port {
 	log := logger.Named("world_refresh")
 
 	// Fetch current ports from API (bypass Redis cache).
 	freshPorts, err := client.ListPorts(ctx, api.PortFilters{})
 	if err != nil {
 		log.Warn("failed to refresh ports", zap.Error(err))
-		return
+		return nil
 	}
 
 	// Fetch current routes.
 	freshRoutes, err := client.ListRoutes(ctx, api.RouteFilters{})
 	if err != nil {
 		log.Warn("failed to refresh routes", zap.Error(err))
-		return
+		return nil
 	}
 
 	// Fetch current goods.
 	freshGoods, err := client.ListGoods(ctx, "")
 	if err != nil {
 		log.Warn("failed to refresh goods", zap.Error(err))
-		return
+		return nil
 	}
 
 	wc.mu.Lock()
 	defer wc.mu.Unlock()
 
 	// Merge new ports.
-	newPorts := 0
+	var discoveredPorts []api.Port
 	for _, p := range freshPorts {
 		if wc.portsByID[p.ID] != nil {
 			continue
@@ -260,8 +261,9 @@ func (wc *WorldCache) RefreshWorldData(ctx context.Context, client *api.Client, 
 		wc.Ports = append(wc.Ports, p)
 		idx := len(wc.Ports) - 1
 		wc.portsByID[wc.Ports[idx].ID] = &wc.Ports[idx]
-		newPorts++
+		discoveredPorts = append(discoveredPorts, p)
 	}
+	newPorts := len(discoveredPorts)
 
 	// Merge new routes.
 	newRoutes := 0
@@ -326,6 +328,8 @@ func (wc *WorldCache) RefreshWorldData(ctx context.Context, client *api.Client, 
 	} else {
 		log.Debug("world data refreshed — no changes")
 	}
+
+	return discoveredPorts
 }
 
 // PortCount returns the number of ports (thread-safe).

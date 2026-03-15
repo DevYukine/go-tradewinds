@@ -102,6 +102,7 @@ Single goroutine rotating through all ports, fetching NPC prices.
 - Updates shared `PriceCache`
 - Saves `PriceObservation` records to DB
 - Adaptive interval: 8s normal, 30s at high utilization (>85%)
+- **On-demand scanning**: When `RefreshWorldData` discovers new ports, the manager immediately triggers `ScanPorts()` to populate prices before the regular scan cycle reaches them. This ensures newly discovered ports can be evaluated as trade destinations right away.
 
 ## WorldCache (`internal/bot/world.go`)
 
@@ -114,5 +115,5 @@ is thread-safe via RWMutex.
 - `RoutesFrom(portID)` — All departing routes
 - `GetPortAtIndex(idx)` — Safe indexed access for scanner
 - `Snapshot()` — Returns copies of all slices for API handlers
-- `RefreshWorldData(ctx, client, logger)` — Fetches and merges new entries
+- `RefreshWorldData(ctx, client, logger)` — Fetches and merges new entries, returns newly discovered ports for immediate price scanning
 - `ToAgentPorts/Routes/ShipTypes()` — Convert to agent types
