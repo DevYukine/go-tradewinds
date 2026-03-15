@@ -20,7 +20,9 @@ type BulkHauler struct {
 
 // NewBulkHauler creates a new BulkHauler strategy instance.
 func NewBulkHauler(ctx bot.StrategyContext) (bot.Strategy, error) {
-	b := &BulkHauler{}
+	b := &BulkHauler{
+		lastFleetEval: time.Now(), // Prevent immediate fleet eval on startup.
+	}
 	b.name = "bulk_hauler"
 	if err := b.Init(ctx); err != nil {
 		return nil, err

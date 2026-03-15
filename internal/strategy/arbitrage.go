@@ -25,7 +25,9 @@ type Arbitrage struct {
 
 // NewArbitrage creates a new Arbitrage strategy instance.
 func NewArbitrage(ctx bot.StrategyContext) (bot.Strategy, error) {
-	a := &Arbitrage{}
+	a := &Arbitrage{
+		lastFleetEval: time.Now(), // Prevent immediate fleet eval on startup.
+	}
 	a.name = "arbitrage"
 	if err := a.Init(ctx); err != nil {
 		return nil, err

@@ -27,7 +27,11 @@ type MarketMaker struct {
 
 // NewMarketMaker creates a new MarketMaker strategy instance.
 func NewMarketMaker(ctx bot.StrategyContext) (bot.Strategy, error) {
-	m := &MarketMaker{}
+	now := time.Now()
+	m := &MarketMaker{
+		lastFleetEval:  now, // Prevent immediate fleet/market eval on startup.
+		lastMarketEval: now,
+	}
 	m.name = "market_maker"
 	if err := m.Init(ctx); err != nil {
 		return nil, err
