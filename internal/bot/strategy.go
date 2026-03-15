@@ -7,6 +7,7 @@ import (
 
 	"github.com/DevYukine/go-tradewinds/internal/agent"
 	"github.com/DevYukine/go-tradewinds/internal/api"
+	"github.com/DevYukine/go-tradewinds/internal/cache"
 )
 
 // Strategy defines the trading behavior for a company. Strategies gather game
@@ -43,6 +44,7 @@ type StrategyContext struct {
 	Logger          *CompanyLogger
 	Events          *EventBroadcaster
 	DB              *gorm.DB
+	Redis           *cache.RedisCache
 }
 
 // StrategyFactory creates a new Strategy instance. Each factory is registered

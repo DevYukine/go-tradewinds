@@ -72,6 +72,19 @@ func (b *baseStrategy) Init(ctx bot.StrategyContext) error {
 
 func (b *baseStrategy) Shutdown() error { return nil }
 
+// persistCargoCosts saves a ship's cargo cost map to Redis for restart survival.
+func (b *baseStrategy) persistCargoCosts(ship *bot.ShipState) {
+	if b.ctx.Redis == nil || ship.CargoCosts == nil {
+		return
+	}
+	// Convert UUID keys to strings for JSON serialization.
+	costs := make(map[string]int, len(ship.CargoCosts))
+	for goodID, cost := range ship.CargoCosts {
+		costs[goodID.String()] = cost
+	}
+	b.ctx.Redis.SaveCargoCosts(context.Background(), b.ctx.State.CompanyID.String(), ship.Ship.ID.String(), costs)
+}
+
 // --- On-Demand Price Scanning ---
 
 // ensurePortPrices checks if the price cache for a port is stale or missing
@@ -560,8 +573,9 @@ func (b *baseStrategy) executeSells(ctx context.Context, ship *bot.ShipState, se
 				zap.Int("total", r.Execution.TotalPrice),
 			)
 
-			// Clear cost tracking for sold goods.
+			// Clear cost tracking for sold goods and persist to Redis.
 			ship.ClearCargoCost(r.Execution.GoodID)
+			b.persistCargoCosts(ship)
 
 			b.recordTrade(r.Execution, tradeContext{
 				ShipID:   ship.Ship.ID.String(),
@@ -684,10 +698,11 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 				zap.Int("total", r.Execution.TotalPrice),
 			)
 
-			// Record cost basis for loss prevention.
+			// Record cost basis for loss prevention and persist to Redis.
 			if r.Execution.Quantity > 0 {
 				avgCost := r.Execution.UnitPrice + r.Execution.TaxPaid/r.Execution.Quantity
 				ship.SetCargoCost(r.Execution.GoodID, r.Execution.Quantity, avgCost)
+				b.persistCargoCosts(ship)
 			}
 
 			tc := tradeContext{

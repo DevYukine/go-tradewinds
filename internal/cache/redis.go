@@ -233,3 +233,45 @@ func (rc *RedisCache) LoadScannerIndex(ctx context.Context) int {
 	rc.logger.Debug("restored scanner position from Redis", zap.Int("port_idx", val))
 	return val
 }
+
+// --- Cargo Cost Persistence ---
+
+const cargoCostKeyPrefix = keyPrefix + "cargo_costs:"
+
+// cargoCostKey builds the Redis key for a ship's cargo costs.
+func cargoCostKey(companyID, shipID string) string {
+	return cargoCostKeyPrefix + companyID + ":" + shipID
+}
+
+// SaveCargoCosts persists a ship's cargo cost map to Redis.
+func (rc *RedisCache) SaveCargoCosts(ctx context.Context, companyID, shipID string, costs map[string]int) {
+	if len(costs) == 0 {
+		// Clean up empty maps.
+		rc.client.Del(ctx, cargoCostKey(companyID, shipID))
+		return
+	}
+	data, err := json.Marshal(costs)
+	if err != nil {
+		rc.logger.Warn("failed to marshal cargo costs", zap.Error(err))
+		return
+	}
+	// TTL of 1 hour — costs become less relevant over time as cargo changes.
+	if err := rc.client.Set(ctx, cargoCostKey(companyID, shipID), data, time.Hour).Err(); err != nil {
+		rc.logger.Warn("failed to save cargo costs to Redis", zap.Error(err))
+	}
+}
+
+// LoadCargoCosts restores a ship's cargo cost map from Redis.
+// Returns nil if not found or expired.
+func (rc *RedisCache) LoadCargoCosts(ctx context.Context, companyID, shipID string) map[string]int {
+	data, err := rc.client.Get(ctx, cargoCostKey(companyID, shipID)).Bytes()
+	if err != nil {
+		return nil
+	}
+	var costs map[string]int
+	if err := json.Unmarshal(data, &costs); err != nil {
+		rc.logger.Warn("failed to unmarshal cargo costs from Redis", zap.Error(err))
+		return nil
+	}
+	return costs
+}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/DevYukine/go-tradewinds/internal/agent"
 	"github.com/DevYukine/go-tradewinds/internal/api"
+	"github.com/DevYukine/go-tradewinds/internal/cache"
 	"github.com/DevYukine/go-tradewinds/internal/db"
 	"gorm.io/gorm"
 )
@@ -38,6 +39,7 @@ const (
 type CompanyRunner struct {
 	client      *api.Client
 	gormDB      *gorm.DB
+	redis       *cache.RedisCache
 	world       *WorldCache
 	priceCache  *PriceCache
 	state       *CompanyState
@@ -64,6 +66,7 @@ type strategySwap struct {
 func NewCompanyRunner(
 	client *api.Client,
 	gormDB *gorm.DB,
+	redis *cache.RedisCache,
 	world *WorldCache,
 	priceCache *PriceCache,
 	state *CompanyState,
@@ -77,6 +80,7 @@ func NewCompanyRunner(
 	return &CompanyRunner{
 		client:          client,
 		gormDB:          gormDB,
+		redis:           redis,
 		world:           world,
 		priceCache:      priceCache,
 		state:           state,
@@ -238,7 +242,7 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 		r.state.Unlock()
 	}
 
-	// Fetch cargo for each ship.
+	// Fetch cargo for each ship and restore cost tracking from Redis.
 	for _, ship := range ships {
 		cargo, err := r.client.GetShipInventory(ctx, ship.ID)
 		if err != nil {
@@ -249,6 +253,30 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 			continue
 		}
 		r.state.SetShipCargo(ship.ID, cargo)
+
+		// Restore cargo costs from Redis.
+		if r.redis != nil {
+			costs := r.redis.LoadCargoCosts(ctx, r.state.CompanyID.String(), ship.ID.String())
+			if len(costs) > 0 {
+				r.state.Lock()
+				if ss, ok := r.state.Ships[ship.ID]; ok {
+					for goodIDStr, cost := range costs {
+						goodID, err := uuid.Parse(goodIDStr)
+						if err != nil {
+							continue
+						}
+						// Only restore cost for goods still on the ship.
+						for _, c := range cargo {
+							if c.GoodID == goodID && c.Quantity > 0 {
+								ss.CargoCosts[goodID] = cost
+								break
+							}
+						}
+					}
+				}
+				r.state.Unlock()
+			}
+		}
 	}
 
 	// Fetch boarded passenger counts for ships with passenger capacity.
@@ -1016,6 +1044,7 @@ func (r *CompanyRunner) swapStrategy(ctx context.Context, newStrategy Strategy, 
 		Logger:     r.logger,
 		Events:     r.events,
 		DB:         r.gormDB,
+		Redis:      r.redis,
 	}
 
 	if err := newStrategy.Init(stratCtx); err != nil {

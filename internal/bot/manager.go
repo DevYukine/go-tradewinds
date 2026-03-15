@@ -422,6 +422,7 @@ func (m *Manager) setupRunner(
 		Logger:         companyLogger,
 		Events:         events,
 		DB:             m.gormDB,
+		Redis:          m.redis,
 	}
 
 	strategy, err := factory(stratCtx)
@@ -432,6 +433,7 @@ func (m *Manager) setupRunner(
 	return NewCompanyRunner(
 		companyClient,
 		m.gormDB,
+		m.redis,
 		m.worldData,
 		m.priceCache,
 		state,
