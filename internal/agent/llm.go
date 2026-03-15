@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -105,8 +106,8 @@ func (a *LLMAgent) callLLM(ctx context.Context, action, systemPrompt string, req
 		return fmt.Errorf("provider call: %w", err)
 	}
 
-	// The model may wrap JSON in markdown code fences; strip them.
-	raw = stripCodeFences(raw)
+	// The model may wrap JSON in markdown code fences or add prose; extract the JSON object.
+	raw = extractJSON(raw)
 
 	if raw == "" {
 		return fmt.Errorf("empty response from LLM after stripping code fences")
@@ -119,35 +120,63 @@ func (a *LLMAgent) callLLM(ctx context.Context, action, systemPrompt string, req
 	return nil
 }
 
-// stripCodeFences removes optional ```json ... ``` wrapping from LLM output.
-func stripCodeFences(s string) string {
-	// Trim leading/trailing whitespace.
-	trimmed := s
-	for len(trimmed) > 0 && (trimmed[0] == ' ' || trimmed[0] == '\n' || trimmed[0] == '\r' || trimmed[0] == '\t') {
-		trimmed = trimmed[1:]
-	}
-	for len(trimmed) > 0 {
-		last := trimmed[len(trimmed)-1]
-		if last == ' ' || last == '\n' || last == '\r' || last == '\t' {
-			trimmed = trimmed[:len(trimmed)-1]
+// extractJSON extracts the first complete JSON object from LLM output,
+// handling code fences, leading/trailing prose, and other wrapper text.
+func extractJSON(s string) string {
+	// Strip code fences first.
+	trimmed := strings.TrimSpace(s)
+	if strings.HasPrefix(trimmed, "```") {
+		// Remove opening fence (```json, ```JSON, or plain ```)
+		if idx := strings.Index(trimmed, "\n"); idx != -1 {
+			trimmed = trimmed[idx+1:]
 		} else {
-			break
+			trimmed = trimmed[3:]
+		}
+		// Remove closing fence.
+		if idx := strings.LastIndex(trimmed, "```"); idx != -1 {
+			trimmed = trimmed[:idx]
+		}
+		trimmed = strings.TrimSpace(trimmed)
+	}
+
+	// Find the first '{' and match its closing '}'.
+	start := strings.IndexByte(trimmed, '{')
+	if start == -1 {
+		return strings.TrimSpace(trimmed)
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(trimmed); i++ {
+		c := trimmed[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if c == '{' {
+			depth++
+		} else if c == '}' {
+			depth--
+			if depth == 0 {
+				return trimmed[start : i+1]
+			}
 		}
 	}
 
-	// Remove leading ```json or ```
-	if len(trimmed) >= 7 && trimmed[:7] == "```json" {
-		trimmed = trimmed[7:]
-	} else if len(trimmed) >= 3 && trimmed[:3] == "```" {
-		trimmed = trimmed[3:]
-	}
-
-	// Remove trailing ```
-	if len(trimmed) >= 3 && trimmed[len(trimmed)-3:] == "```" {
-		trimmed = trimmed[:len(trimmed)-3]
-	}
-
-	return trimmed
+	// Couldn't find matched braces — return from first '{' onward as fallback.
+	return trimmed[start:]
 }
 
 // ---------------------------------------------------------------------------
