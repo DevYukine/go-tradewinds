@@ -556,9 +556,17 @@ func (r *CompanyRunner) handleTick(ctx context.Context) {
 		r.logger.Warn("economy refresh failed", zap.Error(err))
 	} else {
 		// If we were bankrupt and the economy call succeeded, the admin
-		// has bailed us out — resume normal operations.
+		// has bailed us out — but only resume if treasury is enough to
+		// cover at least 2 upkeep cycles. Otherwise we'll just go bankrupt
+		// again on the first trade attempt.
 		if r.bankrupt {
-			r.exitBankruptcy(econ)
+			minTreasury := r.state.TotalUpkeep * 2
+			if minTreasury < 1000 {
+				minTreasury = 1000
+			}
+			if econ.Treasury >= minTreasury {
+				r.exitBankruptcy(econ)
+			}
 		}
 		r.state.UpdateEconomy(econ)
 		r.events.Emit(EventEconomyTick)
@@ -592,11 +600,6 @@ func (r *CompanyRunner) handleTick(ctx context.Context) {
 // The runner continues polling GetEconomy to detect an admin bailout.
 func (r *CompanyRunner) enterBankruptcy() {
 	if r.bankrupt {
-		// Already bankrupt — just log a periodic reminder.
-		r.logger.Warn("company is BANKRUPT — waiting for admin bailout (treasury injection needed)",
-			zap.String("company", r.dbRecord.Name),
-			zap.Int64("last_known_treasury", r.state.Treasury),
-		)
 		return
 	}
 
