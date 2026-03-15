@@ -6,6 +6,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	"github.com/DevYukine/go-tradewinds/internal/api"
 	"github.com/DevYukine/go-tradewinds/internal/db"
@@ -46,6 +47,7 @@ func (s *Server) registerHandlers() {
 	api.Get("/analytics/timeline", s.handleAnalyticsTimeline)
 	api.Get("/analytics/ships", s.handleAnalyticsShips)
 	api.Get("/analytics/warehouses", s.handleAnalyticsWarehouses)
+	api.Get("/analytics/passengers", s.handleAnalyticsPassengers)
 }
 
 // companyResponse extends CompanyRecord with live-enriched fields.
@@ -1730,4 +1732,182 @@ func (s *Server) handleAnalyticsWarehouses(c fiber.Ctx) error {
 		Scan(&results)
 
 	return c.JSON(results)
+}
+
+// handleAnalyticsPassengers returns passenger sniping analytics grouped by
+// route and ship. Supports ?hours= filter (default: all time).
+func (s *Server) handleAnalyticsPassengers(c fiber.Ctx) error {
+	hours := c.Query("hours")
+
+	baseQuery := s.db.Model(&db.PassengerLog{})
+	if hours != "" {
+		if h, err := strconv.Atoi(hours); err == nil && h > 0 {
+			baseQuery = baseQuery.Where("created_at > ?", time.Now().Add(-time.Duration(h)*time.Hour))
+		}
+	}
+
+	// --- Route breakdown ---
+	type routeRow struct {
+		OriginPortID        string
+		OriginPortName      string
+		DestinationPortID   string
+		DestinationPortName string
+		TotalRevenue        int64
+		TotalPassengers     int64
+		SnipeCount          int64
+		AvgBid              float64
+		MaxBid              int
+		FirstSnipe          time.Time
+		LastSnipe           time.Time
+	}
+	var routeRows []routeRow
+	baseQuery.Session(&gorm.Session{}).
+		Select(`origin_port_id, origin_port_name,
+			destination_port_id, destination_port_name,
+			SUM(bid) as total_revenue,
+			SUM(count) as total_passengers,
+			COUNT(*) as snipe_count,
+			AVG(bid) as avg_bid,
+			MAX(bid) as max_bid,
+			MIN(created_at) as first_snipe,
+			MAX(created_at) as last_snipe`).
+		Group("origin_port_id, origin_port_name, destination_port_id, destination_port_name").
+		Scan(&routeRows)
+
+	// Sort routes by total revenue descending.
+	for i := 0; i < len(routeRows); i++ {
+		for j := i + 1; j < len(routeRows); j++ {
+			if routeRows[j].TotalRevenue > routeRows[i].TotalRevenue {
+				routeRows[i], routeRows[j] = routeRows[j], routeRows[i]
+			}
+		}
+	}
+
+	type routeJSON struct {
+		OriginPortID        string  `json:"origin_port_id"`
+		OriginPortName      string  `json:"origin_port_name"`
+		DestinationPortID   string  `json:"destination_port_id"`
+		DestinationPortName string  `json:"destination_port_name"`
+		TotalRevenue        int64   `json:"total_revenue"`
+		TotalPassengers     int64   `json:"total_passengers"`
+		SnipeCount          int64   `json:"snipe_count"`
+		AvgBid              float64 `json:"avg_bid"`
+		MaxBid              int     `json:"max_bid"`
+		FirstSnipe          string  `json:"first_snipe"`
+		LastSnipe           string  `json:"last_snipe"`
+	}
+	routes := make([]routeJSON, 0, len(routeRows))
+	for _, r := range routeRows {
+		first, last := "", ""
+		if !r.FirstSnipe.IsZero() {
+			first = r.FirstSnipe.Format(time.RFC3339)
+		}
+		if !r.LastSnipe.IsZero() {
+			last = r.LastSnipe.Format(time.RFC3339)
+		}
+		routes = append(routes, routeJSON{
+			OriginPortID:        r.OriginPortID,
+			OriginPortName:      r.OriginPortName,
+			DestinationPortID:   r.DestinationPortID,
+			DestinationPortName: r.DestinationPortName,
+			TotalRevenue:        r.TotalRevenue,
+			TotalPassengers:     r.TotalPassengers,
+			SnipeCount:          r.SnipeCount,
+			AvgBid:              r.AvgBid,
+			MaxBid:              r.MaxBid,
+			FirstSnipe:          first,
+			LastSnipe:           last,
+		})
+	}
+
+	// --- Ship breakdown ---
+	type shipRow struct {
+		ShipID          string
+		ShipName        string
+		TotalRevenue    int64
+		TotalPassengers int64
+		SnipeCount      int64
+		AvgBid          float64
+	}
+	var shipRows []shipRow
+	baseQuery.Session(&gorm.Session{}).
+		Select(`ship_id, ship_name,
+			SUM(bid) as total_revenue,
+			SUM(count) as total_passengers,
+			COUNT(*) as snipe_count,
+			AVG(bid) as avg_bid`).
+		Group("ship_id, ship_name").
+		Scan(&shipRows)
+
+	// Sort ships by total revenue descending.
+	for i := 0; i < len(shipRows); i++ {
+		for j := i + 1; j < len(shipRows); j++ {
+			if shipRows[j].TotalRevenue > shipRows[i].TotalRevenue {
+				shipRows[i], shipRows[j] = shipRows[j], shipRows[i]
+			}
+		}
+	}
+
+	type shipJSON struct {
+		ShipID          string  `json:"ship_id"`
+		ShipName        string  `json:"ship_name"`
+		TotalRevenue    int64   `json:"total_revenue"`
+		TotalPassengers int64   `json:"total_passengers"`
+		SnipeCount      int64   `json:"snipe_count"`
+		AvgBid          float64 `json:"avg_bid"`
+	}
+	ships := make([]shipJSON, 0, len(shipRows))
+	for _, sh := range shipRows {
+		ships = append(ships, shipJSON{
+			ShipID:          sh.ShipID,
+			ShipName:        sh.ShipName,
+			TotalRevenue:    sh.TotalRevenue,
+			TotalPassengers: sh.TotalPassengers,
+			SnipeCount:      sh.SnipeCount,
+			AvgBid:          sh.AvgBid,
+		})
+	}
+
+	// --- Summary ---
+	var totalRevenue, totalPassengers, totalSnipes int64
+	var avgBid float64
+	for _, r := range routeRows {
+		totalRevenue += r.TotalRevenue
+		totalPassengers += r.TotalPassengers
+		totalSnipes += r.SnipeCount
+	}
+	if totalSnipes > 0 {
+		avgBid = float64(totalRevenue) / float64(totalSnipes)
+	}
+
+	topShipName := ""
+	var topShipSnipes int64
+	for _, sh := range shipRows {
+		if sh.SnipeCount > topShipSnipes {
+			topShipSnipes = sh.SnipeCount
+			topShipName = sh.ShipName
+		}
+	}
+
+	type summaryJSON struct {
+		TotalRevenue    int64   `json:"total_revenue"`
+		TotalPassengers int64   `json:"total_passengers"`
+		TotalSnipes     int64   `json:"total_snipes"`
+		AvgBidPerSnipe  float64 `json:"avg_bid_per_snipe"`
+		TopShipName     string  `json:"top_ship_name"`
+		TopShipSnipes   int64   `json:"top_ship_snipes"`
+	}
+
+	return c.JSON(fiber.Map{
+		"summary": summaryJSON{
+			TotalRevenue:    totalRevenue,
+			TotalPassengers: totalPassengers,
+			TotalSnipes:     totalSnipes,
+			AvgBidPerSnipe:  avgBid,
+			TopShipName:     topShipName,
+			TopShipSnipes:   topShipSnipes,
+		},
+		"routes": routes,
+		"ships":  ships,
+	})
 }

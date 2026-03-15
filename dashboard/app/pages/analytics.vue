@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { GoodAnalytics, RouteAnalytics, TimelineSeries } from '~/types'
 
-const { goods, routes, timeline, loading, fetchGoods, fetchRoutes, fetchTimeline } = useAnalytics()
+const { goods, routes, timeline, passengers, loading, fetchGoods, fetchRoutes, fetchTimeline, fetchPassengers } = useAnalytics()
 
 // Time filter.
 const timeFilter = ref<number | undefined>(undefined) // undefined = all time
@@ -16,7 +16,7 @@ const timeOptions = [
 ]
 
 // Active tab.
-const activeTab = ref<'goods' | 'routes' | 'timeline'>('goods')
+const activeTab = ref<'goods' | 'routes' | 'timeline' | 'passengers'>('goods')
 
 // Timeline controls.
 const timelineGroupBy = ref<'good' | 'route' | 'strategy'>('good')
@@ -27,12 +27,14 @@ onMounted(() => {
   fetchGoods(timeFilter.value)
   fetchRoutes(timeFilter.value)
   fetchTimeline(timelineGroupBy.value, timelineHours.value)
+  fetchPassengers(timeFilter.value)
 })
 
 // Re-fetch on filter change.
 watch(timeFilter, (h) => {
   fetchGoods(h)
   fetchRoutes(h)
+  fetchPassengers(h)
 })
 
 watch([timelineGroupBy, timelineHours], ([g, h]) => {
@@ -97,6 +99,10 @@ function maxAbsProfit(items: { total_profit: number }[]): number {
   return Math.max(...items.map(i => Math.abs(i.total_profit)), 1)
 }
 
+function maxRevenue(items: { total_revenue: number }[]): number {
+  return Math.max(...items.map(i => i.total_revenue), 1)
+}
+
 // Timeline sparkline: compute cumulative profit for each series.
 function cumulativePoints(series: TimelineSeries): { time: string; cumulative: number }[] {
   let cum = 0
@@ -156,7 +162,7 @@ const seriesColors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#0
 
         <button
           class="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg px-4 py-2"
-          @click="fetchGoods(timeFilter); fetchRoutes(timeFilter); fetchTimeline(timelineGroupBy, timelineHours)"
+          @click="fetchGoods(timeFilter); fetchRoutes(timeFilter); fetchTimeline(timelineGroupBy, timelineHours); fetchPassengers(timeFilter)"
         >
           <Icon name="lucide:refresh-cw" class="text-sm" :class="loading ? 'animate-spin' : ''" />
           Refresh
@@ -171,6 +177,7 @@ const seriesColors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#0
           { id: 'goods' as const, label: 'Cargo Types', icon: 'lucide:package' },
           { id: 'routes' as const, label: 'Routes', icon: 'lucide:route' },
           { id: 'timeline' as const, label: 'Timeline', icon: 'lucide:trending-up' },
+          { id: 'passengers' as const, label: 'Passengers', icon: 'lucide:users' },
         ]"
         :key="tab.id"
         class="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md transition-colors"
@@ -450,6 +457,140 @@ const seriesColors = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#0
       <div v-else-if="!loading" class="py-12 text-center text-slate-600">
         <Icon name="lucide:trending-up" class="text-3xl mb-2" />
         <p>No timeline data yet</p>
+      </div>
+    </template>
+
+    <!-- PASSENGERS TAB -->
+    <template v-if="activeTab === 'passengers'">
+      <!-- Summary cards -->
+      <div v-if="passengers" class="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+          <div class="text-xs text-slate-500 mb-1">Total Revenue</div>
+          <div class="text-2xl font-bold font-mono text-emerald-400">{{ formatCurrency(passengers.summary.total_revenue) }}g</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+          <div class="text-xs text-slate-500 mb-1">Passengers Boarded</div>
+          <div class="text-2xl font-bold font-mono text-slate-200">{{ formatFull(passengers.summary.total_passengers) }}</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+          <div class="text-xs text-slate-500 mb-1">Total Snipes</div>
+          <div class="text-2xl font-bold font-mono text-slate-200">{{ formatFull(passengers.summary.total_snipes) }}</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+          <div class="text-xs text-slate-500 mb-1">Avg Bid / Snipe</div>
+          <div class="text-2xl font-bold font-mono text-slate-200">{{ formatFull(Math.round(passengers.summary.avg_bid_per_snipe)) }}g</div>
+        </div>
+        <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+          <div class="text-xs text-slate-500 mb-1">Top Ship</div>
+          <div class="text-lg font-bold text-slate-200 truncate">{{ passengers.summary.top_ship_name || '---' }}</div>
+          <div class="text-xs text-slate-500">{{ passengers.summary.top_ship_snipes }} snipes</div>
+        </div>
+      </div>
+
+      <!-- Routes table -->
+      <div class="bg-slate-800/80 rounded-xl border border-slate-700 overflow-hidden">
+        <div class="px-4 py-3 border-b border-slate-700">
+          <h3 class="text-sm font-semibold text-slate-300">Routes</h3>
+        </div>
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-xs text-slate-500 uppercase tracking-wider border-b border-slate-700">
+              <th class="text-left py-3 px-4">Route</th>
+              <th class="text-right py-3 px-4">Revenue</th>
+              <th class="text-right py-3 px-4">Passengers</th>
+              <th class="text-right py-3 px-4">Snipes</th>
+              <th class="text-right py-3 px-4 hidden md:table-cell">Avg Bid</th>
+              <th class="text-right py-3 px-4 hidden md:table-cell">Max Bid</th>
+              <th class="text-right py-3 px-4 hidden lg:table-cell">Last Snipe</th>
+              <th class="py-3 px-4 w-32">Revenue Bar</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="(r, i) in passengers?.routes ?? []"
+              :key="r.origin_port_id + r.destination_port_id"
+              class="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors"
+            >
+              <td class="py-3 px-4">
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-slate-600 font-mono w-5">{{ i + 1 }}</span>
+                  <span class="text-slate-200">{{ r.origin_port_name || r.origin_port_id.slice(0, 8) }}</span>
+                  <Icon name="lucide:arrow-right" class="text-slate-600 text-xs" />
+                  <span class="text-slate-200">{{ r.destination_port_name || r.destination_port_id.slice(0, 8) }}</span>
+                </div>
+              </td>
+              <td class="text-right py-3 px-4 font-mono font-bold text-emerald-400">{{ formatCurrency(r.total_revenue) }}</td>
+              <td class="text-right py-3 px-4 font-mono text-slate-300">{{ formatFull(r.total_passengers) }}</td>
+              <td class="text-right py-3 px-4 font-mono text-slate-300">{{ formatFull(r.snipe_count) }}</td>
+              <td class="text-right py-3 px-4 font-mono text-slate-400 hidden md:table-cell">{{ formatFull(Math.round(r.avg_bid)) }}</td>
+              <td class="text-right py-3 px-4 font-mono text-slate-400 hidden md:table-cell">{{ formatFull(r.max_bid) }}</td>
+              <td class="text-right py-3 px-4 text-slate-500 hidden lg:table-cell">{{ timeAgo(r.last_snipe) }}</td>
+              <td class="py-3 px-4">
+                <div class="w-full h-2 rounded-full bg-slate-700 overflow-hidden">
+                  <div
+                    class="h-full rounded-full bg-emerald-500 transition-all"
+                    :style="{ width: Math.min(r.total_revenue / maxRevenue(passengers?.routes ?? []) * 100, 100) + '%' }"
+                  />
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div v-if="!passengers?.routes?.length" class="py-12 text-center text-slate-600">
+          <Icon name="lucide:users" class="text-3xl mb-2" />
+          <p>No passenger data yet</p>
+        </div>
+      </div>
+
+      <!-- Ships table -->
+      <div class="bg-slate-800/80 rounded-xl border border-slate-700 overflow-hidden">
+        <div class="px-4 py-3 border-b border-slate-700">
+          <h3 class="text-sm font-semibold text-slate-300">Ship Performance</h3>
+        </div>
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-xs text-slate-500 uppercase tracking-wider border-b border-slate-700">
+              <th class="text-left py-3 px-4">Ship</th>
+              <th class="text-right py-3 px-4">Revenue</th>
+              <th class="text-right py-3 px-4">Passengers</th>
+              <th class="text-right py-3 px-4">Snipes</th>
+              <th class="text-right py-3 px-4 hidden md:table-cell">Avg Bid</th>
+              <th class="py-3 px-4 w-32">Revenue Bar</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="(sh, i) in passengers?.ships ?? []"
+              :key="sh.ship_id"
+              class="border-b border-slate-700/50 hover:bg-slate-700/30 transition-colors"
+            >
+              <td class="py-3 px-4">
+                <div class="flex items-center gap-2">
+                  <span class="text-xs text-slate-600 font-mono w-5">{{ i + 1 }}</span>
+                  <span class="text-slate-200 font-medium">{{ sh.ship_name || sh.ship_id.slice(0, 8) }}</span>
+                </div>
+              </td>
+              <td class="text-right py-3 px-4 font-mono font-bold text-emerald-400">{{ formatCurrency(sh.total_revenue) }}</td>
+              <td class="text-right py-3 px-4 font-mono text-slate-300">{{ formatFull(sh.total_passengers) }}</td>
+              <td class="text-right py-3 px-4 font-mono text-slate-300">{{ formatFull(sh.snipe_count) }}</td>
+              <td class="text-right py-3 px-4 font-mono text-slate-400 hidden md:table-cell">{{ formatFull(Math.round(sh.avg_bid)) }}</td>
+              <td class="py-3 px-4">
+                <div class="w-full h-2 rounded-full bg-slate-700 overflow-hidden">
+                  <div
+                    class="h-full rounded-full bg-emerald-500 transition-all"
+                    :style="{ width: Math.min(sh.total_revenue / maxRevenue(passengers?.ships ?? []) * 100, 100) + '%' }"
+                  />
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div v-if="!passengers?.ships?.length" class="py-12 text-center text-slate-600">
+          <Icon name="lucide:ship" class="text-3xl mb-2" />
+          <p>No ship data yet</p>
+        </div>
       </div>
     </template>
 

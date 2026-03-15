@@ -337,3 +337,39 @@ export interface TimelineResponse {
   hours: number
   series: TimelineSeries[]
 }
+
+export interface PassengerRouteAnalytics {
+  origin_port_id: string
+  origin_port_name: string
+  destination_port_id: string
+  destination_port_name: string
+  total_revenue: number
+  total_passengers: number
+  snipe_count: number
+  avg_bid: number
+  max_bid: number
+  first_snipe: string
+  last_snipe: string
+}
+
+export interface PassengerShipAnalytics {
+  ship_id: string
+  ship_name: string
+  total_revenue: number
+  total_passengers: number
+  snipe_count: number
+  avg_bid: number
+}
+
+export interface PassengerAnalyticsResponse {
+  summary: {
+    total_revenue: number
+    total_passengers: number
+    total_snipes: number
+    avg_bid_per_snipe: number
+    top_ship_name: string
+    top_ship_snipes: number
+  }
+  routes: PassengerRouteAnalytics[]
+  ships: PassengerShipAnalytics[]
+}

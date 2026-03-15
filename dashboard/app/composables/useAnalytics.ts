@@ -2,6 +2,7 @@ import type {
   GoodAnalytics,
   RouteAnalytics,
   TimelineResponse,
+  PassengerAnalyticsResponse,
 } from '~/types'
 
 export function useAnalytics() {
@@ -11,6 +12,7 @@ export function useAnalytics() {
   const goods = ref<GoodAnalytics[]>([])
   const routes = ref<RouteAnalytics[]>([])
   const timeline = ref<TimelineResponse | null>(null)
+  const passengers = ref<PassengerAnalyticsResponse | null>(null)
   const loading = ref(false)
 
   async function fetchGoods(hours?: number) {
@@ -59,13 +61,31 @@ export function useAnalytics() {
     }
   }
 
+  async function fetchPassengers(hours?: number) {
+    loading.value = true
+    try {
+      const params: Record<string, any> = { _t: Date.now() }
+      if (hours) params.hours = hours
+      passengers.value = await $fetch<PassengerAnalyticsResponse>(
+        `${apiBase}/api/analytics/passengers`,
+        { params }
+      )
+    } catch (e: any) {
+      console.error('Failed to fetch passengers analytics:', e)
+    } finally {
+      loading.value = false
+    }
+  }
+
   return {
     goods,
     routes,
     timeline,
+    passengers,
     loading,
     fetchGoods,
     fetchRoutes,
     fetchTimeline,
+    fetchPassengers,
   }
 }

@@ -41,6 +41,7 @@ Fiber web server on `API_PORT` (default 3002).
 | GET | `/api/analytics/timeline` | Profit over time (`?group_by=good\|route\|strategy&hours=`) |
 | GET | `/api/analytics/ships` | Ship ROI analytics (purchase price vs revenue) |
 | GET | `/api/analytics/warehouses` | Warehouse utilization analytics |
+| GET | `/api/analytics/passengers` | Passenger sniping analytics (`?hours=` filter) — summary, route breakdown, ship performance |
 
 ## SSE Endpoints (`internal/server/sse.go`)
 
