@@ -183,9 +183,12 @@ func TestDecideTradeAction_NoProfitableRoutes_SpeculativeTrade(t *testing.T) {
 	goodX := id(10)
 
 	dec, err := a.DecideTradeAction(context.Background(), TradeDecisionRequest{
-		Ship: ShipSnapshot{PortID: &portA, Capacity: 100},
+		Ship: ShipSnapshot{PortID: &portA, Capacity: 100, IdleTicks: 2},
 		Routes: []RouteInfo{
 			{FromID: portA, ToID: portB, Distance: 5},
+		},
+		Ports: []PortInfo{
+			{ID: portA}, {ID: portB, IsHub: true},
 		},
 		PriceCache: []PricePoint{
 			// Buy price at A is higher than sell at B → no profit.
@@ -193,6 +196,7 @@ func TestDecideTradeAction_NoProfitableRoutes_SpeculativeTrade(t *testing.T) {
 			{PortID: portB, GoodID: goodX, BuyPrice: 110, SellPrice: 90},
 		},
 		Constraints: Constraints{MaxSpend: 5000},
+		Params:      map[string]float64{"speculativeTradeEnabled": 1.0},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -233,8 +237,13 @@ func TestDecideTradeAction_SellsExistingCargo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dec.SellOrders) != 2 {
-		t.Errorf("expected 2 sell orders, got %d", len(dec.SellOrders))
+	// Smart selling holds goodX for portB (where sell price is 80 vs 40 here).
+	// Only goodY is sold (no better destination known).
+	if len(dec.SellOrders) != 1 {
+		t.Errorf("expected 1 sell order (goodY sold, goodX held for portB), got %d", len(dec.SellOrders))
+	}
+	if len(dec.SellOrders) > 0 && dec.SellOrders[0].GoodID != goodY {
+		t.Errorf("expected goodY to be sold, got %s", dec.SellOrders[0].GoodID)
 	}
 }
 
