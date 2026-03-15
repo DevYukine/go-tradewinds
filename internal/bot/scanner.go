@@ -60,8 +60,7 @@ func newScanner(
 // Run starts the scanning loop. Blocks until context is cancelled.
 func (s *Scanner) Run(ctx context.Context) {
 	s.logger.Info("price scanner starting",
-		zap.Int("ports", len(s.world.Ports)),
-		zap.Int("goods", len(s.world.Goods)),
+		zap.Int("ports", s.world.PortCount()),
 	)
 
 	// Restore scanner position from Redis.
@@ -73,13 +72,21 @@ func (s *Scanner) Run(ctx context.Context) {
 			return
 		}
 
-		idx := portIdx % len(s.world.Ports)
-		port := s.world.Ports[idx]
+		port, totalPorts := s.world.GetPortAtIndex(portIdx)
+		if totalPorts == 0 {
+			s.logger.Warn("no ports available, waiting...")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(10 * time.Second):
+			}
+			continue
+		}
 		s.scanPort(ctx, &port)
 		portIdx++
 
 		// Recompute trade opportunities after completing a full scan cycle.
-		if portIdx%len(s.world.Ports) == 0 && s.profitAnalyzer != nil {
+		if portIdx%totalPorts == 0 && s.profitAnalyzer != nil {
 			s.profitAnalyzer.Recompute()
 			s.logger.Debug("profit analyzer recomputed after full scan cycle")
 		}

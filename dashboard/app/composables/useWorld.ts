@@ -4,6 +4,10 @@ import type { WorldData } from '~/types'
 const world = ref<WorldData | null>(null)
 const loading = ref(false)
 let fetched = false
+let pollInterval: ReturnType<typeof setInterval> | null = null
+
+// Poll interval for world data refresh (picks up new ports/routes).
+const WORLD_POLL_MS = 60_000
 
 export function useWorld() {
   const config = useRuntimeConfig()
@@ -20,10 +24,11 @@ export function useWorld() {
     }
   }
 
-  // Auto-fetch once on first use.
+  // Auto-fetch on first use and start periodic refresh.
   if (!fetched) {
     fetched = true
     fetchWorld()
+    pollInterval = setInterval(fetchWorld, WORLD_POLL_MS)
   }
 
   return { world, loading, fetchWorld }

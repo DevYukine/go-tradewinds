@@ -9,6 +9,7 @@ const apiBase = config.public.apiBase
 const mapContainer = ref<HTMLDivElement | null>(null)
 let map: L.Map | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let worldPollTimer: ReturnType<typeof setInterval> | null = null
 let animTimer: ReturnType<typeof setInterval> | null = null
 
 const portLayer = L.layerGroup()
@@ -391,6 +392,7 @@ onMounted(() => {
   fetchShips()
 
   pollTimer = setInterval(fetchShips, 10_000)
+  worldPollTimer = setInterval(fetchWorldData, 60_000) // Refresh ports/routes every 60s
   animTimer = setInterval(animateShips, 1_000)
 })
 
@@ -398,6 +400,10 @@ onUnmounted(() => {
   if (pollTimer) {
     clearInterval(pollTimer)
     pollTimer = null
+  }
+  if (worldPollTimer) {
+    clearInterval(worldPollTimer)
+    worldPollTimer = null
   }
   if (animTimer) {
     clearInterval(animTimer)

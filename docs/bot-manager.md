@@ -18,6 +18,7 @@ Orchestrates all company runners with shared resources.
 3. Create/resume companies from DB using `StrategyAllocation` config
 4. Spawn `CompanyRunner` goroutine per company
 5. Spawn `PriceScanner` goroutine (shared)
+6. Spawn world data refresher (every 5 min, discovers new ports/routes/goods)
 
 ### Public Methods
 - `AddCompany(strategy)` — Dynamically create and start a new company
@@ -104,9 +105,14 @@ Single goroutine rotating through all ports, fetching NPC prices.
 
 ## WorldCache (`internal/bot/world.go`)
 
-Cached static world data with indexed lookups.
+World data with indexed lookups. Loaded at startup and refreshed every 5 minutes
+to discover new ports, routes, and goods added to the game at runtime. All access
+is thread-safe via RWMutex.
 
 - `GetPort/Good/ShipType/Route(id)` — O(1) lookup
 - `FindRoute(from, to)` — Direct route between ports
 - `RoutesFrom(portID)` — All departing routes
+- `GetPortAtIndex(idx)` — Safe indexed access for scanner
+- `Snapshot()` — Returns copies of all slices for API handlers
+- `RefreshWorldData(ctx, client, logger)` — Fetches and merges new entries
 - `ToAgentPorts/Routes/ShipTypes()` — Convert to agent types

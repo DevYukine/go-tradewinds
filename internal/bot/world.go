@@ -14,8 +14,9 @@ import (
 	"github.com/DevYukine/go-tradewinds/internal/cache"
 )
 
-// WorldCache stores static world data (ports, goods, routes, ship types)
-// that rarely changes. Loaded once at startup and shared across all companies.
+// WorldCache stores world data (ports, goods, routes, ship types) shared
+// across all companies. Loaded at startup and periodically refreshed to
+// pick up new ports/routes added to the game at runtime.
 type WorldCache struct {
 	Ports     []api.Port
 	Goods     []api.Good
@@ -33,7 +34,7 @@ type WorldCache struct {
 	routesByFrom   map[uuid.UUID][]api.Route
 	routesByPorts  map[[2]uuid.UUID]*api.Route // key: [fromID, toID]
 
-	mu sync.RWMutex // protects route indexes for dynamic additions
+	mu sync.RWMutex // protects all slices and indexes for dynamic updates
 }
 
 // LoadWorldData fetches all static world data from the API and builds indexes.
@@ -164,21 +165,29 @@ func cachedFetch[T any](ctx context.Context, rc *cache.RedisCache, key string, t
 
 // GetPort returns a port by ID, or nil if not found.
 func (wc *WorldCache) GetPort(id uuid.UUID) *api.Port {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
 	return wc.portsByID[id]
 }
 
 // GetGood returns a good by ID, or nil if not found.
 func (wc *WorldCache) GetGood(id uuid.UUID) *api.Good {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
 	return wc.goodsByID[id]
 }
 
 // GetShipType returns a ship type by ID, or nil if not found.
 func (wc *WorldCache) GetShipType(id uuid.UUID) *api.ShipType {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
 	return wc.shipTypesByID[id]
 }
 
 // GetRoute returns a route by ID, or nil if not found.
 func (wc *WorldCache) GetRoute(id uuid.UUID) *api.Route {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
 	return wc.routesByID[id]
 }
 
@@ -212,8 +221,136 @@ func (wc *WorldCache) AddRoute(r api.Route) {
 	wc.routesByPorts[key] = &wc.Routes[idx]
 }
 
+// RefreshWorldData fetches ports, routes, and goods from the API and merges
+// any new entries into the cache. Existing entries are not modified.
+// Called periodically so the bot discovers new ports/routes at runtime.
+func (wc *WorldCache) RefreshWorldData(ctx context.Context, client *api.Client, logger *zap.Logger) {
+	log := logger.Named("world_refresh")
+
+	// Fetch current ports from API (bypass Redis cache).
+	freshPorts, err := client.ListPorts(ctx, api.PortFilters{})
+	if err != nil {
+		log.Warn("failed to refresh ports", zap.Error(err))
+		return
+	}
+
+	// Fetch current routes.
+	freshRoutes, err := client.ListRoutes(ctx, api.RouteFilters{})
+	if err != nil {
+		log.Warn("failed to refresh routes", zap.Error(err))
+		return
+	}
+
+	// Fetch current goods.
+	freshGoods, err := client.ListGoods(ctx, "")
+	if err != nil {
+		log.Warn("failed to refresh goods", zap.Error(err))
+		return
+	}
+
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+
+	// Merge new ports.
+	newPorts := 0
+	for _, p := range freshPorts {
+		if wc.portsByID[p.ID] != nil {
+			continue
+		}
+		wc.Ports = append(wc.Ports, p)
+		idx := len(wc.Ports) - 1
+		wc.portsByID[wc.Ports[idx].ID] = &wc.Ports[idx]
+		newPorts++
+	}
+
+	// Merge new routes.
+	newRoutes := 0
+	for _, r := range freshRoutes {
+		key := [2]uuid.UUID{r.FromID, r.ToID}
+		if wc.routesByPorts[key] != nil {
+			continue
+		}
+		wc.Routes = append(wc.Routes, r)
+		idx := len(wc.Routes) - 1
+		wc.routesByID[r.ID] = &wc.Routes[idx]
+		wc.routesByFrom[r.FromID] = append(wc.routesByFrom[r.FromID], r)
+		wc.routesByPorts[key] = &wc.Routes[idx]
+		newRoutes++
+	}
+
+	// Merge new goods.
+	newGoods := 0
+	for _, g := range freshGoods {
+		if wc.goodsByID[g.ID] != nil {
+			continue
+		}
+		wc.Goods = append(wc.Goods, g)
+		idx := len(wc.Goods) - 1
+		wc.goodsByID[wc.Goods[idx].ID] = &wc.Goods[idx]
+		newGoods++
+	}
+
+	// Check for new shipyard ports.
+	newShipyards := 0
+	shipyardSet := make(map[uuid.UUID]bool, len(wc.ShipyardPorts))
+	for _, id := range wc.ShipyardPorts {
+		shipyardSet[id] = true
+	}
+	// Only check ports that were newly added.
+	if newPorts > 0 {
+		for i := len(wc.Ports) - newPorts; i < len(wc.Ports); i++ {
+			port := wc.Ports[i]
+			if shipyardSet[port.ID] {
+				continue
+			}
+			// Unlock briefly for the API call, then re-lock.
+			wc.mu.Unlock()
+			shipyard, err := client.GetPortShipyard(ctx, port.ID)
+			wc.mu.Lock()
+			if err == nil && shipyard != nil {
+				wc.ShipyardPorts = append(wc.ShipyardPorts, port.ID)
+				newShipyards++
+			}
+		}
+	}
+
+	if newPorts > 0 || newRoutes > 0 || newGoods > 0 {
+		log.Info("world data refreshed — new entries discovered",
+			zap.Int("new_ports", newPorts),
+			zap.Int("new_routes", newRoutes),
+			zap.Int("new_goods", newGoods),
+			zap.Int("new_shipyards", newShipyards),
+			zap.Int("total_ports", len(wc.Ports)),
+			zap.Int("total_routes", len(wc.Routes)),
+		)
+	} else {
+		log.Debug("world data refreshed — no changes")
+	}
+}
+
+// PortCount returns the number of ports (thread-safe).
+func (wc *WorldCache) PortCount() int {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
+	return len(wc.Ports)
+}
+
+// GetPortAtIndex returns the port at the given index (mod port count) and
+// the total port count. Thread-safe for use by the scanner.
+func (wc *WorldCache) GetPortAtIndex(idx int) (api.Port, int) {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
+	n := len(wc.Ports)
+	if n == 0 {
+		return api.Port{}, 0
+	}
+	return wc.Ports[idx%n], n
+}
+
 // PortIDs returns all port UUIDs for iteration.
 func (wc *WorldCache) PortIDs() []uuid.UUID {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
 	ids := make([]uuid.UUID, len(wc.Ports))
 	for i := range wc.Ports {
 		ids[i] = wc.Ports[i].ID
@@ -223,6 +360,8 @@ func (wc *WorldCache) PortIDs() []uuid.UUID {
 
 // ToAgentPorts converts cached ports to agent-compatible PortInfo slices.
 func (wc *WorldCache) ToAgentPorts() []agent.PortInfo {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
 	ports := make([]agent.PortInfo, len(wc.Ports))
 	for i, p := range wc.Ports {
 		ports[i] = agent.PortInfo{
@@ -254,6 +393,8 @@ func (wc *WorldCache) ToAgentRoutes() []agent.RouteInfo {
 
 // ToAgentShipTypes converts cached ship types to agent-compatible ShipTypeInfo slices.
 func (wc *WorldCache) ToAgentShipTypes() []agent.ShipTypeInfo {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
 	types := make([]agent.ShipTypeInfo, len(wc.ShipTypes))
 	for i, st := range wc.ShipTypes {
 		types[i] = agent.ShipTypeInfo{
@@ -267,6 +408,30 @@ func (wc *WorldCache) ToAgentShipTypes() []agent.ShipTypeInfo {
 		}
 	}
 	return types
+}
+
+// Snapshot returns copies of all world data slices for safe reading
+// outside the lock. Used by API handlers to build consistent responses.
+func (wc *WorldCache) Snapshot() ([]api.Port, []api.Good, []api.Route, []api.ShipType, []uuid.UUID) {
+	wc.mu.RLock()
+	defer wc.mu.RUnlock()
+
+	ports := make([]api.Port, len(wc.Ports))
+	copy(ports, wc.Ports)
+
+	goods := make([]api.Good, len(wc.Goods))
+	copy(goods, wc.Goods)
+
+	routes := make([]api.Route, len(wc.Routes))
+	copy(routes, wc.Routes)
+
+	shipTypes := make([]api.ShipType, len(wc.ShipTypes))
+	copy(shipTypes, wc.ShipTypes)
+
+	shipyardPorts := make([]uuid.UUID, len(wc.ShipyardPorts))
+	copy(shipyardPorts, wc.ShipyardPorts)
+
+	return ports, goods, routes, shipTypes, shipyardPorts
 }
 
 // PriceCache stores observed NPC prices across all ports and goods.

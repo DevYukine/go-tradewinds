@@ -26,7 +26,7 @@ Fiber web server on `API_PORT` (default 3002).
 | GET | `/api/prices` | Latest NPC prices (deduplicated per port+good) |
 | GET | `/api/ratelimit` | Rate limit status (used, max, utilization, remaining) |
 | GET | `/api/health` | Health check (status, uptime, companies, agent type) |
-| GET | `/api/world` | Static world data (ports with lat/lng, goods, routes, ship types) |
+| GET | `/api/world` | World data (ports with lat/lng, goods, routes, ship types) — refreshes dynamically |
 | GET | `/api/ships` | All ships across all companies (for world map) |
 
 ## SSE Endpoints (`internal/server/sse.go`)

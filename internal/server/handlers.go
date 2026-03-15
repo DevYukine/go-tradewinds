@@ -530,23 +530,97 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 		Longitude  float64 `json:"longitude"`
 	}
 
-	// Hardcoded coordinates for European port cities.
+	// Coordinates for European port cities. Looked up by port name.
+	// Comprehensive list so new game ports are auto-placed on the map.
 	portCoordinates := map[string][2]float64{
-		"Rotterdam":  {51.9225, 4.4792},
-		"Plymouth":   {50.3755, -4.1427},
-		"Portsmouth": {50.8198, -1.0880},
-		"Amsterdam":  {52.3676, 4.9041},
-		"Hull":       {53.7457, -0.3367},
-		"Bremen":     {53.0793, 8.8017},
-		"Bristol":    {51.4545, -2.5879},
-		"Dublin":     {53.3498, -6.2603},
-		"Dunkirk":    {51.0343, 2.3768},
-		"Edinburgh":  {55.9533, -3.1883},
-		"Calais":     {50.9513, 1.8587},
-		"Hamburg":    {53.5511, 9.9937},
-		"Antwerp":    {51.2194, 4.4025},
-		"Glasgow":    {55.8642, -4.2518},
-		"London":     {51.5074, -0.1278},
+		// British Isles
+		"London":       {51.5074, -0.1278},
+		"Plymouth":     {50.3755, -4.1427},
+		"Portsmouth":   {50.8198, -1.0880},
+		"Bristol":      {51.4545, -2.5879},
+		"Hull":         {53.7457, -0.3367},
+		"Edinburgh":    {55.9533, -3.1883},
+		"Glasgow":      {55.8642, -4.2518},
+		"Liverpool":    {53.4084, -2.9916},
+		"Newcastle":    {54.9783, -1.6178},
+		"Southampton":  {50.9097, -1.4044},
+		"Dover":        {51.1279, 1.3134},
+		"Aberdeen":     {57.1497, -2.0943},
+		"Inverness":    {57.4778, -4.2247},
+		"Cardiff":      {51.4816, -3.1791},
+		"Belfast":      {54.5973, -5.9301},
+		"Dublin":       {53.3498, -6.2603},
+		"Cork":         {51.8985, -8.4756},
+		"Galway":       {53.2707, -9.0568},
+		"Waterford":    {52.2593, -7.1101},
+		// Low Countries & Germany
+		"Rotterdam":    {51.9225, 4.4792},
+		"Amsterdam":    {52.3676, 4.9041},
+		"Antwerp":      {51.2194, 4.4025},
+		"Bruges":       {51.2093, 3.2247},
+		"Ghent":        {51.0543, 3.7174},
+		"Bremen":       {53.0793, 8.8017},
+		"Hamburg":      {53.5511, 9.9937},
+		"Lübeck":       {53.8655, 10.6866},
+		"Lubeck":       {53.8655, 10.6866},
+		// France
+		"Calais":       {50.9513, 1.8587},
+		"Dunkirk":      {51.0343, 2.3768},
+		"Le Havre":     {49.4944, 0.1079},
+		"Rouen":        {49.4432, 1.0999},
+		"Brest":        {48.3904, -4.4861},
+		"Nantes":       {47.2184, -1.5536},
+		"La Rochelle":  {46.1603, -1.1511},
+		"Bordeaux":     {44.8378, -0.5792},
+		"Marseille":    {43.2965, 5.3698},
+		"Bayonne":      {43.4929, -1.4748},
+		"Saint-Malo":   {48.6493, -2.0007},
+		"Cherbourg":    {49.6337, -1.6222},
+		"Dieppe":       {49.9253, 1.0760},
+		// Iberian Peninsula
+		"Lisbon":       {38.7223, -9.1393},
+		"Porto":        {41.1579, -8.6291},
+		"Cadiz":        {36.5271, -6.2886},
+		"Seville":      {37.3891, -5.9845},
+		"Barcelona":    {41.3874, 2.1686},
+		"Valencia":     {39.4699, -0.3763},
+		"Malaga":       {36.7213, -4.4214},
+		"Bilbao":       {43.2630, -2.9350},
+		"Vigo":         {42.2406, -8.7207},
+		"A Coruña":     {43.3623, -8.4115},
+		"A Coruna":     {43.3623, -8.4115},
+		// Scandinavia & Baltic
+		"Bergen":       {60.3913, 5.3221},
+		"Oslo":         {59.9139, 10.7522},
+		"Stavanger":    {58.9700, 5.7331},
+		"Copenhagen":   {55.6761, 12.5683},
+		"Stockholm":    {59.3293, 18.0686},
+		"Gothenburg":   {57.7089, 11.9746},
+		"Malmö":        {55.6049, 13.0038},
+		"Malmo":        {55.6049, 13.0038},
+		"Gdansk":       {54.3520, 18.6466},
+		"Danzig":       {54.3520, 18.6466},
+		"Riga":         {56.9496, 24.1052},
+		"Tallinn":      {59.4370, 24.7536},
+		"Helsinki":     {60.1699, 24.9384},
+		"Königsberg":   {54.7104, 20.4522},
+		"Konigsberg":   {54.7104, 20.4522},
+		// Italy
+		"Genoa":        {44.4056, 8.9463},
+		"Venice":       {45.4408, 12.3155},
+		"Naples":       {40.8518, 14.2681},
+		"Palermo":      {38.1157, 13.3615},
+		"Pisa":         {43.7228, 10.4017},
+		"Florence":     {43.7696, 11.2558},
+		"Rome":         {41.9028, 12.4964},
+		// Eastern Mediterranean
+		"Constantinople": {41.0082, 28.9784},
+		"Istanbul":     {41.0082, 28.9784},
+		"Athens":       {37.9838, 23.7275},
+		"Alexandria":   {31.2001, 29.9187},
+		// Other
+		"Tangier":      {35.7595, -5.8340},
+		"Tunis":        {36.8065, 10.1815},
 	}
 	type goodInfo struct {
 		ID          string `json:"id"`
@@ -572,14 +646,23 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 		BasePrice    int    `json:"base_price"`
 	}
 
+	// Take a consistent snapshot under the world cache lock.
+	worldPorts, worldGoods, worldRoutes, worldShipTypes, worldShipyardPorts := world.Snapshot()
+
 	// Build shipyard port set for quick lookup.
-	shipyardSet := make(map[uuid.UUID]bool, len(world.ShipyardPorts))
-	for _, id := range world.ShipyardPorts {
+	shipyardSet := make(map[uuid.UUID]bool, len(worldShipyardPorts))
+	for _, id := range worldShipyardPorts {
 		shipyardSet[id] = true
 	}
 
-	ports := make([]portInfo, len(world.Ports))
-	for i, p := range world.Ports {
+	// Build port lookup for route name resolution.
+	portNameByID := make(map[uuid.UUID]string, len(worldPorts))
+	for _, p := range worldPorts {
+		portNameByID[p.ID] = p.Name
+	}
+
+	ports := make([]portInfo, len(worldPorts))
+	for i, p := range worldPorts {
 		pi := portInfo{
 			ID:          p.ID.String(),
 			Name:        p.Name,
@@ -595,8 +678,8 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 		ports[i] = pi
 	}
 
-	goods := make([]goodInfo, len(world.Goods))
-	for i, g := range world.Goods {
+	goods := make([]goodInfo, len(worldGoods))
+	for i, g := range worldGoods {
 		goods[i] = goodInfo{
 			ID:          g.ID.String(),
 			Name:        g.Name,
@@ -605,14 +688,15 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 		}
 	}
 
-	routes := make([]routeInfo, len(world.Routes))
-	for i, r := range world.Routes {
-		fromName, toName := r.FromID.String(), r.ToID.String()
-		if from := world.GetPort(r.FromID); from != nil {
-			fromName = from.Name
+	routes := make([]routeInfo, len(worldRoutes))
+	for i, r := range worldRoutes {
+		fromName := portNameByID[r.FromID]
+		if fromName == "" {
+			fromName = r.FromID.String()
 		}
-		if to := world.GetPort(r.ToID); to != nil {
-			toName = to.Name
+		toName := portNameByID[r.ToID]
+		if toName == "" {
+			toName = r.ToID.String()
 		}
 		routes[i] = routeInfo{
 			ID:           r.ID.String(),
@@ -624,8 +708,8 @@ func (s *Server) handleWorld(c fiber.Ctx) error {
 		}
 	}
 
-	shipTypes := make([]shipTypeInfo, len(world.ShipTypes))
-	for i, st := range world.ShipTypes {
+	shipTypes := make([]shipTypeInfo, len(worldShipTypes))
+	for i, st := range worldShipTypes {
 		shipTypes[i] = shipTypeInfo{
 			ID:           st.ID.String(),
 			Name:         st.Name,

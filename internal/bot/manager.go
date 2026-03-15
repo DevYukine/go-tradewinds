@@ -212,7 +212,10 @@ func (m *Manager) Start(startCtx context.Context, runCtx context.Context) error 
 	// 7. Start the shared price scanner now that world data is loaded.
 	m.startScanner(runCtx)
 
-	// 8. Start periodic rate limiter state persistence.
+	// 8. Start periodic world data refresh to discover new ports/routes.
+	m.startWorldRefresher(runCtx)
+
+	// 9. Start periodic rate limiter state persistence.
 	m.startRateLimitPersister(runCtx)
 
 	m.logger.Info("bot manager started",
@@ -503,6 +506,30 @@ func (m *Manager) startScanner(ctx context.Context) {
 	}()
 
 	m.logger.Info("price scanner started")
+}
+
+// startWorldRefresher periodically re-fetches ports, routes, and goods from
+// the game API so that new additions are discovered at runtime without restart.
+func (m *Manager) startWorldRefresher(ctx context.Context) {
+	const refreshInterval = 5 * time.Minute
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		ticker := time.NewTicker(refreshInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.worldData.RefreshWorldData(ctx, m.baseClient, m.logger)
+			}
+		}
+	}()
+
+	m.logger.Info("world data refresher started", zap.Duration("interval", refreshInterval))
 }
 
 // startRateLimitPersister periodically saves rate limiter state to Redis
