@@ -108,6 +108,10 @@ func (a *LLMAgent) callLLM(ctx context.Context, action, systemPrompt string, req
 	// The model may wrap JSON in markdown code fences; strip them.
 	raw = stripCodeFences(raw)
 
+	if raw == "" {
+		return fmt.Errorf("empty response from LLM after stripping code fences")
+	}
+
 	if err := json.Unmarshal([]byte(raw), dest); err != nil {
 		return fmt.Errorf("parse LLM response: %w (raw: %.200s)", err, raw)
 	}

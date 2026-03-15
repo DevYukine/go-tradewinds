@@ -91,7 +91,11 @@ func (p *ClaudeProvider) Complete(ctx context.Context, systemPrompt, userPrompt 
 	if len(result.Content) == 0 {
 		return "", fmt.Errorf("claude: empty content in response")
 	}
-	return result.Content[0].Text, nil
+	content := result.Content[0].Text
+	if content == "" {
+		return "", fmt.Errorf("claude: empty text in response: %s", string(respBody))
+	}
+	return content, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +172,11 @@ func (p *OpenAIProvider) Complete(ctx context.Context, systemPrompt, userPrompt 
 	if len(result.Choices) == 0 {
 		return "", fmt.Errorf("openai: no choices in response")
 	}
-	return result.Choices[0].Message.Content, nil
+	content := result.Choices[0].Message.Content
+	if content == "" {
+		return "", fmt.Errorf("openai: empty content in response (finish_reason may be length or refusal): %s", string(respBody))
+	}
+	return content, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +254,12 @@ func (p *OpenRouterProvider) Complete(ctx context.Context, systemPrompt, userPro
 	if len(result.Choices) == 0 {
 		return "", fmt.Errorf("openrouter: no choices in response")
 	}
-	return result.Choices[0].Message.Content, nil
+	content := result.Choices[0].Message.Content
+	if content == "" {
+		// Some models return empty content on max_tokens hit or refusal.
+		return "", fmt.Errorf("openrouter: empty content in response (finish_reason may be length or refusal): %s", string(respBody))
+	}
+	return content, nil
 }
 
 // ---------------------------------------------------------------------------

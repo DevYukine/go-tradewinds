@@ -137,6 +137,7 @@ Delegates decisions to an LLM (Claude, OpenAI, or Ollama). Returns errors to the
 - LLM errors are returned to the strategy layer (no silent heuristic fallback)
 - **Exponential backoff**: Trade dispatch retries 5× (2s→4s→8s→16s), fleet/market eval failures back off 30s→1m→…→30m before retrying
 - Strips markdown code fences from responses
+- **Empty response guard**: All providers (Claude, OpenAI, OpenRouter) check for empty content and return descriptive errors. `callLLM` also validates after stripping code fences.
 - Logs every call with action type, latency, success, and response length
 
 ## Composite Agent (`internal/agent/composite.go`)
