@@ -587,8 +587,9 @@ func (r *CompanyRunner) handleWorldEvent(ctx context.Context, event api.SSEEvent
 }
 
 // handlePassengerCreated reacts to a new passenger group appearing at a port.
-// If we have an idle ship docked at that port (preferring small/fast passenger
-// ships), we immediately re-dispatch it so it can board the passenger and sail.
+// Instead of going through the full trade decision pipeline (which costs 5+
+// API calls and agent latency), we board the passenger directly and then
+// dispatch the ship so the strategy can decide the best destination.
 func (r *CompanyRunner) handlePassengerCreated(ctx context.Context, data json.RawMessage) {
 	pax, err := api.ParsePassengerRequestCreatedEvent(data)
 	if err != nil {
@@ -628,9 +629,8 @@ func (r *CompanyRunner) handlePassengerCreated(ctx context.Context, data json.Ra
 	}
 
 	// Skip if this ship was recently dispatched (avoid re-dispatch spam).
-	now := time.Now()
 	if lastDispatched, ok := r.dispatchedShips[bestShip.Ship.ID]; ok {
-		if now.Sub(lastDispatched) < 5*time.Second {
+		if time.Since(lastDispatched) < 2*time.Second {
 			return
 		}
 	}
@@ -640,13 +640,55 @@ func (r *CompanyRunner) handlePassengerCreated(ctx context.Context, data json.Ra
 		return
 	}
 
-	r.logger.Info("sniping passenger",
-		zap.Int("bid", pax.Bid),
-		zap.Int("count", pax.Count),
+	// Board immediately — this is a race against other players.
+	// Skip the full trade pipeline (ensurePortPrices, agent decision, etc.)
+	// and call the board API directly. One API call instead of 6+.
+	boarded, err := r.client.BoardPassenger(ctx, pax.ID, bestShip.Ship.ID)
+	if err != nil {
+		// Expected when another player beats us — not an error worth warning about.
+		r.logger.Debug("passenger snipe failed (likely taken by competitor)",
+			zap.String("passenger_id", pax.ID.String()),
+			zap.String("ship", bestShip.Ship.Name),
+			zap.Error(err),
+		)
+		return
+	}
+
+	destName := pax.DestinationPortID.String()
+	if p := r.world.GetPort(pax.DestinationPortID); p != nil {
+		destName = p.Name
+	}
+	originName := port.Name
+
+	r.logger.Trade("sniped passenger",
+		zap.String("passenger_id", pax.ID.String()),
+		zap.Int("bid", boarded.Bid),
+		zap.Int("count", boarded.Count),
 		zap.String("ship", bestShip.Ship.Name),
-		zap.String("port", port.Name),
+		zap.String("origin", originName),
+		zap.String("destination", destName),
 	)
 
+	// Log to database.
+	r.gormDB.Create(&db.PassengerLog{
+		CompanyID:           r.dbRecord.ID,
+		PassengerID:         pax.ID.String(),
+		Count:               boarded.Count,
+		Bid:                 boarded.Bid,
+		OriginPortID:        pax.OriginPortID.String(),
+		OriginPortName:      originName,
+		DestinationPortID:   pax.DestinationPortID.String(),
+		DestinationPortName: destName,
+		ShipID:              bestShip.Ship.ID.String(),
+		ShipName:            bestShip.Ship.Name,
+		Strategy:            r.strategy.Name(),
+		AgentName:           r.agent.Name(),
+	})
+
+	// Now dispatch the ship so the strategy can sell cargo, pick up more
+	// passengers, and choose the best destination (which should now favor
+	// the boarded passenger's destination).
+	r.dispatchedShips[bestShip.Ship.ID] = time.Now()
 	r.dispatchWithRetry(ctx, bestShip, port)
 }
 

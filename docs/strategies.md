@@ -60,7 +60,9 @@ The `CompanyRunner` subscribes to the public world SSE stream (`/world/events`) 
 1. Finds the best idle docked ship at the passenger's origin port
 2. Prefers "passenger ships" (cargo capacity ≤ 60, has passenger slots) over cargo ships
 3. Among same type, prefers ships idle longer
-4. Immediately re-dispatches the ship to trigger `OnShipArrival`, which boards the passenger
+4. **Boards the passenger directly** via a single `BoardPassenger` API call — skips the full trade pipeline (price scanning, agent decision, etc.) to win the race against other players
+5. If boarding succeeds, dispatches the ship through the normal strategy flow to sell cargo and choose the best destination (which now accounts for the boarded passenger)
+6. If boarding fails (another player got it first), logs at debug level and moves on — no wasted API calls on the full trade pipeline
 
 ### Passenger Ship Spreading
 
