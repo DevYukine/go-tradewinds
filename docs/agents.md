@@ -87,7 +87,10 @@ Hand-coded rules adapting to strategy hints.
 9. **Board passengers** heading to chosen destination (or any reachable port)
    - Score: `bidPerHead / distance`, PassengerDestBonus (default 8.0) for matching destination
    - Fill up to `ship.PassengerCap`
-9. **Route History** — `route_history` in request contains recent buy→sell results. Average profit per trade for each (from→to) pair is added as bonus to destination scoring
+   - **Deadline filtering**: Passengers whose `ExpiresAt` cannot be met (travel time + 20% safety margin > deadline) are skipped entirely — avoids boarding passengers that will expire en route and incur fines
+   - **Urgency scoring**: Boarded passengers with < 2x travel time remaining get 5x bid weight (instead of normal 2x) to force ships to prioritize delivery over detours
+   - Expired/undeliverable passengers are also excluded from `passengerRevByDest` scoring and `bestPassengerDestination` to avoid distorting destination selection
+10. **Route History** — `route_history` in request contains recent buy→sell results. Average profit per trade for each (from→to) pair is added as bonus to destination scoring
 
 ### Fleet Decisions (`DecideFleetAction`)
 

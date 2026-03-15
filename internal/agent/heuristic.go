@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -96,11 +97,11 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 		dest := a.closestPort(reachable)
 		// Even when broke, board passengers — they're pure revenue.
 		// Check if a passenger destination is better than closest port.
-		bestPassDest, bestPassRev := a.bestPassengerDestination(req.AvailablePassengers, reachable)
+		bestPassDest, bestPassRev := a.bestPassengerDestination(req.AvailablePassengers, reachable, ship.Speed)
 		if bestPassRev > 0 {
 			dest = bestPassDest
 		}
-		passengers := a.selectPassengers(req.AvailablePassengers, req.BoardedPassengers, ship.PassengerCap, &dest, reachable, 8.0)
+		passengers := a.selectPassengers(req.AvailablePassengers, req.BoardedPassengers, ship.PassengerCap, &dest, reachable, 8.0, ship.Speed)
 		return &TradeDecision{
 			Action: "sell_and_buy", SellOrders: sells, FillOrders: fills, SailTo: &dest,
 			BoardPassengers: passengers,
@@ -158,7 +159,7 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 	// If passenger revenue for the best passenger destination exceeds the
 	// expected trade PROFIT of the chosen destination, switch to the passenger destination.
 	if decision.SailTo != nil {
-		bestPassDest, bestPassRev := a.bestPassengerDestination(req.AvailablePassengers, reachable)
+		bestPassDest, bestPassRev := a.bestPassengerDestination(req.AvailablePassengers, reachable, ship.Speed)
 		expectedProfit := int64(0)
 		for _, b := range decision.BuyOrders {
 			buyPP, buyOK := priceIndex[priceKey(currentPortID, b.GoodID)]
@@ -179,14 +180,15 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 	// Step 3: Board passengers heading to our destination (or any reachable port).
 	decision.BoardPassengers = a.selectPassengers(
 		req.AvailablePassengers, req.BoardedPassengers,
-		ship.PassengerCap, decision.SailTo, reachable, passengerDestBonus,
+		ship.PassengerCap, decision.SailTo, reachable, passengerDestBonus, ship.Speed,
 	)
 
 	return decision, nil
 }
 
 // selectPassengers picks profitable passengers to board, preferring those heading
-// to the chosen destination. Returns passenger IDs to board.
+// to the chosen destination. Filters out passengers that cannot be delivered
+// before their deadline. Returns passenger IDs to board.
 func (a *HeuristicAgent) selectPassengers(
 	available []PassengerInfo,
 	boarded []PassengerInfo,
@@ -194,6 +196,7 @@ func (a *HeuristicAgent) selectPassengers(
 	destPortID *uuid.UUID,
 	reachable map[uuid.UUID]float64,
 	destBonus float64,
+	shipSpeed int,
 ) []uuid.UUID {
 	if passengerCap <= 0 || len(available) == 0 {
 		return nil
@@ -209,6 +212,9 @@ func (a *HeuristicAgent) selectPassengers(
 		return nil
 	}
 
+	now := time.Now()
+	speed := math.Max(float64(shipSpeed), 1.0)
+
 	// Score passengers: those heading to our destination get a bonus.
 	type scored struct {
 		id    uuid.UUID
@@ -218,7 +224,17 @@ func (a *HeuristicAgent) selectPassengers(
 	var candidates []scored
 	for _, p := range available {
 		// Only board passengers heading to a reachable port.
-		if _, ok := reachable[p.DestinationPortID]; !ok {
+		dist, ok := reachable[p.DestinationPortID]
+		if !ok {
+			continue
+		}
+
+		// Skip passengers that have already expired or cannot be delivered
+		// in time. Use a 20% safety margin on travel time to account for
+		// docking delays and processing time.
+		travelMins := dist / speed
+		arrivalTime := now.Add(time.Duration(travelMins*1.2) * time.Minute)
+		if !p.ExpiresAt.IsZero() && arrivalTime.After(p.ExpiresAt) {
 			continue
 		}
 
@@ -228,7 +244,6 @@ func (a *HeuristicAgent) selectPassengers(
 		}
 
 		bidPerHead := float64(p.Bid) / float64(p.Count)
-		dist := reachable[p.DestinationPortID]
 		score := bidPerHead / max(dist, 1.0)
 
 		// Bonus if heading to the same destination we've already chosen.
@@ -283,17 +298,51 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 	explorationBonus map[uuid.UUID]float64,
 ) (*TradeDecision, error) {
 	buyTaxBps := taxIndex[currentPortID]
+	now := time.Now()
+	speed := math.Max(float64(req.Ship.Speed), 1.0)
 
 	// Build passenger revenue index for destination scoring.
 	// Include both available passengers (can board) and boarded passengers
-	// (already on ship, must be delivered).
+	// (already on ship, must be delivered). Filter out passengers that
+	// cannot be delivered before their deadline.
 	passengerRevByDest := make(map[uuid.UUID]int)
 	for _, p := range req.AvailablePassengers {
+		dist, ok := reachable[p.DestinationPortID]
+		if !ok {
+			continue
+		}
+		if !p.ExpiresAt.IsZero() {
+			travelMins := dist / speed
+			if now.Add(time.Duration(travelMins*1.2) * time.Minute).After(p.ExpiresAt) {
+				continue
+			}
+		}
 		passengerRevByDest[p.DestinationPortID] += p.Bid
 	}
 	for _, p := range req.BoardedPassengers {
 		// Boarded passengers are committed revenue — weight them heavily.
-		passengerRevByDest[p.DestinationPortID] += p.Bid * 2
+		// Add urgency multiplier for passengers near their deadline to
+		// prevent the ship from detouring and missing the delivery window.
+		weight := 2
+		if !p.ExpiresAt.IsZero() {
+			dist, ok := reachable[p.DestinationPortID]
+			if !ok {
+				continue
+			}
+			travelMins := dist / speed
+			arrivalTime := now.Add(time.Duration(travelMins*1.2) * time.Minute)
+			if arrivalTime.After(p.ExpiresAt) {
+				// Already impossible — still count to avoid total loss.
+				weight = 1
+			} else {
+				remaining := p.ExpiresAt.Sub(now).Minutes()
+				// Urgency: if less than 2x travel time remains, boost heavily.
+				if remaining < travelMins*2 {
+					weight = 5
+				}
+			}
+		}
+		passengerRevByDest[p.DestinationPortID] += p.Bid * weight
 	}
 
 	// Build held cargo bonus by destination.
@@ -381,7 +430,7 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 
 		dist := math.Max(reachable[destID], 1.0)
 		// Subtract travel upkeep cost: travel time = distance / speed (in minutes).
-		travelMins := dist / math.Max(float64(req.Ship.Speed), 1.0)
+		travelMins := dist / speed
 		travelUpkeep := upkeepPerMin * travelMins
 		adjustedProfit := float64(totalProfit) - travelUpkeep
 
@@ -493,16 +542,48 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 ) (*TradeDecision, error) {
 	buyTaxBps := taxIndex[currentPortID]
 	capacity := req.Ship.Capacity
+	now := time.Now()
+	speed := math.Max(float64(req.Ship.Speed), 1.0)
 
 	// Build passenger revenue index for destination scoring.
 	// Include both available passengers (can board) and boarded passengers
-	// (already on ship, must be delivered).
+	// (already on ship, must be delivered). Filter out passengers that
+	// cannot be delivered before their deadline.
 	passengerRevByDest := make(map[uuid.UUID]int)
 	for _, p := range req.AvailablePassengers {
+		dist, ok := reachable[p.DestinationPortID]
+		if !ok {
+			continue
+		}
+		if !p.ExpiresAt.IsZero() {
+			travelMins := dist / speed
+			if now.Add(time.Duration(travelMins*1.2) * time.Minute).After(p.ExpiresAt) {
+				continue
+			}
+		}
 		passengerRevByDest[p.DestinationPortID] += p.Bid
 	}
 	for _, p := range req.BoardedPassengers {
-		passengerRevByDest[p.DestinationPortID] += p.Bid * 2
+		// Boarded passengers are committed revenue — weight them heavily.
+		// Add urgency multiplier for passengers near their deadline.
+		weight := 2
+		if !p.ExpiresAt.IsZero() {
+			dist, ok := reachable[p.DestinationPortID]
+			if !ok {
+				continue
+			}
+			travelMins := dist / speed
+			arrivalTime := now.Add(time.Duration(travelMins*1.2) * time.Minute)
+			if arrivalTime.After(p.ExpiresAt) {
+				weight = 1
+			} else {
+				remaining := p.ExpiresAt.Sub(now).Minutes()
+				if remaining < travelMins*2 {
+					weight = 5
+				}
+			}
+		}
+		passengerRevByDest[p.DestinationPortID] += p.Bid * weight
 	}
 
 	// Build held cargo bonus by destination.
@@ -590,7 +671,7 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 
 		dist := math.Max(reachable[destID], 1.0)
 		// Subtract travel upkeep cost from profit.
-		travelMins := dist / math.Max(float64(req.Ship.Speed), 1.0)
+		travelMins := dist / speed
 		travelUpkeep := upkeepPerMin * travelMins
 		adjustedProfit := float64(totalProfit) - travelUpkeep
 
@@ -700,7 +781,7 @@ func (a *HeuristicAgent) speculativeTrade(
 	buyTaxBps := taxIndex[currentPortID]
 
 	// Try to sail toward the best passenger revenue destination.
-	bestPassDest, bestPassRev := a.bestPassengerDestination(req.AvailablePassengers, reachable)
+	bestPassDest, bestPassRev := a.bestPassengerDestination(req.AvailablePassengers, reachable, req.Ship.Speed)
 	if bestPassRev > 0 {
 		buys := a.speculativeBuys(req.Ship, priceIndex, taxIndex, currentPortID, bestPassDest, budget, buyTaxBps)
 		a.logger.Info("no profitable trade, sailing toward passenger revenue",
@@ -2006,16 +2087,31 @@ func getParam(params map[string]float64, key string, fallback float64) float64 {
 }
 
 // bestPassengerDestination finds the reachable destination with the highest
-// total passenger revenue (sum of bids heading there).
+// total passenger revenue (sum of bids heading there). Only considers
+// passengers that can be delivered before their deadline.
 func (a *HeuristicAgent) bestPassengerDestination(
 	available []PassengerInfo,
 	reachable map[uuid.UUID]float64,
+	shipSpeed int,
 ) (uuid.UUID, int) {
+	now := time.Now()
+	speed := math.Max(float64(shipSpeed), 1.0)
+
 	revByDest := make(map[uuid.UUID]int)
 	for _, p := range available {
-		if _, ok := reachable[p.DestinationPortID]; ok {
-			revByDest[p.DestinationPortID] += p.Bid
+		dist, ok := reachable[p.DestinationPortID]
+		if !ok {
+			continue
 		}
+		// Skip passengers that can't be delivered in time.
+		if !p.ExpiresAt.IsZero() {
+			travelMins := dist / speed
+			arrivalTime := now.Add(time.Duration(travelMins*1.2) * time.Minute)
+			if arrivalTime.After(p.ExpiresAt) {
+				continue
+			}
+		}
+		revByDest[p.DestinationPortID] += p.Bid
 	}
 	var bestDest uuid.UUID
 	bestRev := 0
