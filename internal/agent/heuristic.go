@@ -461,6 +461,11 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 		travelUpkeep := upkeepPerMin * totalTripMins
 		adjustedProfit := float64(totalProfit) - travelUpkeep
 
+		// Add warehouse sell profit: goods at the current port warehouse that
+		// can be profitably sold at this destination.
+		whProfit := a.warehouseSellProfit(req.Warehouses, currentPortID, destID, priceIndex, taxIndex, remaining)
+		adjustedProfit += float64(whProfit)
+
 		score := adjustedProfit / totalTripMins
 		score += float64(passengerRevByDest[destID]) / totalTripMins * passengerWeight
 		score += float64(heldProfitByDest[destID]) / totalTripMins
@@ -715,6 +720,10 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 		totalTripMins := travelMins + 2.0
 		travelUpkeep := upkeepPerMin * totalTripMins
 		adjustedProfit := float64(totalProfit) - travelUpkeep
+
+		// Add warehouse sell profit for this destination.
+		whProfit := a.warehouseSellProfit(req.Warehouses, currentPortID, destID, priceIndex, taxIndex, remaining)
+		adjustedProfit += float64(whProfit)
 
 		// Bulk hauler: profit per minute (not per distance) to favor fast high-value routes.
 		score := adjustedProfit / totalTripMins
@@ -1654,6 +1663,35 @@ func (a *HeuristicAgent) buildSmartSellOrders(
 			}
 		}
 
+		// Loss prevention: if we know the buy price and selling here loses money,
+		// hold the cargo instead (route to a port that can sell above cost).
+		// Exception: force-liquidate after 3+ idle ticks to free capacity.
+		if cargo.BuyPrice > 0 && currentNet < cargo.BuyPrice && ship.IdleTicks < 3 {
+			// Find destination to hold for — use best destination if it's above cost,
+			// otherwise just point to the best net destination available.
+			holdDest := bestDestID
+			holdGain := 0
+			if bestDestNet > cargo.BuyPrice {
+				holdGain = (bestDestNet - cargo.BuyPrice) * cargo.Quantity
+			} else if bestDestNet > currentNet {
+				// Can't sell above cost anywhere, but best dest is still better than here.
+				holdGain = (bestDestNet - currentNet) * cargo.Quantity
+			}
+			held = append(held, heldCargo{
+				goodID:     cargo.GoodID,
+				quantity:   cargo.Quantity,
+				bestDestID: holdDest,
+				profitGain: holdGain,
+			})
+			a.logger.Info("holding cargo to avoid loss",
+				zap.String("good_id", cargo.GoodID.String()[:8]),
+				zap.Int("buy_price", cargo.BuyPrice),
+				zap.Int("current_net", currentNet),
+				zap.Int("best_dest_net", bestDestNet),
+			)
+			continue
+		}
+
 		// Hold if a destination offers >20% better net price AFTER subtracting
 		// travel upkeep cost. Without this, ships hold cargo for far-away ports
 		// where the upkeep to get there eats all the price improvement.
@@ -1952,24 +1990,20 @@ func (a *HeuristicAgent) warehouseOps(
 
 	// --- LOAD: retrieve profitable goods from warehouse ---
 
-	// Calculate remaining ship capacity after buys.
+	// Calculate remaining ship capacity after existing cargo (not buys — we may displace buys).
 	cargoUsed := 0
 	for _, c := range req.Ship.Cargo {
 		cargoUsed += c.Quantity
 	}
-	for _, b := range decision.BuyOrders {
-		cargoUsed += b.Quantity
+
+	// Determine the destination — either the ship's chosen destination
+	// or find the best destination for warehouse goods.
+	destID := uuid.Nil
+	if decision.SailTo != nil {
+		destID = *decision.SailTo
 	}
-	remaining := req.Ship.Capacity - cargoUsed
 
-	if remaining > 0 && len(wh.Items) > 0 {
-		// Determine the destination — either the ship's chosen destination
-		// or find the best destination for warehouse goods.
-		destID := uuid.Nil
-		if decision.SailTo != nil {
-			destID = *decision.SailTo
-		}
-
+	if len(wh.Items) > 0 {
 		// Score each warehouse item by profitability at the destination (or best dest).
 		type loadCandidate struct {
 			goodID uuid.UUID
@@ -2032,11 +2066,79 @@ func (a *HeuristicAgent) warehouseOps(
 			}
 		}
 
-		// Sort by profit descending and fill remaining capacity.
+		// Sort warehouse candidates by profit descending.
 		sort.Slice(candidates, func(i, j int) bool {
 			return candidates[i].profit > candidates[j].profit
 		})
 
+		// Calculate capacity after buy orders.
+		buyQty := 0
+		for _, b := range decision.BuyOrders {
+			buyQty += b.Quantity
+		}
+		remaining := req.Ship.Capacity - cargoUsed - buyQty
+
+		// If warehouse candidates exist but no room, displace low-ROI buy orders.
+		// Don't displace more than 50% of planned buys.
+		if remaining <= 0 && len(candidates) > 0 && len(decision.BuyOrders) > 0 {
+			// Build per-unit profit for each buy order.
+			type buyROI struct {
+				idx    int
+				profit int // per-unit profit estimate
+				qty    int
+			}
+			var buyROIs []buyROI
+			for i, b := range decision.BuyOrders {
+				profit := 0
+				if destID != uuid.Nil {
+					bp, bOK := priceIndex[priceKey(currentPortID, b.GoodID)]
+					dp, dOK := priceIndex[priceKey(destID, b.GoodID)]
+					if bOK && dOK && dp.SellPrice > 0 && bp.BuyPrice > 0 {
+						buyTaxCost := bp.BuyPrice * buyTaxBps / 10000
+						sellTaxCost := dp.SellPrice * taxIndex[destID] / 10000
+						profit = dp.SellPrice - bp.BuyPrice - buyTaxCost - sellTaxCost
+					}
+				}
+				buyROIs = append(buyROIs, buyROI{idx: i, profit: profit, qty: b.Quantity})
+			}
+			// Sort by profit ascending (worst buys first).
+			sort.Slice(buyROIs, func(i, j int) bool {
+				return buyROIs[i].profit < buyROIs[j].profit
+			})
+
+			maxDisplace := buyQty / 2 // Don't remove more than 50% of buy capacity.
+			displaced := 0
+			removedIdx := make(map[int]bool)
+
+			for _, br := range buyROIs {
+				if displaced >= maxDisplace {
+					break
+				}
+				// Only displace if the best warehouse candidate is more profitable.
+				bestWhProfit := 0
+				if len(candidates) > 0 {
+					bestWhProfit = candidates[0].profit
+				}
+				if bestWhProfit <= br.profit {
+					break // Warehouse isn't better than this buy.
+				}
+				removedIdx[br.idx] = true
+				displaced += br.qty
+				remaining += br.qty
+			}
+
+			if len(removedIdx) > 0 {
+				var kept []BuyOrder
+				for i, b := range decision.BuyOrders {
+					if !removedIdx[i] {
+						kept = append(kept, b)
+					}
+				}
+				decision.BuyOrders = kept
+			}
+		}
+
+		// Fill remaining capacity with warehouse loads.
 		for _, c := range candidates {
 			if remaining <= 0 {
 				break
@@ -2222,6 +2324,58 @@ func (a *HeuristicAgent) findBestWarehousePickup(
 	}
 
 	return bestPort, bestProfit
+}
+
+// warehouseSellProfit computes the total profit from selling warehouse goods at
+// the current port to a given destination. Returns profit capped by available
+// ship capacity. This lets destination scoring favor ports where warehouse goods
+// can be profitably offloaded.
+func (a *HeuristicAgent) warehouseSellProfit(
+	warehouses []WarehouseSnapshot,
+	currentPortID uuid.UUID,
+	destID uuid.UUID,
+	priceIndex map[string]PricePoint,
+	taxIndex map[uuid.UUID]int,
+	capacity int,
+) int {
+	totalProfit := 0
+	remainCap := capacity
+
+	for _, wh := range warehouses {
+		if wh.PortID != currentPortID {
+			continue
+		}
+		for _, item := range wh.Items {
+			if item.Quantity <= 0 || remainCap <= 0 {
+				continue
+			}
+			// Warehouse goods are already paid for — use NPC buy price as cost estimate.
+			costBasis := 0
+			if pp, ok := priceIndex[priceKey(currentPortID, item.GoodID)]; ok && pp.BuyPrice > 0 {
+				buyTax := pp.BuyPrice * taxIndex[currentPortID] / 10000
+				costBasis = pp.BuyPrice + buyTax
+			}
+
+			dp, ok := priceIndex[priceKey(destID, item.GoodID)]
+			if !ok || dp.SellPrice <= 0 {
+				continue
+			}
+			sellTax := dp.SellPrice * taxIndex[destID] / 10000
+			netSell := dp.SellPrice - sellTax
+			profit := netSell - costBasis
+			if profit <= 0 {
+				continue
+			}
+
+			qty := item.Quantity
+			if qty > remainCap {
+				qty = remainCap
+			}
+			totalProfit += profit * qty
+			remainCap -= qty
+		}
+	}
+	return totalProfit
 }
 
 func (a *HeuristicAgent) buildPortTaxIndex(ports []PortInfo) map[uuid.UUID]int {

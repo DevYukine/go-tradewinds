@@ -559,6 +559,10 @@ func (b *baseStrategy) executeSells(ctx context.Context, ship *bot.ShipState, se
 				zap.Int("unit_price", r.Execution.UnitPrice),
 				zap.Int("total", r.Execution.TotalPrice),
 			)
+
+			// Clear cost tracking for sold goods.
+			ship.ClearCargoCost(r.Execution.GoodID)
+
 			b.recordTrade(r.Execution, tradeContext{
 				ShipID:   ship.Ship.ID.String(),
 				ShipName: ship.Ship.Name,
@@ -679,6 +683,13 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 				zap.Int("unit_price", r.Execution.UnitPrice),
 				zap.Int("total", r.Execution.TotalPrice),
 			)
+
+			// Record cost basis for loss prevention.
+			if r.Execution.Quantity > 0 {
+				avgCost := r.Execution.UnitPrice + r.Execution.TaxPaid/r.Execution.Quantity
+				ship.SetCargoCost(r.Execution.GoodID, r.Execution.Quantity, avgCost)
+			}
+
 			tc := tradeContext{
 				ShipID:   ship.Ship.ID.String(),
 				ShipName: ship.Ship.Name,
@@ -1448,6 +1459,7 @@ func shipToSnapshot(s *bot.ShipState, world *bot.WorldCache) agent.ShipSnapshot 
 		cargo[i] = agent.CargoItem{
 			GoodID:   c.GoodID,
 			Quantity: c.Quantity,
+			BuyPrice: s.CargoCosts[c.GoodID], // 0 if not tracked
 		}
 	}
 

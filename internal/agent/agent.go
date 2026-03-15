@@ -190,6 +190,7 @@ type PassengerInfo struct {
 type CargoItem struct {
 	GoodID   uuid.UUID `json:"good_id"`
 	Quantity int       `json:"quantity"`
+	BuyPrice int       `json:"buy_price"` // avg unit cost (price + tax), 0 if unknown
 }
 
 // WarehouseSnapshot is a point-in-time view of a warehouse.

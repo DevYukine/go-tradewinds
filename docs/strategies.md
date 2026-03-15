@@ -164,11 +164,13 @@ All strategies read timing intervals from `CompanyState.Params` (set by the opti
 ## Profitability Guards
 
 The heuristic agent enforces several guards to prevent money-losing trades:
+- **Cost basis tracking**: `ShipState.CargoCosts` records the weighted-average buy price (including tax) for each good on each ship. `CargoItem.BuyPrice` carries this to the agent. Costs are recorded in `executeBuys` and cleared in `executeSells`.
+- **Loss prevention**: `buildSmartSellOrders` refuses to sell cargo at a loss when `BuyPrice > 0` and `currentNet < BuyPrice`. The cargo is held and routed to the best destination above cost. After 3+ idle ticks, cargo is force-liquidated to free capacity.
 - **Minimum margin**: trades must exceed `MinMarginPct` (default 8%) of buy price
 - **Sell-side tax**: profit calculation includes both buy and sell port taxes
 - **Idle relocation**: after 2+ idle ticks (~60s), ships relocate to the nearest hub port or opportunity port instead of sitting idle. Hub ports are preferred because they have more trade variety.
 - **Speculative sailing**: when enabled (default), ships sail to opportunity buy ports from the ProfitAnalyzer when no local trade is profitable
-- **Cargo hold threshold**: ships only hold cargo for a better destination if the destination offers >50% better net price (high bar to keep ships moving)
+- **Cargo hold threshold**: ships only hold cargo for a better destination if the destination offers >20% better net price after travel upkeep
 - **P2P fill threshold**: 5% minimum margin for filling player orders
 
 ## ProfitAnalyzer (`internal/bot/profit_analyzer.go`)
@@ -184,8 +186,11 @@ price data. Maintains a ranked list of the top 50 opportunities (by profit/dista
 ## Smart Selling
 
 Instead of dumping all cargo at the current port, the agent evaluates each cargo
-item against reachable destinations. Cargo is held (not sold) when a destination
-offers >30% better net sell price after taxes. Held cargo:
+item against reachable destinations. Cargo is held in two scenarios:
+1. **Loss prevention**: if `BuyPrice > 0` and selling here would lose money (`currentNet < BuyPrice`), the cargo is held and routed to the best profitable destination. After 3+ idle ticks, held cargo is force-liquidated.
+2. **Better destination**: cargo is held when a reachable destination offers >20% better net sell price after taxes and travel upkeep.
+
+Held cargo:
 - Reduces available ship capacity for new buys
 - Adds a scoring bonus to the destination it should be carried to
 - Is automatically sold when the ship arrives at the better port
@@ -205,6 +210,7 @@ totalTripMinutes = distance / speed + 2
 | Factor | Weight |
 |--------|--------|
 | Total achievable cargo profit minus travel upkeep | ÷ totalTripMinutes |
+| Warehouse sell profit (goods at current port sellable at dest) | ÷ totalTripMinutes |
 | Passenger revenue at destination | ÷ totalTripMinutes × passengerWeight |
 | Held cargo profit gain | ÷ totalTripMinutes |
 | Route history bonus (avg past profit) | ÷ totalTripMinutes |
@@ -223,3 +229,24 @@ The `buildTradeRequestWithPassengers` function loads the last 24h of
 `RoutePerformance` records (up to 50) for the company. The heuristic agent
 uses these to compute an average-profit-per-trade bonus for each destination
 from the current port, biasing decisions toward historically profitable routes.
+
+## Warehouse Operations
+
+`warehouseOps` runs after the main trade decision and handles loading/storing goods.
+
+### Load Priority over Low-ROI Buys
+Warehouse goods are already paid for (sunk cost), so loading them is almost always
+more profitable per-unit than buying new NPC goods. When warehouse load candidates
+exist but no ship capacity remains after buy orders:
+- Buy orders are sorted by per-unit profit ascending
+- Warehouse candidates are compared against the worst buy orders
+- If a warehouse load is more profitable, the buy order is displaced (removed)
+- Displacement is capped at 50% of planned buy capacity to keep the ship useful
+- This ensures warehouse goods don't rot while ships fill up with marginal NPC buys
+
+### Warehouse Sell Profit in Destination Scoring
+Destination scoring in both `decideArbitrageTrade` and `decideBulkHaulerTrade`
+now includes warehouse sell profit: for each destination candidate, the agent
+checks if warehouse goods at the current port can be profitably sold there.
+This makes ships naturally choose destinations that allow warehouse inventory
+to be offloaded.

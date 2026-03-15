@@ -73,9 +73,15 @@ func (s *CompanyState) UpdateShips(ships []api.Ship) {
 		ship := &ships[i]
 		if existing, ok := s.Ships[ship.ID]; ok {
 			existing.Ship = *ship
+			if existing.CargoCosts == nil {
+				existing.CargoCosts = make(map[uuid.UUID]int)
+			}
 			updated[ship.ID] = existing
 		} else {
-			updated[ship.ID] = &ShipState{Ship: *ship}
+			updated[ship.ID] = &ShipState{
+				Ship:       *ship,
+				CargoCosts: make(map[uuid.UUID]int),
+			}
 		}
 	}
 	s.Ships = updated
@@ -281,8 +287,48 @@ func (s *CompanyState) RUnlock() {
 type ShipState struct {
 	Ship           api.Ship
 	Cargo          []api.Cargo
-	PassengerCount int // currently boarded passengers
-	IdleTicks      int // consecutive "wait" actions while docked (reset on trade/sail)
+	CargoCosts     map[uuid.UUID]int // goodID → avg unit cost (price + tax), for loss prevention
+	PassengerCount int               // currently boarded passengers
+	IdleTicks      int               // consecutive "wait" actions while docked (reset on trade/sail)
+}
+
+// SetCargoCost records or updates the weighted-average cost basis for a good on this ship.
+// If the ship already has some of this good at a different cost, a weighted average is used.
+func (ss *ShipState) SetCargoCost(goodID uuid.UUID, newQty, newUnitCost int) {
+	if ss.CargoCosts == nil {
+		ss.CargoCosts = make(map[uuid.UUID]int)
+	}
+	if newQty <= 0 || newUnitCost <= 0 {
+		return
+	}
+
+	existingCost, exists := ss.CargoCosts[goodID]
+	if !exists {
+		ss.CargoCosts[goodID] = newUnitCost
+		return
+	}
+
+	// Find existing quantity of this good on ship.
+	existingQty := 0
+	for _, c := range ss.Cargo {
+		if c.GoodID == goodID {
+			existingQty += c.Quantity
+		}
+	}
+
+	if existingQty <= 0 {
+		ss.CargoCosts[goodID] = newUnitCost
+		return
+	}
+
+	// Weighted average: (existingQty*existingCost + newQty*newCost) / totalQty
+	totalQty := existingQty + newQty
+	ss.CargoCosts[goodID] = (existingQty*existingCost + newQty*newUnitCost) / totalQty
+}
+
+// ClearCargoCost removes cost tracking for a good (e.g. after selling all of it).
+func (ss *ShipState) ClearCargoCost(goodID uuid.UUID) {
+	delete(ss.CargoCosts, goodID)
 }
 
 // UsedCapacity returns the total quantity of cargo loaded on this ship.
