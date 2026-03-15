@@ -552,7 +552,11 @@ func (b *baseStrategy) executeSells(ctx context.Context, ship *bot.ShipState, se
 				zap.Int("unit_price", r.Execution.UnitPrice),
 				zap.Int("total", r.Execution.TotalPrice),
 			)
-			b.recordTrade(r.Execution)
+			b.recordTrade(r.Execution, tradeContext{
+				ShipID:   ship.Ship.ID.String(),
+				ShipName: ship.Ship.Name,
+				Source:   "port_sell",
+			})
 			traded = true
 		}
 	}
@@ -564,7 +568,8 @@ func (b *baseStrategy) executeSells(ctx context.Context, ship *bot.ShipState, se
 }
 
 // executeBuys buys cargo and loads it onto the ship at the current port.
-func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buys []agent.BuyOrder) error {
+// destPortID is the intended sell destination (from the trade decision's SailTo).
+func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buys []agent.BuyOrder, destPortID *uuid.UUID) error {
 	if len(buys) == 0 {
 		return nil
 	}
@@ -667,7 +672,18 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 				zap.Int("unit_price", r.Execution.UnitPrice),
 				zap.Int("total", r.Execution.TotalPrice),
 			)
-			b.recordTrade(r.Execution)
+			tc := tradeContext{
+				ShipID:   ship.Ship.ID.String(),
+				ShipName: ship.Ship.Name,
+				Source:   "port_buy",
+			}
+			if destPortID != nil {
+				tc.DestPortID = destPortID.String()
+				if dp := b.ctx.World.GetPort(*destPortID); dp != nil {
+					tc.DestPortName = dp.Name
+				}
+			}
+			b.recordTrade(r.Execution, tc)
 			traded = true
 		}
 	}
@@ -703,6 +719,21 @@ func (b *baseStrategy) executeWarehouseLoads(ctx context.Context, ship *bot.Ship
 			zap.String("good", goodName),
 			zap.Int("quantity", load.Quantity),
 		)
+
+		// Log warehouse load event.
+		loadPortID, loadPortName := b.resolveWarehousePort(load.WarehouseID)
+		b.ctx.DB.Create(&db.WarehouseEventLog{
+			CompanyID:   b.ctx.State.CompanyDBID(),
+			WarehouseID: load.WarehouseID.String(),
+			PortID:      loadPortID,
+			PortName:    loadPortName,
+			EventType:   "load",
+			GoodID:      load.GoodID.String(),
+			GoodName:    goodName,
+			Quantity:    load.Quantity,
+			Strategy:    b.name,
+			AgentName:   b.ctx.Agent.Name(),
+		})
 	}
 	if len(affected) > 0 {
 		b.refreshWarehouseInventories(ctx, affected)
@@ -735,6 +766,21 @@ func (b *baseStrategy) executeWarehouseStores(ctx context.Context, ship *bot.Shi
 			zap.String("good", goodName),
 			zap.Int("quantity", store.Quantity),
 		)
+
+		// Log warehouse store event.
+		storePortID, storePortName := b.resolveWarehousePort(store.WarehouseID)
+		b.ctx.DB.Create(&db.WarehouseEventLog{
+			CompanyID:   b.ctx.State.CompanyDBID(),
+			WarehouseID: store.WarehouseID.String(),
+			PortID:      storePortID,
+			PortName:    storePortName,
+			EventType:   "store",
+			GoodID:      store.GoodID.String(),
+			GoodName:    goodName,
+			Quantity:    store.Quantity,
+			Strategy:    b.name,
+			AgentName:   b.ctx.Agent.Name(),
+		})
 	}
 	if len(affected) > 0 {
 		b.refreshWarehouseInventories(ctx, affected)
@@ -877,6 +923,32 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 			zap.Int("price", resp.Price),
 		)
 
+		// Log ship sale event.
+		portName := ship.PortID.String()
+		if p := b.ctx.World.GetPort(*ship.PortID); p != nil {
+			portName = p.Name
+		}
+		shipType := ""
+		if st := b.ctx.World.GetShipType(ship.ShipTypeID); st != nil {
+			shipType = st.Name
+		}
+		b.ctx.State.RLock()
+		treasury := b.ctx.State.Treasury
+		b.ctx.State.RUnlock()
+		b.ctx.DB.Create(&db.ShipEventLog{
+			CompanyID: b.ctx.State.CompanyDBID(),
+			ShipID:    shipID.String(),
+			ShipName:  ship.Name,
+			ShipType:  shipType,
+			EventType: "sale",
+			Price:     resp.Price,
+			Treasury:  int(treasury),
+			PortID:    ship.PortID.String(),
+			PortName:  portName,
+			Strategy:  b.name,
+			AgentName: b.ctx.Agent.Name(),
+		})
+
 		// Immediately remove the sold ship from state so dispatchIdleShips
 		// and handleShipDocked don't try to use a ship that no longer exists.
 		b.ctx.State.Lock()
@@ -923,6 +995,23 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 			zap.String("warehouse_id", wh.ID.String()),
 			zap.String("port_id", portID.String()),
 		)
+
+		// Log warehouse purchase event.
+		whPortName := portID.String()
+		if p := b.ctx.World.GetPort(portID); p != nil {
+			whPortName = p.Name
+		}
+		b.ctx.DB.Create(&db.WarehouseEventLog{
+			CompanyID:   b.ctx.State.CompanyDBID(),
+			WarehouseID: wh.ID.String(),
+			PortID:      portID.String(),
+			PortName:    whPortName,
+			EventType:   "purchase",
+			Level:       wh.Level,
+			Strategy:    b.name,
+			AgentName:   b.ctx.Agent.Name(),
+		})
+
 		// Add the new warehouse to in-memory state so subsequent decisions
 		// and the dashboard see it immediately.
 		b.ctx.State.AddWarehouse(*wh)
@@ -1082,6 +1171,32 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 			b.ctx.State.UpdateEconomy(econ)
 		}
 
+		// Log ship purchase event.
+		purchasePortName := portID.String()
+		if p := b.ctx.World.GetPort(portID); p != nil {
+			purchasePortName = p.Name
+		}
+		purchaseShipType := ""
+		if st := b.ctx.World.GetShipType(chosenItem.ShipTypeID); st != nil {
+			purchaseShipType = st.Name
+		}
+		b.ctx.State.RLock()
+		postTreasury := b.ctx.State.Treasury
+		b.ctx.State.RUnlock()
+		b.ctx.DB.Create(&db.ShipEventLog{
+			CompanyID: b.ctx.State.CompanyDBID(),
+			ShipID:    ship.ID.String(),
+			ShipName:  ship.Name,
+			ShipType:  purchaseShipType,
+			EventType: "purchase",
+			Price:     chosenItem.Cost,
+			Treasury:  int(postTreasury),
+			PortID:    portID.String(),
+			PortName:  purchasePortName,
+			Strategy:  b.name,
+			AgentName: b.ctx.Agent.Name(),
+		})
+
 		return ship
 	}
 
@@ -1124,8 +1239,17 @@ func (b *baseStrategy) logAgentDecision(
 
 // --- Trade Logging ---
 
+// tradeContext carries extra metadata for trade logging beyond what the API returns.
+type tradeContext struct {
+	ShipID       string
+	ShipName     string
+	Source       string // "port_buy", "port_sell", "warehouse_load", "p2p_fill"
+	DestPortID   string
+	DestPortName string
+}
+
 // recordTrade writes a trade to the database.
-func (b *baseStrategy) recordTrade(exec *api.TradeExecution) {
+func (b *baseStrategy) recordTrade(exec *api.TradeExecution, tc tradeContext) {
 	portName := exec.PortID.String()
 	if p := b.ctx.World.GetPort(exec.PortID); p != nil {
 		portName = p.Name
@@ -1136,17 +1260,23 @@ func (b *baseStrategy) recordTrade(exec *api.TradeExecution) {
 	}
 
 	trade := db.TradeLog{
-		CompanyID:  b.ctx.State.CompanyDBID(),
-		Action:     exec.Action,
-		GoodID:     exec.GoodID.String(),
-		GoodName:   goodName,
-		PortID:     exec.PortID.String(),
-		PortName:   portName,
-		Quantity:   exec.Quantity,
-		UnitPrice:  exec.UnitPrice,
-		TotalPrice: exec.TotalPrice,
-		Strategy:   b.name,
-		AgentName:  b.ctx.Agent.Name(),
+		CompanyID:    b.ctx.State.CompanyDBID(),
+		Action:       exec.Action,
+		GoodID:       exec.GoodID.String(),
+		GoodName:     goodName,
+		PortID:       exec.PortID.String(),
+		PortName:     portName,
+		Quantity:     exec.Quantity,
+		UnitPrice:    exec.UnitPrice,
+		TotalPrice:   exec.TotalPrice,
+		TaxPaid:      exec.TaxPaid,
+		ShipID:       tc.ShipID,
+		ShipName:     tc.ShipName,
+		Source:       tc.Source,
+		DestPortID:   tc.DestPortID,
+		DestPortName: tc.DestPortName,
+		Strategy:     b.name,
+		AgentName:    b.ctx.Agent.Name(),
 	}
 
 	if err := b.ctx.DB.Create(&trade).Error; err != nil {
@@ -1162,35 +1292,73 @@ func (b *baseStrategy) recordTrade(exec *api.TradeExecution) {
 	}
 }
 
-// recordRoutePerformance finds the most recent buy of the same good and
-// records the profit for the completed buy→sell cycle.
+// recordRoutePerformance uses FIFO queue matching to pair sell quantities with
+// unmatched buys and record profit for each completed buy→sell cycle.
 func (b *baseStrategy) recordRoutePerformance(sell *api.TradeExecution) {
-	// Find the most recent buy of the same good.
-	var buyTrade db.TradeLog
-	err := b.ctx.DB.Where("company_id = ? AND action = ? AND good_id = ? AND created_at > ?",
-		b.ctx.State.CompanyDBID(), "buy", sell.GoodID.String(), time.Now().Add(-24*time.Hour)).
-		Order("created_at DESC").First(&buyTrade).Error
-	if err != nil {
-		return // No matching buy found.
+	// Find all unmatched buys for the same company+good, ordered FIFO.
+	var buyTrades []db.TradeLog
+	err := b.ctx.DB.Where("company_id = ? AND action = ? AND good_id = ? AND matched = ?",
+		b.ctx.State.CompanyDBID(), "buy", sell.GoodID.String(), false).
+		Order("created_at ASC").Find(&buyTrades).Error
+	if err != nil || len(buyTrades) == 0 {
+		return // No matching buys found.
 	}
 
-	profit := sell.TotalPrice - buyTrade.TotalPrice
+	remaining := sell.Quantity
+	for i := range buyTrades {
+		if remaining <= 0 {
+			break
+		}
+		buy := &buyTrades[i]
+		matchQty := buy.Quantity
+		if matchQty > remaining {
+			matchQty = remaining
+		}
 
-	rp := db.RoutePerformance{
-		CompanyID:  b.ctx.State.CompanyDBID(),
-		FromPortID: buyTrade.PortID,
-		ToPortID:   sell.PortID.String(),
-		GoodID:     sell.GoodID.String(),
-		BuyPrice:   buyTrade.UnitPrice,
-		SellPrice:  sell.UnitPrice,
-		Quantity:   sell.Quantity,
-		Profit:     profit,
-		Strategy:   b.name,
-	}
+		// Calculate profit for this matched portion.
+		buyCost := matchQty * buy.UnitPrice
+		sellRev := matchQty * sell.UnitPrice
+		profit := sellRev - buyCost
 
-	if err := b.ctx.DB.Create(&rp).Error; err != nil {
-		b.logger.Warn("failed to record route performance", zap.Error(err))
+		rp := db.RoutePerformance{
+			CompanyID:  b.ctx.State.CompanyDBID(),
+			FromPortID: buy.PortID,
+			ToPortID:   sell.PortID.String(),
+			GoodID:     sell.GoodID.String(),
+			BuyPrice:   buy.UnitPrice,
+			SellPrice:  sell.UnitPrice,
+			Quantity:   matchQty,
+			Profit:     profit,
+			Strategy:   b.name,
+		}
+		if err := b.ctx.DB.Create(&rp).Error; err != nil {
+			b.logger.Warn("failed to record route performance", zap.Error(err))
+		}
+
+		// Mark buy as matched if fully consumed.
+		if matchQty >= buy.Quantity {
+			b.ctx.DB.Model(buy).Update("matched", true)
+		}
+
+		remaining -= matchQty
 	}
+}
+
+// resolveWarehousePort looks up the port ID and name for a warehouse from in-memory state.
+func (b *baseStrategy) resolveWarehousePort(warehouseID uuid.UUID) (string, string) {
+	b.ctx.State.RLock()
+	defer b.ctx.State.RUnlock()
+	for _, w := range b.ctx.State.Warehouses {
+		if w.Warehouse.ID == warehouseID {
+			portID := w.Warehouse.PortID.String()
+			portName := portID
+			if p := b.ctx.World.GetPort(w.Warehouse.PortID); p != nil {
+				portName = p.Name
+			}
+			return portID, portName
+		}
+	}
+	return warehouseID.String(), warehouseID.String()
 }
 
 // --- Snapshot Converters ---

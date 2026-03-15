@@ -9,6 +9,7 @@ import (
 	"github.com/DevYukine/go-tradewinds/internal/agent"
 	"github.com/DevYukine/go-tradewinds/internal/api"
 	"github.com/DevYukine/go-tradewinds/internal/bot"
+	"github.com/DevYukine/go-tradewinds/internal/db"
 )
 
 const (
@@ -74,7 +75,7 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 		}
 		m.executeFills(ctx, port.ID, decision.FillOrders)
 		m.executeWarehouseLoads(ctx, ship, decision.WarehouseLoads)
-		if err := m.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
+		if err := m.executeBuys(ctx, ship, decision.BuyOrders, decision.SailTo); err != nil {
 			if api.IsBankrupt(err) {
 				return err
 			}
@@ -240,6 +241,29 @@ func (m *MarketMaker) evaluateMarket(ctx context.Context) {
 			zap.Int("price", order.Price),
 			zap.Int("total", order.Total),
 		)
+
+		goodName := order.GoodID.String()
+		if g := m.ctx.World.GetGood(order.GoodID); g != nil {
+			goodName = g.Name
+		}
+		portName := order.PortID.String()
+		if p := m.ctx.World.GetPort(order.PortID); p != nil {
+			portName = p.Name
+		}
+		m.ctx.DB.Create(&db.P2POrderLog{
+			CompanyID:  m.ctx.State.CompanyDBID(),
+			OrderID:    posted.ID.String(),
+			OrderType:  "post",
+			GoodID:     order.GoodID.String(),
+			GoodName:   goodName,
+			PortID:     order.PortID.String(),
+			PortName:   portName,
+			Quantity:   order.Total,
+			Price:      order.Price,
+			TotalValue: order.Price * order.Total,
+			Strategy:   m.name,
+			AgentName:  m.ctx.Agent.Name(),
+		})
 	}
 
 	for _, fill := range decision.FillOrders {
@@ -255,6 +279,37 @@ func (m *MarketMaker) evaluateMarket(ctx context.Context) {
 			zap.String("order_id", fill.OrderID.String()),
 			zap.Int("quantity", fill.Quantity),
 		)
+
+		// Look up order details for logging.
+		fillGoodName, fillPortName, fillGoodID, fillPortID, fillPrice := "", "", "", "", 0
+		for _, o := range openOrders {
+			if o.ID == fill.OrderID {
+				fillGoodID = o.GoodID.String()
+				fillPortID = o.PortID.String()
+				fillPrice = o.Price
+				if g := m.ctx.World.GetGood(o.GoodID); g != nil {
+					fillGoodName = g.Name
+				}
+				if p := m.ctx.World.GetPort(o.PortID); p != nil {
+					fillPortName = p.Name
+				}
+				break
+			}
+		}
+		m.ctx.DB.Create(&db.P2POrderLog{
+			CompanyID:  m.ctx.State.CompanyDBID(),
+			OrderID:    fill.OrderID.String(),
+			OrderType:  "fill",
+			GoodID:     fillGoodID,
+			GoodName:   fillGoodName,
+			PortID:     fillPortID,
+			PortName:   fillPortName,
+			Quantity:   fill.Quantity,
+			Price:      fillPrice,
+			TotalValue: fillPrice * fill.Quantity,
+			Strategy:   m.name,
+			AgentName:  m.ctx.Agent.Name(),
+		})
 	}
 
 	for _, orderID := range decision.CancelOrders {
@@ -268,6 +323,14 @@ func (m *MarketMaker) evaluateMarket(ctx context.Context) {
 		m.logger.Info("cancelled market order",
 			zap.String("order_id", orderID.String()),
 		)
+
+		m.ctx.DB.Create(&db.P2POrderLog{
+			CompanyID: m.ctx.State.CompanyDBID(),
+			OrderID:   orderID.String(),
+			OrderType: "cancel",
+			Strategy:  m.name,
+			AgentName: m.ctx.Agent.Name(),
+		})
 	}
 }
 

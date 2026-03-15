@@ -12,9 +12,10 @@ import (
 const (
 	retentionCheckInterval = 1 * time.Hour
 
-	retentionCompanyLog      = 24 * time.Hour      // 1 day
+	retentionCompanyLog       = 24 * time.Hour      // 1 day
 	retentionPriceObservation = 7 * 24 * time.Hour  // 7 days
 	retentionAgentDecisionLog = 30 * 24 * time.Hour // 30 days
+	retentionQuoteFailureLog  = 7 * 24 * time.Hour  // 7 days
 )
 
 // RetentionPruner periodically deletes old records to prevent unbounded DB growth.
@@ -68,6 +69,7 @@ func (p *RetentionPruner) prune() {
 	p.pruneTable("company_logs", retentionCompanyLog)
 	p.pruneTable("price_observations", retentionPriceObservation)
 	p.pruneTable("agent_decision_logs", retentionAgentDecisionLog)
+	p.pruneTable("quote_failure_logs", retentionQuoteFailureLog)
 }
 
 // pruneTable deletes rows from the given table where created_at is older than maxAge.

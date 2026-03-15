@@ -41,9 +41,15 @@ type CompanyRunner struct {
 	dbRecord   *db.CompanyRecord
 
 	events          *EventBroadcaster
-	strategyCh      chan Strategy          // Receives new strategy assignments from the optimizer.
+	strategyCh      chan strategySwap       // Receives new strategy assignments from the optimizer.
 	dispatchedShips map[uuid.UUID]time.Time // Tracks recently dispatched ships.
 	bankrupt        bool                   // True when the game API reports the company as bankrupt.
+}
+
+// strategySwap bundles a new strategy with the reason it was selected.
+type strategySwap struct {
+	Strategy Strategy
+	Reason   string
 }
 
 // NewCompanyRunner creates a runner for a single company.
@@ -70,7 +76,7 @@ func NewCompanyRunner(
 		logger:          logger,
 		dbRecord:        dbRecord,
 		events:          events,
-		strategyCh:      make(chan Strategy, 1),
+		strategyCh:      make(chan strategySwap, 1),
 		dispatchedShips: make(map[uuid.UUID]time.Time),
 	}
 }
@@ -131,17 +137,17 @@ func (r *CompanyRunner) Run(ctx context.Context) {
 		case <-ticker.C:
 			r.handleTick(ctx)
 
-		case newStrategy := <-r.strategyCh:
-			r.swapStrategy(ctx, newStrategy)
+		case swap := <-r.strategyCh:
+			r.swapStrategy(ctx, swap.Strategy, swap.Reason)
 		}
 	}
 }
 
 // SwapStrategy sends a new strategy to the runner's strategy channel.
 // Called by the optimizer when rebalancing.
-func (r *CompanyRunner) SwapStrategy(s Strategy) {
+func (r *CompanyRunner) SwapStrategy(s Strategy, reason string) {
 	select {
-	case r.strategyCh <- s:
+	case r.strategyCh <- strategySwap{Strategy: s, Reason: reason}:
 	default:
 		r.logger.Warn("strategy swap channel full, skipping")
 	}
@@ -829,7 +835,7 @@ func (r *CompanyRunner) recordPnLSnapshot() {
 }
 
 // swapStrategy replaces the current strategy with a new one (from the optimizer).
-func (r *CompanyRunner) swapStrategy(ctx context.Context, newStrategy Strategy) {
+func (r *CompanyRunner) swapStrategy(ctx context.Context, newStrategy Strategy, reason string) {
 	oldName := r.strategy.Name()
 
 	if err := r.strategy.Shutdown(); err != nil {
@@ -863,6 +869,14 @@ func (r *CompanyRunner) swapStrategy(ctx context.Context, newStrategy Strategy) 
 		zap.String("old", oldName),
 		zap.String("new", newStrategy.Name()),
 	)
+
+	// Log strategy change event.
+	r.gormDB.Create(&db.StrategyChangeLog{
+		CompanyID:    r.dbRecord.ID,
+		FromStrategy: oldName,
+		ToStrategy:   newStrategy.Name(),
+		Reason:       reason,
+	})
 
 	// Update DB record.
 	r.gormDB.Model(r.dbRecord).Update("strategy", newStrategy.Name())

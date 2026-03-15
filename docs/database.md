@@ -28,7 +28,11 @@ Every buy/sell executed.
 | GoodID, GoodName | string | Traded good |
 | PortID, PortName | string | Trade location |
 | Quantity, UnitPrice, TotalPrice | int | Trade details |
-| TaxPaid | int | Tax amount |
+| TaxPaid | int | Tax amount (from API response) |
+| ShipID, ShipName | string | Which ship executed the trade |
+| Source | string | "port_buy", "port_sell", "warehouse_load", "p2p_fill" |
+| DestPortID, DestPortName | string | Intended sell destination (for buy trades) |
+| Matched | bool | Whether this buy has been FIFO-matched to a sell |
 | Strategy, AgentName | string | Decision context |
 | Indexed | company_id + created_at |
 
@@ -59,7 +63,7 @@ Every passenger boarding executed.
 | Indexed | company_id + created_at |
 
 ### RoutePerformance
-Completed buy→sell cycle profitability.
+Completed buy→sell cycle profitability (FIFO matching).
 | Field | Type | Notes |
 |-------|------|-------|
 | CompanyID | uint | FK |
@@ -69,6 +73,71 @@ Completed buy→sell cycle profitability.
 | Quantity | int | Units traded |
 | Profit | int | sell_total - buy_total |
 | Strategy | string | Active strategy |
+
+### ShipEventLog
+Ship purchases and sales.
+| Field | Type | Notes |
+|-------|------|-------|
+| CompanyID | uint | FK |
+| ShipID, ShipName | string | Ship identity |
+| ShipType | string | Ship type name |
+| EventType | string | "purchase" or "sale" |
+| Price | int | Purchase/sale price |
+| Treasury | int | Treasury after event |
+| PortID, PortName | string | Transaction location |
+| Strategy, AgentName | string | Decision context |
+| Retention | permanent |
+
+### WarehouseEventLog
+Warehouse purchases, stores, and loads.
+| Field | Type | Notes |
+|-------|------|-------|
+| CompanyID | uint | FK |
+| WarehouseID | string | Warehouse identity |
+| PortID, PortName | string | Warehouse location |
+| EventType | string | "purchase", "store", or "load" |
+| GoodID, GoodName | string | Good involved (empty for purchases) |
+| Quantity | int | Units transferred |
+| Level | int | Warehouse level (for purchase events) |
+| Strategy, AgentName | string | Decision context |
+| Retention | permanent |
+
+### P2POrderLog
+P2P market order activity.
+| Field | Type | Notes |
+|-------|------|-------|
+| CompanyID | uint | FK |
+| OrderID | string | Market order ID |
+| OrderType | string | "post", "fill", or "cancel" |
+| GoodID, GoodName | string | Good involved |
+| PortID, PortName | string | Market location |
+| Quantity, Price, TotalValue | int | Order details |
+| Strategy, AgentName | string | Decision context |
+| Retention | permanent |
+
+### StrategyChangeLog
+Strategy swaps by the optimizer.
+| Field | Type | Notes |
+|-------|------|-------|
+| CompanyID | uint | FK |
+| FromStrategy, ToStrategy | string | Strategy names |
+| Reason | string | Optimizer reason or "manual" |
+| Retention | permanent |
+
+### QuoteFailureLog
+Failed quote attempts for analysis.
+| Field | Type | Notes |
+|-------|------|-------|
+| CompanyID | uint | FK |
+| ShipID | string | Ship that attempted the trade |
+| GoodID, GoodName | string | Good involved |
+| PortID, PortName | string | Port location |
+| Action | string | "buy" or "sell" |
+| Quantity | int | Attempted quantity |
+| ExpPrice, ActPrice | int | Expected vs actual price |
+| Reason | string | "price_moved", "out_of_stock", "api_error" |
+| Strategy | string | Active strategy |
+| Retention | 7 days |
 
 ### StrategyMetric
 Aggregated per-strategy performance per eval period.
@@ -87,7 +156,6 @@ Aggregated per-strategy performance per eval period.
 ### Other Models
 - **CompanyLog** — Log entries (level, message) for dashboard streaming
 - **PriceObservation** — NPC prices per port+good
-- **InventorySnapshot** — Cargo/warehouse state over time
 - **AgentDecisionLog** — Full request/response/reasoning for each decision
 
 ## Retention Pruning (`internal/db/retention.go`)
@@ -98,5 +166,7 @@ Background goroutine, checks every 1 hour:
 | CompanyLog | 1 day |
 | PriceObservation | 7 days |
 | AgentDecisionLog | 30 days |
+| QuoteFailureLog | 7 days |
+| All other new tables | permanent (no pruning) |
 
 `AllModels()` returns all models for auto-migration.

@@ -180,6 +180,7 @@ type TradeExecution struct {
 	Quantity   int       `json:"quantity"`
 	UnitPrice  int       `json:"unit_price"`
 	TotalPrice int       `json:"total_price"`
+	TaxPaid    int       `json:"tax_paid"`
 }
 
 type ExecuteTradeRequest struct {

@@ -21,20 +21,26 @@ type CompanyRecord struct {
 
 // TradeLog records every trade executed by the bot.
 type TradeLog struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`
-	CompanyID  uint      `gorm:"index:idx_trade_company_time;index:idx_trade_company_action;index:idx_trade_buy_lookup;not null" json:"company_id"`
-	Action     string    `gorm:"not null;size:4;index:idx_trade_company_action;index:idx_trade_buy_lookup" json:"action"`
-	GoodID     string    `gorm:"not null;index:idx_trade_buy_lookup" json:"good_id"`
-	GoodName   string    `gorm:"not null" json:"good_name"`
-	PortID     string    `gorm:"not null" json:"port_id"`
-	PortName   string    `gorm:"not null" json:"port_name"`
-	Quantity   int       `gorm:"not null" json:"quantity"`
-	UnitPrice  int       `gorm:"not null" json:"unit_price"`
-	TotalPrice int       `gorm:"not null" json:"total_price"`
-	TaxPaid    int       `json:"tax_paid"`
-	Strategy   string    `gorm:"not null" json:"strategy"`
-	AgentName  string    `json:"agent_name"`
-	CreatedAt  time.Time `gorm:"index:idx_trade_company_time;not null" json:"created_at"`
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	CompanyID    uint      `gorm:"index:idx_trade_company_time;index:idx_trade_company_action;index:idx_trade_buy_lookup;not null" json:"company_id"`
+	Action       string    `gorm:"not null;size:4;index:idx_trade_company_action;index:idx_trade_buy_lookup" json:"action"`
+	GoodID       string    `gorm:"not null;index:idx_trade_buy_lookup" json:"good_id"`
+	GoodName     string    `gorm:"not null" json:"good_name"`
+	PortID       string    `gorm:"not null" json:"port_id"`
+	PortName     string    `gorm:"not null" json:"port_name"`
+	Quantity     int       `gorm:"not null" json:"quantity"`
+	UnitPrice    int       `gorm:"not null" json:"unit_price"`
+	TotalPrice   int       `gorm:"not null" json:"total_price"`
+	TaxPaid      int       `json:"tax_paid"`
+	ShipID       string    `json:"ship_id"`
+	ShipName     string    `json:"ship_name"`
+	Source       string    `json:"source"`         // "port_buy", "port_sell", "warehouse_load", "p2p_fill"
+	DestPortID   string    `json:"dest_port_id"`   // Intended sell destination (for buy trades)
+	DestPortName string    `json:"dest_port_name"` // Destination port name
+	Matched      bool      `json:"matched"`        // Whether this buy has been matched to a sell (FIFO)
+	Strategy     string    `gorm:"not null" json:"strategy"`
+	AgentName    string    `json:"agent_name"`
+	CreatedAt    time.Time `gorm:"index:idx_trade_company_time;not null" json:"created_at"`
 }
 
 // PnLSnapshot stores periodic profit/loss snapshots per company.
@@ -52,15 +58,84 @@ type PnLSnapshot struct {
 	CreatedAt       time.Time `gorm:"index:idx_pnl_company_time;not null" json:"created_at"`
 }
 
-// InventorySnapshot tracks cargo and warehouse state over time.
-type InventorySnapshot struct {
+// ShipEventLog records ship purchases and sales.
+type ShipEventLog struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
-	CompanyID uint      `gorm:"index:idx_inv_company_time;not null" json:"company_id"`
-	Location  string    `gorm:"not null" json:"location"`
-	GoodID    string    `gorm:"not null" json:"good_id"`
-	GoodName  string    `gorm:"not null" json:"good_name"`
-	Quantity  int       `gorm:"not null" json:"quantity"`
-	CreatedAt time.Time `gorm:"index:idx_inv_company_time;not null" json:"created_at"`
+	CompanyID uint      `gorm:"index" json:"company_id"`
+	ShipID    string    `json:"ship_id"`
+	ShipName  string    `json:"ship_name"`
+	ShipType  string    `json:"ship_type"`
+	EventType string    `json:"event_type"` // "purchase", "sale"
+	Price     int       `json:"price"`
+	Treasury  int       `json:"treasury"` // Treasury after event
+	PortID    string    `json:"port_id"`
+	PortName  string    `json:"port_name"`
+	Strategy  string    `json:"strategy"`
+	AgentName string    `json:"agent_name"`
+	CreatedAt time.Time `gorm:"index" json:"created_at"`
+}
+
+// WarehouseEventLog records warehouse purchases, stores, and loads.
+type WarehouseEventLog struct {
+	ID          uint      `gorm:"primaryKey" json:"id"`
+	CompanyID   uint      `gorm:"index" json:"company_id"`
+	WarehouseID string    `json:"warehouse_id"`
+	PortID      string    `json:"port_id"`
+	PortName    string    `json:"port_name"`
+	EventType   string    `json:"event_type"` // "purchase", "store", "load"
+	GoodID      string    `json:"good_id"`
+	GoodName    string    `json:"good_name"`
+	Quantity    int       `json:"quantity"`
+	Level       int       `json:"level"` // Warehouse level (for purchase events)
+	Strategy    string    `json:"strategy"`
+	AgentName   string    `json:"agent_name"`
+	CreatedAt   time.Time `gorm:"index" json:"created_at"`
+}
+
+// P2POrderLog records P2P market order activity.
+type P2POrderLog struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	CompanyID  uint      `gorm:"index" json:"company_id"`
+	OrderID    string    `json:"order_id"`
+	OrderType  string    `json:"order_type"` // "post", "fill", "cancel"
+	GoodID     string    `json:"good_id"`
+	GoodName   string    `json:"good_name"`
+	PortID     string    `json:"port_id"`
+	PortName   string    `json:"port_name"`
+	Quantity   int       `json:"quantity"`
+	Price      int       `json:"price"`
+	TotalValue int       `json:"total_value"`
+	Strategy   string    `json:"strategy"`
+	AgentName  string    `json:"agent_name"`
+	CreatedAt  time.Time `gorm:"index" json:"created_at"`
+}
+
+// StrategyChangeLog records strategy swaps by the optimizer.
+type StrategyChangeLog struct {
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	CompanyID    uint      `gorm:"index" json:"company_id"`
+	FromStrategy string    `json:"from_strategy"`
+	ToStrategy   string    `json:"to_strategy"`
+	Reason       string    `json:"reason"` // Optimizer reason or "manual"
+	CreatedAt    time.Time `gorm:"index" json:"created_at"`
+}
+
+// QuoteFailureLog records failed quote attempts for analysis.
+type QuoteFailureLog struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	CompanyID uint      `gorm:"index" json:"company_id"`
+	ShipID    string    `json:"ship_id"`
+	GoodID    string    `json:"good_id"`
+	GoodName  string    `json:"good_name"`
+	PortID    string    `json:"port_id"`
+	PortName  string    `json:"port_name"`
+	Action    string    `json:"action"` // "buy" or "sell"
+	Quantity  int       `json:"quantity"`
+	ExpPrice  int       `json:"exp_price"` // Expected price
+	ActPrice  int       `json:"act_price"` // Actual quoted price (0 if no quote)
+	Reason    string    `json:"reason"`    // "price_moved", "out_of_stock", "api_error"
+	Strategy  string    `json:"strategy"`
+	CreatedAt time.Time `gorm:"index" json:"created_at"`
 }
 
 // StrategyMetric tracks per-strategy performance aggregated across companies.
@@ -187,7 +262,6 @@ func AllModels() []any {
 		&CompanyRecord{},
 		&TradeLog{},
 		&PnLSnapshot{},
-		&InventorySnapshot{},
 		&StrategyMetric{},
 		&CompanyLog{},
 		&PriceObservation{},
@@ -196,5 +270,10 @@ func AllModels() []any {
 		&PassengerLog{},
 		&CompanyParams{},
 		&ParamExperimentLog{},
+		&ShipEventLog{},
+		&WarehouseEventLog{},
+		&P2POrderLog{},
+		&StrategyChangeLog{},
+		&QuoteFailureLog{},
 	}
 }

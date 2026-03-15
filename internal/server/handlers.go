@@ -33,10 +33,19 @@ func (s *Server) registerHandlers() {
 	api.Get("/global-pnl", s.handleGlobalPnL)
 	api.Get("/companies/:id/market-orders", s.handleCompanyMarketOrders)
 
+	// Event logs.
+	api.Get("/companies/:id/ship-events", s.handleShipEvents)
+	api.Get("/companies/:id/warehouse-events", s.handleWarehouseEvents)
+	api.Get("/companies/:id/p2p-orders", s.handleP2POrders)
+	api.Get("/companies/:id/strategy-changes", s.handleStrategyChanges)
+	api.Get("/companies/:id/quote-failures", s.handleQuoteFailures)
+
 	// Analytics — aggregated trade and route performance data.
 	api.Get("/analytics/goods", s.handleAnalyticsGoods)
 	api.Get("/analytics/routes", s.handleAnalyticsRoutes)
 	api.Get("/analytics/timeline", s.handleAnalyticsTimeline)
+	api.Get("/analytics/ships", s.handleAnalyticsShips)
+	api.Get("/analytics/warehouses", s.handleAnalyticsWarehouses)
 }
 
 // companyResponse extends CompanyRecord with live-enriched fields.
@@ -1558,4 +1567,165 @@ func (s *Server) goodNameIndex() map[string]string {
 		names[r.GoodID] = r.GoodName
 	}
 	return names
+}
+
+// --- Event Log Endpoints ---
+
+func (s *Server) handleShipEvents(c fiber.Ctx) error {
+	companyID, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid company id"})
+	}
+	limit := queryInt(c, "limit", 50)
+	offset := queryInt(c, "offset", 0)
+
+	var events []db.ShipEventLog
+	if err := s.db.Where("company_id = ?", companyID).
+		Order("created_at DESC").Limit(limit).Offset(offset).
+		Find(&events).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch ship events"})
+	}
+	return c.JSON(events)
+}
+
+func (s *Server) handleWarehouseEvents(c fiber.Ctx) error {
+	companyID, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid company id"})
+	}
+	limit := queryInt(c, "limit", 50)
+	offset := queryInt(c, "offset", 0)
+
+	var events []db.WarehouseEventLog
+	if err := s.db.Where("company_id = ?", companyID).
+		Order("created_at DESC").Limit(limit).Offset(offset).
+		Find(&events).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch warehouse events"})
+	}
+	return c.JSON(events)
+}
+
+func (s *Server) handleP2POrders(c fiber.Ctx) error {
+	companyID, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid company id"})
+	}
+	limit := queryInt(c, "limit", 50)
+	offset := queryInt(c, "offset", 0)
+
+	var orders []db.P2POrderLog
+	if err := s.db.Where("company_id = ?", companyID).
+		Order("created_at DESC").Limit(limit).Offset(offset).
+		Find(&orders).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch P2P orders"})
+	}
+	return c.JSON(orders)
+}
+
+func (s *Server) handleStrategyChanges(c fiber.Ctx) error {
+	companyID, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid company id"})
+	}
+
+	var changes []db.StrategyChangeLog
+	if err := s.db.Where("company_id = ?", companyID).
+		Order("created_at DESC").
+		Find(&changes).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch strategy changes"})
+	}
+	return c.JSON(changes)
+}
+
+func (s *Server) handleQuoteFailures(c fiber.Ctx) error {
+	companyID, err := strconv.ParseUint(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid company id"})
+	}
+	limit := queryInt(c, "limit", 50)
+	offset := queryInt(c, "offset", 0)
+
+	var failures []db.QuoteFailureLog
+	if err := s.db.Where("company_id = ?", companyID).
+		Order("created_at DESC").Limit(limit).Offset(offset).
+		Find(&failures).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch quote failures"})
+	}
+	return c.JSON(failures)
+}
+
+// --- Ship & Warehouse Analytics ---
+
+func (s *Server) handleAnalyticsShips(c fiber.Ctx) error {
+	type shipROI struct {
+		ShipID       string  `json:"ship_id"`
+		ShipName     string  `json:"ship_name"`
+		ShipType     string  `json:"ship_type"`
+		PurchaseDate string  `json:"purchase_date"`
+		PurchasePort string  `json:"purchase_port"`
+		Cost         int     `json:"cost"`
+		Revenue      float64 `json:"revenue"`
+		Trades       int     `json:"trades"`
+		ROI          float64 `json:"roi"`
+	}
+
+	// Get all ship purchases.
+	var purchases []db.ShipEventLog
+	s.db.Where("event_type = ?", "purchase").Order("created_at DESC").Find(&purchases)
+
+	results := make([]shipROI, 0, len(purchases))
+	for _, p := range purchases {
+		// Sum revenue from trades by this ship.
+		var revenue float64
+		var trades int64
+		s.db.Model(&db.TradeLog{}).
+			Where("ship_id = ? AND action = ?", p.ShipID, "sell").
+			Select("COALESCE(SUM(total_price), 0)").Scan(&revenue)
+		s.db.Model(&db.TradeLog{}).
+			Where("ship_id = ?", p.ShipID).
+			Count(&trades)
+
+		roi := 0.0
+		if p.Price > 0 {
+			roi = (revenue - float64(p.Price)) / float64(p.Price) * 100
+		}
+
+		results = append(results, shipROI{
+			ShipID:       p.ShipID,
+			ShipName:     p.ShipName,
+			ShipType:     p.ShipType,
+			PurchaseDate: p.CreatedAt.Format(time.RFC3339),
+			PurchasePort: p.PortName,
+			Cost:         p.Price,
+			Revenue:      revenue,
+			Trades:       int(trades),
+			ROI:          roi,
+		})
+	}
+
+	return c.JSON(results)
+}
+
+func (s *Server) handleAnalyticsWarehouses(c fiber.Ctx) error {
+	type warehouseStats struct {
+		WarehouseID string `json:"warehouse_id"`
+		PortName    string `json:"port_name"`
+		Loads       int64  `json:"loads"`
+		Stores      int64  `json:"stores"`
+		TotalItems  int64  `json:"total_items"`
+	}
+
+	// Aggregate warehouse events by warehouse.
+	var results []warehouseStats
+	s.db.Model(&db.WarehouseEventLog{}).
+		Select(`warehouse_id,
+			MAX(port_name) as port_name,
+			SUM(CASE WHEN event_type = 'load' THEN 1 ELSE 0 END) as loads,
+			SUM(CASE WHEN event_type = 'store' THEN 1 ELSE 0 END) as stores,
+			SUM(CASE WHEN event_type IN ('load','store') THEN quantity ELSE 0 END) as total_items`).
+		Where("event_type IN ('load','store')").
+		Group("warehouse_id").
+		Scan(&results)
+
+	return c.JSON(results)
 }

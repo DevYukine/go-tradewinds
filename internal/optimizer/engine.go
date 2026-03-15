@@ -388,7 +388,7 @@ func (e *Engine) checkInactiveCompanies(ctx context.Context, metrics []companyMe
 			continue
 		}
 
-		runner.SwapStrategy(newStrategy)
+		runner.SwapStrategy(newStrategy, "inactive company with docked ships")
 		e.recordSwap(m.CompanyID)
 		break // Only swap one company per evaluation.
 	}
@@ -517,7 +517,7 @@ func (e *Engine) executeReallocation(worst, best strategyStats) {
 	}
 
 	// Send the new strategy to the runner via its swap channel.
-	runner.SwapStrategy(newStrategy)
+	runner.SwapStrategy(newStrategy, "reallocation: underperforming vs "+best.StrategyName)
 
 	e.logger.Info("optimizer executed strategy reallocation",
 		zap.String("company", dbRecord.Name),
@@ -721,7 +721,7 @@ func (e *Engine) applyAgentSwitch(stats []strategyStats, targetStrategy string) 
 		return
 	}
 
-	runner.SwapStrategy(newStrategy)
+	runner.SwapStrategy(newStrategy, "agent-recommended strategy switch")
 
 	e.logger.Info("optimizer executed agent-recommended strategy switch",
 		zap.String("company", dbRecord.Name),

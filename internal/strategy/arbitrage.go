@@ -83,7 +83,7 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 		// Load goods from warehouse onto ship (before buying, to fill capacity).
 		a.executeWarehouseLoads(ctx, ship, decision.WarehouseLoads)
 		// Then buy.
-		if err := a.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
+		if err := a.executeBuys(ctx, ship, decision.BuyOrders, decision.SailTo); err != nil {
 			if api.IsBankrupt(err) {
 				return err
 			}

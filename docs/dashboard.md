@@ -31,9 +31,16 @@ Fiber web server on `API_PORT` (default 3002).
 | GET | `/api/global-pnl` | Aggregate P&L across all running companies |
 | GET | `/api/companies/:id/game-trades` | Game API trade history |
 | GET | `/api/companies/:id/market-orders` | P2P order activity (fills, posts) |
+| GET | `/api/companies/:id/ship-events` | Ship purchase/sale history (`?limit=&offset=`) |
+| GET | `/api/companies/:id/warehouse-events` | Warehouse operations log (`?limit=&offset=`) |
+| GET | `/api/companies/:id/p2p-orders` | P2P order activity (`?limit=&offset=`) |
+| GET | `/api/companies/:id/strategy-changes` | Strategy change history |
+| GET | `/api/companies/:id/quote-failures` | Recent quote failures (`?limit=&offset=`) |
 | GET | `/api/analytics/goods` | Profit by cargo type (`?hours=` filter) |
 | GET | `/api/analytics/routes` | Profit by route (`?hours=` filter) |
 | GET | `/api/analytics/timeline` | Profit over time (`?group_by=good\|route\|strategy&hours=`) |
+| GET | `/api/analytics/ships` | Ship ROI analytics (purchase price vs revenue) |
+| GET | `/api/analytics/warehouses` | Warehouse utilization analytics |
 
 ## SSE Endpoints (`internal/server/sse.go`)
 

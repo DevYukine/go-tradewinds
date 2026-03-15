@@ -66,7 +66,7 @@ func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, por
 		}
 		b.executeFills(ctx, port.ID, decision.FillOrders)
 		b.executeWarehouseLoads(ctx, ship, decision.WarehouseLoads)
-		if err := b.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
+		if err := b.executeBuys(ctx, ship, decision.BuyOrders, decision.SailTo); err != nil {
 			if api.IsBankrupt(err) {
 				return err
 			}
