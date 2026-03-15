@@ -258,11 +258,11 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 		params = db.CompanyParams{
 			CompanyID:               r.dbRecord.ID,
 			MinMarginPct:            0.05,
-			PassengerWeight:         5.0,
+			PassengerWeight:         8.0,
 			SpeculativeTradeEnabled: true,
 			MarketEvalIntervalSec:   60,
 			FleetEvalIntervalSec:    180,
-			PassengerDestBonus:      5.0,
+			PassengerDestBonus:      8.0,
 		}
 		if err := r.gormDB.Create(&params).Error; err != nil {
 			// Another runner may have created it — try loading again.
@@ -278,17 +278,17 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 			updates["min_margin_pct"] = 0.05
 			params.MinMarginPct = 0.05
 		}
-		if params.PassengerWeight <= 2.0 {
-			updates["passenger_weight"] = 5.0
-			params.PassengerWeight = 5.0
+		if params.PassengerWeight < 8.0 {
+			updates["passenger_weight"] = 8.0
+			params.PassengerWeight = 8.0
 		}
 		if !params.SpeculativeTradeEnabled {
 			updates["speculative_trade_enabled"] = true
 			params.SpeculativeTradeEnabled = true
 		}
-		if params.PassengerDestBonus <= 3.0 {
-			updates["passenger_dest_bonus"] = 5.0
-			params.PassengerDestBonus = 5.0
+		if params.PassengerDestBonus < 8.0 {
+			updates["passenger_dest_bonus"] = 8.0
+			params.PassengerDestBonus = 8.0
 		}
 		if len(updates) > 0 {
 			r.gormDB.Model(&params).Updates(updates)

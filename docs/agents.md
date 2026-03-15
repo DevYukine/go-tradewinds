@@ -61,7 +61,7 @@ Hand-coded rules adapting to strategy hints.
 - Profit calculation: `sellPrice - buyPrice - buyTax - sellTax` (both sides taxed)
 - Minimum margin: `profit >= buyPrice * MinMarginPct` (default 5%)
 - Score: `totalCargoProfit / distance + passengerRevenue / distance * PassengerWeight + heldCargoGain / distance + routeHistoryBonus + opportunityBonus`
-- PassengerWeight default: 5.0, PassengerDestBonus default: 5.0
+- PassengerWeight default: 8.0, PassengerDestBonus default: 8.0
 
 #### Bulk Hauler (`decideBulkHaulerTrade`)
 - Same destination-level simulation as arbitrage
@@ -81,9 +81,10 @@ Hand-coded rules adapting to strategy hints.
 - Hub ports are preferred for relocation because they have more goods and routes
 - Confidence: 0.3–0.5
 
-7. **Passenger Override** — After choosing a destination, if passenger revenue (weighted by PassengerWeight) exceeds **half** of expected trade profit, override destination to best passenger port (aggressive override)
-8. **Board passengers** heading to chosen destination (or any reachable port)
-   - Score: `bidPerHead / distance`, PassengerDestBonus (default 5.0) for matching destination
+7. **Passenger Override** — After choosing a destination, if passenger revenue (weighted by PassengerWeight) exceeds **quarter** of expected trade profit, override destination to best passenger port (very aggressive override)
+8. **Budget=0 passenger routing** — When treasury is exhausted, sail to best passenger destination (not just closest port) since passengers are pure revenue
+9. **Board passengers** heading to chosen destination (or any reachable port)
+   - Score: `bidPerHead / distance`, PassengerDestBonus (default 8.0) for matching destination
    - Fill up to `ship.PassengerCap`
 9. **Route History** — `route_history` in request contains recent buy→sell results. Average profit per trade for each (from→to) pair is added as bonus to destination scoring
 
@@ -93,8 +94,8 @@ Order of evaluation:
 1. **Warehouse purchase** — Only if `numShips >= 3`, `treasury > upkeep * 10 cycles`, `< 2 warehouses`, and a port has `>= 2 docked ships`
 2. **Ship decommission** — If `treasury < totalUpkeep * reserveCycles` and `> 1 ship`: sell worst value ship (highest upkeep relative to capacity). Reserve cycles scale with fleet size: base 5 cycles (25h), +1 cycle per 4 ships (bulk_hauler: per 2, market_maker: per 5). Sold ships are immediately removed from state to prevent race conditions. Ship must have empty cargo hold (checked via API) before selling.
 3. **Ship purchase** — Strategy-specific preference:
-   - Arbitrage: fastest ship (high speed)
-   - Bulk hauler: largest capacity (max fleet: 3)
+   - Arbitrage: fastest ship with passenger capacity bonus (`speed + passengerCap/5`)
+   - Bulk hauler: largest capacity, passenger capacity as tiebreaker (max fleet: 3)
    - Market maker: cheapest upkeep ship
    - Max fleet: 5 (3 for bulk hauler)
    - Safety: `ship_cost * (1 + port_tax_rate) + (current_upkeep + new_upkeep) * 5 cycles` (tax from port's `tax_rate_bps`)
@@ -116,8 +117,8 @@ Order of evaluation:
 
 ### Tunable Parameters (from `CompanyParams` / request `params` field)
 - `MinMarginPct`: 0.03–0.50 (default 0.05) — minimum profit margin as fraction of buy price
-- `PassengerWeight`: 0.5–10.0 (default 5.0) — passenger revenue weight in destination scoring
-- `PassengerDestBonus`: 1.0–10.0 (default 5.0) — bonus for destination-matching passengers
+- `PassengerWeight`: 0.5–20.0 (default 8.0) — passenger revenue weight in destination scoring
+- `PassengerDestBonus`: 1.0–20.0 (default 8.0) — bonus for destination-matching passengers
 - `FleetEvalIntervalSec`: 60–600 (default 180)
 - `MarketEvalIntervalSec`: 30–300 (default 60)
 - `SpeculativeTradeEnabled`: true (default) — allow sailing to opportunity ports when no local trade is profitable

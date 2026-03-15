@@ -94,7 +94,13 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 
 	if budget <= 0 {
 		dest := a.closestPort(reachable)
-		passengers := a.selectPassengers(req.AvailablePassengers, req.BoardedPassengers, ship.PassengerCap, &dest, reachable, 3.0)
+		// Even when broke, board passengers — they're pure revenue.
+		// Check if a passenger destination is better than closest port.
+		bestPassDest, bestPassRev := a.bestPassengerDestination(req.AvailablePassengers, reachable)
+		if bestPassRev > 0 {
+			dest = bestPassDest
+		}
+		passengers := a.selectPassengers(req.AvailablePassengers, req.BoardedPassengers, ship.PassengerCap, &dest, reachable, 8.0)
 		return &TradeDecision{
 			Action: "sell_and_buy", SellOrders: sells, FillOrders: fills, SailTo: &dest,
 			BoardPassengers: passengers,
@@ -104,8 +110,8 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 
 	// Step 2: Find best opportunity — scoring differs by strategy.
 	// Read tunable params with defaults.
-	passengerWeight := getParam(req.Params, "passengerWeight", 5.0)
-	passengerDestBonus := getParam(req.Params, "passengerDestBonus", 5.0)
+	passengerWeight := getParam(req.Params, "passengerWeight", 8.0)
+	passengerDestBonus := getParam(req.Params, "passengerDestBonus", 8.0)
 	minMarginPct := getParam(req.Params, "minMarginPct", 0.03)
 	speculativeEnabled := getParam(req.Params, "speculativeTradeEnabled", 0.0) > 0.5
 
@@ -154,7 +160,7 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 				expectedProfit += int64(b.Quantity) * int64(profit)
 			}
 		}
-		if bestPassRev > 0 && int64(float64(bestPassRev)*passengerWeight) > expectedProfit/2 && bestPassDest != *decision.SailTo {
+		if bestPassRev > 0 && int64(float64(bestPassRev)*passengerWeight) > expectedProfit/4 && bestPassDest != *decision.SailTo {
 			decision.SailTo = &bestPassDest
 			decision.Reasoning += " (overridden: passenger revenue dominates)"
 		}
@@ -786,16 +792,23 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 	var targetShipType ShipTypeInfo
 	switch req.StrategyHint {
 	case "bulk_hauler":
-		// Prefer largest capacity ships (galleons).
+		// Prefer largest capacity ships, with passenger capacity as tiebreaker.
 		sort.Slice(shipTypes, func(i, j int) bool {
-			return shipTypes[i].Capacity > shipTypes[j].Capacity
+			if shipTypes[i].Capacity != shipTypes[j].Capacity {
+				return shipTypes[i].Capacity > shipTypes[j].Capacity
+			}
+			return shipTypes[i].PassengerCap > shipTypes[j].PassengerCap
 		})
 		targetShipType = shipTypes[0]
 
 	case "arbitrage":
-		// Prefer fastest ships for quick turnover.
+		// Prefer fast ships with passenger capacity — passengers are the top
+		// revenue stream, so a slightly slower ship with passengers beats a
+		// faster ship without. Score = speed + passengerCap/5.
 		sort.Slice(shipTypes, func(i, j int) bool {
-			return shipTypes[i].Speed > shipTypes[j].Speed
+			si := float64(shipTypes[i].Speed) + float64(shipTypes[i].PassengerCap)/5.0
+			sj := float64(shipTypes[j].Speed) + float64(shipTypes[j].PassengerCap)/5.0
+			return si > sj
 		})
 		targetShipType = shipTypes[0]
 
