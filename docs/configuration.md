@@ -34,7 +34,7 @@ Persists rate limiter state, price cache, scanner position, and world data cache
 | `API_PORT` | `3002` | Dashboard API port |
 | `ENV` | `development` | Environment |
 | `LOG_LEVEL` | `debug` | Log level |
-| `RATE_LIMIT_PER_MINUTE` | `300` | API rate budget |
+| `RATE_LIMIT_PER_MINUTE` | `900` | API rate budget |
 | `STRATEGY_ALLOCATION` | `arbitrage:3,bulk_hauler:2,market_maker:2` | Strategy distribution |
 
 ### Agent

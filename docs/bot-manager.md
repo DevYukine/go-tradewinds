@@ -6,7 +6,7 @@ Orchestrates all company runners with shared resources.
 
 ### Shared Resources
 - **baseClient** — Single HTTP client with JWT auth token
-- **rateLimiter** — Sliding window, 300 req/min, priority-based
+- **rateLimiter** — Sliding window, 900 req/min, priority-based
 - **worldData** — `WorldCache` with ports, goods, routes, ship types
 - **priceCache** — `PriceCache` with NPC buy/sell prices (updated by scanner)
 - **agent** — AI decision agent (heuristic/LLM/composite)

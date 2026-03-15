@@ -24,20 +24,20 @@ const (
 )
 
 const (
-	defaultMaxPerMinute = 300
+	defaultMaxPerMinute = 900
 
 	// Throttle thresholds as percentages of maxPerMinute.
 	thresholdLowBlock    = 0.70 // 70%: block PriorityLow
 	thresholdNormalBlock = 0.85 // 85%: block PriorityNormal
 
 	// Minimum spacing between requests to avoid micro-bursts.
-	minRequestSpacing = 250 * time.Millisecond // ~240 req/min max throughput (safe margin under 300 limit)
+	minRequestSpacing = 60 * time.Millisecond // ~1000 req/min max throughput (safe margin under 900 limit)
 
 	// windowDuration is the sliding window size.
 	windowDuration = 60 * time.Second
 )
 
-// RateLimiter enforces the game's rate limit of 300 requests per 60 seconds per IP.
+// RateLimiter enforces the game's rate limit of 900 requests per 60 seconds per IP.
 // It uses a true sliding window (ring buffer of timestamps) to avoid the burst
 // problem that tumbling windows have at reset boundaries.
 type RateLimiter struct {
