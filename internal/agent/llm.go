@@ -222,7 +222,7 @@ const fleetSystemPrompt = `You are a fleet management AI for Tradewinds, a marit
 
 ## Game Mechanics
 
-SHIP PURCHASE: Ships are bought at shipyard ports only (listed in "shipyard_ports"). A ~6% purchase tax applies. Each ship type has different capacity, speed, upkeep, and passenger_cap.
+SHIP PURCHASE: Ships are bought at shipyard ports only (listed in "shipyard_ports"). A purchase tax applies based on the port's tax_rate_bps (e.g., 200 bps = 2%, 500 bps = 5%). Each ship type has different capacity, speed, upkeep, and passenger_cap.
 
 SHIP UPKEEP: Every ship drains treasury continuously via its upkeep cost, whether active or idle. More ships = higher burn rate.
 

@@ -713,6 +713,22 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 			)
 			continue
 		}
+		// Verify ship has no cargo — game API requires empty hold to sell.
+		cargo, err := b.ctx.Client.GetShipInventory(ctx, shipID)
+		if err != nil {
+			b.logger.Warn("failed to check ship cargo before sale",
+				zap.String("ship_id", shipID.String()),
+				zap.Error(err),
+			)
+			continue
+		}
+		if len(cargo) > 0 {
+			b.logger.Warn("cannot sell ship with cargo, skipping",
+				zap.String("ship_id", shipID.String()),
+				zap.Int("cargo_items", len(cargo)),
+			)
+			continue
+		}
 		// Find shipyard at the ship's port.
 		shipyard, err := b.ctx.Client.FindShipyard(ctx, *ship.PortID)
 		if err != nil || shipyard == nil {
@@ -840,10 +856,16 @@ func (b *baseStrategy) tryBuyShip(ctx context.Context, purchase agent.ShipPurcha
 			return inventory[i].Cost < inventory[j].Cost
 		})
 
+		// Look up port tax rate (bps → fraction, e.g. 500 bps = 5%).
+		portTaxRate := 0.05 // fallback
+		if port := b.ctx.World.GetPort(portID); port != nil {
+			portTaxRate = float64(port.TaxRateBps) / 10000.0
+		}
+
 		// canAffordShip checks if we can buy a ship and still maintain 5 upkeep
 		// cycles (~25h) of post-purchase upkeep (current + new ship's upkeep).
 		canAffordShip := func(item *api.ShipyardInventoryItem) bool {
-			costWithTax := int64(float64(item.Cost) * 1.06)
+			costWithTax := int64(float64(item.Cost) * (1.0 + portTaxRate))
 			// Look up the new ship's upkeep from world data.
 			newShipUpkeep := int64(0)
 			if st := b.ctx.World.GetShipType(item.ShipTypeID); st != nil {
