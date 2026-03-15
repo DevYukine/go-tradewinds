@@ -81,6 +81,14 @@ const totalCargoItems = computed(() =>
   allInventories.value.reduce((s, i) => s + i.ships.reduce((ss, sh) => ss + sh.cargo_total, 0), 0)
 )
 
+// Passenger stats.
+const totalPassengers = computed(() =>
+  allInventories.value.reduce((s, i) => s + i.ships.reduce((ss, sh) => ss + sh.passenger_count, 0), 0)
+)
+const totalPassengerCap = computed(() =>
+  allInventories.value.reduce((s, i) => s + i.ships.reduce((ss, sh) => ss + sh.passenger_cap, 0), 0)
+)
+
 // Fleet value — look up base_price from world data ship types by matching ship_type name.
 const shipTypePrices = computed(() => {
   const m: Record<string, number> = {}
@@ -180,6 +188,14 @@ function companyDockedCount(id: number): number {
 function companySailingCount(id: number): number {
   return inventories.value[id]?.ships.filter(s => s.status === 'traveling').length ?? 0
 }
+
+function companyPassengerCount(id: number): number {
+  return inventories.value[id]?.ships.reduce((s, sh) => s + sh.passenger_count, 0) ?? 0
+}
+
+function companyPassengerCap(id: number): number {
+  return inventories.value[id]?.ships.reduce((s, sh) => s + sh.passenger_cap, 0) ?? 0
+}
 </script>
 
 <template>
@@ -242,7 +258,7 @@ function companySailingCount(id: number): number {
       </div>
 
       <!-- Breakdown values -->
-      <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-6">
+      <div class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-4">
         <div class="text-center">
           <div class="text-xs text-slate-500 mb-1">Treasury</div>
           <div class="text-xl font-bold text-sky-400 font-mono">{{ formatFull(totalTreasury) }}g</div>
@@ -256,6 +272,11 @@ function companySailingCount(id: number): number {
           <div class="text-xs text-slate-500 mb-1">Cargo Value</div>
           <div class="text-xl font-bold text-amber-400 font-mono">{{ formatFull(totalCargoValue) }}g</div>
           <div class="text-[10px] text-slate-600">{{ formatFull(totalCargoItems) }} items aboard</div>
+        </div>
+        <div v-if="totalPassengerCap > 0" class="text-center">
+          <div class="text-xs text-slate-500 mb-1">Passengers</div>
+          <div class="text-xl font-bold text-cyan-400 font-mono">{{ totalPassengers }} / {{ totalPassengerCap }}</div>
+          <div class="text-[10px] text-slate-600">aboard fleet</div>
         </div>
         <div v-if="totalWarehouses > 0" class="text-center">
           <div class="text-xs text-slate-500 mb-1">Warehouses</div>
@@ -410,8 +431,14 @@ function companySailingCount(id: number): number {
               <span class="text-slate-600">ships</span>
             </div>
             <div v-if="companyWarehouseCount(company.id)" class="flex items-center gap-1">
-              <Icon name="mdi:warehouse" class="text-purple-400 text-sm" />
+              <Icon name="lucide:warehouse" class="text-purple-400 text-sm" />
               <span class="font-mono">{{ companyWarehouseCount(company.id) }}</span>
+              <span class="text-slate-600">{{ companyWarehouseCount(company.id) === 1 ? 'warehouse' : 'warehouses' }}</span>
+            </div>
+            <div v-if="companyPassengerCap(company.id) > 0" class="flex items-center gap-1">
+              <Icon name="lucide:users" class="text-cyan-400 text-sm" />
+              <span class="font-mono">{{ companyPassengerCount(company.id) }}/{{ companyPassengerCap(company.id) }}</span>
+              <span class="text-slate-600">pax</span>
             </div>
             <div v-if="companyUpkeep(company.id)" class="flex items-center gap-1">
               <span class="text-rose-400 font-mono text-[11px]">({{ formatCurrency(companyUpkeep(company.id)) }}/cycle)</span>
