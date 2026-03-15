@@ -49,6 +49,7 @@ type CompanyRunner struct {
 
 	events          *EventBroadcaster
 	strategyCh      chan strategySwap       // Receives new strategy assignments from the optimizer.
+	dispatchCh      chan struct{}           // Receives forced dispatch signals from the optimizer.
 	dispatchedShips map[uuid.UUID]time.Time // Tracks recently dispatched ships.
 	bankrupt        bool                   // True when the game API reports the company as bankrupt.
 }
@@ -86,6 +87,7 @@ func NewCompanyRunner(
 		coordinator:     coordinator,
 		events:          events,
 		strategyCh:      make(chan strategySwap, 1),
+		dispatchCh:      make(chan struct{}, 1),
 		dispatchedShips: make(map[uuid.UUID]time.Time),
 	}
 }
@@ -167,6 +169,9 @@ func (r *CompanyRunner) Run(ctx context.Context) {
 
 		case swap := <-r.strategyCh:
 			r.swapStrategy(ctx, swap.Strategy, swap.Reason)
+
+		case <-r.dispatchCh:
+			r.dispatchIdleShips(ctx)
 		}
 	}
 }
@@ -178,6 +183,15 @@ func (r *CompanyRunner) SwapStrategy(s Strategy, reason string) {
 	case r.strategyCh <- strategySwap{Strategy: s, Reason: reason}:
 	default:
 		r.logger.Warn("strategy swap channel full, skipping")
+	}
+}
+
+// ForceDispatch signals the runner to re-dispatch all idle docked ships.
+// Called by the optimizer to recover inactive companies without swapping strategy.
+func (r *CompanyRunner) ForceDispatch() {
+	select {
+	case r.dispatchCh <- struct{}{}:
+	default:
 	}
 }
 

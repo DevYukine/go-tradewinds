@@ -44,8 +44,8 @@ func NewParameterTuner(gormDB *gorm.DB, manager *bot.Manager, logger *zap.Logger
 }
 
 // minExperimentAge is how long an experiment must run before being evaluated.
-// This ensures we have enough trade data to judge the parameter change.
-const minExperimentAge = 20 * time.Minute
+// With 10-min eval intervals, experiments get 3 eval cycles of data before judgment.
+const minExperimentAge = 30 * time.Minute
 
 // EvaluateExperiments checks active experiments and completes or reverts them
 // based on whether the company's profit improved. Experiments must run for at

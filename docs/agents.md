@@ -10,7 +10,6 @@ type Agent interface {
     DecideTradeAction(ctx, TradeDecisionRequest) (*TradeDecision, error)
     DecideFleetAction(ctx, FleetDecisionRequest) (*FleetDecision, error)
     DecideMarketAction(ctx, MarketDecisionRequest) (*MarketDecision, error)
-    EvaluateStrategy(ctx, StrategyEvalRequest) (*StrategyEvaluation, error)
 }
 ```
 
@@ -118,11 +117,6 @@ Order of evaluation:
 - Post new buy/sell orders (spread > 20%, max 5 active orders)
 - Account for port taxes (tax_rate_bps) in all profit calculations
 
-### Strategy Evaluation (`EvaluateStrategy`)
-- Switch when best strategy's profit/hour is 1.5x better than current
-- Switch when current strategy has negative profit (losing money)
-- Only recommend switching to a strategy that is actually performing well
-
 ### Tunable Parameters (from `CompanyParams` / request `params` field)
 - `MinMarginPct`: 0.03–0.50 (default 0.08) — minimum profit margin as fraction of buy price (8% hard floor after all taxes)
 - `PassengerWeight`: 0.5–20.0 (default 8.0) — passenger revenue weight in destination scoring
@@ -135,13 +129,12 @@ Order of evaluation:
 
 Delegates decisions to an LLM (Claude, OpenAI, or Ollama). Returns errors to the caller on failure (no silent fallback).
 
-- Trade/Fleet/Market/Strategy decisions serialized as JSON → LLM → parsed JSON response
+- Trade/Fleet/Market decisions serialized as JSON → LLM → parsed JSON response
 - **Data-driven prompts**: The LLM receives full game state, game mechanics explanations, data field descriptions, and hard constraints — but reasons autonomously about trade-offs and strategy rather than following prescribed formulas or thresholds
 - System prompts per decision type:
   - **Trade**: Game mechanics (taxes, routes, passengers, P2P), data dictionary for all input fields, hard constraints (treasury floor, reachability, warehouse requirement, no self-fill), goals (maximize profit across all revenue streams, avoid empty sailing)
   - **Fleet**: Ship purchase/sell/warehouse mechanics, shipyard port constraint, treasury sustainability goals
   - **Market**: P2P order mechanics, warehouse requirement, NPC price baseline for comparison
-  - **Strategy**: Available strategies and parameter ranges, performance-based evaluation
 - LLM errors are returned to the strategy layer (no silent heuristic fallback)
 - **Exponential backoff**: Trade dispatch retries 5× (2s→4s→8s→16s), fleet/market eval failures back off 30s→1m→…→30m before retrying
 - Strips markdown code fences from responses
@@ -156,7 +149,6 @@ Routes decisions between fast (heuristic) and slow (LLM) agents:
 - `DecideTradeAction` → Fast (time-sensitive)
 - `DecideFleetAction` → Slow (fallback to fast)
 - `DecideMarketAction` → Slow (fallback to fast)
-- `EvaluateStrategy` → Slow (fallback to fast)
 
 ## Key Types
 
@@ -164,13 +156,11 @@ Routes decisions between fast (heuristic) and slow (LLM) agents:
 - `TradeDecisionRequest` — Ship, company, price cache, routes, ports (with TaxRateBps), constraints, passengers, TopOpportunities (from ProfitAnalyzer), ClaimedRoutes (from Coordinator)
 - `FleetDecisionRequest` — Ships, warehouses, ship types, shipyard ports
 - `MarketDecisionRequest` — Open/own orders, price cache, warehouses
-- `StrategyEvalRequest` — Strategy metrics array
 
 ### Response Types
 - `TradeDecision` — SellOrders, BuyOrders, WarehouseLoads, WarehouseStores, BoardPassengers, SailTo, Confidence
 - `FleetDecision` — BuyShips, SellShips, BuyWarehouses, WarehouseActions (grow/shrink/demolish via `WarehouseAction` type)
 - `MarketDecision` — FillOrders, PostOrders, CancelOrders
-- `StrategyEvaluation` — ParamChanges, SwitchTo
 
 ### Snapshot Types
 - `ShipSnapshot` — ID, Name, Status, PortID, Cargo, Capacity, Speed, PassengerCap

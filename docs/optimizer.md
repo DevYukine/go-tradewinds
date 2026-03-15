@@ -1,50 +1,33 @@
 # Optimizer
 
-Evaluates strategy performance and reallocates companies between strategies. Includes a self-learning parameter tuner that experiments with trading parameters.
+Evaluates strategy performance, records metrics for the dashboard, recovers inactive companies, and tunes trading parameters. Does **not** switch strategies — companies stay on their configured strategy.
 
 ## Engine (`internal/optimizer/engine.go`)
 
 ### Configuration
-- `defaultEvalInterval = 5 min` — Evaluation cycle
-- `minPeriodsBeforeSwitch = 1` — Consecutive underperform periods before swap (5 min total)
-- `minCompaniesPerStrategy = 2` — Minimum for statistical validity
-- `lowUtilThreshold = 0.50` — Scale up below this
-- `highUtilThreshold = 0.90` — Scale down above this
-- `utilPeriodsBeforeScale = 2` — Consecutive periods before scaling (10 min)
+- `defaultEvalInterval = 10 min` — Evaluation cycle
+- `metricsLookback = 2 hours` — How far back to look for trade data
 
 ### Evaluation Cycle (`evaluate`)
 
 1. Collect per-company metrics from trade logs **and passenger logs**
 2. Aggregate by strategy (mean, std dev, 95% CI, score)
-3. Record strategy metrics to DB
+3. Record strategy metrics to DB (for dashboard)
 4. Log results
-5. **Check inactive companies** — 0 trades + docked ships → swap to best strategy
-6. **Check reallocations** — Worst CI_high < best CI_low for 1 period → swap worst company
-7. **Dynamic scaling** — Low utilization → add company; high utilization → pause worst
-8. **Agent evaluation** — Ask agent for strategy recommendations
-9. **Parameter tuning** — Evaluate active experiments, then start new ones
+5. **Recover inactive companies** — ALL ships docked + 0 trades + 0 passenger revenue → `ForceDispatch()` to re-kick idle ships
+6. **Parameter tuning** — Evaluate active experiments, then start new ones
 
-### Inactivity Detection (`checkInactiveCompanies`)
-- Companies with 0 trades and docked ships are "stalled"
-- Swaps to best-performing strategy to break the stall
-- Only one swap per evaluation
+### Inactive Recovery (`recoverInactiveCompanies`)
+- Criteria: ALL ships docked AND 0 trades AND 0 passenger revenue in the 2-hour lookback
+- Action: Calls `runner.ForceDispatch()` to re-dispatch idle ships through the trade decision loop
+- Does NOT swap strategy — the strategy stays, ships just get re-evaluated
+- `ForceDispatch()` is a non-blocking signal via a buffered channel on `CompanyRunner`
 
-### Reallocation Logic (`checkReallocations`)
-- Tracks `underperformCount` per strategy
-- Increments when worst CI_high < best CI_low
-- Resets when CIs overlap (recovery)
-- After `minPeriodsBeforeSwitch` consecutive periods: swap worst company in underperforming strategy to best strategy
-- Won't reduce below `minCompaniesPerStrategy`
-
-### Dynamic Scaling (`checkDynamicScaling`)
-- **Scale up**: `lowUtilCount >= 2` → add company to best strategy (respects max from config)
-- **Scale down**: `highUtilCount >= 2` → pause worst company in worst strategy
-- Counters reset when utilization returns to healthy range
-
-### Agent Evaluation (`agentEvaluation`)
-- Calls `agent.EvaluateStrategy()` with converted metrics
-- Logs parameter change recommendations
-- Executes strategy switch recommendations
+### Constructor
+```go
+func NewEngine(gormDB *gorm.DB, logger *zap.Logger, manager *bot.Manager) *Engine
+```
+No agent or registry dependencies — the optimizer only tunes parameters and recovers inactive companies.
 
 ## Metrics (`internal/optimizer/metrics.go`)
 
@@ -79,16 +62,13 @@ Recent trades (1 min) get weight ~0.95. Trades 14 min old get ~0.5. Applied to P
 | `MeanWinRate` | Average win rate |
 | `MeanTradesPerHour` | Average trading velocity |
 | `MeanCapacityUtil` | Average capacity utilization |
-| `Score` | Composite score |
+| `Score` | Net profit per hour (`MeanProfit`) |
 
-### Composite Score Formula
+### Score
 ```
-Score = 0.35 * CI_lower
-      + 0.25 * mean_profit_per_hour
-      + 0.20 * mean_win_rate
-      + 0.10 * mean_trades_per_hour
-      + 0.10 * mean_capacity_util
+Score = MeanProfit
 ```
+Simple net profit per hour. The tuner just needs a relative comparison between strategies.
 
 ## Parameter Tuner (`internal/optimizer/tuner.go`)
 
@@ -106,9 +86,9 @@ Self-learning system that experiments with per-company trading parameters.
 ### Experiment Flow
 1. **Pick target**: worst-performing company by profit/hour
 2. **Pick param**: least-recently-tuned parameter for that company
-3. **Adjust**: change by ±step% (try increase first, decrease if at max)
+3. **Adjust**: change by ±step% (alternating direction each experiment)
 4. **Record**: save to `ParamExperimentLog` with status "active"
-5. **Wait**: one eval period (5 min)
+5. **Wait**: `minExperimentAge = 30 min` (3 eval cycles at 10-min intervals)
 6. **Evaluate**: compare profit before/after
    - Better → mark "completed", propagate to peers on same strategy
    - Worse → mark "reverted", restore old value

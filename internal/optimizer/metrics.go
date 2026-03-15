@@ -6,7 +6,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/DevYukine/go-tradewinds/internal/agent"
 	"github.com/DevYukine/go-tradewinds/internal/db"
 )
 
@@ -184,16 +183,9 @@ func aggregateByStrategy(metrics []companyMetrics) []strategyStats {
 			s.ConfidenceHigh = s.MeanProfit
 		}
 
-		// Composite score: profit-based metrics dominate, but win rate and activity
-		// act as tiebreakers. All components are on comparable scales:
-		// - Profit terms are in gold/hour (can be negative or thousands)
-		// - WinRate and CapacityUtil are 0-1, so we scale them by |MeanProfit| to
-		//   make them proportional to the profit magnitude.
-		profitScale := math.Max(math.Abs(s.MeanProfit), 1.0)
-		s.Score = 0.40*s.ConfidenceLow + 0.30*s.MeanProfit +
-			0.15*s.MeanWinRate*profitScale +
-			0.10*s.MeanTradesPerHour*profitScale/10.0 +
-			0.05*s.MeanCapacityUtil*profitScale
+		// Score is net profit per hour. The tuner just needs a relative
+		// comparison between strategies — no need for a weighted composite.
+		s.Score = s.MeanProfit
 
 		stats = append(stats, s)
 	}
@@ -201,24 +193,3 @@ func aggregateByStrategy(metrics []companyMetrics) []strategyStats {
 	return stats
 }
 
-// toAgentMetrics converts internal stats to agent-compatible metrics.
-func toAgentMetrics(stats []strategyStats) []agent.StrategyMetrics {
-	result := make([]agent.StrategyMetrics, len(stats))
-	for i, s := range stats {
-		var totalProfit, totalLoss int64
-		for _, c := range s.Companies {
-			totalProfit += c.TotalProfit
-			totalLoss += c.TotalLoss
-		}
-		result[i] = agent.StrategyMetrics{
-			StrategyName:   s.StrategyName,
-			CompanyCount:   s.CompanyCount,
-			TradesExecuted: s.TotalTrades,
-			TotalProfit:    totalProfit,
-			TotalLoss:      totalLoss,
-			WinRate:        s.MeanWinRate,
-			ProfitPerHour:  s.MeanProfit,
-		}
-	}
-	return result
-}

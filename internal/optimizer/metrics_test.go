@@ -120,28 +120,3 @@ func TestDecayWeight(t *testing.T) {
 	}
 }
 
-func TestToAgentMetrics(t *testing.T) {
-	stats := []strategyStats{
-		{
-			StrategyName: "arbitrage",
-			CompanyCount: 2,
-			TotalTrades:  10,
-			MeanWinRate:  0.8,
-			MeanProfit:   100,
-			Companies: []companyMetrics{
-				{TotalProfit: 500, TotalLoss: 200},
-				{TotalProfit: 300, TotalLoss: 100},
-			},
-		},
-	}
-	result := toAgentMetrics(stats)
-	if len(result) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(result))
-	}
-	if result[0].TotalProfit != 800 {
-		t.Errorf("total profit: got %d, want 800", result[0].TotalProfit)
-	}
-	if result[0].TotalLoss != 300 {
-		t.Errorf("total loss: got %d, want 300", result[0].TotalLoss)
-	}
-}

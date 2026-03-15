@@ -8,8 +8,8 @@ import (
 
 // CompositeAgent routes decisions between a fast agent (for time-sensitive
 // operations like trade decisions) and a slow agent (for strategic decisions
-// like fleet management and strategy evaluation). If the slow agent fails,
-// the fast agent is used as a fallback.
+// like fleet and market management). If the slow agent fails, the fast agent
+// is used as a fallback.
 type CompositeAgent struct {
 	fast   Agent
 	slow   Agent
@@ -60,15 +60,3 @@ func (a *CompositeAgent) DecideMarketAction(ctx context.Context, req MarketDecis
 	return decision, nil
 }
 
-// EvaluateStrategy is strategic and routes to the slow agent.
-// Falls back to fast on error.
-func (a *CompositeAgent) EvaluateStrategy(ctx context.Context, req StrategyEvalRequest) (*StrategyEvaluation, error) {
-	evaluation, err := a.slow.EvaluateStrategy(ctx, req)
-	if err != nil {
-		a.logger.Warn("slow agent strategy eval failed, falling back to fast",
-			zap.Error(err),
-		)
-		return a.fast.EvaluateStrategy(ctx, req)
-	}
-	return evaluation, nil
-}

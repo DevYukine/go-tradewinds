@@ -34,10 +34,6 @@ type Agent interface {
 
 	// DecideMarketAction is called when evaluating P2P market opportunities.
 	DecideMarketAction(ctx context.Context, req MarketDecisionRequest) (*MarketDecision, error)
-
-	// EvaluateStrategy is called by the optimizer. Given performance metrics,
-	// the agent can recommend parameter adjustments or strategy switches.
-	EvaluateStrategy(ctx context.Context, req StrategyEvalRequest) (*StrategyEvaluation, error)
 }
 
 // NewAgent creates the appropriate Agent implementation based on config.
@@ -426,28 +422,3 @@ type MarketDecision struct {
 	Reasoning    string           `json:"reasoning"`
 }
 
-// --- Strategy Evaluation ---
-
-// StrategyMetrics holds aggregated performance data for a strategy.
-type StrategyMetrics struct {
-	StrategyName   string  `json:"strategy_name"`
-	CompanyCount   int     `json:"company_count"`
-	TradesExecuted int     `json:"trades_executed"`
-	TotalProfit    int64   `json:"total_profit"`
-	TotalLoss      int64   `json:"total_loss"`
-	WinRate        float64 `json:"win_rate"`
-	ProfitPerHour  float64 `json:"profit_per_hour"`
-}
-
-// StrategyEvalRequest provides metrics for the agent to evaluate strategies.
-type StrategyEvalRequest struct {
-	Metrics       []StrategyMetrics `json:"metrics"`
-	CurrentParams map[string]any    `json:"current_params"`
-}
-
-// StrategyEvaluation is the agent's recommendation for strategy changes.
-type StrategyEvaluation struct {
-	ParamChanges map[string]any `json:"param_changes"`
-	SwitchTo     *string        `json:"switch_to"` // Recommend switching strategy (nil = keep current).
-	Reasoning    string         `json:"reasoning"`
-}

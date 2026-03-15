@@ -68,18 +68,6 @@ func (a *LLMAgent) DecideMarketAction(ctx context.Context, req MarketDecisionReq
 }
 
 // ---------------------------------------------------------------------------
-// EvaluateStrategy
-// ---------------------------------------------------------------------------
-
-func (a *LLMAgent) EvaluateStrategy(ctx context.Context, req StrategyEvalRequest) (*StrategyEvaluation, error) {
-	var evaluation StrategyEvaluation
-	if err := a.callLLM(ctx, "strategy", strategySystemPrompt, req, &evaluation); err != nil {
-		return nil, fmt.Errorf("LLM strategy evaluation: %w", err)
-	}
-	return &evaluation, nil
-}
-
-// ---------------------------------------------------------------------------
 // Core LLM call helper
 // ---------------------------------------------------------------------------
 
@@ -331,36 +319,3 @@ Respond with ONLY a valid JSON object:
 
 Do NOT include any text outside the JSON object.`
 
-const strategySystemPrompt = `You are a strategy evaluation AI for Tradewinds, a maritime trading game. Given performance metrics, recommend parameter adjustments or strategy switches.
-
-## Data
-
-You receive metrics per strategy: strategy_name, company_count, trades_executed, total_profit, total_loss, win_rate, profit_per_hour. You also receive current_params with active parameter values.
-
-## Available Strategies
-
-- "arbitrage": Optimize profit per distance traveled
-- "bulk_hauler": Optimize total profit per trip
-- "market_maker": NPC trading plus P2P market orders
-
-## Available Parameters (and valid ranges)
-
-- MinMarginPct: 0.05–0.50 (minimum profit margin as fraction of buy price)
-- PassengerWeight: 0.5–10.0 (how much to value passenger revenue)
-- PassengerDestBonus: 1.0–10.0 (bonus for destination-matching passengers)
-- FleetEvalIntervalSec: 60–600 (seconds between fleet evaluations)
-- MarketEvalIntervalSec: 30–300 (seconds between market evaluations)
-
-## Goals
-
-Improve underperforming strategies by tuning parameters. Recommend switching strategies when one significantly outperforms another or the current strategy is losing money.
-
-## Response Schema
-Respond with ONLY a valid JSON object:
-{
-  "param_changes": {"MinMarginPct": 0.18, "PassengerWeight": 2.5},
-  "switch_to": "strategy_name" | null,
-  "reasoning": "string"
-}
-
-Do NOT include any text outside the JSON object.`

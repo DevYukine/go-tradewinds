@@ -17,9 +17,6 @@ const (
 
 	// Target utilization — leave 20% headroom for bursts.
 	targetUtilization = 0.80
-
-	// Minimum companies per strategy for statistical comparison.
-	minCompaniesPerStrategy = 2
 )
 
 // ScaledAllocation is the result of scaling a strategy allocation to fit
@@ -112,12 +109,12 @@ func (s *Scaler) CalculateAllocation(
 			remaining -= scaled
 		}
 
-		// Distribute leftover slots to strategies that were scaled below minimum.
+		// Distribute leftover slots to strategies that were scaled below their request.
 		for i := range allocations {
 			if remaining <= 0 {
 				break
 			}
-			if allocations[i].Count < minCompaniesPerStrategy && allocations[i].Count < requested[i].Count {
+			if allocations[i].Count < requested[i].Count {
 				allocations[i].Count++
 				remaining--
 			}

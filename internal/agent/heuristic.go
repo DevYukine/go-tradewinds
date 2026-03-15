@@ -1486,63 +1486,6 @@ func (a *HeuristicAgent) DecideMarketAction(_ context.Context, req MarketDecisio
 }
 
 // ---------------------------------------------------------------------------
-// Strategy Evaluation
-// ---------------------------------------------------------------------------
-
-// EvaluateStrategy analyzes performance metrics and recommends strategy changes.
-func (a *HeuristicAgent) EvaluateStrategy(_ context.Context, req StrategyEvalRequest) (*StrategyEvaluation, error) {
-	if len(req.Metrics) < 2 {
-		return &StrategyEvaluation{Reasoning: "not enough strategies to compare"}, nil
-	}
-
-	// Find best and worst by profit per hour.
-	best := req.Metrics[0]
-	worst := req.Metrics[0]
-	for _, m := range req.Metrics[1:] {
-		if m.ProfitPerHour > best.ProfitPerHour {
-			best = m
-		}
-		if m.ProfitPerHour < worst.ProfitPerHour {
-			worst = m
-		}
-	}
-
-	// Don't recommend switches when both strategies are barely active.
-	// With a 30-minute lookback, <3 trades means the data is too noisy.
-	if best.TradesExecuted < 3 && worst.TradesExecuted < 3 {
-		return &StrategyEvaluation{Reasoning: "insufficient trade data to evaluate strategies"}, nil
-	}
-
-	// Only recommend switching away from a losing strategy if:
-	// 1. It's meaningfully negative (not just -1 gold/hour noise)
-	// 2. Best is actually positive (switching to another loser doesn't help)
-	// 3. The difference is significant (best is at least 2x better by absolute gap)
-	if worst.ProfitPerHour < -100 && best.ProfitPerHour > 0 &&
-		worst.StrategyName != best.StrategyName {
-		switchTo := best.StrategyName
-		return &StrategyEvaluation{
-			SwitchTo:  &switchTo,
-			Reasoning: fmt.Sprintf("%s is significantly losing money (%.0f/hr), switching to %s (%.0f/hr)",
-				worst.StrategyName, worst.ProfitPerHour, best.StrategyName, best.ProfitPerHour),
-		}, nil
-	}
-
-	// If best is 2x better than worst and both are positive, recommend switch.
-	if best.ProfitPerHour > 0 && worst.ProfitPerHour > 0 &&
-		best.ProfitPerHour > worst.ProfitPerHour*2.0 &&
-		worst.StrategyName != best.StrategyName {
-		switchTo := best.StrategyName
-		return &StrategyEvaluation{
-			SwitchTo:  &switchTo,
-			Reasoning: fmt.Sprintf("%s outperforms %s by 2x+ (%.0f vs %.0f/hr)",
-				best.StrategyName, worst.StrategyName, best.ProfitPerHour, worst.ProfitPerHour),
-		}, nil
-	}
-
-	return &StrategyEvaluation{Reasoning: "all strategies performing within acceptable range"}, nil
-}
-
-// ---------------------------------------------------------------------------
 // P2P Order Fill Scanning (used by trade decisions)
 // ---------------------------------------------------------------------------
 
