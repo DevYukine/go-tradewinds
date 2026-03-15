@@ -129,6 +129,14 @@ func (s *CompanyState) SetWarehouseInventory(warehouseID uuid.UUID, items []api.
 	}
 }
 
+// AddWarehouse adds a newly purchased warehouse to the in-memory state.
+func (s *CompanyState) AddWarehouse(wh api.Warehouse) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.Warehouses[wh.ID] = &WarehouseState{Warehouse: wh}
+}
+
 // UpdateOrders replaces the full active order set from an API response.
 func (s *CompanyState) UpdateOrders(orders []api.Order) {
 	s.mu.Lock()

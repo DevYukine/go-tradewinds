@@ -64,6 +64,15 @@ const statusCounts = computed(() => {
   return c
 })
 
+// Warehouse stats.
+const totalWarehouses = computed(() => allInventories.value.reduce((s, i) => s + i.warehouses.length, 0))
+const totalWarehouseItems = computed(() =>
+  allInventories.value.reduce((s, i) => s + i.warehouses.reduce((ws, w) => ws + w.items.reduce((is, item) => is + item.quantity, 0), 0), 0)
+)
+function companyWarehouseCount(id: number): number {
+  return inventories.value[id]?.warehouses.length ?? 0
+}
+
 // Cargo value — sum of buy-price-based cargo valuations across all ships.
 const totalCargoValue = computed(() =>
   allInventories.value.reduce((s, i) => s + (i.cargo_value ?? 0), 0)
@@ -248,6 +257,11 @@ function companySailingCount(id: number): number {
           <div class="text-xl font-bold text-amber-400 font-mono">{{ formatFull(totalCargoValue) }}g</div>
           <div class="text-[10px] text-slate-600">{{ formatFull(totalCargoItems) }} items aboard</div>
         </div>
+        <div v-if="totalWarehouses > 0" class="text-center">
+          <div class="text-xs text-slate-500 mb-1">Warehouses</div>
+          <div class="text-xl font-bold text-purple-400 font-mono">{{ totalWarehouses }}</div>
+          <div class="text-[10px] text-slate-600">{{ formatFull(totalWarehouseItems) }} items stored</div>
+        </div>
         <div class="text-center">
           <div class="text-xs text-slate-500 mb-1">Upkeep / Cycle</div>
           <div class="text-xl font-bold text-rose-400 font-mono">{{ formatFull(totalUpkeep) }}g</div>
@@ -394,6 +408,10 @@ function companySailingCount(id: number): number {
               <Icon name="mdi:ship" class="text-sky-400 text-sm" />
               <span class="font-mono">{{ companyShipCount(company.id) }}</span>
               <span class="text-slate-600">ships</span>
+            </div>
+            <div v-if="companyWarehouseCount(company.id)" class="flex items-center gap-1">
+              <Icon name="mdi:warehouse" class="text-purple-400 text-sm" />
+              <span class="font-mono">{{ companyWarehouseCount(company.id) }}</span>
             </div>
             <div v-if="companyUpkeep(company.id)" class="flex items-center gap-1">
               <span class="text-rose-400 font-mono text-[11px]">({{ formatCurrency(companyUpkeep(company.id)) }}/cycle)</span>

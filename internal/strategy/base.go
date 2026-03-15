@@ -645,6 +645,7 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 
 // executeWarehouseLoads transfers goods from a warehouse onto a ship.
 func (b *baseStrategy) executeWarehouseLoads(ctx context.Context, ship *bot.ShipState, loads []agent.WarehouseTransfer) {
+	affected := make(map[uuid.UUID]bool)
 	for _, load := range loads {
 		err := b.ctx.Client.TransferToShip(ctx, load.WarehouseID, api.TransferToShipRequest{
 			ShipID:   ship.Ship.ID,
@@ -658,6 +659,7 @@ func (b *baseStrategy) executeWarehouseLoads(ctx context.Context, ship *bot.Ship
 			)
 			continue
 		}
+		affected[load.WarehouseID] = true
 		goodName := load.GoodID.String()[:8]
 		if g := b.ctx.World.GetGood(load.GoodID); g != nil {
 			goodName = g.Name
@@ -667,13 +669,15 @@ func (b *baseStrategy) executeWarehouseLoads(ctx context.Context, ship *bot.Ship
 			zap.Int("quantity", load.Quantity),
 		)
 	}
-	if len(loads) > 0 {
+	if len(affected) > 0 {
+		b.refreshWarehouseInventories(ctx, affected)
 		b.ctx.Events.Emit(bot.EventWarehouse)
 	}
 }
 
 // executeWarehouseStores transfers goods from a ship into a warehouse.
 func (b *baseStrategy) executeWarehouseStores(ctx context.Context, ship *bot.ShipState, stores []agent.WarehouseTransfer) {
+	affected := make(map[uuid.UUID]bool)
 	for _, store := range stores {
 		err := b.ctx.Client.TransferToWarehouse(ctx, ship.Ship.ID, api.TransferToWarehouseRequest{
 			WarehouseID: store.WarehouseID,
@@ -687,6 +691,7 @@ func (b *baseStrategy) executeWarehouseStores(ctx context.Context, ship *bot.Shi
 			)
 			continue
 		}
+		affected[store.WarehouseID] = true
 		goodName := store.GoodID.String()[:8]
 		if g := b.ctx.World.GetGood(store.GoodID); g != nil {
 			goodName = g.Name
@@ -696,8 +701,25 @@ func (b *baseStrategy) executeWarehouseStores(ctx context.Context, ship *bot.Shi
 			zap.Int("quantity", store.Quantity),
 		)
 	}
-	if len(stores) > 0 {
+	if len(affected) > 0 {
+		b.refreshWarehouseInventories(ctx, affected)
 		b.ctx.Events.Emit(bot.EventWarehouse)
+	}
+}
+
+// refreshWarehouseInventories re-fetches inventory from the API for the given
+// warehouse IDs and updates the in-memory state so the dashboard sees current data.
+func (b *baseStrategy) refreshWarehouseInventories(ctx context.Context, warehouseIDs map[uuid.UUID]bool) {
+	for whID := range warehouseIDs {
+		inv, err := b.ctx.Client.GetWarehouseInventory(ctx, whID)
+		if err != nil {
+			b.logger.Debug("failed to refresh warehouse inventory after transfer",
+				zap.String("warehouse_id", whID.String()),
+				zap.Error(err),
+			)
+			continue
+		}
+		b.ctx.State.SetWarehouseInventory(whID, inv)
 	}
 }
 
@@ -866,6 +888,9 @@ func (b *baseStrategy) executeFleetDecision(ctx context.Context, decision *agent
 			zap.String("warehouse_id", wh.ID.String()),
 			zap.String("port_id", portID.String()),
 		)
+		// Add the new warehouse to in-memory state so subsequent decisions
+		// and the dashboard see it immediately.
+		b.ctx.State.AddWarehouse(*wh)
 		b.ctx.Events.Emit(bot.EventWarehouse)
 	}
 }
