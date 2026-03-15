@@ -421,6 +421,17 @@ type CompanyFormedEvent struct {
 	Ticker string    `json:"ticker"`
 }
 
+// PassengerRequestCreatedEvent is emitted on the world events stream
+// when a new passenger group becomes available at a port.
+type PassengerRequestCreatedEvent struct {
+	ID                uuid.UUID `json:"id"`
+	Count             int       `json:"count"`
+	Bid               int       `json:"bid"`
+	OriginPortID      uuid.UUID `json:"origin_port_id"`
+	DestinationPortID uuid.UUID `json:"destination_port_id"`
+	ExpiresAt         time.Time `json:"expires_at"`
+}
+
 // --- Traders ---
 
 type Trader struct {

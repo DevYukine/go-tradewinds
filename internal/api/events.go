@@ -236,3 +236,12 @@ func ParseCompanyFormedEvent(data json.RawMessage) (*CompanyFormedEvent, error) 
 	}
 	return &event, nil
 }
+
+// ParsePassengerRequestCreatedEvent parses the data field of a passenger_request_created event.
+func ParsePassengerRequestCreatedEvent(data json.RawMessage) (*PassengerRequestCreatedEvent, error) {
+	var event PassengerRequestCreatedEvent
+	if err := json.Unmarshal(data, &event); err != nil {
+		return nil, err
+	}
+	return &event, nil
+}

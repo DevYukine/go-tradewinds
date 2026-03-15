@@ -78,7 +78,8 @@ Hand-coded rules adapting to strategy hints.
 
 #### Speculative (`speculativeTrade`)
 - Triggered when no profitable trade meets minimum margin
-- Priority: (1) sail to best passenger revenue destination, (2) sail to ProfitAnalyzer opportunity buy port, (3) after 2+ idle ticks → relocate to nearest hub port or opportunity sell port, (4) first tick only → wait briefly for price refresh
+- Priority: (1) sail to best passenger revenue destination, (2) sail to ProfitAnalyzer opportunity buy port, (3) **passenger ships after 1 idle tick** → relocate to uncovered port for sniping coverage, (4) after 2+ idle ticks → relocate to nearest hub port or opportunity sell port, (5) first tick only → wait briefly for price refresh
+- **Passenger ship spreading**: Small ships (capacity ≤ 60, has passenger slots) are classified as "passenger ships" and relocate after just 1 idle tick to ports where no other company ships are docked, maximizing geographic coverage for passenger sniping. Prefers uncovered hubs > uncovered non-hubs > covered hubs > farthest port.
 - Hub ports are preferred for relocation because they have more goods and routes
 - Confidence: 0.3–0.5
 

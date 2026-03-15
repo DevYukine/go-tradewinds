@@ -144,12 +144,14 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 func (a *Arbitrage) OnTick(ctx context.Context, _ *bot.CompanyState) error {
 	fleetInterval := fleetEvalInterval
 	a.ctx.State.RLock()
+	shipCount := len(a.ctx.State.Ships)
 	if a.ctx.State.Params != nil && a.ctx.State.Params.FleetEvalIntervalSec > 0 {
 		fleetInterval = time.Duration(a.ctx.State.Params.FleetEvalIntervalSec) * time.Second
 	}
 	a.ctx.State.RUnlock()
 
-	if time.Since(a.lastFleetEval) < fleetInterval {
+	// Bypass interval check when the company has no ships — buy immediately.
+	if shipCount > 0 && time.Since(a.lastFleetEval) < fleetInterval {
 		return nil
 	}
 	if !a.fleetEvalBackoff.ready() {

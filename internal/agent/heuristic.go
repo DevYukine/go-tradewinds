@@ -807,6 +807,26 @@ func (a *HeuristicAgent) speculativeTrade(
 		}, nil
 	}
 
+	// Passenger ships (small cargo, has passenger slots) should spread across
+	// ports for maximum passenger sniping coverage. They relocate after just
+	// 1 idle tick and prefer ports where no other company ships are docked.
+	if a.isPassengerShip(req.Ship) && req.Ship.IdleTicks >= 1 {
+		if dest, ok := a.findPassengerRelocationPort(req.AllShips, req.Ports, reachable, currentPortID); ok {
+			buys := a.speculativeBuys(req.Ship, priceIndex, taxIndex, currentPortID, dest, budget, buyTaxBps)
+			a.logger.Info("passenger ship spreading to uncovered port",
+				zap.String("ship", req.Ship.Name),
+				zap.Int("idle_ticks", req.Ship.IdleTicks),
+				zap.String("dest_port", dest.String()),
+				zap.Int("speculative_buys", len(buys)),
+			)
+			return &TradeDecision{
+				Action: "sell_and_buy", SellOrders: sells, BuyOrders: buys, SailTo: &dest,
+				Reasoning: "passenger ship relocating to uncovered port for passenger sniping coverage",
+				Confidence: 0.5,
+			}, nil
+		}
+	}
+
 	// After 2+ idle ticks, force relocation instead of sitting at a dead port.
 	// Prefer hub ports (more trade variety) > opportunity sell ports > closest port.
 	if req.Ship.IdleTicks >= 2 {
@@ -2194,6 +2214,93 @@ func (a *HeuristicAgent) findRelocationPort(
 	closest := a.closestPort(reachable)
 	if closest != uuid.Nil {
 		return closest, true
+	}
+
+	return uuid.Nil, false
+}
+
+// isPassengerShip returns true if the ship is a small/fast vessel suited for
+// dedicated passenger runs (low cargo capacity, has passenger slots).
+func (a *HeuristicAgent) isPassengerShip(ship ShipSnapshot) bool {
+	return ship.Capacity <= 60 && ship.PassengerCap > 0
+}
+
+// findPassengerRelocationPort picks the best port for a passenger ship to
+// idle at for sniping. Prefers reachable ports where no other company ships
+// are currently docked, maximizing geographic coverage. Among uncovered ports,
+// prefers hubs (higher passenger traffic) and farther distances (more spread).
+func (a *HeuristicAgent) findPassengerRelocationPort(
+	allShips []ShipSnapshot,
+	ports []PortInfo,
+	reachable map[uuid.UUID]float64,
+	currentPortID uuid.UUID,
+) (uuid.UUID, bool) {
+	if len(reachable) == 0 {
+		return uuid.Nil, false
+	}
+
+	// Build a set of ports where company ships are currently docked or heading.
+	coveredPorts := make(map[uuid.UUID]bool)
+	for _, s := range allShips {
+		if s.ID == uuid.Nil {
+			continue
+		}
+		if s.PortID != nil {
+			coveredPorts[*s.PortID] = true
+		}
+	}
+
+	// Score reachable ports: prefer uncovered, then hubs, then farther distance.
+	type candidate struct {
+		id   uuid.UUID
+		dist float64
+		hub  bool
+	}
+	var uncoveredHubs, uncoveredNonHubs, coveredHubs []candidate
+	portIsHub := make(map[uuid.UUID]bool)
+	for _, p := range ports {
+		portIsHub[p.ID] = p.IsHub
+	}
+
+	for portID, dist := range reachable {
+		if portID == currentPortID {
+			continue
+		}
+		c := candidate{id: portID, dist: dist, hub: portIsHub[portID]}
+		if !coveredPorts[portID] {
+			if c.hub {
+				uncoveredHubs = append(uncoveredHubs, c)
+			} else {
+				uncoveredNonHubs = append(uncoveredNonHubs, c)
+			}
+		} else if c.hub {
+			coveredHubs = append(coveredHubs, c)
+		}
+	}
+
+	// Pick from uncovered hubs first, then uncovered non-hubs, then covered hubs.
+	// Within each tier, pick the farthest port for maximum geographic spread.
+	pickFarthest := func(candidates []candidate) (uuid.UUID, bool) {
+		if len(candidates) == 0 {
+			return uuid.Nil, false
+		}
+		best := candidates[0]
+		for _, c := range candidates[1:] {
+			if c.dist > best.dist {
+				best = c
+			}
+		}
+		return best.id, true
+	}
+
+	if id, ok := pickFarthest(uncoveredHubs); ok {
+		return id, true
+	}
+	if id, ok := pickFarthest(uncoveredNonHubs); ok {
+		return id, true
+	}
+	if id, ok := pickFarthest(coveredHubs); ok {
+		return id, true
 	}
 
 	return uuid.Nil, false

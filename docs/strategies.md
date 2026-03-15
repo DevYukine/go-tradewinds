@@ -53,6 +53,23 @@ Shared logic used by all strategies.
 - `shipToSnapshot(ship, world)` — ShipState → agent.ShipSnapshot (enriched with ship type info)
 - `warehouseToSnapshot(wh)` — WarehouseState → agent.WarehouseSnapshot
 
+## Passenger Sniping via World Events
+
+The `CompanyRunner` subscribes to the public world SSE stream (`/world/events`) and listens for `passenger_request_created` events. When a new passenger group appears at a port:
+
+1. Finds the best idle docked ship at the passenger's origin port
+2. Prefers "passenger ships" (cargo capacity ≤ 60, has passenger slots) over cargo ships
+3. Among same type, prefers ships idle longer
+4. Immediately re-dispatches the ship to trigger `OnShipArrival`, which boards the passenger
+
+### Passenger Ship Spreading
+
+Small/fast passenger ships relocate to uncovered ports (where no other company ships are docked) after just 1 idle tick — maximizing geographic coverage for sniping. Priority: uncovered hubs > uncovered non-hubs > covered hubs. This is handled in `speculativeTrade` in the heuristic agent.
+
+### Immediate Fleet Purchase on Startup
+
+When a company has 0 ships, the fleet evaluation interval is bypassed entirely — all strategies trigger fleet eval on the very first tick to purchase ships immediately.
+
 ## Arbitrage Strategy (`internal/strategy/arbitrage.go`)
 
 Fast buy-low-sell-high across ports.

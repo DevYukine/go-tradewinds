@@ -145,7 +145,11 @@ func (m *MarketMaker) OnTick(ctx context.Context, _ *bot.CompanyState) error {
 	}
 
 	// Evaluate fleet decisions less frequently.
-	if time.Since(m.lastFleetEval) >= fleetInterval && m.fleetEvalBackoff.ready() {
+	// Bypass interval check when the company has no ships — buy immediately.
+	m.ctx.State.RLock()
+	shipCount := len(m.ctx.State.Ships)
+	m.ctx.State.RUnlock()
+	if (shipCount == 0 || time.Since(m.lastFleetEval) >= fleetInterval) && m.fleetEvalBackoff.ready() {
 		m.lastFleetEval = time.Now()
 		m.evaluateFleet(ctx)
 	}

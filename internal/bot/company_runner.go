@@ -25,6 +25,12 @@ const (
 	// economyJitterMax is the maximum random offset added to the economy ticker
 	// to prevent all companies from refreshing at the same instant.
 	economyJitterMax = 15 * time.Second
+
+	// passengerShipCapacityThreshold is the maximum cargo capacity for a ship
+	// to be considered a "passenger ship" eligible for passenger sniping.
+	// Small/fast ships with low cargo capacity but high passenger capacity
+	// are ideal for dedicated passenger runs.
+	passengerShipCapacityThreshold = 60
 )
 
 // CompanyRunner manages the lifecycle of a single company: subscribing to
@@ -110,6 +116,22 @@ func (r *CompanyRunner) Run(ctx context.Context) {
 	})
 	defer stream.Close()
 
+	// Subscribe to world events for passenger sniping.
+	// When a passenger_request_created event arrives, we immediately dispatch
+	// any idle ship docked at the origin port to grab the passenger.
+	worldEventCh := make(chan api.SSEEvent, 64)
+	worldStream := r.client.SubscribeWorldEvents(ctx, func(event api.SSEEvent) {
+		// Only forward passenger events to avoid flooding the channel.
+		if event.Type == "passenger_request_created" {
+			select {
+			case worldEventCh <- event:
+			default:
+				// Drop if full — passenger sniping is best-effort.
+			}
+		}
+	})
+	defer worldStream.Close()
+
 	// Jittered economy ticker.
 	jitter := time.Duration(rand.Int64N(int64(economyJitterMax)))
 	ticker := time.NewTicker(economyRefreshInterval + jitter)
@@ -133,6 +155,9 @@ func (r *CompanyRunner) Run(ctx context.Context) {
 
 		case event := <-eventCh:
 			r.handleEvent(ctx, event)
+
+		case event := <-worldEventCh:
+			r.handleWorldEvent(ctx, event)
 
 		case <-ticker.C:
 			r.handleTick(ctx)
@@ -547,6 +572,82 @@ func (r *CompanyRunner) handleShipBought(ctx context.Context, data json.RawMessa
 	if ship.Status == "docked" && ship.PortID != nil {
 		r.dispatchDockedShip(ctx, bought.ShipID)
 	}
+}
+
+// handleWorldEvent processes an SSE event from the public world event stream.
+func (r *CompanyRunner) handleWorldEvent(ctx context.Context, event api.SSEEvent) {
+	if r.bankrupt {
+		return
+	}
+
+	switch event.Type {
+	case "passenger_request_created":
+		r.handlePassengerCreated(ctx, event.Data)
+	}
+}
+
+// handlePassengerCreated reacts to a new passenger group appearing at a port.
+// If we have an idle ship docked at that port (preferring small/fast passenger
+// ships), we immediately re-dispatch it so it can board the passenger and sail.
+func (r *CompanyRunner) handlePassengerCreated(ctx context.Context, data json.RawMessage) {
+	pax, err := api.ParsePassengerRequestCreatedEvent(data)
+	if err != nil {
+		r.logger.Debug("failed to parse passenger_request_created event", zap.Error(err))
+		return
+	}
+
+	// Find idle docked ships at the passenger's origin port.
+	// Prefer small/fast "passenger ships" (low cargo capacity) over large cargo ships.
+	r.state.mu.RLock()
+	var bestShip *ShipState
+	bestIsPassengerShip := false
+	for _, ss := range r.state.Ships {
+		if ss.Ship.Status != "docked" || ss.Ship.PortID == nil {
+			continue
+		}
+		if *ss.Ship.PortID != pax.OriginPortID {
+			continue
+		}
+		// Check if this is a passenger-type ship (small cargo, fast).
+		st := r.world.GetShipType(ss.Ship.ShipTypeID)
+		isPassengerShip := st != nil && st.Capacity <= passengerShipCapacityThreshold && st.Passengers > 0
+
+		// Prefer passenger ships over cargo ships. Among same type, prefer
+		// ships that have been idle longer.
+		if bestShip == nil ||
+			(isPassengerShip && !bestIsPassengerShip) ||
+			(isPassengerShip == bestIsPassengerShip && ss.IdleTicks > bestShip.IdleTicks) {
+			bestShip = ss
+			bestIsPassengerShip = isPassengerShip
+		}
+	}
+	r.state.mu.RUnlock()
+
+	if bestShip == nil {
+		return
+	}
+
+	// Skip if this ship was recently dispatched (avoid re-dispatch spam).
+	now := time.Now()
+	if lastDispatched, ok := r.dispatchedShips[bestShip.Ship.ID]; ok {
+		if now.Sub(lastDispatched) < 5*time.Second {
+			return
+		}
+	}
+
+	port := r.world.GetPort(pax.OriginPortID)
+	if port == nil {
+		return
+	}
+
+	r.logger.Info("sniping passenger",
+		zap.Int("bid", pax.Bid),
+		zap.Int("count", pax.Count),
+		zap.String("ship", bestShip.Ship.Name),
+		zap.String("port", port.Name),
+	)
+
+	r.dispatchWithRetry(ctx, bestShip, port)
 }
 
 // handleTick runs periodic tasks: economy refresh, P&L snapshot, strategy tick,

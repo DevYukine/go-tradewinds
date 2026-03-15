@@ -117,12 +117,14 @@ func (b *BulkHauler) OnShipArrival(ctx context.Context, ship *bot.ShipState, por
 func (b *BulkHauler) OnTick(ctx context.Context, _ *bot.CompanyState) error {
 	fleetInterval := fleetEvalInterval
 	b.ctx.State.RLock()
+	shipCount := len(b.ctx.State.Ships)
 	if b.ctx.State.Params != nil && b.ctx.State.Params.FleetEvalIntervalSec > 0 {
 		fleetInterval = time.Duration(b.ctx.State.Params.FleetEvalIntervalSec) * time.Second
 	}
 	b.ctx.State.RUnlock()
 
-	if time.Since(b.lastFleetEval) < fleetInterval {
+	// Bypass interval check when the company has no ships — buy immediately.
+	if shipCount > 0 && time.Since(b.lastFleetEval) < fleetInterval {
 		return nil
 	}
 	if !b.fleetEvalBackoff.ready() {

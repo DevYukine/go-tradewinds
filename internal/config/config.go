@@ -119,7 +119,7 @@ func Load() (*Config, error) {
 		LogLevel:           envOrDefault("LOG_LEVEL", "debug"),
 		PlayerEmail:        os.Getenv("PLAYER_EMAIL"),
 		PlayerPassword:     os.Getenv("PLAYER_PASSWORD"),
-		RateLimitPerMinute: envIntOrDefault("RATE_LIMIT_PER_MINUTE", 300),
+		RateLimitPerMinute: envIntOrDefault("RATE_LIMIT_PER_MINUTE", 900),
 		Agent: AgentConfig{
 			Type:               envOrDefault("AGENT_TYPE", "heuristic"),
 			LLMProvider:        os.Getenv("LLM_PROVIDER"),
