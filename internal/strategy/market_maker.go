@@ -65,7 +65,7 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 		if err := m.executeSells(ctx, ship, decision.SellOrders); err != nil {
 			m.logger.Warn("sell execution failed", zap.Error(err))
 		}
-		m.executeFills(ctx, *ship.Ship.PortID, decision.FillOrders)
+		m.executeFills(ctx, port.ID, decision.FillOrders)
 		if err := m.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
 			m.logger.Warn("buy execution failed", zap.Error(err))
 		}
@@ -89,7 +89,7 @@ func (m *MarketMaker) OnShipArrival(ctx context.Context, ship *bot.ShipState, po
 		if err := m.executeSells(ctx, ship, decision.SellOrders); err != nil {
 			m.logger.Warn("sell execution failed", zap.Error(err))
 		}
-		m.executeFills(ctx, *ship.Ship.PortID, decision.FillOrders)
+		m.executeFills(ctx, port.ID, decision.FillOrders)
 		m.boardPassengers(ctx, ship, decision.BoardPassengers)
 		// Track idle ticks.
 		m.ctx.State.Lock()

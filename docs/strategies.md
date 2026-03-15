@@ -83,18 +83,19 @@ All strategies read timing intervals from `CompanyState.Params` (set by the opti
 |-----------|---------|---------|
 | `FleetEvalIntervalSec` | 180 (3 min) | All strategies |
 | `MarketEvalIntervalSec` | 60 (1 min) | Market Maker |
-| `MinMarginPct` | 0.08 (8%) | Heuristic agent trade decisions |
+| `MinMarginPct` | 0.05 (5%) | Heuristic agent trade decisions |
 | `PassengerWeight` | 5.0 | Heuristic agent destination scoring |
 | `PassengerDestBonus` | 5.0 | Heuristic agent passenger selection |
-| `SpeculativeTradeEnabled` | false | Heuristic agent fallback behavior |
+| `SpeculativeTradeEnabled` | true | Heuristic agent fallback behavior |
 
 ## Profitability Guards
 
 The heuristic agent enforces several guards to prevent money-losing trades:
-- **Minimum margin**: trades must exceed `MinMarginPct` (default 8%) of buy price
+- **Minimum margin**: trades must exceed `MinMarginPct` (default 5%) of buy price
 - **Sell-side tax**: profit calculation includes both buy and sell port taxes
-- **No empty sailing**: when no profitable trade or passengers exist, ships WAIT at port instead of sailing empty. After checking ProfitAnalyzer for known profitable buy ports, ships only sail with purpose.
-- **No speculative buying**: ships don't buy cargo without a guaranteed profitable destination
+- **Idle relocation**: after 2+ idle ticks (~60s), ships relocate to the nearest hub port or opportunity port instead of sitting idle. Hub ports are preferred because they have more trade variety.
+- **Speculative sailing**: when enabled (default), ships sail to opportunity buy ports from the ProfitAnalyzer when no local trade is profitable
+- **Cargo hold threshold**: ships only hold cargo for a better destination if the destination offers >50% better net price (high bar to keep ships moving)
 - **P2P fill threshold**: 5% minimum margin for filling player orders
 
 ## ProfitAnalyzer (`internal/bot/profit_analyzer.go`)

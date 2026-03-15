@@ -106,7 +106,7 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 	// Read tunable params with defaults.
 	passengerWeight := getParam(req.Params, "passengerWeight", 5.0)
 	passengerDestBonus := getParam(req.Params, "passengerDestBonus", 5.0)
-	minMarginPct := getParam(req.Params, "minMarginPct", 0.08)
+	minMarginPct := getParam(req.Params, "minMarginPct", 0.03)
 	speculativeEnabled := getParam(req.Params, "speculativeTradeEnabled", 0.0) > 0.5
 
 	// Build route history bonus index for destination scoring.
@@ -600,7 +600,8 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 // speculativeTrade handles the fallback when no clear arbitrage exists.
 // Ships with passengers sail to the best passenger destination. Otherwise,
 // ships check the ProfitAnalyzer for reachable buy ports with known profitable
-// routes. As a last resort, ships WAIT at port rather than sailing empty.
+// routes. After 2+ idle ticks, ships forcibly relocate to a hub port rather
+// than sitting idle indefinitely.
 func (a *HeuristicAgent) speculativeTrade(
 	req TradeDecisionRequest,
 	sells []SellOrder,
@@ -633,23 +634,27 @@ func (a *HeuristicAgent) speculativeTrade(
 		}, nil
 	}
 
-	// After 3 consecutive idle ticks (~60s), force a re-check of ProfitAnalyzer
-	// and sail to the best opportunity buy port even if not directly reachable
-	// from the first check (which only checked reachable ports).
-	if req.Ship.IdleTicks >= 3 {
-		// Already checked reachable buy ports above; truly stuck. Log it.
-		a.logger.Warn("ship stuck idle for 3+ ticks, no reachable opportunity",
-			zap.Int("idle_ticks", req.Ship.IdleTicks),
-		)
+	// After 2+ idle ticks, force relocation instead of sitting at a dead port.
+	// Prefer hub ports (more trade variety) > opportunity sell ports > closest port.
+	if req.Ship.IdleTicks >= 2 {
+		if dest, ok := a.findRelocationPort(req.Ports, req.TopOpportunities, reachable, currentPortID); ok {
+			a.logger.Info("ship idle, relocating to better port",
+				zap.Int("idle_ticks", req.Ship.IdleTicks),
+				zap.String("dest_port", dest.String()),
+			)
+			return &TradeDecision{
+				Action: "sell_and_buy", SellOrders: sells, SailTo: &dest,
+				Reasoning: fmt.Sprintf("idle %d ticks, relocating to port with more opportunities", req.Ship.IdleTicks),
+				Confidence: 0.4,
+			}, nil
+		}
 	}
 
-	// No profitable trade, no passengers, no opportunity — WAIT at port.
-	// Sitting at port costs the same upkeep as sailing empty, but doesn't
-	// waste travel time. Ship will be re-evaluated on the next economy tick.
-	a.logger.Debug("no profitable opportunity, waiting at port")
+	// First tick — wait to see if prices change on the next scan cycle.
+	a.logger.Debug("no profitable opportunity, waiting at port (will relocate if idle persists)")
 	return &TradeDecision{
 		Action: "wait", SellOrders: sells,
-		Reasoning: "no profitable trade, passengers, or opportunity — waiting at port", Confidence: 0.3,
+		Reasoning: "no profitable trade — waiting briefly before relocating", Confidence: 0.3,
 	}, nil
 }
 
@@ -1251,8 +1256,10 @@ func (a *HeuristicAgent) buildSmartSellOrders(
 			}
 		}
 
-		// Hold if a destination offers >30% better price and current price exists.
-		if currentNet > 0 && bestDestNet > currentNet*130/100 && bestDestID != uuid.Nil {
+		// Hold if a destination offers >50% better price and current price exists.
+		// High threshold to avoid ships sitting at port holding cargo when they
+		// could sell now and trade again.
+		if currentNet > 0 && bestDestNet > currentNet*150/100 && bestDestID != uuid.Nil {
 			held = append(held, heldCargo{
 				goodID:     cargo.GoodID,
 				quantity:   cargo.Quantity,
@@ -1513,6 +1520,54 @@ func (a *HeuristicAgent) findOpportunityBuyPort(
 			return opp.BuyPortID, true
 		}
 	}
+	return uuid.Nil, false
+}
+
+// findRelocationPort picks the best port to relocate an idle ship to.
+// Priority: (1) reachable hub port with most routes, (2) reachable sell port
+// from top opportunities, (3) closest reachable port (just move somewhere).
+func (a *HeuristicAgent) findRelocationPort(
+	ports []PortInfo,
+	opportunities []TradeOpportunity,
+	reachable map[uuid.UUID]float64,
+	currentPortID uuid.UUID,
+) (uuid.UUID, bool) {
+	if len(reachable) == 0 {
+		return uuid.Nil, false
+	}
+
+	// Prefer hub ports — they tend to have more goods and routes.
+	var bestHub uuid.UUID
+	bestHubDist := math.MaxFloat64
+	for _, p := range ports {
+		if !p.IsHub || p.ID == currentPortID {
+			continue
+		}
+		if dist, ok := reachable[p.ID]; ok && dist < bestHubDist {
+			bestHubDist = dist
+			bestHub = p.ID
+		}
+	}
+	if bestHub != uuid.Nil {
+		return bestHub, true
+	}
+
+	// Fall back to the sell port of a top opportunity.
+	for _, opp := range opportunities {
+		if opp.SellPortID == currentPortID {
+			continue
+		}
+		if _, ok := reachable[opp.SellPortID]; ok {
+			return opp.SellPortID, true
+		}
+	}
+
+	// Last resort: sail to the closest port — moving is better than sitting.
+	closest := a.closestPort(reachable)
+	if closest != uuid.Nil {
+		return closest, true
+	}
+
 	return uuid.Nil, false
 }
 

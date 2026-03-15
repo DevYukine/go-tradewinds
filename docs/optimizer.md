@@ -97,9 +97,9 @@ Self-learning system that experiments with per-company trading parameters.
 ### Tunable Parameters
 | Parameter | Min | Max | Step% | Description |
 |-----------|-----|-----|-------|-------------|
-| `MinMarginPct` | 0.05 | 0.30 | 15% | Minimum profit margin to accept a trade |
-| `PassengerWeight` | 0.5 | 5.0 | 20% | Weight of passenger revenue in destination scoring |
-| `PassengerDestBonus` | 1.5 | 5.0 | 15% | Multiplier for passengers heading to chosen destination |
+| `MinMarginPct` | 0.03 | 0.30 | 15% | Minimum profit margin to accept a trade |
+| `PassengerWeight` | 0.5 | 10.0 | 20% | Weight of passenger revenue in destination scoring |
+| `PassengerDestBonus` | 1.5 | 10.0 | 15% | Multiplier for passengers heading to chosen destination |
 | `FleetEvalIntervalSec` | 60 | 600 | 20% | How often to evaluate fleet decisions |
 | `MarketEvalIntervalSec` | 30 | 300 | 20% | How often to evaluate P2P market |
 

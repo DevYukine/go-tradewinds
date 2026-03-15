@@ -20,9 +20,9 @@ type paramDef struct {
 }
 
 var tunableParams = []paramDef{
-	{Name: "MinMarginPct", Min: 0.05, Max: 0.30, StepPct: 0.15},
-	{Name: "PassengerWeight", Min: 0.5, Max: 5.0, StepPct: 0.20},
-	{Name: "PassengerDestBonus", Min: 1.5, Max: 5.0, StepPct: 0.15},
+	{Name: "MinMarginPct", Min: 0.03, Max: 0.30, StepPct: 0.15},
+	{Name: "PassengerWeight", Min: 0.5, Max: 10.0, StepPct: 0.20},
+	{Name: "PassengerDestBonus", Min: 1.5, Max: 10.0, StepPct: 0.15},
 	{Name: "FleetEvalIntervalSec", Min: 60, Max: 600, StepPct: 0.20},
 	{Name: "MarketEvalIntervalSec", Min: 30, Max: 300, StepPct: 0.20},
 }

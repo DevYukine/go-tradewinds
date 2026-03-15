@@ -74,7 +74,7 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 			a.logger.Warn("sell execution failed", zap.Error(err))
 		}
 		// Fill P2P orders.
-		a.executeFills(ctx, *ship.Ship.PortID, decision.FillOrders)
+		a.executeFills(ctx, port.ID, decision.FillOrders)
 		// Then buy.
 		if err := a.executeBuys(ctx, ship, decision.BuyOrders); err != nil {
 			a.logger.Warn("buy execution failed", zap.Error(err))
@@ -102,7 +102,7 @@ func (a *Arbitrage) OnShipArrival(ctx context.Context, ship *bot.ShipState, port
 		if err := a.executeSells(ctx, ship, decision.SellOrders); err != nil {
 			a.logger.Warn("sell execution failed", zap.Error(err))
 		}
-		a.executeFills(ctx, *ship.Ship.PortID, decision.FillOrders)
+		a.executeFills(ctx, port.ID, decision.FillOrders)
 		a.boardPassengers(ctx, ship, decision.BoardPassengers)
 		// Track idle ticks for the ship.
 		a.ctx.State.Lock()

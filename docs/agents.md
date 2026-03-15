@@ -59,7 +59,7 @@ Hand-coded rules adapting to strategy hints.
 - **Passenger-only destinations**: Ports with passenger revenue but no cargo profit are also scored as candidates
 - **Opportunity sell-port bonus**: Destinations that are sell ports of top ProfitAnalyzer opportunities get a scoring bonus
 - Profit calculation: `sellPrice - buyPrice - buyTax - sellTax` (both sides taxed)
-- Minimum margin: `profit >= buyPrice * MinMarginPct` (default 8%)
+- Minimum margin: `profit >= buyPrice * MinMarginPct` (default 5%)
 - Score: `totalCargoProfit / distance + passengerRevenue / distance * PassengerWeight + heldCargoGain / distance + routeHistoryBonus + opportunityBonus`
 - PassengerWeight default: 5.0, PassengerDestBonus default: 5.0
 
@@ -71,8 +71,8 @@ Hand-coded rules adapting to strategy hints.
 
 #### Speculative (`speculativeTrade`)
 - Triggered when no profitable trade meets minimum margin
-- Does NOT buy cargo speculatively (unless `SpeculativeTradeEnabled` param is true)
-- Priority: (1) sail to best passenger revenue destination, (2) sail to ProfitAnalyzer opportunity buy port, (3) WAIT at port (never sail empty)
+- Priority: (1) sail to best passenger revenue destination, (2) sail to ProfitAnalyzer opportunity buy port, (3) after 2+ idle ticks → relocate to nearest hub port or opportunity sell port, (4) first tick only → wait briefly for price refresh
+- Hub ports are preferred for relocation because they have more goods and routes
 - Confidence: 0.3–0.5
 
 7. **Passenger Override** — After choosing a destination, if passenger revenue (weighted by PassengerWeight) exceeds **half** of expected trade profit, override destination to best passenger port (aggressive override)
@@ -108,12 +108,12 @@ Order of evaluation:
 - Only recommend switching to a strategy that is actually performing well
 
 ### Tunable Parameters (from `CompanyParams` / request `params` field)
-- `MinMarginPct`: 0.05–0.50 (default 0.08) — minimum profit margin as fraction of buy price
+- `MinMarginPct`: 0.03–0.50 (default 0.05) — minimum profit margin as fraction of buy price
 - `PassengerWeight`: 0.5–10.0 (default 5.0) — passenger revenue weight in destination scoring
 - `PassengerDestBonus`: 1.0–10.0 (default 5.0) — bonus for destination-matching passengers
 - `FleetEvalIntervalSec`: 60–600 (default 180)
 - `MarketEvalIntervalSec`: 30–300 (default 60)
-- `SpeculativeTradeEnabled`: false (default) — allow buying without guaranteed profit
+- `SpeculativeTradeEnabled`: true (default) — allow sailing to opportunity ports when no local trade is profitable
 
 ## LLM Agent (`internal/agent/llm.go`)
 

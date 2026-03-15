@@ -78,7 +78,7 @@ func (b *baseStrategy) Shutdown() error { return nil }
 // and fetches fresh buy/sell quotes on demand. This prevents ships from
 // arriving at unscanned ports and finding no profitable trades.
 func (b *baseStrategy) ensurePortPrices(ctx context.Context, port *api.Port) {
-	const stalePriceThreshold = 3 * time.Minute
+	const stalePriceThreshold = 2 * time.Minute
 
 	age := b.ctx.PriceCache.PortAge(port.ID)
 	if age < stalePriceThreshold {
