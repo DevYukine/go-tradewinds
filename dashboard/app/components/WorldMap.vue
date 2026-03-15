@@ -6,6 +6,7 @@ import { computeSeaRoute, interpolateAlongPath, getTrailPath, type SeaPoint } fr
 
 const config = useRuntimeConfig()
 const apiBase = config.public.apiBase
+const { subscribe: subscribeGlobal } = useGlobalEvents()
 
 const mapContainer = ref<HTMLDivElement | null>(null)
 let map: L.Map | null = null
@@ -399,8 +400,24 @@ onMounted(() => {
   fetchWorldData()
   fetchShips()
 
-  pollTimer = setInterval(fetchShips, 10_000)
-  worldPollTimer = setInterval(fetchWorldData, 60_000) // Refresh ports/routes every 60s
+  // SSE: instant refresh when ships are bought/sold/dock/sail.
+  const shipEvents = new Set(['ship_bought', 'ship_sold', 'ship_docked', 'ship_sailed'])
+  let sseRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  subscribeGlobal((event) => {
+    if (shipEvents.has(event.type)) {
+      // Debounce rapid bursts into a single fetch.
+      if (!sseRefreshTimer) {
+        sseRefreshTimer = setTimeout(() => {
+          sseRefreshTimer = null
+          fetchShips()
+        }, 500)
+      }
+    }
+  })
+
+  // Fallback polling at relaxed intervals (SSE handles the fast path).
+  pollTimer = setInterval(fetchShips, 30_000)
+  worldPollTimer = setInterval(fetchWorldData, 60_000)
   animTimer = setInterval(animateShips, 1_000)
 })
 

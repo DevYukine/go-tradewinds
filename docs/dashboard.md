@@ -50,6 +50,7 @@ Fiber web server on `API_PORT` (default 3002).
 | GET | `/sse/logs/:id` | Live log stream for a company |
 | GET | `/sse/pnl/:id` | Live P&L stream (`?since_id=`) |
 | GET | `/sse/events/:id` | Real-time state change notifications |
+| GET | `/sse/global-events` | Multiplexed events from ALL companies |
 
 ### `/sse/logs/:id`
 Subscribes to `CompanyLogger` ring buffer. Streams log entries as line-delimited JSON. Auto-cleans on disconnect.
@@ -64,4 +65,14 @@ Subscribes to `EventBroadcaster` on the `CompanyRunner`. Streams typed state cha
 - `economy` — treasury/upkeep refresh
 - `warehouse` — warehouse purchased
 
-The **company detail page** uses these to trigger instant re-fetches of inventory, trades, and company data instead of waiting for poll intervals. The overview page uses polling only — SSE connections are limited to the detail page to stay within the browser's 6-connection-per-origin HTTP/1.1 limit.
+The **company detail page** uses these to trigger instant re-fetches of inventory, trades, and company data instead of waiting for poll intervals.
+
+### `/sse/global-events`
+Multiplexes state change events from ALL running companies into a single SSE stream. Each event includes `company_id` so the frontend knows which company changed. Used by the **overview page** and **world map** for instant updates without opening one SSE connection per company (which would exceed the browser's 6-connection HTTP/1.1 limit).
+
+### Dashboard refresh strategy
+All pages use SSE-driven instant refresh with relaxed fallback polling:
+- **Overview page**: Global SSE triggers immediate company/inventory re-fetch on fleet or economy events (500ms debounce). Fallback polling at 30s.
+- **World map**: Global SSE triggers immediate ship re-fetch on ship_bought/sold/docked/sailed events (500ms debounce). Fallback polling at 30s.
+- **Company detail page**: Per-company SSE triggers immediate inventory re-fetch. P&L streamed via SSE. Inventory fallback polling at 30s.
+- **Analytics page**: Manual refresh only (historical/aggregate data).

@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"go.uber.org/zap"
 
+	"github.com/DevYukine/go-tradewinds/internal/bot"
 	"github.com/DevYukine/go-tradewinds/internal/db"
 )
 
@@ -20,6 +21,7 @@ func (s *Server) registerSSE() {
 	sse.Get("/logs/:id", s.handleSSELogs)
 	sse.Get("/pnl/:id", s.handleSSEPnL)
 	sse.Get("/events/:id", s.handleSSEEvents)
+	sse.Get("/global-events", s.handleSSEGlobalEvents)
 }
 
 // handleSSELogs streams live log entries for a specific company.
@@ -212,4 +214,97 @@ func (s *Server) sendPnLUpdates(w *bufio.Writer, lastID *uint, companyID uint64)
 	}
 
 	return true
+}
+
+// handleSSEGlobalEvents multiplexes state change events from ALL running
+// companies into a single SSE stream. This lets the overview page and world
+// map receive instant updates without opening one SSE connection per company
+// (which would exceed the browser's 6-connection HTTP/1.1 limit).
+func (s *Server) handleSSEGlobalEvents(c fiber.Ctx) error {
+	c.Set("Content-Type", "text/event-stream")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
+	c.Set("Transfer-Encoding", "chunked")
+
+	return c.SendStreamWriter(func(w *bufio.Writer) {
+		s.logger.Debug("SSE global events stream started")
+
+		// Merged channel receives events from all companies.
+		merged := make(chan globalEvent, 64)
+		done := make(chan struct{})
+
+		// Goroutine that subscribes to all runners and forwards events.
+		go func() {
+			defer close(merged)
+
+			type sub struct {
+				runner *bot.CompanyRunner
+				subID  int
+				ch     <-chan bot.StateEvent
+			}
+
+			var subs []sub
+
+			// Subscribe to all current runners.
+			companies := s.manager.Companies()
+			for gameID, runner := range companies {
+				subID, ch := runner.Events().Subscribe()
+				subs = append(subs, sub{runner: runner, subID: subID, ch: ch})
+
+				// Look up DB company ID for the frontend.
+				var record db.CompanyRecord
+				if err := s.db.Where("game_id = ?", gameID).First(&record).Error; err != nil {
+					continue
+				}
+
+				// Forward events from this runner to merged channel.
+				go func(ch <-chan bot.StateEvent, companyID uint) {
+					for event := range ch {
+						select {
+						case merged <- globalEvent{
+							Type:      event.Type,
+							Timestamp: event.Timestamp,
+							CompanyID: companyID,
+						}:
+						case <-done:
+							return
+						}
+					}
+				}(ch, record.ID)
+			}
+
+			// Block until client disconnects.
+			<-done
+
+			// Unsubscribe all.
+			for _, s := range subs {
+				s.runner.Events().Unsubscribe(s.subID)
+			}
+		}()
+
+		// Stream merged events to client.
+		for event := range merged {
+			data, err := json.Marshal(event)
+			if err != nil {
+				continue
+			}
+
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				close(done)
+				return
+			}
+			if err := w.Flush(); err != nil {
+				close(done)
+				return
+			}
+		}
+	})
+}
+
+// globalEvent extends StateEvent with the company ID so the frontend knows
+// which company the event originated from.
+type globalEvent struct {
+	Type      string `json:"type"`
+	Timestamp int64  `json:"ts"`
+	CompanyID uint   `json:"company_id"`
 }

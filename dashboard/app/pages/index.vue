@@ -4,6 +4,7 @@ import type { Company, CompanyInventory } from '~/types'
 const { companies, fetchCompanies } = useCompanies()
 const { world } = useWorld()
 const router = useRouter()
+const { subscribe: subscribeGlobal } = useGlobalEvents()
 
 // Use the shared inventory composable — same global state as company detail page.
 const { inventories, fetchInventory } = useInventory()
@@ -15,11 +16,7 @@ async function fetchAllInventories() {
   )
 }
 
-// Initial fetch when companies arrive, then poll.
-// No SSE on the overview page — opening 7 SSE connections (one per company)
-// would exceed the browser's 6-connection-per-origin HTTP/1.1 limit and block
-// all other API requests.
-// Component-scoped flag so navigating away and back triggers a re-fetch.
+// Initial fetch when companies arrive, then poll as a fallback.
 const initialFetchDone = ref(false)
 watch(
   () => companies.value,
@@ -32,12 +29,40 @@ watch(
   { immediate: true }
 )
 
+// Global SSE: instant refresh on state changes from any company.
+// Uses a single multiplexed connection instead of one per company.
+const fleetEvents = new Set(['ship_bought', 'ship_sold', 'economy', 'warehouse'])
+const inventoryEvents = new Set(['ship_bought', 'ship_docked', 'ship_sailed', 'ship_sold', 'trade', 'passenger', 'economy', 'warehouse'])
+
+// Debounce rapid event bursts (e.g. multiple ships docking at once).
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleRefresh(fetchInv: boolean) {
+  if (refreshTimer) return
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null
+    fetchCompanies()
+    if (fetchInv) fetchAllInventories()
+  }, 500)
+}
+
+onMounted(() => {
+  subscribeGlobal((event) => {
+    if (fleetEvents.has(event.type)) {
+      scheduleRefresh(true)
+    } else if (inventoryEvents.has(event.type)) {
+      // Refresh just the affected company's inventory.
+      fetchInventory(event.company_id)
+    }
+  })
+})
+
+// Fallback polling at a relaxed interval (SSE handles the fast path).
 let pollTimer: ReturnType<typeof setInterval> | null = null
 onMounted(() => {
   pollTimer = setInterval(() => {
     fetchCompanies()
     fetchAllInventories()
-  }, 15000)
+  }, 30000)
 })
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
