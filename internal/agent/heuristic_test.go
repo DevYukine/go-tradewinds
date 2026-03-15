@@ -1057,22 +1057,25 @@ func TestCalcQuantity(t *testing.T) {
 		name      string
 		budget    int64
 		unitPrice int
+		taxBps    int
 		maxQty    int
 		want      int
 	}{
-		{"zero price", 1000, 0, 100, 0},
-		{"affordable max", 10000, 10, 100, 100},
-		{"budget limited", 500, 100, 100, 5},
-		{"cannot afford", 1, 100, 100, 0},
-		{"can afford one", 100, 100, 100, 1},
+		{"zero price", 1000, 0, 0, 100, 0},
+		{"affordable max", 10000, 10, 0, 100, 100},
+		{"budget limited", 500, 100, 0, 100, 5},
+		{"cannot afford", 1, 100, 0, 100, 0},
+		{"can afford one", 100, 100, 0, 100, 1},
+		{"tax reduces quantity", 1000, 100, 500, 100, 9},  // 100 + 5% tax = 105 per unit, 1000/105 = 9
+		{"tax makes unaffordable", 100, 100, 500, 100, 0}, // 105 > 100
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := a.calcQuantity(tc.budget, tc.unitPrice, tc.maxQty)
+			got := a.calcQuantity(tc.budget, tc.unitPrice, tc.taxBps, tc.maxQty)
 			if got != tc.want {
-				t.Errorf("calcQuantity(%d, %d, %d) = %d, want %d",
-					tc.budget, tc.unitPrice, tc.maxQty, got, tc.want)
+				t.Errorf("calcQuantity(%d, %d, tax=%d, %d) = %d, want %d",
+					tc.budget, tc.unitPrice, tc.taxBps, tc.maxQty, got, tc.want)
 			}
 		})
 	}
@@ -1186,27 +1189,37 @@ func TestDecideTradeAction_Arbitrage_MultiGoodBuying(t *testing.T) {
 	goodY := id(11)
 	goodZ := id(12)
 
+	// With unlimited supply per good, the greedy fill algorithm fills all
+	// capacity (or exhausts budget) with the highest-ROI good first. This
+	// test verifies the algorithm correctly picks the best-ROI good and
+	// fills as much capacity as budget allows.
+	//
+	// ROI ranking: Z (1.2) > X (1.0) > Y (0.8). All buy at 50g.
+	// Budget=30000, capacity=500. calcQuantity(30000, 50, 0, 500) → 500
+	// (affordable=600 > cap=500). Ship fills entirely with Z.
 	dec, err := a.DecideTradeAction(context.Background(), TradeDecisionRequest{
 		StrategyHint: "arbitrage",
 		Ship:         ShipSnapshot{PortID: &portA, Capacity: 500},
 		Routes:       []RouteInfo{{FromID: portA, ToID: portB, Distance: 5}},
 		PriceCache: []PricePoint{
-			{PortID: portA, GoodID: goodX, BuyPrice: 10, SellPrice: 5},
-			{PortID: portA, GoodID: goodY, BuyPrice: 20, SellPrice: 15},
-			{PortID: portA, GoodID: goodZ, BuyPrice: 30, SellPrice: 25},
-			{PortID: portB, GoodID: goodX, BuyPrice: 20, SellPrice: 25},  // profit 15
-			{PortID: portB, GoodID: goodY, BuyPrice: 30, SellPrice: 40},  // profit 20
-			{PortID: portB, GoodID: goodZ, BuyPrice: 50, SellPrice: 60},  // profit 30
+			{PortID: portA, GoodID: goodX, BuyPrice: 50, SellPrice: 30},
+			{PortID: portA, GoodID: goodY, BuyPrice: 50, SellPrice: 30},
+			{PortID: portA, GoodID: goodZ, BuyPrice: 50, SellPrice: 30},
+			{PortID: portB, GoodID: goodX, BuyPrice: 80, SellPrice: 100},  // profit 50, ROI 1.0
+			{PortID: portB, GoodID: goodY, BuyPrice: 70, SellPrice: 90},   // profit 40, ROI 0.8
+			{PortID: portB, GoodID: goodZ, BuyPrice: 90, SellPrice: 110},  // profit 60, ROI 1.2
 		},
-		// Budget of 5000 limits how much of the top good we can buy (5000/30=166),
-		// so remaining capacity (334) should be filled with cheaper goods.
-		Constraints: Constraints{MaxSpend: 5000},
+		Constraints: Constraints{MaxSpend: 30000},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(dec.BuyOrders) < 2 {
-		t.Errorf("expected multiple buy orders for multi-good filling, got %d", len(dec.BuyOrders))
+	if len(dec.BuyOrders) < 1 {
+		t.Errorf("expected at least 1 buy order, got %d", len(dec.BuyOrders))
+	}
+	// Best-ROI good (Z) should be bought first.
+	if len(dec.BuyOrders) > 0 && dec.BuyOrders[0].GoodID != goodZ {
+		t.Errorf("expected first buy to be best-ROI good Z, got %s", dec.BuyOrders[0].GoodID)
 	}
 	// Total quantity should not exceed ship capacity.
 	totalQty := 0

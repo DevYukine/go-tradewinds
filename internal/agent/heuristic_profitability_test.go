@@ -432,7 +432,7 @@ func TestSmartSell_SellsWhenDestinationOnlySlightlyBetter(t *testing.T) {
 		Routes: []RouteInfo{{FromID: portA, ToID: portB, Distance: 5}},
 		PriceCache: []PricePoint{
 			{PortID: portA, GoodID: goodX, BuyPrice: 60, SellPrice: 40}, // Sell here for 40
-			{PortID: portB, GoodID: goodX, BuyPrice: 50, SellPrice: 55}, // Only 55, not >60 (40*1.5)
+			{PortID: portB, GoodID: goodX, BuyPrice: 50, SellPrice: 45}, // Only 45, not >48 (40*1.2)
 		},
 		Constraints: Constraints{MaxSpend: 50000},
 		Params:      defaultParams(),
@@ -441,7 +441,7 @@ func TestSmartSell_SellsWhenDestinationOnlySlightlyBetter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 55 < 40 * 1.5 = 60 → should sell now.
+	// 45 < 40 * 1.2 = 48 → should sell now (below 20% threshold).
 	found := false
 	for _, sell := range dec.SellOrders {
 		if sell.GoodID == goodX {
@@ -449,7 +449,7 @@ func TestSmartSell_SellsWhenDestinationOnlySlightlyBetter(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("should sell goodX when destination is only slightly better (below 50% threshold)")
+		t.Error("should sell goodX when destination is only slightly better (below 20% threshold)")
 	}
 }
 
@@ -2121,7 +2121,7 @@ func TestCalcQuantity_Overflow(t *testing.T) {
 	a := newTestAgent()
 
 	// Very large budget, ensure no integer overflow.
-	qty := a.calcQuantity(math.MaxInt64/2, 1, 1000)
+	qty := a.calcQuantity(math.MaxInt64/2, 1, 0, 1000)
 	if qty < 0 || qty > 1000 {
 		t.Errorf("calcQuantity overflow: got %d", qty)
 	}
@@ -2130,7 +2130,7 @@ func TestCalcQuantity_Overflow(t *testing.T) {
 func TestCalcQuantity_NegativePrice(t *testing.T) {
 	a := newTestAgent()
 
-	qty := a.calcQuantity(1000, -1, 100)
+	qty := a.calcQuantity(1000, -1, 0, 100)
 	if qty != 0 {
 		t.Errorf("expected 0 for negative price, got %d", qty)
 	}

@@ -173,9 +173,11 @@ type ShipSnapshot struct {
 	Cargo        []CargoItem `json:"cargo"`
 	Capacity     int         `json:"capacity"`
 	Speed        int         `json:"speed"`
+	Upkeep       int         `json:"upkeep"`        // Per-cycle upkeep cost.
 	PassengerCap int         `json:"passenger_cap"` // Max passenger groups from ship type.
 	ArrivesAt    *time.Time  `json:"arrives_at"`
 	IdleTicks    int         `json:"idle_ticks"` // Consecutive "wait" ticks while docked.
+	ShipType     string      `json:"ship_type"`
 }
 
 // PassengerInfo describes an available or boarded passenger group.
@@ -354,6 +356,7 @@ type FleetDecisionRequest struct {
 	ShipTypes     []ShipTypeInfo      `json:"ship_types"`
 	PriceCache    []PricePoint        `json:"price_cache"`
 	ShipyardPorts []uuid.UUID         `json:"shipyard_ports"` // Port IDs that have shipyards (not all ports do).
+	Ports         []PortInfo          `json:"ports"`          // Port details including tax rates for purchase cost calculation.
 }
 
 // ShipPurchase describes a ship to buy at a specific port.

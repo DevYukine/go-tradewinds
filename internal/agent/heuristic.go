@@ -160,7 +160,7 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 				expectedProfit += int64(b.Quantity) * int64(profit)
 			}
 		}
-		if bestPassRev > 0 && int64(float64(bestPassRev)*passengerWeight) > expectedProfit/4 && bestPassDest != *decision.SailTo {
+		if bestPassRev > 0 && int64(bestPassRev) > expectedProfit && bestPassDest != *decision.SailTo {
 			decision.SailTo = &bestPassDest
 			decision.Reasoning += " (overridden: passenger revenue dominates)"
 		}
@@ -290,6 +290,7 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 		goodID   uuid.UUID
 		buyPrice int
 		profit   int
+		roi      float64 // profit / effective buy cost (for sorting)
 	}
 	destGoods := make(map[uuid.UUID][]goodOpp)
 
@@ -298,6 +299,7 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 			continue
 		}
 		buyTaxCost := pp.BuyPrice * buyTaxBps / 10000
+		effectiveBuyCost := pp.BuyPrice + buyTaxCost
 		for destID := range reachable {
 			dp, ok := priceIndex[priceKey(destID, pp.GoodID)]
 			if !ok || dp.SellPrice <= 0 {
@@ -308,7 +310,8 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 			if profit < int(float64(pp.BuyPrice)*minMarginPct) {
 				continue
 			}
-			destGoods[destID] = append(destGoods[destID], goodOpp{pp.GoodID, pp.BuyPrice, profit})
+			roi := float64(profit) / float64(max(effectiveBuyCost, 1))
+			destGoods[destID] = append(destGoods[destID], goodOpp{pp.GoodID, pp.BuyPrice, profit, roi})
 		}
 	}
 
@@ -319,6 +322,9 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 	}
 	buyCapacity := req.Ship.Capacity - heldCapacity
 
+	// Upkeep cost per minute for this ship (upkeep is per 5-hour cycle = 300 minutes).
+	upkeepPerMin := float64(req.Ship.Upkeep) / 300.0
+
 	// Score each destination by simulating a full ship fill.
 	type destCandidate struct {
 		destID uuid.UUID
@@ -328,7 +334,7 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 	var candidates []destCandidate
 
 	for destID, goods := range destGoods {
-		// Deduplicate and sort goods by profit descending.
+		// Deduplicate and sort goods by ROI descending (profit per gold invested).
 		seen := make(map[uuid.UUID]bool)
 		var unique []goodOpp
 		for _, g := range goods {
@@ -337,7 +343,7 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 				unique = append(unique, g)
 			}
 		}
-		sort.Slice(unique, func(i, j int) bool { return unique[i].profit > unique[j].profit })
+		sort.Slice(unique, func(i, j int) bool { return unique[i].roi > unique[j].roi })
 
 		// Simulate greedy fill to compute total achievable profit.
 		remaining := buyCapacity
@@ -347,16 +353,22 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 			if remaining <= 0 || remainBudget <= 0 {
 				break
 			}
-			qty := a.calcQuantity(remainBudget, g.buyPrice, remaining)
+			qty := a.calcQuantity(remainBudget, g.buyPrice, buyTaxBps, remaining)
 			if qty > 0 {
 				totalProfit += g.profit * qty
 				remaining -= qty
-				remainBudget -= int64(qty * g.buyPrice)
+				effectiveCost := g.buyPrice + g.buyPrice*buyTaxBps/10000
+				remainBudget -= int64(qty * effectiveCost)
 			}
 		}
 
 		dist := math.Max(reachable[destID], 1.0)
-		score := float64(totalProfit) / dist
+		// Subtract travel upkeep cost: travel time = distance / speed (in minutes).
+		travelMins := dist / math.Max(float64(req.Ship.Speed), 1.0)
+		travelUpkeep := upkeepPerMin * travelMins
+		adjustedProfit := float64(totalProfit) - travelUpkeep
+
+		score := adjustedProfit / dist
 		score += float64(passengerRevByDest[destID]) / dist * passengerWeight
 		score += float64(heldProfitByDest[destID]) / dist
 		score += routeBonus[destID] / dist
@@ -405,11 +417,12 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 			if remaining <= 0 || remainBudget <= 0 {
 				break
 			}
-			qty := a.calcQuantity(remainBudget, g.buyPrice, remaining)
+			qty := a.calcQuantity(remainBudget, g.buyPrice, buyTaxBps, remaining)
 			if qty > 0 {
 				buys = append(buys, BuyOrder{GoodID: g.goodID, Quantity: qty})
 				remaining -= qty
-				remainBudget -= int64(qty * g.buyPrice)
+				effectiveCost := g.buyPrice + g.buyPrice*buyTaxBps/10000
+				remainBudget -= int64(qty * effectiveCost)
 			}
 		}
 
@@ -469,6 +482,7 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 		goodID   uuid.UUID
 		buyPrice int
 		profit   int
+		roi      float64
 	}
 	destGoods := make(map[uuid.UUID][]goodOpp)
 
@@ -477,6 +491,7 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 			continue
 		}
 		buyTaxCost := pp.BuyPrice * buyTaxBps / 10000
+		effectiveBuyCost := pp.BuyPrice + buyTaxCost
 		for destID := range reachable {
 			dp, ok := priceIndex[priceKey(destID, pp.GoodID)]
 			if !ok || dp.SellPrice <= 0 {
@@ -487,7 +502,8 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 			if profit < int(float64(pp.BuyPrice)*minMarginPct) {
 				continue
 			}
-			destGoods[destID] = append(destGoods[destID], goodOpp{pp.GoodID, pp.BuyPrice, profit})
+			roi := float64(profit) / float64(max(effectiveBuyCost, 1))
+			destGoods[destID] = append(destGoods[destID], goodOpp{pp.GoodID, pp.BuyPrice, profit, roi})
 		}
 	}
 
@@ -498,6 +514,9 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 	}
 	buyCapacity := capacity - heldCapacity
 
+	// Upkeep cost per minute for this ship (upkeep is per 5-hour cycle = 300 minutes).
+	upkeepPerMin := float64(req.Ship.Upkeep) / 300.0
+
 	// Score each destination by simulating a full ship fill.
 	type destCandidate struct {
 		destID uuid.UUID
@@ -507,7 +526,7 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 	var candidates []destCandidate
 
 	for destID, goods := range destGoods {
-		// Deduplicate and sort goods by profit descending.
+		// Deduplicate and sort goods by ROI descending (profit per gold invested).
 		seen := make(map[uuid.UUID]bool)
 		var unique []goodOpp
 		for _, g := range goods {
@@ -516,7 +535,7 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 				unique = append(unique, g)
 			}
 		}
-		sort.Slice(unique, func(i, j int) bool { return unique[i].profit > unique[j].profit })
+		sort.Slice(unique, func(i, j int) bool { return unique[i].roi > unique[j].roi })
 
 		// Simulate greedy fill to compute total achievable profit.
 		remaining := buyCapacity
@@ -526,17 +545,23 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 			if remaining <= 0 || remainBudget <= 0 {
 				break
 			}
-			qty := a.calcQuantity(remainBudget, g.buyPrice, remaining)
+			qty := a.calcQuantity(remainBudget, g.buyPrice, buyTaxBps, remaining)
 			if qty > 0 {
 				totalProfit += g.profit * qty
 				remaining -= qty
-				remainBudget -= int64(qty * g.buyPrice)
+				effectiveCost := g.buyPrice + g.buyPrice*buyTaxBps/10000
+				remainBudget -= int64(qty * effectiveCost)
 			}
 		}
 
 		dist := math.Max(reachable[destID], 1.0)
+		// Subtract travel upkeep cost from profit.
+		travelMins := dist / math.Max(float64(req.Ship.Speed), 1.0)
+		travelUpkeep := upkeepPerMin * travelMins
+		adjustedProfit := float64(totalProfit) - travelUpkeep
+
 		// Bulk hauler: absolute profit, not per-distance.
-		score := float64(totalProfit)
+		score := adjustedProfit
 		score += float64(passengerRevByDest[destID]) / dist * passengerWeight
 		score += float64(heldProfitByDest[destID])
 		score += routeBonus[destID]
@@ -585,11 +610,12 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 			if remaining <= 0 || remainBudget <= 0 {
 				break
 			}
-			qty := a.calcQuantity(remainBudget, g.buyPrice, remaining)
+			qty := a.calcQuantity(remainBudget, g.buyPrice, buyTaxBps, remaining)
 			if qty > 0 {
 				buys = append(buys, BuyOrder{GoodID: g.goodID, Quantity: qty})
 				remaining -= qty
-				remainBudget -= int64(qty * g.buyPrice)
+				effectiveCost := g.buyPrice + g.buyPrice*buyTaxBps/10000
+				remainBudget -= int64(qty * effectiveCost)
 			}
 		}
 
@@ -821,13 +847,23 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 	}
 
 	// --- AFFORDABILITY CHECK ---
-	// The company must be able to afford the ship price AND still maintain
-	// a reserve of (newTotalUpkeep * reserveCycles) afterwards.
+	// The company must be able to afford the ship price (including port purchase
+	// tax) AND still maintain a reserve of (newTotalUpkeep * reserveCycles).
 	// reserveCycles grows with fleet size, naturally limiting expansion.
 	newReserve := reserveCycles(numShips+1, req.StrategyHint)
+
+	// Build port tax index for purchase cost calculation.
+	portTaxIndex := make(map[uuid.UUID]int, len(req.Ports))
+	for _, p := range req.Ports {
+		portTaxIndex[p.ID] = p.TaxRateBps
+	}
+	purchasePortID := a.findPurchasePort(req.Ships, req.ShipyardPorts)
+	purchaseTaxBps := portTaxIndex[purchasePortID]
+
 	canAfford := func(st ShipTypeInfo) bool {
 		newUpkeep := upkeep + int64(st.Upkeep)
-		required := int64(st.BasePrice) + newUpkeep*newReserve
+		shipCost := int64(st.BasePrice) + int64(st.BasePrice)*int64(purchaseTaxBps)/10000
+		required := shipCost + newUpkeep*newReserve
 		return treasury >= required
 	}
 
@@ -855,20 +891,23 @@ func (a *HeuristicAgent) DecideFleetAction(_ context.Context, req FleetDecisionR
 	}
 
 	// --- PURCHASE PORT SELECTION ---
-	purchasePortID := a.findPurchasePort(req.Ships, req.ShipyardPorts)
+	// purchasePortID already resolved above for tax calculation; verify it's valid.
 	if purchasePortID == uuid.Nil {
 		return &FleetDecision{Reasoning: "no suitable port found for ship purchase"}, nil
 	}
 
 	newUpkeep := upkeep + int64(targetShipType.Upkeep)
+	shipCost := int64(targetShipType.BasePrice) + int64(targetShipType.BasePrice)*int64(purchaseTaxBps)/10000
 	a.logger.Info("recommending ship purchase",
 		zap.String("strategy", req.StrategyHint),
 		zap.String("ship_type", targetShipType.Name),
 		zap.Int("price", targetShipType.BasePrice),
+		zap.Int("tax_bps", purchaseTaxBps),
+		zap.Int64("total_cost", shipCost),
 		zap.Int("capacity", targetShipType.Capacity),
 		zap.Int("speed", targetShipType.Speed),
 		zap.Int("current_fleet", numShips),
-		zap.Int64("treasury_after", treasury-int64(targetShipType.BasePrice)),
+		zap.Int64("treasury_after", treasury-shipCost),
 		zap.Int64("new_upkeep_per_cycle", newUpkeep),
 		zap.Int64("reserve_cycles", newReserve),
 	)
@@ -1285,10 +1324,10 @@ func (a *HeuristicAgent) buildSmartSellOrders(
 			}
 		}
 
-		// Hold if a destination offers >50% better price and current price exists.
-		// High threshold to avoid ships sitting at port holding cargo when they
-		// could sell now and trade again.
-		if currentNet > 0 && bestDestNet > currentNet*150/100 && bestDestID != uuid.Nil {
+		// Hold if a destination offers >20% better net price. The ship is already
+		// sailing somewhere, so holding costs nothing extra — the cargo rides along
+		// and earns the price difference at the next stop.
+		if currentNet > 0 && bestDestNet > currentNet*120/100 && bestDestID != uuid.Nil {
 			held = append(held, heldCargo{
 				goodID:     cargo.GoodID,
 				quantity:   cargo.Quantity,
@@ -1389,11 +1428,17 @@ func (a *HeuristicAgent) closestPort(reachable map[uuid.UUID]float64) uuid.UUID 
 	return bestID
 }
 
-func (a *HeuristicAgent) calcQuantity(budget int64, unitPrice int, maxQty int) int {
+// calcQuantity calculates how many units can be bought given budget, unit price,
+// buy tax rate (in bps), and maximum capacity. Tax is factored into the cost.
+func (a *HeuristicAgent) calcQuantity(budget int64, unitPrice int, taxBps int, maxQty int) int {
 	if unitPrice <= 0 {
 		return 0
 	}
-	affordable := int(budget) / unitPrice
+	effectiveCost := unitPrice + unitPrice*taxBps/10000
+	if effectiveCost <= 0 {
+		return 0
+	}
+	affordable := int(budget / int64(effectiveCost))
 	if affordable < maxQty {
 		maxQty = affordable
 	}
@@ -1547,12 +1592,19 @@ func (a *HeuristicAgent) warehouseOps(
 		}
 		var candidates []loadCandidate
 
+		// Use the current NPC buy price at this port as a cost baseline for
+		// warehouse goods (original purchase price is not tracked).
 		for _, item := range wh.Items {
 			if item.Quantity <= 0 {
 				continue
 			}
-			// If we have a destination, check profit there.
-			// Otherwise, find the best reachable destination.
+			// Estimate cost basis: what we'd pay to buy this good at this port now.
+			costBasis := 0
+			if pp, ok := priceIndex[priceKey(currentPortID, item.GoodID)]; ok && pp.BuyPrice > 0 {
+				costBasis = pp.BuyPrice + pp.BuyPrice*buyTaxBps/10000
+			}
+
+			// Find the best reachable destination by net profit over cost basis.
 			bestProfit := 0
 			bestDest := uuid.Nil
 
@@ -1562,8 +1614,10 @@ func (a *HeuristicAgent) warehouseOps(
 					return
 				}
 				sellTax := dp.SellPrice * taxIndex[dID] / 10000
-				// No buy tax — goods are already in warehouse.
-				profit := dp.SellPrice - sellTax
+				netSell := dp.SellPrice - sellTax
+				// Profit over cost basis. If no cost basis (good not sold here),
+				// use net sell revenue directly (still profitable to move).
+				profit := netSell - costBasis
 				if profit > bestProfit {
 					bestProfit = profit
 					bestDest = dID
@@ -1573,7 +1627,6 @@ func (a *HeuristicAgent) warehouseOps(
 			if destID != uuid.Nil {
 				checkDest(destID)
 			}
-			// Also check other reachable ports for better options.
 			for portID := range reachable {
 				checkDest(portID)
 			}

@@ -43,7 +43,8 @@ func NewProfitAnalyzer(priceCache *PriceCache, world *WorldCache) *ProfitAnalyze
 }
 
 // Recompute rebuilds the top opportunities list from current price data.
-// Called after each full scanner cycle completes.
+// Called after each full scanner cycle completes. Considers both direct
+// routes and 2-hop routes (buy at A, sail through B, sell at C).
 func (pa *ProfitAnalyzer) Recompute() {
 	prices := pa.priceCache.All()
 
@@ -72,6 +73,54 @@ func (pa *ProfitAnalyzer) Recompute() {
 		}
 	}
 
+	// Build adjacency map for 2-hop distance lookups.
+	// neighbors[portA] = map[portB] = distance
+	portIDs := pa.world.PortIDs()
+	neighbors := make(map[uuid.UUID]map[uuid.UUID]float64, len(portIDs))
+	for _, pid := range portIDs {
+		routes := pa.world.RoutesFrom(pid)
+		m := make(map[uuid.UUID]float64, len(routes))
+		for _, r := range routes {
+			peer := r.ToID
+			if peer == pid {
+				peer = r.FromID
+			}
+			m[peer] = r.Distance
+		}
+		neighbors[pid] = m
+	}
+
+	// lookupDist checks direct route, then 2-hop via intermediate port.
+	lookupDist := func(from, to uuid.UUID) float64 {
+		// Direct route.
+		if d, ok := neighbors[from][to]; ok {
+			return d
+		}
+		if d, ok := neighbors[to][from]; ok {
+			return d
+		}
+		// 2-hop: find shortest from->mid->to path.
+		bestDist := 0.0
+		fromNeighbors := neighbors[from]
+		for mid, d1 := range fromNeighbors {
+			if mid == to {
+				continue
+			}
+			d2, ok := neighbors[mid][to]
+			if !ok {
+				d2, ok = neighbors[to][mid]
+			}
+			if !ok {
+				continue
+			}
+			total := d1 + d2
+			if bestDist == 0 || total < bestDist {
+				bestDist = total
+			}
+		}
+		return bestDist
+	}
+
 	var opportunities []TradeOpportunity
 
 	for goodID, buys := range buyByGood {
@@ -94,10 +143,10 @@ func (pa *ProfitAnalyzer) Recompute() {
 					continue
 				}
 
-				// Look up distance between ports.
-				dist := pa.lookupDistance(buy.portID, sell.portID)
+				// Look up distance (direct or 2-hop).
+				dist := lookupDist(buy.portID, sell.portID)
 				if dist <= 0 {
-					continue // No route between these ports.
+					continue // No route between these ports (even via 2 hops).
 				}
 
 				score := float64(profit) / math.Max(dist, 1.0)
@@ -116,12 +165,13 @@ func (pa *ProfitAnalyzer) Recompute() {
 		}
 	}
 
-	// Sort by score descending and keep top 50.
+	// Sort by score descending and keep top 100 (increased from 50 to capture
+	// more opportunities across different ship locations).
 	sort.Slice(opportunities, func(i, j int) bool {
 		return opportunities[i].Score > opportunities[j].Score
 	})
-	if len(opportunities) > 50 {
-		opportunities = opportunities[:50]
+	if len(opportunities) > 100 {
+		opportunities = opportunities[:100]
 	}
 
 	pa.mu.Lock()

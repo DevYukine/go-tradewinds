@@ -230,6 +230,18 @@ func (b *baseStrategy) buildFleetRequest() agent.FleetDecisionRequest {
 		warehouses = append(warehouses, warehouseToSnapshot(w))
 	}
 
+	// Build port info for tax-aware purchase calculations.
+	ports := make([]agent.PortInfo, 0, len(b.ctx.World.Ports))
+	for _, p := range b.ctx.World.Ports {
+		ports = append(ports, agent.PortInfo{
+			ID:         p.ID,
+			Name:       p.Name,
+			Code:       p.Code,
+			IsHub:      p.IsHub,
+			TaxRateBps: p.TaxRateBps,
+		})
+	}
+
 	return agent.FleetDecisionRequest{
 		StrategyHint:  b.name,
 		Company: agent.CompanySnapshot{
@@ -243,6 +255,7 @@ func (b *baseStrategy) buildFleetRequest() agent.FleetDecisionRequest {
 		ShipTypes:     b.ctx.World.ToAgentShipTypes(),
 		PriceCache:    b.ctx.PriceCache.All(),
 		ShipyardPorts: b.ctx.World.ShipyardPorts,
+		Ports:         ports,
 	}
 }
 
@@ -1183,7 +1196,9 @@ func shipToSnapshot(s *bot.ShipState, world *bot.WorldCache) agent.ShipSnapshot 
 	if st := world.GetShipType(s.Ship.ShipTypeID); st != nil {
 		snap.Capacity = st.Capacity
 		snap.Speed = st.Speed
+		snap.Upkeep = st.Upkeep
 		snap.PassengerCap = st.Passengers
+		snap.ShipType = st.Name
 	}
 
 	return snap
