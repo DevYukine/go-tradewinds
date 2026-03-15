@@ -332,13 +332,17 @@ func (m *Manager) setupRunner(
 		return nil, fmt.Errorf("failed to upsert company record: %w", result.Error)
 	}
 
-	// Update fields in case they've changed.
+	// Update fields in case they've changed (DB + in-memory struct).
 	m.gormDB.Model(dbRecord).Updates(map[string]any{
 		"name":     company.Name,
 		"strategy": strategyName,
 		"status":   "running",
 		"treasury": company.Treasury,
 	})
+	dbRecord.Name = company.Name
+	dbRecord.Strategy = strategyName
+	dbRecord.Status = "running"
+	dbRecord.Treasury = company.Treasury
 
 	// Load or create CompanyParams to check for agent override.
 	var params db.CompanyParams
@@ -346,13 +350,19 @@ func (m *Manager) setupRunner(
 		return nil, fmt.Errorf("load company_params: %w", err)
 	}
 
-	// Apply allocation agent hint to CompanyParams if this is a fresh record with default agent.
-	if agentType != "" && params.AgentType == "heuristic" {
-		params.AgentType = agentType
+	// Sync agent type from allocation config to CompanyParams.
+	// This ensures companies reflect the current allocation even if they
+	// were previously assigned a different agent type (e.g. LLM → heuristic).
+	wantAgent := agentType
+	if wantAgent == "" {
+		wantAgent = "heuristic"
+	}
+	if params.AgentType != wantAgent || params.LLMProvider != llmProvider || params.LLMModel != llmModel {
+		params.AgentType = wantAgent
 		params.LLMProvider = llmProvider
 		params.LLMModel = llmModel
 		m.gormDB.Model(&params).Updates(map[string]any{
-			"agent_type":   agentType,
+			"agent_type":   wantAgent,
 			"llm_provider": llmProvider,
 			"llm_model":    llmModel,
 		})
