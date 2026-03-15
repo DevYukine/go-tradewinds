@@ -74,6 +74,7 @@ Hand-coded rules adapting to strategy hints.
 - **LOAD (warehouse → ship)**: When docked at a port with a warehouse, check inventory for goods profitable to sell at the destination (or any reachable port). Load onto ship to fill remaining capacity. No buy tax since goods are already owned.
 - **STORE (buy → warehouse)**: Low-priority fallback, only during idle/speculative decisions (confidence ≤ 0.5). Buy cheap goods at the current port and store in warehouse when sell margin ≥ 15% at any known port. Limited to 25% of available budget to avoid over-investing.
 - Store destinations use `BuyOrder.Destination = warehouse_id` with `type: "warehouse"` in the API call
+- After LOAD/STORE transfers, warehouse inventory is re-fetched from the API and state is updated so the dashboard reflects current data
 
 #### Speculative (`speculativeTrade`)
 - Triggered when no profitable trade meets minimum margin
