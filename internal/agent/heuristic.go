@@ -155,6 +155,20 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 		decision.WarehouseStores = stores
 	}
 
+	// Step 2.4b: Warehouse pickup routing.
+	// When the ship has no profitable trade (low confidence) and no warehouse
+	// loads were generated (not at a warehouse port), check if any reachable
+	// warehouse has goods worth picking up. Route the ship there instead of
+	// sitting idle or relocating randomly.
+	if decision.Confidence <= 0.5 && len(decision.WarehouseLoads) == 0 && len(req.Warehouses) > 0 {
+		bestWhPort, bestWhProfit := a.findBestWarehousePickup(req, priceIndex, taxIndex, reachable, currentPortID)
+		if bestWhProfit > 0 {
+			decision.SailTo = &bestWhPort
+			decision.Action = "sell_and_buy"
+			decision.Reasoning += fmt.Sprintf(" + routing to warehouse port for pickup (%d est. profit)", bestWhProfit)
+		}
+	}
+
 	// Step 2.5: Passenger-only destination override.
 	// If passenger revenue for the best passenger destination exceeds the
 	// expected trade PROFIT of the chosen destination, switch to the passenger destination.
@@ -1939,8 +1953,12 @@ func (a *HeuristicAgent) warehouseOps(
 			if destID != uuid.Nil {
 				checkDest(destID)
 			}
-			for portID := range reachable {
-				checkDest(portID)
+			// Check all known ports, not just reachable — warehouse goods may
+			// need to travel multiple hops to reach the best market.
+			for _, pp := range req.PriceCache {
+				if pp.PortID != currentPortID && pp.GoodID == item.GoodID {
+					checkDest(pp.PortID)
+				}
 			}
 
 			if bestProfit > 0 && bestDest != uuid.Nil {
@@ -2081,6 +2099,68 @@ func (a *HeuristicAgent) warehouseOps(
 	}
 
 	return loads, nil
+}
+
+// findBestWarehousePickup checks if any reachable warehouse has goods that
+// can be profitably sold elsewhere. Returns the warehouse port ID and estimated
+// total profit. This lets idle ships actively seek out warehouse inventory
+// instead of leaving goods to rot.
+func (a *HeuristicAgent) findBestWarehousePickup(
+	req TradeDecisionRequest,
+	priceIndex map[string]PricePoint,
+	taxIndex map[uuid.UUID]int,
+	reachable map[uuid.UUID]float64,
+	currentPortID uuid.UUID,
+) (uuid.UUID, int) {
+	bestPort := uuid.Nil
+	bestProfit := 0
+
+	for _, wh := range req.Warehouses {
+		// Skip warehouses at the current port (already handled by warehouseOps).
+		if wh.PortID == currentPortID {
+			continue
+		}
+		// Only consider directly reachable warehouse ports.
+		if _, ok := reachable[wh.PortID]; !ok {
+			continue
+		}
+
+		// Estimate total profit from selling all warehouse goods.
+		totalProfit := 0
+		for _, item := range wh.Items {
+			if item.Quantity <= 0 {
+				continue
+			}
+			// Cost basis: current buy price at the warehouse port.
+			costBasis := 0
+			if pp, ok := priceIndex[priceKey(wh.PortID, item.GoodID)]; ok && pp.BuyPrice > 0 {
+				whTax := pp.BuyPrice * taxIndex[wh.PortID] / 10000
+				costBasis = pp.BuyPrice + whTax
+			}
+
+			// Find the best sell price across all known ports.
+			bestSellProfit := 0
+			for _, pp := range req.PriceCache {
+				if pp.PortID == wh.PortID || pp.GoodID != item.GoodID || pp.SellPrice <= 0 {
+					continue
+				}
+				sellTax := pp.SellPrice * taxIndex[pp.PortID] / 10000
+				netSell := pp.SellPrice - sellTax
+				profit := netSell - costBasis
+				if profit > bestSellProfit {
+					bestSellProfit = profit
+				}
+			}
+			totalProfit += bestSellProfit * item.Quantity
+		}
+
+		if totalProfit > bestProfit {
+			bestProfit = totalProfit
+			bestPort = wh.PortID
+		}
+	}
+
+	return bestPort, bestProfit
 }
 
 func (a *HeuristicAgent) buildPortTaxIndex(ports []PortInfo) map[uuid.UUID]int {
