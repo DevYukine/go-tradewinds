@@ -32,6 +32,11 @@ func (s *Server) registerHandlers() {
 	api.Get("/ships", s.handleAllShips)
 	api.Get("/global-pnl", s.handleGlobalPnL)
 	api.Get("/companies/:id/market-orders", s.handleCompanyMarketOrders)
+
+	// Analytics — aggregated trade and route performance data.
+	api.Get("/analytics/goods", s.handleAnalyticsGoods)
+	api.Get("/analytics/routes", s.handleAnalyticsRoutes)
+	api.Get("/analytics/timeline", s.handleAnalyticsTimeline)
 }
 
 // companyResponse extends CompanyRecord with live-enriched fields.
@@ -1087,4 +1092,470 @@ func queryInt(c fiber.Ctx, key string, defaultVal int) int {
 		return defaultVal
 	}
 	return n
+}
+
+// ---------------------------------------------------------------------------
+// Analytics endpoints — aggregate trade profitability data
+// ---------------------------------------------------------------------------
+
+// handleAnalyticsGoods returns profit breakdown by cargo type (good).
+// Aggregates from RoutePerformance for completed buy→sell cycles and from
+// TradeLog for raw volume. Supports ?hours= filter (default: all time).
+func (s *Server) handleAnalyticsGoods(c fiber.Ctx) error {
+	hours := c.Query("hours") // empty = all time
+
+	type goodProfit struct {
+		GoodID       string  `json:"good_id"`
+		GoodName     string  `json:"good_name"`
+		TotalProfit  int64   `json:"total_profit"`
+		TotalRevenue int64   `json:"total_revenue"`
+		TotalCost    int64   `json:"total_cost"`
+		TradeCount   int64   `json:"trade_count"`
+		TotalQty     int64   `json:"total_quantity"`
+		AvgProfit    float64 `json:"avg_profit_per_trade"`
+		WinCount     int64   `json:"win_count"`
+		LossCount    int64   `json:"loss_count"`
+		WinRate      float64 `json:"win_rate"`
+		BestProfit   int     `json:"best_profit"`
+		WorstProfit  int     `json:"worst_profit"`
+		FirstTrade   string  `json:"first_trade"`
+		LastTrade    string  `json:"last_trade"`
+	}
+
+	// Aggregate from RoutePerformance (completed cycles with known profit).
+	query := s.db.Model(&db.RoutePerformance{})
+	if hours != "" {
+		if h, err := strconv.Atoi(hours); err == nil && h > 0 {
+			query = query.Where("created_at > ?", time.Now().Add(-time.Duration(h)*time.Hour))
+		}
+	}
+
+	type routeRow struct {
+		GoodID      string
+		TotalProfit int64
+		TradeCount  int64
+		TotalQty    int64
+		WinCount    int64
+		LossCount   int64
+		BestProfit  int
+		WorstProfit int
+		FirstTrade  time.Time
+		LastTrade   time.Time
+	}
+	var routeRows []routeRow
+	query.Select(`good_id,
+		SUM(profit) as total_profit,
+		COUNT(*) as trade_count,
+		SUM(quantity) as total_qty,
+		SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) as win_count,
+		SUM(CASE WHEN profit <= 0 THEN 1 ELSE 0 END) as loss_count,
+		MAX(profit) as best_profit,
+		MIN(profit) as worst_profit,
+		MIN(created_at) as first_trade,
+		MAX(created_at) as last_trade`).
+		Group("good_id").
+		Scan(&routeRows)
+
+	// Aggregate revenue/cost from TradeLog by good.
+	tradeQuery := s.db.Model(&db.TradeLog{})
+	if hours != "" {
+		if h, err := strconv.Atoi(hours); err == nil && h > 0 {
+			tradeQuery = tradeQuery.Where("created_at > ?", time.Now().Add(-time.Duration(h)*time.Hour))
+		}
+	}
+
+	type tradeRow struct {
+		GoodID   string
+		GoodName string
+		Action   string
+		Total    int64
+	}
+	var tradeRows []tradeRow
+	tradeQuery.Select("good_id, good_name, action, SUM(total_price) as total").
+		Group("good_id, good_name, action").
+		Scan(&tradeRows)
+
+	// Merge data.
+	type mergedGood struct {
+		name    string
+		rev     int64
+		cost    int64
+		profit  int64
+		count   int64
+		qty     int64
+		wins    int64
+		losses  int64
+		best    int
+		worst   int
+		first   time.Time
+		last    time.Time
+	}
+	goods := make(map[string]*mergedGood)
+
+	for _, r := range routeRows {
+		g, ok := goods[r.GoodID]
+		if !ok {
+			g = &mergedGood{}
+			goods[r.GoodID] = g
+		}
+		g.profit = r.TotalProfit
+		g.count = r.TradeCount
+		g.qty = r.TotalQty
+		g.wins = r.WinCount
+		g.losses = r.LossCount
+		g.best = r.BestProfit
+		g.worst = r.WorstProfit
+		g.first = r.FirstTrade
+		g.last = r.LastTrade
+	}
+
+	for _, t := range tradeRows {
+		g, ok := goods[t.GoodID]
+		if !ok {
+			g = &mergedGood{}
+			goods[t.GoodID] = g
+		}
+		g.name = t.GoodName
+		if t.Action == "sell" {
+			g.rev = t.Total
+		} else {
+			g.cost = t.Total
+		}
+	}
+
+	result := make([]goodProfit, 0, len(goods))
+	for id, g := range goods {
+		winRate := 0.0
+		if g.count > 0 {
+			winRate = float64(g.wins) / float64(g.count)
+		}
+		avgProfit := 0.0
+		if g.count > 0 {
+			avgProfit = float64(g.profit) / float64(g.count)
+		}
+		first := ""
+		last := ""
+		if !g.first.IsZero() {
+			first = g.first.Format(time.RFC3339)
+		}
+		if !g.last.IsZero() {
+			last = g.last.Format(time.RFC3339)
+		}
+		result = append(result, goodProfit{
+			GoodID:       id,
+			GoodName:     g.name,
+			TotalProfit:  g.profit,
+			TotalRevenue: g.rev,
+			TotalCost:    g.cost,
+			TradeCount:   g.count,
+			TotalQty:     g.qty,
+			AvgProfit:    avgProfit,
+			WinCount:     g.wins,
+			LossCount:    g.losses,
+			WinRate:      winRate,
+			BestProfit:   g.best,
+			WorstProfit:  g.worst,
+			FirstTrade:   first,
+			LastTrade:    last,
+		})
+	}
+
+	// Sort by total profit descending.
+	for i := 0; i < len(result); i++ {
+		for j := i + 1; j < len(result); j++ {
+			if result[j].TotalProfit > result[i].TotalProfit {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+	}
+
+	return c.JSON(result)
+}
+
+// handleAnalyticsRoutes returns profit breakdown by route (from_port → to_port).
+// Aggregates from RoutePerformance. Supports ?hours= filter.
+func (s *Server) handleAnalyticsRoutes(c fiber.Ctx) error {
+	hours := c.Query("hours")
+
+	type routeProfit struct {
+		FromPortID   string  `json:"from_port_id"`
+		FromPortName string  `json:"from_port_name"`
+		ToPortID     string  `json:"to_port_id"`
+		ToPortName   string  `json:"to_port_name"`
+		TotalProfit  int64   `json:"total_profit"`
+		TradeCount   int64   `json:"trade_count"`
+		TotalQty     int64   `json:"total_quantity"`
+		AvgProfit    float64 `json:"avg_profit_per_trade"`
+		WinCount     int64   `json:"win_count"`
+		LossCount    int64   `json:"loss_count"`
+		WinRate      float64 `json:"win_rate"`
+		TopGoodID    string  `json:"top_good_id"`
+		TopGoodName  string  `json:"top_good_name"`
+		FirstTrade   string  `json:"first_trade"`
+		LastTrade    string  `json:"last_trade"`
+	}
+
+	query := s.db.Model(&db.RoutePerformance{})
+	if hours != "" {
+		if h, err := strconv.Atoi(hours); err == nil && h > 0 {
+			query = query.Where("created_at > ?", time.Now().Add(-time.Duration(h)*time.Hour))
+		}
+	}
+
+	type row struct {
+		FromPortID  string
+		ToPortID    string
+		TotalProfit int64
+		TradeCount  int64
+		TotalQty    int64
+		WinCount    int64
+		LossCount   int64
+		FirstTrade  time.Time
+		LastTrade   time.Time
+	}
+	var rows []row
+	query.Select(`from_port_id, to_port_id,
+		SUM(profit) as total_profit,
+		COUNT(*) as trade_count,
+		SUM(quantity) as total_qty,
+		SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) as win_count,
+		SUM(CASE WHEN profit <= 0 THEN 1 ELSE 0 END) as loss_count,
+		MIN(created_at) as first_trade,
+		MAX(created_at) as last_trade`).
+		Group("from_port_id, to_port_id").
+		Scan(&rows)
+
+	// Build port name lookup from world data.
+	portNames := s.portNameIndex()
+
+	// For each route, find the top good by profit.
+	type goodProfitRow struct {
+		FromPortID string
+		ToPortID   string
+		GoodID     string
+		GoodProfit int64
+	}
+	var goodRows []goodProfitRow
+	goodQuery := s.db.Model(&db.RoutePerformance{})
+	if hours != "" {
+		if h, err := strconv.Atoi(hours); err == nil && h > 0 {
+			goodQuery = goodQuery.Where("created_at > ?", time.Now().Add(-time.Duration(h)*time.Hour))
+		}
+	}
+	goodQuery.Select("from_port_id, to_port_id, good_id, SUM(profit) as good_profit").
+		Group("from_port_id, to_port_id, good_id").
+		Order("good_profit DESC").
+		Scan(&goodRows)
+
+	// Top good per route.
+	type routeKey struct{ from, to string }
+	topGood := make(map[routeKey]string)
+	for _, gr := range goodRows {
+		k := routeKey{gr.FromPortID, gr.ToPortID}
+		if _, exists := topGood[k]; !exists {
+			topGood[k] = gr.GoodID
+		}
+	}
+
+	// Good name lookup from TradeLog.
+	goodNames := s.goodNameIndex()
+
+	result := make([]routeProfit, 0, len(rows))
+	for _, r := range rows {
+		winRate := 0.0
+		if r.TradeCount > 0 {
+			winRate = float64(r.WinCount) / float64(r.TradeCount)
+		}
+		avgProfit := 0.0
+		if r.TradeCount > 0 {
+			avgProfit = float64(r.TotalProfit) / float64(r.TradeCount)
+		}
+		first := ""
+		last := ""
+		if !r.FirstTrade.IsZero() {
+			first = r.FirstTrade.Format(time.RFC3339)
+		}
+		if !r.LastTrade.IsZero() {
+			last = r.LastTrade.Format(time.RFC3339)
+		}
+
+		topGoodID := topGood[routeKey{r.FromPortID, r.ToPortID}]
+
+		result = append(result, routeProfit{
+			FromPortID:   r.FromPortID,
+			FromPortName: portNames[r.FromPortID],
+			ToPortID:     r.ToPortID,
+			ToPortName:   portNames[r.ToPortID],
+			TotalProfit:  r.TotalProfit,
+			TradeCount:   r.TradeCount,
+			TotalQty:     r.TotalQty,
+			AvgProfit:    avgProfit,
+			WinCount:     r.WinCount,
+			LossCount:    r.LossCount,
+			WinRate:      winRate,
+			TopGoodID:    topGoodID,
+			TopGoodName:  goodNames[topGoodID],
+			FirstTrade:   first,
+			LastTrade:    last,
+		})
+	}
+
+	// Sort by total profit descending.
+	for i := 0; i < len(result); i++ {
+		for j := i + 1; j < len(result); j++ {
+			if result[j].TotalProfit > result[i].TotalProfit {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+	}
+
+	return c.JSON(result)
+}
+
+// handleAnalyticsTimeline returns profit over time, bucketed by hour.
+// Supports ?group_by=good|route|strategy (default: good) and ?hours= filter.
+func (s *Server) handleAnalyticsTimeline(c fiber.Ctx) error {
+	hours := c.Query("hours", "168") // default 7 days
+	groupBy := c.Query("group_by", "good")
+
+	h, err := strconv.Atoi(hours)
+	if err != nil || h < 1 {
+		h = 168
+	}
+	since := time.Now().Add(-time.Duration(h) * time.Hour)
+
+	// Determine bucket size: if >48h, bucket by day; else by hour.
+	bucketFormat := "2006-01-02 15:00"
+	bucketLabel := "hour"
+	if h > 48 {
+		bucketFormat = "2006-01-02"
+		bucketLabel = "day"
+	}
+
+	var perfs []db.RoutePerformance
+	s.db.Where("created_at > ?", since).Order("created_at ASC").Find(&perfs)
+
+	goodNames := s.goodNameIndex()
+	portNames := s.portNameIndex()
+
+	type bucket struct {
+		Profit int64 `json:"profit"`
+		Count  int64 `json:"count"`
+		Qty    int64 `json:"quantity"`
+	}
+
+	// series key → time bucket → aggregated data
+	series := make(map[string]map[string]*bucket)
+
+	for _, p := range perfs {
+		var key string
+		switch groupBy {
+		case "route":
+			fromName := portNames[p.FromPortID]
+			toName := portNames[p.ToPortID]
+			if fromName == "" {
+				fromName = p.FromPortID[:8]
+			}
+			if toName == "" {
+				toName = p.ToPortID[:8]
+			}
+			key = fromName + " → " + toName
+		case "strategy":
+			key = p.Strategy
+		default: // "good"
+			key = goodNames[p.GoodID]
+			if key == "" {
+				key = p.GoodID[:8]
+			}
+		}
+
+		timeBucket := p.CreatedAt.Format(bucketFormat)
+
+		if series[key] == nil {
+			series[key] = make(map[string]*bucket)
+		}
+		b, ok := series[key][timeBucket]
+		if !ok {
+			b = &bucket{}
+			series[key][timeBucket] = b
+		}
+		b.Profit += int64(p.Profit)
+		b.Count++
+		b.Qty += int64(p.Quantity)
+	}
+
+	// Flatten into response.
+	type timePoint struct {
+		Time     string `json:"time"`
+		Profit   int64  `json:"profit"`
+		Count    int64  `json:"count"`
+		Quantity int64  `json:"quantity"`
+	}
+	type seriesEntry struct {
+		Name   string      `json:"name"`
+		Points []timePoint `json:"points"`
+		Total  int64       `json:"total_profit"`
+	}
+
+	result := make([]seriesEntry, 0, len(series))
+	for name, buckets := range series {
+		entry := seriesEntry{Name: name}
+		for t, b := range buckets {
+			entry.Points = append(entry.Points, timePoint{
+				Time: t, Profit: b.Profit, Count: b.Count, Quantity: b.Qty,
+			})
+			entry.Total += b.Profit
+		}
+		// Sort points by time.
+		for i := 0; i < len(entry.Points); i++ {
+			for j := i + 1; j < len(entry.Points); j++ {
+				if entry.Points[j].Time < entry.Points[i].Time {
+					entry.Points[i], entry.Points[j] = entry.Points[j], entry.Points[i]
+				}
+			}
+		}
+		result = append(result, entry)
+	}
+
+	// Sort series by total profit descending.
+	for i := 0; i < len(result); i++ {
+		for j := i + 1; j < len(result); j++ {
+			if result[j].Total > result[i].Total {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"bucket_size": bucketLabel,
+		"hours":       h,
+		"series":      result,
+	})
+}
+
+// portNameIndex builds a map of port UUID string → port name from world data.
+func (s *Server) portNameIndex() map[string]string {
+	names := make(map[string]string)
+	world := s.manager.WorldData()
+	if world != nil {
+		for _, p := range world.Ports {
+			names[p.ID.String()] = p.Name
+		}
+	}
+	return names
+}
+
+// goodNameIndex builds a map of good UUID string → good name from trade logs.
+func (s *Server) goodNameIndex() map[string]string {
+	names := make(map[string]string)
+	type nameRow struct {
+		GoodID   string
+		GoodName string
+	}
+	var rows []nameRow
+	s.db.Model(&db.TradeLog{}).Select("DISTINCT good_id, good_name").Scan(&rows)
+	for _, r := range rows {
+		names[r.GoodID] = r.GoodName
+	}
+	return names
 }

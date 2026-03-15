@@ -279,3 +279,60 @@ export interface GameTradeEntry {
   source: string
   occurred_at: string
 }
+
+// Analytics types
+
+export interface GoodAnalytics {
+  good_id: string
+  good_name: string
+  total_profit: number
+  total_revenue: number
+  total_cost: number
+  trade_count: number
+  total_quantity: number
+  avg_profit_per_trade: number
+  win_count: number
+  loss_count: number
+  win_rate: number
+  best_profit: number
+  worst_profit: number
+  first_trade: string
+  last_trade: string
+}
+
+export interface RouteAnalytics {
+  from_port_id: string
+  from_port_name: string
+  to_port_id: string
+  to_port_name: string
+  total_profit: number
+  trade_count: number
+  total_quantity: number
+  avg_profit_per_trade: number
+  win_count: number
+  loss_count: number
+  win_rate: number
+  top_good_id: string
+  top_good_name: string
+  first_trade: string
+  last_trade: string
+}
+
+export interface TimelinePoint {
+  time: string
+  profit: number
+  count: number
+  quantity: number
+}
+
+export interface TimelineSeries {
+  name: string
+  points: TimelinePoint[]
+  total_profit: number
+}
+
+export interface TimelineResponse {
+  bucket_size: string
+  hours: number
+  series: TimelineSeries[]
+}

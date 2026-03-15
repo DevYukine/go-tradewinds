@@ -28,6 +28,12 @@ Fiber web server on `API_PORT` (default 3002).
 | GET | `/api/health` | Health check (status, uptime, companies, agent type) |
 | GET | `/api/world` | World data (ports with lat/lng, goods, routes, ship types) — refreshes dynamically |
 | GET | `/api/ships` | All ships across all companies (for world map) |
+| GET | `/api/global-pnl` | Aggregate P&L across all running companies |
+| GET | `/api/companies/:id/game-trades` | Game API trade history |
+| GET | `/api/companies/:id/market-orders` | P2P order activity (fills, posts) |
+| GET | `/api/analytics/goods` | Profit by cargo type (`?hours=` filter) |
+| GET | `/api/analytics/routes` | Profit by route (`?hours=` filter) |
+| GET | `/api/analytics/timeline` | Profit over time (`?group_by=good\|route\|strategy&hours=`) |
 
 ## SSE Endpoints (`internal/server/sse.go`)
 

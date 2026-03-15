@@ -56,6 +56,7 @@ function formatUptime(seconds: number): string {
 
 const navItems = [
   { to: '/', label: 'Overview', icon: 'lucide:layout-dashboard' },
+  { to: '/analytics', label: 'Analytics', icon: 'lucide:bar-chart-2' },
   { to: '/market', label: 'Market', icon: 'lucide:bar-chart-3' },
   { to: '/world', label: 'World', icon: 'lucide:globe' },
 ]
