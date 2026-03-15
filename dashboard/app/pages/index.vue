@@ -249,7 +249,7 @@ function companySailingCount(id: number): number {
           <div class="text-[10px] text-slate-600">{{ formatFull(totalCargoItems) }} items aboard</div>
         </div>
         <div class="text-center">
-          <div class="text-xs text-slate-500 mb-1">Upkeep / Hour</div>
+          <div class="text-xs text-slate-500 mb-1">Upkeep / Cycle</div>
           <div class="text-xl font-bold text-rose-400 font-mono">{{ formatFull(totalUpkeep) }}g</div>
         </div>
         <div class="text-center">
@@ -318,10 +318,10 @@ function companySailingCount(id: number): number {
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
         <div class="flex items-center gap-2 text-slate-400 text-sm mb-1.5">
           <Icon name="lucide:arrow-up-circle" class="text-rose-400" />
-          Upkeep/Hour
+          Upkeep/Cycle
         </div>
         <div class="text-3xl font-bold text-rose-400 font-mono">{{ formatCurrency(totalUpkeep) }}</div>
-        <div class="text-xs text-slate-500 mt-1.5">~{{ formatCurrency(totalUpkeep * 24) }}/day</div>
+        <div class="text-xs text-slate-500 mt-1.5">~{{ formatCurrency(Math.round(totalUpkeep * 24 / UPKEEP_CYCLE_HOURS)) }}/day</div>
       </div>
 
       <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
