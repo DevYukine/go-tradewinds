@@ -19,12 +19,13 @@ async function fetchAllInventories() {
 // No SSE on the overview page — opening 7 SSE connections (one per company)
 // would exceed the browser's 6-connection-per-origin HTTP/1.1 limit and block
 // all other API requests.
-let initialFetchDone = false
+// Component-scoped flag so navigating away and back triggers a re-fetch.
+const initialFetchDone = ref(false)
 watch(
   () => companies.value,
   (list) => {
-    if (list.length > 0 && !initialFetchDone) {
-      initialFetchDone = true
+    if (list.length > 0 && !initialFetchDone.value) {
+      initialFetchDone.value = true
       fetchAllInventories()
     }
   },
@@ -32,7 +33,12 @@ watch(
 )
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
-onMounted(() => { pollTimer = setInterval(fetchAllInventories, 15000) })
+onMounted(() => {
+  pollTimer = setInterval(() => {
+    fetchCompanies()
+    fetchAllInventories()
+  }, 15000)
+})
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
 })

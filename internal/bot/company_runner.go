@@ -249,18 +249,44 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 		// Not found — create with defaults.
 		params = db.CompanyParams{
 			CompanyID:               r.dbRecord.ID,
-			MinMarginPct:            0.15,
-			PassengerWeight:         2.0,
-			SpeculativeTradeEnabled: false,
+			MinMarginPct:            0.05,
+			PassengerWeight:         5.0,
+			SpeculativeTradeEnabled: true,
 			MarketEvalIntervalSec:   60,
 			FleetEvalIntervalSec:    180,
-			PassengerDestBonus:      3.0,
+			PassengerDestBonus:      5.0,
 		}
 		if err := r.gormDB.Create(&params).Error; err != nil {
 			// Another runner may have created it — try loading again.
 			if err2 := r.gormDB.Where("company_id = ?", r.dbRecord.ID).First(&params).Error; err2 != nil {
 				r.logger.Warn("failed to load company params, using defaults", zap.Error(err2))
 			}
+		}
+	} else {
+		// Migrate existing params: if still using old conservative defaults,
+		// update to aggressive values for better trading throughput.
+		updates := map[string]any{}
+		if params.MinMarginPct >= 0.15 {
+			updates["min_margin_pct"] = 0.05
+			params.MinMarginPct = 0.05
+		}
+		if params.PassengerWeight <= 2.0 {
+			updates["passenger_weight"] = 5.0
+			params.PassengerWeight = 5.0
+		}
+		if !params.SpeculativeTradeEnabled {
+			updates["speculative_trade_enabled"] = true
+			params.SpeculativeTradeEnabled = true
+		}
+		if params.PassengerDestBonus <= 3.0 {
+			updates["passenger_dest_bonus"] = 5.0
+			params.PassengerDestBonus = 5.0
+		}
+		if len(updates) > 0 {
+			r.gormDB.Model(&params).Updates(updates)
+			r.logger.Info("migrated company params to aggressive trading defaults",
+				zap.Any("updates", updates),
+			)
 		}
 	}
 	r.state.mu.Lock()
@@ -282,6 +308,21 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 
 	// Seed cumulative P&L counters from DB so incremental tracking is accurate.
 	r.seedPnLCounters()
+
+	// Mark state as fully initialized so API handlers can safely use live values.
+	r.state.mu.Lock()
+	r.state.Initialized = true
+	r.state.mu.Unlock()
+
+	// Sync treasury/reputation to DB immediately so they survive a restart
+	// before the first recordPnLSnapshot tick.
+	r.gormDB.Model(r.dbRecord).Updates(map[string]any{
+		"treasury":   econ.Treasury,
+		"reputation": econ.Reputation,
+	})
+
+	// Notify SSE listeners that fresh data is available.
+	r.events.Emit(EventEconomyTick)
 
 	r.logger.Info("company state initialized",
 		zap.Int64("treasury", econ.Treasury),

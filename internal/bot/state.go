@@ -31,6 +31,7 @@ type CompanyState struct {
 	CumWarehouseCosts int64 // Total spent on warehouse purchases
 	InitialTreasury   int64 // Treasury at bot start, for upkeep derivation
 	pnlInitialized    bool  // Whether cumulative counters have been seeded from DB.
+	Initialized       bool  // Whether initState has completed (safe to read live values).
 
 	// Tunable trading parameters from optimizer.
 	Params *db.CompanyParams

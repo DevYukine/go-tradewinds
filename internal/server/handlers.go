@@ -61,8 +61,13 @@ func (s *Server) handleCompanies(c fiber.Ctx) error {
 			if rec != nil && rec.GameID == companies[i].GameID {
 				state := runner.State()
 				state.RLock()
-				resp[i].Treasury = state.Treasury
-				resp[i].Reputation = state.Reputation
+				// Only overlay live values once initState has completed;
+				// before that, state.Treasury is 0 and would clobber the
+				// correct DB value set by setupRunner.
+				if state.Initialized {
+					resp[i].Treasury = state.Treasury
+					resp[i].Reputation = state.Reputation
+				}
 				state.RUnlock()
 				resp[i].AgentName = runner.AgentName()
 				break
@@ -373,9 +378,16 @@ func (s *Server) handleCompanyInventory(c fiber.Ctx) error {
 		})
 	}
 
+	// Use live treasury only after initState completes; otherwise fall back to
+	// the DB value which setupRunner populated from the game API listing.
+	treasury := state.Treasury
+	if !state.Initialized {
+		treasury = company.Treasury
+	}
+
 	return c.JSON(fiber.Map{
 		"company_id":    company.GameID,
-		"treasury":      state.Treasury,
+		"treasury":      treasury,
 		"total_upkeep":  state.TotalUpkeep,
 		"ships":         ships,
 		"warehouses":    warehouses,
@@ -866,13 +878,15 @@ func (s *Server) handleGlobalPnL(c fiber.Ctx) error {
 			Select("COALESCE(SUM(bid), 0)").Scan(&passengerRev)
 
 		treasury := comp.Treasury
-		// Overlay live treasury.
+		// Overlay live treasury only after runner has fully initialized.
 		for _, runner := range runners {
 			rec := runner.DBRecord()
 			if rec != nil && rec.GameID == comp.GameID {
 				state := runner.State()
 				state.RLock()
-				treasury = state.Treasury
+				if state.Initialized {
+					treasury = state.Treasury
+				}
 				state.RUnlock()
 				break
 			}
