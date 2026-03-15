@@ -117,15 +117,23 @@ func (a *HeuristicAgent) DecideTradeAction(_ context.Context, req TradeDecisionR
 
 	// Build route history bonus index for destination scoring.
 	routeBonus := a.buildRouteHistoryBonus(req.RouteHistory, currentPortID)
+	// Exploration bonus scales with idle ticks: zero when actively trading,
+	// grows when a ship is sitting idle. This ensures profitable routes are
+	// never overridden, but idle ships are nudged toward unexplored ports.
+	explorationBonus := a.buildExplorationBonus(req.RouteHistory, reachable, currentPortID)
+	idleScale := math.Min(float64(ship.IdleTicks), 3.0) / 3.0 // 0.0 → 1.0 over 3 idle ticks
+	for id := range explorationBonus {
+		explorationBonus[id] *= idleScale
+	}
 
 	var decision *TradeDecision
 	var err error
 
 	switch req.StrategyHint {
 	case "bulk_hauler":
-		decision, err = a.decideBulkHaulerTrade(req, sells, priceIndex, reachable, taxIndex, currentPortID, budget, passengerWeight, minMarginPct, speculativeEnabled, held, routeBonus)
+		decision, err = a.decideBulkHaulerTrade(req, sells, priceIndex, reachable, taxIndex, currentPortID, budget, passengerWeight, minMarginPct, speculativeEnabled, held, routeBonus, explorationBonus)
 	default:
-		decision, err = a.decideArbitrageTrade(req, sells, priceIndex, reachable, taxIndex, currentPortID, budget, passengerWeight, minMarginPct, speculativeEnabled, held, routeBonus)
+		decision, err = a.decideArbitrageTrade(req, sells, priceIndex, reachable, taxIndex, currentPortID, budget, passengerWeight, minMarginPct, speculativeEnabled, held, routeBonus, explorationBonus)
 	}
 
 	if err != nil {
@@ -272,6 +280,7 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 	speculativeEnabled bool,
 	held []heldCargo,
 	routeBonus map[uuid.UUID]float64,
+	explorationBonus map[uuid.UUID]float64,
 ) (*TradeDecision, error) {
 	buyTaxBps := taxIndex[currentPortID]
 
@@ -379,7 +388,11 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 		score := adjustedProfit / dist
 		score += float64(passengerRevByDest[destID]) / dist * passengerWeight
 		score += float64(heldProfitByDest[destID]) / dist
-		score += routeBonus[destID] / dist
+		// Use sqrt(distance) for route and exploration bonuses so that
+		// far-away ports aren't as harshly penalized for these components.
+		sqrtDist := math.Sqrt(dist)
+		score += routeBonus[destID] / sqrtDist
+		score += explorationBonus[destID] / sqrtDist
 
 		candidates = append(candidates, destCandidate{destID, score, unique})
 	}
@@ -398,9 +411,11 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 			continue
 		}
 		dist := math.Max(reachable[destID], 1.0)
+		sqrtDist := math.Sqrt(dist)
 		score := float64(passRev) / dist * passengerWeight
 		score += float64(heldProfitByDest[destID]) / dist
-		score += routeBonus[destID] / dist
+		score += routeBonus[destID] / sqrtDist
+		score += explorationBonus[destID] / sqrtDist
 		candidates = append(candidates, destCandidate{destID, score, nil})
 	}
 
@@ -474,6 +489,7 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 	speculativeEnabled bool,
 	held []heldCargo,
 	routeBonus map[uuid.UUID]float64,
+	explorationBonus map[uuid.UUID]float64,
 ) (*TradeDecision, error) {
 	buyTaxBps := taxIndex[currentPortID]
 	capacity := req.Ship.Capacity
@@ -583,6 +599,7 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 		score += float64(passengerRevByDest[destID]) / dist * passengerWeight
 		score += float64(heldProfitByDest[destID])
 		score += routeBonus[destID]
+		score += explorationBonus[destID]
 
 		candidates = append(candidates, destCandidate{destID, score, unique})
 	}
@@ -604,6 +621,7 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 		score := float64(passRev) / dist * passengerWeight
 		score += float64(heldProfitByDest[destID])
 		score += routeBonus[destID]
+		score += explorationBonus[destID]
 		candidates = append(candidates, destCandidate{destID, score, nil})
 	}
 
@@ -1505,7 +1523,8 @@ func (a *HeuristicAgent) buildSellOrders(ship ShipSnapshot) []SellOrder {
 
 // buildRouteHistoryBonus computes a scoring bonus for each destination based
 // on historical route performance. Routes with positive average profit get a
-// bonus, routes with losses get a penalty.
+// bonus, routes with losses get a penalty. The bonus is capped to prevent
+// established routes from permanently dominating over unexplored ones.
 func (a *HeuristicAgent) buildRouteHistoryBonus(history []RoutePerformanceEntry, fromPortID uuid.UUID) map[uuid.UUID]float64 {
 	bonus := make(map[uuid.UUID]float64)
 	if len(history) == 0 {
@@ -1533,8 +1552,51 @@ func (a *HeuristicAgent) buildRouteHistoryBonus(history []RoutePerformanceEntry,
 
 	for destID, s := range byDest {
 		if s.count > 0 {
-			bonus[destID] = float64(s.totalProfit) / float64(s.count)
+			avg := float64(s.totalProfit) / float64(s.count)
+			// Cap the bonus so established routes can't overwhelm new ones.
+			// Allow negative penalties to be uncapped (avoid loss routes).
+			const maxRouteBonus = 500.0
+			if avg > maxRouteBonus {
+				avg = maxRouteBonus
+			}
+			bonus[destID] = avg
 		}
+	}
+
+	return bonus
+}
+
+// buildExplorationBonus computes a bonus for ports that the company has not
+// visited recently. This encourages ships to explore new/distant ports instead
+// of always clustering at familiar nearby ones. Ports with zero route history
+// entries get the full exploration bonus; ports visited fewer times get a
+// partial bonus that decays with visit count.
+func (a *HeuristicAgent) buildExplorationBonus(
+	history []RoutePerformanceEntry,
+	reachable map[uuid.UUID]float64,
+	fromPortID uuid.UUID,
+) map[uuid.UUID]float64 {
+	// Count visits to each destination from the current port.
+	visitCount := make(map[uuid.UUID]int)
+	for _, rp := range history {
+		if rp.FromPortID == fromPortID {
+			visitCount[rp.ToPortID]++
+		}
+	}
+
+	bonus := make(map[uuid.UUID]float64, len(reachable))
+	const explorationBonus = 200.0 // Base bonus for completely unvisited ports.
+
+	for destID := range reachable {
+		visits := visitCount[destID]
+		if visits == 0 {
+			// Never visited: full exploration bonus.
+			bonus[destID] = explorationBonus
+		} else if visits < 5 {
+			// Rarely visited: decaying partial bonus.
+			bonus[destID] = explorationBonus / float64(visits+1)
+		}
+		// 5+ visits: no exploration bonus (well-explored).
 	}
 
 	return bonus
@@ -2005,13 +2067,15 @@ func (a *HeuristicAgent) findRelocationPort(
 	}
 
 	// Prefer hub ports — they tend to have more goods and routes.
+	// Prioritize the farthest reachable hub to encourage geographic spread
+	// and exploration of new areas rather than clustering at the nearest hub.
 	var bestHub uuid.UUID
-	bestHubDist := math.MaxFloat64
+	bestHubDist := 0.0
 	for _, p := range ports {
 		if !p.IsHub || p.ID == currentPortID {
 			continue
 		}
-		if dist, ok := reachable[p.ID]; ok && dist < bestHubDist {
+		if dist, ok := reachable[p.ID]; ok && dist > bestHubDist {
 			bestHubDist = dist
 			bestHub = p.ID
 		}
