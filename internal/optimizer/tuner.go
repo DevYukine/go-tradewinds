@@ -43,8 +43,13 @@ func NewParameterTuner(gormDB *gorm.DB, manager *bot.Manager, logger *zap.Logger
 	}
 }
 
+// minExperimentAge is how long an experiment must run before being evaluated.
+// This ensures we have enough trade data to judge the parameter change.
+const minExperimentAge = 20 * time.Minute
+
 // EvaluateExperiments checks active experiments and completes or reverts them
-// based on whether the company's profit improved.
+// based on whether the company's profit improved. Experiments must run for at
+// least minExperimentAge before being evaluated.
 func (t *ParameterTuner) EvaluateExperiments(metrics []companyMetrics) {
 	var active []db.ParamExperimentLog
 	t.gormDB.Where("status = ?", "active").Find(&active)
@@ -60,6 +65,16 @@ func (t *ParameterTuner) EvaluateExperiments(metrics []companyMetrics) {
 	}
 
 	for _, exp := range active {
+		// Don't evaluate experiments that haven't run long enough.
+		if time.Since(exp.CreatedAt) < minExperimentAge {
+			t.logger.Debug("experiment too young to evaluate",
+				zap.Uint("company_id", exp.CompanyID),
+				zap.String("param", exp.ParamName),
+				zap.Duration("age", time.Since(exp.CreatedAt)),
+			)
+			continue
+		}
+
 		profitAfter, ok := profitByCompany[exp.CompanyID]
 		if !ok {
 			continue
@@ -138,12 +153,30 @@ func (t *ParameterTuner) RunExperiment(metrics []companyMetrics) {
 	oldValue := t.getParamValue(&params, param.Name)
 	step := oldValue * param.StepPct
 
-	// Direction: try increasing first, then decreasing.
-	newValue := oldValue + step
+	// Alternate direction based on the last experiment for this param.
+	// This prevents always biasing upward and explores both directions.
+	var lastExp db.ParamExperimentLog
+	lastWentUp := true
+	if err := t.gormDB.Where("company_id = ? AND param_name = ?", target.CompanyID, param.Name).
+		Order("created_at DESC").First(&lastExp).Error; err == nil {
+		lastWentUp = lastExp.NewValue > lastExp.OldValue
+	}
+
+	var newValue float64
+	if lastWentUp {
+		newValue = oldValue - step // try decreasing this time
+	} else {
+		newValue = oldValue + step // try increasing this time
+	}
+
+	// Clamp to bounds.
 	if newValue > param.Max {
-		newValue = oldValue - step
+		newValue = param.Max
 	}
 	if newValue < param.Min {
+		newValue = param.Min
+	}
+	if newValue == oldValue {
 		t.logger.Debug("param at bounds, skipping", zap.String("param", param.Name))
 		return
 	}

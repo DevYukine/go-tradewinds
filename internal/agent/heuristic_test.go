@@ -1002,8 +1002,8 @@ func TestEvaluateStrategy_LosingVsProfitable(t *testing.T) {
 	a := testAgent()
 	dec, err := a.EvaluateStrategy(context.Background(), StrategyEvalRequest{
 		Metrics: []StrategyMetrics{
-			{StrategyName: "arbitrage", ProfitPerHour: 500},
-			{StrategyName: "bulk_hauler", ProfitPerHour: -100},
+			{StrategyName: "arbitrage", ProfitPerHour: 500, TradesExecuted: 10},
+			{StrategyName: "bulk_hauler", ProfitPerHour: -200, TradesExecuted: 5},
 		},
 	})
 	if err != nil {
@@ -1018,8 +1018,8 @@ func TestEvaluateStrategy_TwoXOutperformance(t *testing.T) {
 	a := testAgent()
 	dec, err := a.EvaluateStrategy(context.Background(), StrategyEvalRequest{
 		Metrics: []StrategyMetrics{
-			{StrategyName: "arbitrage", ProfitPerHour: 1000},
-			{StrategyName: "bulk_hauler", ProfitPerHour: 400},
+			{StrategyName: "arbitrage", ProfitPerHour: 1000, TradesExecuted: 10},
+			{StrategyName: "bulk_hauler", ProfitPerHour: 400, TradesExecuted: 10},
 		},
 	})
 	if err != nil {

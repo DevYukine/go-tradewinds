@@ -184,8 +184,16 @@ func aggregateByStrategy(metrics []companyMetrics) []strategyStats {
 			s.ConfidenceHigh = s.MeanProfit
 		}
 
-		// Composite score: weights consistency (CI lower bound) heavily.
-		s.Score = 0.35*s.ConfidenceLow + 0.25*s.MeanProfit + 0.20*s.MeanWinRate + 0.10*s.MeanTradesPerHour + 0.10*s.MeanCapacityUtil
+		// Composite score: profit-based metrics dominate, but win rate and activity
+		// act as tiebreakers. All components are on comparable scales:
+		// - Profit terms are in gold/hour (can be negative or thousands)
+		// - WinRate and CapacityUtil are 0-1, so we scale them by |MeanProfit| to
+		//   make them proportional to the profit magnitude.
+		profitScale := math.Max(math.Abs(s.MeanProfit), 1.0)
+		s.Score = 0.40*s.ConfidenceLow + 0.30*s.MeanProfit +
+			0.15*s.MeanWinRate*profitScale +
+			0.10*s.MeanTradesPerHour*profitScale/10.0 +
+			0.05*s.MeanCapacityUtil*profitScale
 
 		stats = append(stats, s)
 	}

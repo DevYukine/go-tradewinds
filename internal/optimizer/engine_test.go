@@ -1,7 +1,9 @@
 package optimizer
 
 import (
+	"math"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -10,6 +12,7 @@ func testEngine() *Engine {
 	logger, _ := zap.NewDevelopment()
 	return &Engine{
 		underperformCount: make(map[string]int),
+		lastSwap:          make(map[uint]time.Time),
 		logger:            logger.Named("optimizer_test"),
 	}
 }
@@ -67,8 +70,12 @@ func TestScoreFormula(t *testing.T) {
 	}
 	s := stats[0]
 
-	// Verify score uses updated formula.
-	expected := 0.35*s.ConfidenceLow + 0.25*s.MeanProfit + 0.20*s.MeanWinRate + 0.10*s.MeanTradesPerHour + 0.10*s.MeanCapacityUtil
+	// Verify score uses updated formula with normalized scales.
+	profitScale := math.Max(math.Abs(s.MeanProfit), 1.0)
+	expected := 0.40*s.ConfidenceLow + 0.30*s.MeanProfit +
+		0.15*s.MeanWinRate*profitScale +
+		0.10*s.MeanTradesPerHour*profitScale/10.0 +
+		0.05*s.MeanCapacityUtil*profitScale
 	if s.Score != expected {
 		t.Errorf("score mismatch: got %f, expected %f", s.Score, expected)
 	}

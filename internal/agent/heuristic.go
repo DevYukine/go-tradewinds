@@ -1139,23 +1139,35 @@ func (a *HeuristicAgent) EvaluateStrategy(_ context.Context, req StrategyEvalReq
 		}
 	}
 
-	// If worst is losing money, recommend switching regardless of best's state.
-	if worst.ProfitPerHour < 0 && worst.StrategyName != best.StrategyName {
-		switchTo := best.StrategyName
-		return &StrategyEvaluation{
-			SwitchTo:  &switchTo,
-			Reasoning: worst.StrategyName + " is losing money, switching to " + best.StrategyName,
-		}, nil
+	// Don't recommend switches when both strategies are barely active.
+	// With a 30-minute lookback, <3 trades means the data is too noisy.
+	if best.TradesExecuted < 3 && worst.TradesExecuted < 3 {
+		return &StrategyEvaluation{Reasoning: "insufficient trade data to evaluate strategies"}, nil
 	}
 
-	// If best is 1.5x better than worst, recommend switch (was 2x).
-	if best.ProfitPerHour > 0 && worst.ProfitPerHour > 0 &&
-		best.ProfitPerHour > worst.ProfitPerHour*1.5 &&
+	// Only recommend switching away from a losing strategy if:
+	// 1. It's meaningfully negative (not just -1 gold/hour noise)
+	// 2. Best is actually positive (switching to another loser doesn't help)
+	// 3. The difference is significant (best is at least 2x better by absolute gap)
+	if worst.ProfitPerHour < -100 && best.ProfitPerHour > 0 &&
 		worst.StrategyName != best.StrategyName {
 		switchTo := best.StrategyName
 		return &StrategyEvaluation{
 			SwitchTo:  &switchTo,
-			Reasoning: best.StrategyName + " outperforms " + worst.StrategyName + " by 1.5x+",
+			Reasoning: fmt.Sprintf("%s is significantly losing money (%.0f/hr), switching to %s (%.0f/hr)",
+				worst.StrategyName, worst.ProfitPerHour, best.StrategyName, best.ProfitPerHour),
+		}, nil
+	}
+
+	// If best is 2x better than worst and both are positive, recommend switch.
+	if best.ProfitPerHour > 0 && worst.ProfitPerHour > 0 &&
+		best.ProfitPerHour > worst.ProfitPerHour*2.0 &&
+		worst.StrategyName != best.StrategyName {
+		switchTo := best.StrategyName
+		return &StrategyEvaluation{
+			SwitchTo:  &switchTo,
+			Reasoning: fmt.Sprintf("%s outperforms %s by 2x+ (%.0f vs %.0f/hr)",
+				best.StrategyName, worst.StrategyName, best.ProfitPerHour, worst.ProfitPerHour),
 		}, nil
 	}
 

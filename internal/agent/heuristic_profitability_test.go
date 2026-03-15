@@ -1379,8 +1379,8 @@ func TestStrategy_SwitchesFromLosingToWinning(t *testing.T) {
 
 	dec, err := a.EvaluateStrategy(context.Background(), StrategyEvalRequest{
 		Metrics: []StrategyMetrics{
-			{StrategyName: "arbitrage", ProfitPerHour: 500},
-			{StrategyName: "bulk_hauler", ProfitPerHour: -200},
+			{StrategyName: "arbitrage", ProfitPerHour: 500, TradesExecuted: 10},
+			{StrategyName: "bulk_hauler", ProfitPerHour: -200, TradesExecuted: 5},
 		},
 	})
 	if err != nil {
@@ -1397,8 +1397,8 @@ func TestStrategy_NoSwitchWhenClose(t *testing.T) {
 
 	dec, err := a.EvaluateStrategy(context.Background(), StrategyEvalRequest{
 		Metrics: []StrategyMetrics{
-			{StrategyName: "arbitrage", ProfitPerHour: 500},
-			{StrategyName: "bulk_hauler", ProfitPerHour: 400},
+			{StrategyName: "arbitrage", ProfitPerHour: 500, TradesExecuted: 10},
+			{StrategyName: "bulk_hauler", ProfitPerHour: 400, TradesExecuted: 10},
 		},
 	})
 	if err != nil {
@@ -1406,17 +1406,17 @@ func TestStrategy_NoSwitchWhenClose(t *testing.T) {
 	}
 
 	if dec.SwitchTo != nil {
-		t.Error("should not switch when strategies are within 1.5x range")
+		t.Error("should not switch when strategies are within 2x range")
 	}
 }
 
-func TestStrategy_SwitchesAt1_5xOutperformance(t *testing.T) {
+func TestStrategy_SwitchesAt2xOutperformance(t *testing.T) {
 	a := newTestAgent()
 
 	dec, err := a.EvaluateStrategy(context.Background(), StrategyEvalRequest{
 		Metrics: []StrategyMetrics{
-			{StrategyName: "arbitrage", ProfitPerHour: 1000},
-			{StrategyName: "bulk_hauler", ProfitPerHour: 500},
+			{StrategyName: "arbitrage", ProfitPerHour: 1000, TradesExecuted: 10},
+			{StrategyName: "bulk_hauler", ProfitPerHour: 400, TradesExecuted: 10},
 		},
 	})
 	if err != nil {
@@ -1424,7 +1424,7 @@ func TestStrategy_SwitchesAt1_5xOutperformance(t *testing.T) {
 	}
 
 	if dec.SwitchTo == nil || *dec.SwitchTo != "arbitrage" {
-		t.Error("should switch when outperformance exceeds 1.5x (1000 vs 500 = 2x)")
+		t.Error("should switch when outperformance exceeds 2x (1000 vs 400 = 2.5x)")
 	}
 }
 
