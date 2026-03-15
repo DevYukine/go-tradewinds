@@ -41,8 +41,8 @@ function formatTime(i: number) {
   const ss = d.getSeconds().toString().padStart(2, '0')
   // Show seconds when data spans less than 1 hour
   if (props.history.length >= 2) {
-    const first = new Date(props.history[0].created_at).getTime()
-    const last = new Date(props.history[props.history.length - 1].created_at).getTime()
+    const first = new Date(props.history[0]!.created_at).getTime()
+    const last = new Date(props.history[props.history.length - 1]!.created_at).getTime()
     if (last - first < 3_600_000) return `${hh}:${mm}:${ss}`
   }
   return `${hh}:${mm}`
@@ -84,7 +84,7 @@ function formatCurrency(tick: number) {
           :y-formatter="formatCurrency"
           :x-num-ticks="Math.min(treasuryData.length, 8)"
           :y-num-ticks="5"
-          curve-type="monotoneX"
+          :curve-type="'monotoneX' as any"
           :line-width="2"
           :gradient-stops="[
             { offset: '0%', stopOpacity: 0.3 },
@@ -100,7 +100,7 @@ function formatCurrency(tick: number) {
           :x-domain-line="true"
           :y-domain-line="false"
           :duration="600"
-          legend-position="top-right"
+          :legend-position="'top-right' as any"
           :x-axis-config="{
             tickTextColor: '#64748b',
             tickTextFontSize: '11px',
@@ -137,7 +137,7 @@ function formatCurrency(tick: number) {
           :y-formatter="formatCurrency"
           :x-num-ticks="Math.min(pnlData.length, 8)"
           :y-num-ticks="6"
-          curve-type="monotoneX"
+          :curve-type="'monotoneX' as any"
           :line-width="2"
           :gradient-stops="[
             { offset: '0%', stopOpacity: 0.3 },
@@ -153,7 +153,7 @@ function formatCurrency(tick: number) {
           :x-domain-line="true"
           :y-domain-line="false"
           :duration="600"
-          legend-position="top-right"
+          :legend-position="'top-right' as any"
           :x-axis-config="{
             tickTextColor: '#64748b',
             tickTextFontSize: '11px',

@@ -17,7 +17,7 @@ export function useCompanies() {
       if (!grouped[company.strategy]) {
         grouped[company.strategy] = []
       }
-      grouped[company.strategy].push(company)
+      grouped[company.strategy]!.push(company)
     }
     return grouped
   })

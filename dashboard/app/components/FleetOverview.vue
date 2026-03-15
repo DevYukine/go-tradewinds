@@ -4,7 +4,7 @@ const props = defineProps<{
 }>()
 
 const cid = computed(() => props.companyId)
-const { inventory, loading, startPolling, stopPolling } = useInventory(cid)
+const { inventory, loading, fetchInventory, startPolling, stopPolling } = useInventory(cid)
 const { now } = useNow()
 
 watch(

@@ -30,7 +30,7 @@ const pricesByPort = computed(() => {
   const grouped: Record<string, PriceEntry[]> = {}
   for (const p of filteredPrices.value) {
     if (!grouped[p.port_name]) grouped[p.port_name] = []
-    grouped[p.port_name].push(p)
+    grouped[p.port_name]!.push(p)
   }
   return grouped
 })

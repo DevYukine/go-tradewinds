@@ -289,10 +289,10 @@ function companySailingCount(id: number): number {
         <div class="text-3xl font-bold text-slate-100 font-mono">{{ companies.length }}</div>
         <div class="text-xs text-slate-500 mt-1.5">
           <span class="text-emerald-400">{{ statusCounts.running }}</span> active
-          <template v-if="statusCounts.bankrupt > 0">
+          <template v-if="(statusCounts.bankrupt ?? 0) > 0">
             / <span class="text-gray-400">{{ statusCounts.bankrupt }}</span> bankrupt
           </template>
-          <template v-if="statusCounts.error > 0">
+          <template v-if="(statusCounts.error ?? 0) > 0">
             / <span class="text-rose-400">{{ statusCounts.error }}</span> error
           </template>
         </div>
