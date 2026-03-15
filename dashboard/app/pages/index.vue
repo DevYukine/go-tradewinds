@@ -74,25 +74,44 @@ function selectCompany(company: Company) {
 
 // --- Aggregates ---
 
-const allInventories = computed(() => Object.values(inventories.value) as CompanyInventory[])
-
 const totalTreasury = computed(() =>
-  companies.value.reduce((s, c) => s + (inventories.value[c.id]?.treasury ?? c.treasury), 0)
+  filteredCompanies.value.reduce((s, c) => s + (inventories.value[c.id]?.treasury ?? c.treasury), 0)
 )
-const totalShips = computed(() => allInventories.value.reduce((s, i) => s + i.ships.length, 0))
-const totalUpkeep = computed(() => allInventories.value.reduce((s, i) => s + i.total_upkeep, 0))
-const shipsAtSea = computed(() => allInventories.value.reduce((s, i) => s + i.ships.filter(sh => sh.status === 'traveling').length, 0))
-const shipsDocked = computed(() => allInventories.value.reduce((s, i) => s + i.ships.filter(sh => sh.status === 'docked').length, 0))
+const totalShips = computed(() => filteredInventories.value.reduce((s, i) => s + i.ships.length, 0))
+const totalUpkeep = computed(() => filteredInventories.value.reduce((s, i) => s + i.total_upkeep, 0))
+const shipsAtSea = computed(() => filteredInventories.value.reduce((s, i) => s + i.ships.filter(sh => sh.status === 'traveling').length, 0))
+const shipsDocked = computed(() => filteredInventories.value.reduce((s, i) => s + i.ships.filter(sh => sh.status === 'docked').length, 0))
 const statusCounts = computed(() => {
-  const c: Record<string, number> = { running: 0, paused: 0, error: 0, bankrupt: 0 }
+  const c: Record<string, number> = { running: 0, paused: 0, stopped: 0, bankrupt: 0 }
   companies.value.forEach(co => c[co.status] = (c[co.status] || 0) + 1)
   return c
 })
 
+// Status filter — hide stopped companies by default.
+const hiddenStatuses = ref<Set<string>>(new Set(['stopped']))
+
+function toggleStatus(status: string) {
+  const next = new Set(hiddenStatuses.value)
+  if (next.has(status)) next.delete(status)
+  else next.add(status)
+  hiddenStatuses.value = next
+}
+
+const filteredCompanies = computed(() =>
+  companies.value.filter(c => !hiddenStatuses.value.has(c.status))
+)
+
+// Filtered inventories — only for visible companies.
+const filteredInventories = computed(() =>
+  filteredCompanies.value
+    .map(c => inventories.value[c.id])
+    .filter((i): i is CompanyInventory => !!i)
+)
+
 // Warehouse stats.
-const totalWarehouses = computed(() => allInventories.value.reduce((s, i) => s + i.warehouses.length, 0))
+const totalWarehouses = computed(() => filteredInventories.value.reduce((s, i) => s + i.warehouses.length, 0))
 const totalWarehouseItems = computed(() =>
-  allInventories.value.reduce((s, i) => s + i.warehouses.reduce((ws, w) => ws + w.items.reduce((is, item) => is + item.quantity, 0), 0), 0)
+  filteredInventories.value.reduce((s, i) => s + i.warehouses.reduce((ws, w) => ws + w.items.reduce((is, item) => is + item.quantity, 0), 0), 0)
 )
 function companyWarehouseCount(id: number): number {
   return inventories.value[id]?.warehouses.length ?? 0
@@ -100,18 +119,18 @@ function companyWarehouseCount(id: number): number {
 
 // Cargo value — sum of buy-price-based cargo valuations across all ships.
 const totalCargoValue = computed(() =>
-  allInventories.value.reduce((s, i) => s + (i.cargo_value ?? 0), 0)
+  filteredInventories.value.reduce((s, i) => s + (i.cargo_value ?? 0), 0)
 )
 const totalCargoItems = computed(() =>
-  allInventories.value.reduce((s, i) => s + i.ships.reduce((ss, sh) => ss + sh.cargo_total, 0), 0)
+  filteredInventories.value.reduce((s, i) => s + i.ships.reduce((ss, sh) => ss + sh.cargo_total, 0), 0)
 )
 
 // Passenger stats.
 const totalPassengers = computed(() =>
-  allInventories.value.reduce((s, i) => s + i.ships.reduce((ss, sh) => ss + sh.passenger_count, 0), 0)
+  filteredInventories.value.reduce((s, i) => s + i.ships.reduce((ss, sh) => ss + sh.passenger_count, 0), 0)
 )
 const totalPassengerCap = computed(() =>
-  allInventories.value.reduce((s, i) => s + i.ships.reduce((ss, sh) => ss + sh.passenger_cap, 0), 0)
+  filteredInventories.value.reduce((s, i) => s + i.ships.reduce((ss, sh) => ss + sh.passenger_cap, 0), 0)
 )
 
 // Fleet value — look up base_price from world data ship types by matching ship_type name.
@@ -126,7 +145,7 @@ const shipTypePrices = computed(() => {
 })
 
 const fleetValue = computed(() =>
-  allInventories.value.reduce((s, i) => s + i.ships.reduce((ss, sh) => ss + (shipTypePrices.value[sh.ship_type] ?? 0), 0), 0)
+  filteredInventories.value.reduce((s, i) => s + i.ships.reduce((ss, sh) => ss + (shipTypePrices.value[sh.ship_type] ?? 0), 0), 0)
 )
 
 // Runway — how many hours the treasury can sustain current upkeep.
@@ -155,7 +174,7 @@ const barSegments = computed(() => {
 
 // Max treasury across companies (for treasury bar in company cards).
 const maxTreasury = computed(() =>
-  Math.max(...companies.value.map(c => inventories.value[c.id]?.treasury ?? c.treasury), 1)
+  Math.max(...filteredCompanies.value.map(c => inventories.value[c.id]?.treasury ?? c.treasury), 1)
 )
 
 // Company upkeep helper.
@@ -229,7 +248,7 @@ function companyPassengerCap(id: number): number {
     <div class="flex items-center justify-between">
       <div>
         <h2 class="text-3xl font-bold text-slate-100">Dashboard</h2>
-        <p class="text-sm text-slate-500 mt-1">Fleet overview across {{ companies.length }} companies</p>
+        <p class="text-sm text-slate-500 mt-1">Fleet overview across {{ filteredCompanies.length }} of {{ companies.length }} companies</p>
       </div>
       <button
         class="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-200 transition-colors bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg px-4 py-2"
@@ -319,7 +338,7 @@ function companyPassengerCap(id: number): number {
         </div>
         <div class="text-center">
           <div class="text-xs text-slate-500 mb-1">Avg Treasury</div>
-          <div class="text-xl font-bold text-slate-300 font-mono">{{ companies.length > 0 ? formatFull(Math.round(totalTreasury / companies.length)) + 'g' : '---' }}</div>
+          <div class="text-xl font-bold text-slate-300 font-mono">{{ filteredCompanies.length > 0 ? formatFull(Math.round(totalTreasury / filteredCompanies.length)) + 'g' : '---' }}</div>
           <div class="text-[10px] text-slate-600">per company</div>
         </div>
       </div>
@@ -332,7 +351,7 @@ function companyPassengerCap(id: number): number {
           <Icon name="lucide:building-2" class="text-slate-500" />
           Companies
         </div>
-        <div class="text-3xl font-bold text-slate-100 font-mono">{{ companies.length }}</div>
+        <div class="text-3xl font-bold text-slate-100 font-mono">{{ filteredCompanies.length }}</div>
         <div class="text-xs text-slate-500 mt-1.5">
           <span class="text-emerald-400">{{ statusCounts.running }}</span> active
           <template v-if="(statusCounts.bankrupt ?? 0) > 0">
@@ -351,7 +370,7 @@ function companyPassengerCap(id: number): number {
         </div>
         <div class="text-3xl font-bold text-amber-400 font-mono">{{ formatCurrency(totalTreasury) }}</div>
         <div class="text-xs text-slate-500 mt-1.5">
-          avg {{ companies.length > 0 ? formatCurrency(Math.round(totalTreasury / companies.length)) : '0' }}
+          avg {{ filteredCompanies.length > 0 ? formatCurrency(Math.round(totalTreasury / filteredCompanies.length)) : '0' }}
         </div>
       </div>
 
@@ -396,11 +415,28 @@ function companyPassengerCap(id: number): number {
 
     <!-- Companies Grid -->
     <div>
-      <h3 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Companies</h3>
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-sm font-semibold text-slate-400 uppercase tracking-wider">Companies</h3>
+        <div class="flex items-center gap-2">
+          <button
+            v-for="(count, status) in statusCounts"
+            :key="status"
+            class="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border transition-all"
+            :class="hiddenStatuses.has(status)
+              ? 'border-slate-700 bg-slate-800/50 text-slate-600'
+              : 'border-slate-600 bg-slate-700/50 text-slate-300'"
+            @click="toggleStatus(status)"
+          >
+            <span class="w-2 h-2 rounded-full" :class="statusDot(status)" />
+            <span class="capitalize">{{ status }}</span>
+            <span class="font-mono text-[10px]" :class="hiddenStatuses.has(status) ? 'text-slate-700' : 'text-slate-500'">({{ count }})</span>
+          </button>
+        </div>
+      </div>
 
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-5">
         <button
-          v-for="company in companies"
+          v-for="company in filteredCompanies"
           :key="company.id"
           class="relative bg-slate-800 rounded-xl border p-5 text-left hover:border-slate-500 transition-all group"
           :class="company.status === 'bankrupt' ? 'border-rose-900/60 opacity-75' : 'border-slate-700'"
