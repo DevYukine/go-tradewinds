@@ -396,9 +396,30 @@ func (a *HeuristicAgent) decideArbitrageTrade(
 			if claimedSet[rk] {
 				continue
 			}
-			sellTaxCost := dp.SellPrice * taxIndex[destID] / 10000
-			profit := dp.SellPrice - pp.BuyPrice - buyTaxCost - sellTaxCost
-			if profit < int(float64(pp.BuyPrice)*minMarginPct) {
+
+			// Discount stale destination prices — prices older than 2 min are
+			// unreliable, reduce expected sell price by 10% per minute of staleness.
+			sellPrice := dp.SellPrice
+			if !dp.ObservedAt.IsZero() {
+				staleMinutes := now.Sub(dp.ObservedAt).Minutes()
+				if staleMinutes > 2.0 {
+					discount := math.Min((staleMinutes-2.0)*0.10, 0.50) // cap at 50%
+					sellPrice = int(float64(sellPrice) * (1.0 - discount))
+				}
+			}
+
+			sellTaxCost := sellPrice * taxIndex[destID] / 10000
+			profit := sellPrice - pp.BuyPrice - buyTaxCost - sellTaxCost
+			// Dynamic margin: expensive goods need higher margins to absorb
+			// price volatility. Scale from minMarginPct to 2x for costly goods.
+			effectiveMargin := minMarginPct
+			if pp.BuyPrice > 100 {
+				effectiveMargin = math.Max(minMarginPct, 0.15)
+			}
+			if pp.BuyPrice > 500 {
+				effectiveMargin = math.Max(minMarginPct, 0.20)
+			}
+			if profit < int(float64(pp.BuyPrice)*effectiveMargin) {
 				continue
 			}
 			roi := float64(profit) / float64(max(effectiveBuyCost, 1))
@@ -656,9 +677,30 @@ func (a *HeuristicAgent) decideBulkHaulerTrade(
 			if claimedSet[rk] {
 				continue
 			}
-			sellTaxCost := dp.SellPrice * taxIndex[destID] / 10000
-			profit := dp.SellPrice - pp.BuyPrice - buyTaxCost - sellTaxCost
-			if profit < int(float64(pp.BuyPrice)*minMarginPct) {
+
+			// Discount stale destination prices — prices older than 2 min are
+			// unreliable, reduce expected sell price by 10% per minute of staleness.
+			sellPrice := dp.SellPrice
+			if !dp.ObservedAt.IsZero() {
+				staleMinutes := now.Sub(dp.ObservedAt).Minutes()
+				if staleMinutes > 2.0 {
+					discount := math.Min((staleMinutes-2.0)*0.10, 0.50)
+					sellPrice = int(float64(sellPrice) * (1.0 - discount))
+				}
+			}
+
+			sellTaxCost := sellPrice * taxIndex[destID] / 10000
+			profit := sellPrice - pp.BuyPrice - buyTaxCost - sellTaxCost
+			// Dynamic margin: expensive goods need higher margins to absorb
+			// price volatility. Scale from minMarginPct to 2x for costly goods.
+			effectiveMargin := minMarginPct
+			if pp.BuyPrice > 100 {
+				effectiveMargin = math.Max(minMarginPct, 0.15)
+			}
+			if pp.BuyPrice > 500 {
+				effectiveMargin = math.Max(minMarginPct, 0.20)
+			}
+			if profit < int(float64(pp.BuyPrice)*effectiveMargin) {
 				continue
 			}
 			roi := float64(profit) / float64(max(effectiveBuyCost, 1))
@@ -1663,35 +1705,6 @@ func (a *HeuristicAgent) buildSmartSellOrders(
 			}
 		}
 
-		// Loss prevention: if we know the buy price and selling here loses money,
-		// hold the cargo instead (route to a port that can sell above cost).
-		// Exception: force-liquidate after 3+ idle ticks to free capacity.
-		if cargo.BuyPrice > 0 && currentNet < cargo.BuyPrice && ship.IdleTicks < 3 {
-			// Find destination to hold for — use best destination if it's above cost,
-			// otherwise just point to the best net destination available.
-			holdDest := bestDestID
-			holdGain := 0
-			if bestDestNet > cargo.BuyPrice {
-				holdGain = (bestDestNet - cargo.BuyPrice) * cargo.Quantity
-			} else if bestDestNet > currentNet {
-				// Can't sell above cost anywhere, but best dest is still better than here.
-				holdGain = (bestDestNet - currentNet) * cargo.Quantity
-			}
-			held = append(held, heldCargo{
-				goodID:     cargo.GoodID,
-				quantity:   cargo.Quantity,
-				bestDestID: holdDest,
-				profitGain: holdGain,
-			})
-			a.logger.Info("holding cargo to avoid loss",
-				zap.String("good_id", cargo.GoodID.String()[:8]),
-				zap.Int("buy_price", cargo.BuyPrice),
-				zap.Int("current_net", currentNet),
-				zap.Int("best_dest_net", bestDestNet),
-			)
-			continue
-		}
-
 		// Hold if a destination offers >20% better net price AFTER subtracting
 		// travel upkeep cost. Without this, ships hold cargo for far-away ports
 		// where the upkeep to get there eats all the price improvement.
@@ -1990,20 +2003,24 @@ func (a *HeuristicAgent) warehouseOps(
 
 	// --- LOAD: retrieve profitable goods from warehouse ---
 
-	// Calculate remaining ship capacity after existing cargo (not buys — we may displace buys).
+	// Calculate remaining ship capacity after buys.
 	cargoUsed := 0
 	for _, c := range req.Ship.Cargo {
 		cargoUsed += c.Quantity
 	}
-
-	// Determine the destination — either the ship's chosen destination
-	// or find the best destination for warehouse goods.
-	destID := uuid.Nil
-	if decision.SailTo != nil {
-		destID = *decision.SailTo
+	for _, b := range decision.BuyOrders {
+		cargoUsed += b.Quantity
 	}
+	remaining := req.Ship.Capacity - cargoUsed
 
-	if len(wh.Items) > 0 {
+	if remaining > 0 && len(wh.Items) > 0 {
+		// Determine the destination — either the ship's chosen destination
+		// or find the best destination for warehouse goods.
+		destID := uuid.Nil
+		if decision.SailTo != nil {
+			destID = *decision.SailTo
+		}
+
 		// Score each warehouse item by profitability at the destination (or best dest).
 		type loadCandidate struct {
 			goodID uuid.UUID
@@ -2013,19 +2030,14 @@ func (a *HeuristicAgent) warehouseOps(
 		}
 		var candidates []loadCandidate
 
-		// Use the current NPC buy price at this port as a cost baseline for
-		// warehouse goods (original purchase price is not tracked).
+		// Warehouse goods are already paid for (sunk cost) — any sell revenue
+		// is pure profit. Use 0 cost basis.
 		for _, item := range wh.Items {
 			if item.Quantity <= 0 {
 				continue
 			}
-			// Estimate cost basis: what we'd pay to buy this good at this port now.
-			costBasis := 0
-			if pp, ok := priceIndex[priceKey(currentPortID, item.GoodID)]; ok && pp.BuyPrice > 0 {
-				costBasis = pp.BuyPrice + pp.BuyPrice*buyTaxBps/10000
-			}
 
-			// Find the best reachable destination by net profit over cost basis.
+			// Find the best reachable destination by net sell revenue.
 			bestProfit := 0
 			bestDest := uuid.Nil
 
@@ -2035,10 +2047,7 @@ func (a *HeuristicAgent) warehouseOps(
 					return
 				}
 				sellTax := dp.SellPrice * taxIndex[dID] / 10000
-				netSell := dp.SellPrice - sellTax
-				// Profit over cost basis. If no cost basis (good not sold here),
-				// use net sell revenue directly (still profitable to move).
-				profit := netSell - costBasis
+				profit := dp.SellPrice - sellTax // sunk cost, revenue = profit
 				if profit > bestProfit {
 					bestProfit = profit
 					bestDest = dID
@@ -2066,79 +2075,11 @@ func (a *HeuristicAgent) warehouseOps(
 			}
 		}
 
-		// Sort warehouse candidates by profit descending.
+		// Sort by profit descending and fill remaining capacity.
 		sort.Slice(candidates, func(i, j int) bool {
 			return candidates[i].profit > candidates[j].profit
 		})
 
-		// Calculate capacity after buy orders.
-		buyQty := 0
-		for _, b := range decision.BuyOrders {
-			buyQty += b.Quantity
-		}
-		remaining := req.Ship.Capacity - cargoUsed - buyQty
-
-		// If warehouse candidates exist but no room, displace low-ROI buy orders.
-		// Don't displace more than 50% of planned buys.
-		if remaining <= 0 && len(candidates) > 0 && len(decision.BuyOrders) > 0 {
-			// Build per-unit profit for each buy order.
-			type buyROI struct {
-				idx    int
-				profit int // per-unit profit estimate
-				qty    int
-			}
-			var buyROIs []buyROI
-			for i, b := range decision.BuyOrders {
-				profit := 0
-				if destID != uuid.Nil {
-					bp, bOK := priceIndex[priceKey(currentPortID, b.GoodID)]
-					dp, dOK := priceIndex[priceKey(destID, b.GoodID)]
-					if bOK && dOK && dp.SellPrice > 0 && bp.BuyPrice > 0 {
-						buyTaxCost := bp.BuyPrice * buyTaxBps / 10000
-						sellTaxCost := dp.SellPrice * taxIndex[destID] / 10000
-						profit = dp.SellPrice - bp.BuyPrice - buyTaxCost - sellTaxCost
-					}
-				}
-				buyROIs = append(buyROIs, buyROI{idx: i, profit: profit, qty: b.Quantity})
-			}
-			// Sort by profit ascending (worst buys first).
-			sort.Slice(buyROIs, func(i, j int) bool {
-				return buyROIs[i].profit < buyROIs[j].profit
-			})
-
-			maxDisplace := buyQty / 2 // Don't remove more than 50% of buy capacity.
-			displaced := 0
-			removedIdx := make(map[int]bool)
-
-			for _, br := range buyROIs {
-				if displaced >= maxDisplace {
-					break
-				}
-				// Only displace if the best warehouse candidate is more profitable.
-				bestWhProfit := 0
-				if len(candidates) > 0 {
-					bestWhProfit = candidates[0].profit
-				}
-				if bestWhProfit <= br.profit {
-					break // Warehouse isn't better than this buy.
-				}
-				removedIdx[br.idx] = true
-				displaced += br.qty
-				remaining += br.qty
-			}
-
-			if len(removedIdx) > 0 {
-				var kept []BuyOrder
-				for i, b := range decision.BuyOrders {
-					if !removedIdx[i] {
-						kept = append(kept, b)
-					}
-				}
-				decision.BuyOrders = kept
-			}
-		}
-
-		// Fill remaining capacity with warehouse loads.
 		for _, c := range candidates {
 			if remaining <= 0 {
 				break
@@ -2289,32 +2230,26 @@ func (a *HeuristicAgent) findBestWarehousePickup(
 		}
 
 		// Estimate total profit from selling all warehouse goods.
+		// Warehouse goods are already paid for (sunk cost) — any sell revenue is profit.
 		totalProfit := 0
 		for _, item := range wh.Items {
 			if item.Quantity <= 0 {
 				continue
 			}
-			// Cost basis: current buy price at the warehouse port.
-			costBasis := 0
-			if pp, ok := priceIndex[priceKey(wh.PortID, item.GoodID)]; ok && pp.BuyPrice > 0 {
-				whTax := pp.BuyPrice * taxIndex[wh.PortID] / 10000
-				costBasis = pp.BuyPrice + whTax
-			}
 
-			// Find the best sell price across all known ports.
-			bestSellProfit := 0
+			// Find the best sell revenue across all known ports.
+			bestSellRev := 0
 			for _, pp := range req.PriceCache {
 				if pp.PortID == wh.PortID || pp.GoodID != item.GoodID || pp.SellPrice <= 0 {
 					continue
 				}
 				sellTax := pp.SellPrice * taxIndex[pp.PortID] / 10000
 				netSell := pp.SellPrice - sellTax
-				profit := netSell - costBasis
-				if profit > bestSellProfit {
-					bestSellProfit = profit
+				if netSell > bestSellRev {
+					bestSellRev = netSell
 				}
 			}
-			totalProfit += bestSellProfit * item.Quantity
+			totalProfit += bestSellRev * item.Quantity
 		}
 
 		if totalProfit > bestProfit {
@@ -2349,20 +2284,14 @@ func (a *HeuristicAgent) warehouseSellProfit(
 			if item.Quantity <= 0 || remainCap <= 0 {
 				continue
 			}
-			// Warehouse goods are already paid for — use NPC buy price as cost estimate.
-			costBasis := 0
-			if pp, ok := priceIndex[priceKey(currentPortID, item.GoodID)]; ok && pp.BuyPrice > 0 {
-				buyTax := pp.BuyPrice * taxIndex[currentPortID] / 10000
-				costBasis = pp.BuyPrice + buyTax
-			}
-
+			// Warehouse goods are already paid for (sunk cost) — cost basis is 0.
+			// Any sell revenue is pure profit.
 			dp, ok := priceIndex[priceKey(destID, item.GoodID)]
 			if !ok || dp.SellPrice <= 0 {
 				continue
 			}
 			sellTax := dp.SellPrice * taxIndex[destID] / 10000
-			netSell := dp.SellPrice - sellTax
-			profit := netSell - costBasis
+			profit := dp.SellPrice - sellTax
 			if profit <= 0 {
 				continue
 			}

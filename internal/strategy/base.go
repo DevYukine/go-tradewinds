@@ -698,9 +698,11 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 				zap.Int("total", r.Execution.TotalPrice),
 			)
 
-			// Record cost basis for loss prevention and persist to Redis.
+			// Record cost basis for analytics and persist to Redis.
 			if r.Execution.Quantity > 0 {
-				avgCost := r.Execution.UnitPrice + r.Execution.TaxPaid/r.Execution.Quantity
+				// Use ceiling division to avoid underestimating costs.
+				taxPerUnit := (r.Execution.TaxPaid + r.Execution.Quantity - 1) / r.Execution.Quantity
+				avgCost := r.Execution.UnitPrice + taxPerUnit
 				ship.SetCargoCost(r.Execution.GoodID, r.Execution.Quantity, avgCost)
 				b.persistCargoCosts(ship)
 			}
