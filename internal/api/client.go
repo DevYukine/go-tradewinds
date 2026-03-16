@@ -141,6 +141,14 @@ func (c *Client) do(ctx context.Context, method, path string, body any, result a
 				}
 			}
 
+		case apiErr.statusCode == 401:
+			c.logger.Warn("401 Unauthorized",
+				zap.String("method", method),
+				zap.String("path", path),
+				zap.String("body", apiErr.body),
+			)
+			return lastErr
+
 		case apiErr.statusCode >= 500:
 			backoff := initialBackoff * time.Duration(1<<uint(attempt))
 
