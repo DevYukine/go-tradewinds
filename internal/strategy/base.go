@@ -515,11 +515,19 @@ func (b *baseStrategy) executeFills(ctx context.Context, portID uuid.UUID, fills
 	for _, fill := range fills {
 		_, err := b.ctx.Client.FillOrder(ctx, fill.OrderID, fill.Quantity)
 		if err != nil {
-			b.logger.Warn("failed to fill market order",
-				zap.String("order_id", fill.OrderID.String()),
-				zap.Int("quantity", fill.Quantity),
-				zap.Error(err),
-			)
+			// 404 means order already filled/expired or warehouse not found — expected.
+			if api.IsNotFound(err) {
+				b.logger.Debug("order fill skipped (not found)",
+					zap.String("order_id", fill.OrderID.String()),
+					zap.Error(err),
+				)
+			} else {
+				b.logger.Warn("failed to fill market order",
+					zap.String("order_id", fill.OrderID.String()),
+					zap.Int("quantity", fill.Quantity),
+					zap.Error(err),
+				)
+			}
 			continue
 		}
 		b.logger.Trade("filled market order",

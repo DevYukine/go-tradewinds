@@ -328,6 +328,18 @@ func newRequestError(resp *resty.Response) *requestError {
 	return reqErr
 }
 
+// IsNotFound returns true if the error is a 404 Not Found response.
+func IsNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	reqErr, ok := err.(*requestError)
+	if !ok {
+		return false
+	}
+	return reqErr.statusCode == 404
+}
+
 // IsBankrupt returns true if the error indicates the company is bankrupt
 // (game API returns 401 Unauthorized with "bankrupt" in the message).
 func IsBankrupt(err error) bool {
