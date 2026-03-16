@@ -275,3 +275,43 @@ func (rc *RedisCache) LoadCargoCosts(ctx context.Context, companyID, shipID stri
 	}
 	return costs
 }
+
+// --- Warehouse Cost Persistence ---
+
+const warehouseCostKeyPrefix = keyPrefix + "warehouse_costs:"
+
+// warehouseCostKey builds the Redis key for a warehouse's item costs.
+func warehouseCostKey(companyID, warehouseID string) string {
+	return warehouseCostKeyPrefix + companyID + ":" + warehouseID
+}
+
+// SaveWarehouseCosts persists a warehouse's item cost map to Redis.
+func (rc *RedisCache) SaveWarehouseCosts(ctx context.Context, companyID, warehouseID string, costs map[string]int) {
+	if len(costs) == 0 {
+		rc.client.Del(ctx, warehouseCostKey(companyID, warehouseID))
+		return
+	}
+	data, err := json.Marshal(costs)
+	if err != nil {
+		rc.logger.Warn("failed to marshal warehouse costs", zap.Error(err))
+		return
+	}
+	if err := rc.client.Set(ctx, warehouseCostKey(companyID, warehouseID), data, time.Hour).Err(); err != nil {
+		rc.logger.Warn("failed to save warehouse costs to Redis", zap.Error(err))
+	}
+}
+
+// LoadWarehouseCosts restores a warehouse's item cost map from Redis.
+// Returns nil if not found or expired.
+func (rc *RedisCache) LoadWarehouseCosts(ctx context.Context, companyID, warehouseID string) map[string]int {
+	data, err := rc.client.Get(ctx, warehouseCostKey(companyID, warehouseID)).Bytes()
+	if err != nil {
+		return nil
+	}
+	var costs map[string]int
+	if err := json.Unmarshal(data, &costs); err != nil {
+		rc.logger.Warn("failed to unmarshal warehouse costs from Redis", zap.Error(err))
+		return nil
+	}
+	return costs
+}

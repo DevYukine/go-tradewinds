@@ -117,9 +117,15 @@ func (s *CompanyState) UpdateWarehouses(warehouses []api.Warehouse) {
 		wh := &warehouses[i]
 		if existing, ok := s.Warehouses[wh.ID]; ok {
 			existing.Warehouse = *wh
+			if existing.ItemCosts == nil {
+				existing.ItemCosts = make(map[uuid.UUID]int)
+			}
 			updated[wh.ID] = existing
 		} else {
-			updated[wh.ID] = &WarehouseState{Warehouse: *wh}
+			updated[wh.ID] = &WarehouseState{
+				Warehouse: *wh,
+				ItemCosts: make(map[uuid.UUID]int),
+			}
 		}
 	}
 	s.Warehouses = updated
@@ -140,7 +146,10 @@ func (s *CompanyState) AddWarehouse(wh api.Warehouse) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.Warehouses[wh.ID] = &WarehouseState{Warehouse: wh}
+	s.Warehouses[wh.ID] = &WarehouseState{
+		Warehouse: wh,
+		ItemCosts: make(map[uuid.UUID]int),
+	}
 }
 
 // RemoveWarehouse removes a demolished warehouse from the in-memory state.
@@ -342,6 +351,53 @@ func (ss *ShipState) UsedCapacity() int {
 
 // WarehouseState tracks a single warehouse and its inventory.
 type WarehouseState struct {
-	Warehouse api.Warehouse
-	Inventory []api.WarehouseInventoryItem
+	Warehouse  api.Warehouse
+	Inventory  []api.WarehouseInventoryItem
+	ItemCosts  map[uuid.UUID]int // goodID → avg unit cost (price + tax)
+}
+
+// SetItemCost records or updates the cost basis for a good in this warehouse.
+func (ws *WarehouseState) SetItemCost(goodID uuid.UUID, newQty, newUnitCost int) {
+	if ws.ItemCosts == nil {
+		ws.ItemCosts = make(map[uuid.UUID]int)
+	}
+	if newQty <= 0 || newUnitCost <= 0 {
+		return
+	}
+
+	existingCost, exists := ws.ItemCosts[goodID]
+	if !exists {
+		ws.ItemCosts[goodID] = newUnitCost
+		return
+	}
+
+	// Find existing quantity of this good in warehouse.
+	existingQty := 0
+	for _, item := range ws.Inventory {
+		if item.GoodID == goodID {
+			existingQty += item.Quantity
+		}
+	}
+
+	if existingQty <= 0 {
+		ws.ItemCosts[goodID] = newUnitCost
+		return
+	}
+
+	// Weighted average.
+	totalQty := existingQty + newQty
+	ws.ItemCosts[goodID] = (existingQty*existingCost + newQty*newUnitCost) / totalQty
+}
+
+// ClearItemCost removes cost tracking for a good.
+func (ws *WarehouseState) ClearItemCost(goodID uuid.UUID) {
+	delete(ws.ItemCosts, goodID)
+}
+
+// GetItemCost returns the cost basis for a good, or 0 if unknown.
+func (ws *WarehouseState) GetItemCost(goodID uuid.UUID) int {
+	if ws.ItemCosts == nil {
+		return 0
+	}
+	return ws.ItemCosts[goodID]
 }

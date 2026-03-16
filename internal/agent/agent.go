@@ -206,6 +206,7 @@ type WarehouseSnapshot struct {
 type WarehouseItem struct {
 	GoodID   uuid.UUID `json:"good_id"`
 	Quantity int       `json:"quantity"`
+	CostBasis int      `json:"cost_basis"` // avg unit cost (price + tax), 0 if unknown
 }
 
 // PricePoint records observed buy/sell prices for a good at a port.

@@ -85,6 +85,25 @@ func (b *baseStrategy) persistCargoCosts(ship *bot.ShipState) {
 	b.ctx.Redis.SaveCargoCosts(context.Background(), b.ctx.State.CompanyID.String(), ship.Ship.ID.String(), costs)
 }
 
+// persistWarehouseCosts saves a warehouse's item cost map to Redis for restart survival.
+func (b *baseStrategy) persistWarehouseCosts(warehouseID uuid.UUID) {
+	if b.ctx.Redis == nil {
+		return
+	}
+	b.ctx.State.RLock()
+	ws, ok := b.ctx.State.Warehouses[warehouseID]
+	if !ok || ws.ItemCosts == nil {
+		b.ctx.State.RUnlock()
+		return
+	}
+	costs := make(map[string]int, len(ws.ItemCosts))
+	for goodID, cost := range ws.ItemCosts {
+		costs[goodID.String()] = cost
+	}
+	b.ctx.State.RUnlock()
+	b.ctx.Redis.SaveWarehouseCosts(context.Background(), b.ctx.State.CompanyID.String(), warehouseID.String(), costs)
+}
+
 // --- On-Demand Price Scanning ---
 
 // ensurePortPrices checks if the price cache for a port is stale or missing
@@ -634,6 +653,9 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 	}
 
 	// Filter quotes that would exceed treasury floor.
+	// Track which goods go to warehouses vs ship for cost recording.
+	warehouseDests := make(map[uuid.UUID]uuid.UUID) // goodID → warehouseID
+
 	var execReqs []api.ExecuteQuoteRequest
 	for _, r := range results {
 		if r.Status != "success" || r.Token == "" || r.Quote == nil {
@@ -659,6 +681,7 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 				for _, w := range b.ctx.State.Warehouses {
 					if w.Warehouse.ID == buy.Destination {
 						destType = "warehouse"
+						warehouseDests[r.Quote.GoodID] = buy.Destination
 						break
 					}
 				}
@@ -698,13 +721,23 @@ func (b *baseStrategy) executeBuys(ctx context.Context, ship *bot.ShipState, buy
 				zap.Int("total", r.Execution.TotalPrice),
 			)
 
-			// Record cost basis for analytics and persist to Redis.
+			// Record cost basis on the correct destination.
 			if r.Execution.Quantity > 0 {
-				// Use ceiling division to avoid underestimating costs.
 				taxPerUnit := (r.Execution.TaxPaid + r.Execution.Quantity - 1) / r.Execution.Quantity
 				avgCost := r.Execution.UnitPrice + taxPerUnit
-				ship.SetCargoCost(r.Execution.GoodID, r.Execution.Quantity, avgCost)
-				b.persistCargoCosts(ship)
+
+				if whID, isWarehouse := warehouseDests[r.Execution.GoodID]; isWarehouse {
+					// Cost goes to warehouse, not ship.
+					b.ctx.State.Lock()
+					if ws, ok := b.ctx.State.Warehouses[whID]; ok {
+						ws.SetItemCost(r.Execution.GoodID, r.Execution.Quantity, avgCost)
+					}
+					b.ctx.State.Unlock()
+					b.persistWarehouseCosts(whID)
+				} else {
+					ship.SetCargoCost(r.Execution.GoodID, r.Execution.Quantity, avgCost)
+					b.persistCargoCosts(ship)
+				}
 			}
 
 			tc := tradeContext{
@@ -755,6 +788,28 @@ func (b *baseStrategy) executeWarehouseLoads(ctx context.Context, ship *bot.Ship
 			zap.Int("quantity", load.Quantity),
 		)
 
+		// Transfer cost basis from warehouse to ship.
+		b.ctx.State.Lock()
+		if ws, ok := b.ctx.State.Warehouses[load.WarehouseID]; ok {
+			costBasis := ws.GetItemCost(load.GoodID)
+			if costBasis > 0 {
+				ship.SetCargoCost(load.GoodID, load.Quantity, costBasis)
+			}
+			// Clear warehouse cost if all quantity was loaded.
+			remainingInWh := 0
+			for _, item := range ws.Inventory {
+				if item.GoodID == load.GoodID {
+					remainingInWh += item.Quantity
+				}
+			}
+			if remainingInWh <= load.Quantity {
+				ws.ClearItemCost(load.GoodID)
+			}
+		}
+		b.ctx.State.Unlock()
+		b.persistCargoCosts(ship)
+		b.persistWarehouseCosts(load.WarehouseID)
+
 		// Log warehouse load event.
 		loadPortID, loadPortName := b.resolveWarehousePort(load.WarehouseID)
 		b.ctx.DB.Create(&db.WarehouseEventLog{
@@ -801,6 +856,32 @@ func (b *baseStrategy) executeWarehouseStores(ctx context.Context, ship *bot.Shi
 			zap.String("good", goodName),
 			zap.Int("quantity", store.Quantity),
 		)
+
+		// Transfer cost basis from ship to warehouse.
+		costBasis := 0
+		if ship.CargoCosts != nil {
+			costBasis = ship.CargoCosts[store.GoodID]
+		}
+		if costBasis > 0 {
+			b.ctx.State.Lock()
+			if ws, ok := b.ctx.State.Warehouses[store.WarehouseID]; ok {
+				ws.SetItemCost(store.GoodID, store.Quantity, costBasis)
+			}
+			b.ctx.State.Unlock()
+			b.persistWarehouseCosts(store.WarehouseID)
+
+			// Clear ship cost if no more of this good remains on ship.
+			remainingOnShip := 0
+			for _, c := range ship.Cargo {
+				if c.GoodID == store.GoodID {
+					remainingOnShip += c.Quantity
+				}
+			}
+			if remainingOnShip <= store.Quantity {
+				ship.ClearCargoCost(store.GoodID)
+				b.persistCargoCosts(ship)
+			}
+		}
 
 		// Log warehouse store event.
 		storePortID, storePortName := b.resolveWarehousePort(store.WarehouseID)
@@ -1506,8 +1587,9 @@ func warehouseToSnapshot(w *bot.WarehouseState) agent.WarehouseSnapshot {
 	items := make([]agent.WarehouseItem, len(w.Inventory))
 	for i, item := range w.Inventory {
 		items[i] = agent.WarehouseItem{
-			GoodID:   item.GoodID,
-			Quantity: item.Quantity,
+			GoodID:    item.GoodID,
+			Quantity:  item.Quantity,
+			CostBasis: w.GetItemCost(item.GoodID),
 		}
 	}
 

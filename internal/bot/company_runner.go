@@ -323,6 +323,33 @@ func (r *CompanyRunner) initState(ctx context.Context) error {
 			continue
 		}
 		r.state.SetWarehouseInventory(wh.ID, inv)
+
+		// Restore warehouse item costs from Redis.
+		if r.redis != nil {
+			costs := r.redis.LoadWarehouseCosts(ctx, r.state.CompanyID.String(), wh.ID.String())
+			if len(costs) > 0 {
+				r.state.Lock()
+				if ws, ok := r.state.Warehouses[wh.ID]; ok {
+					for goodIDStr, cost := range costs {
+						goodID, err := uuid.Parse(goodIDStr)
+						if err != nil {
+							continue
+						}
+						// Only restore cost for goods still in the warehouse.
+						for _, item := range inv {
+							if item.GoodID == goodID && item.Quantity > 0 {
+								if ws.ItemCosts == nil {
+									ws.ItemCosts = make(map[uuid.UUID]int)
+								}
+								ws.ItemCosts[goodID] = cost
+								break
+							}
+						}
+					}
+				}
+				r.state.Unlock()
+			}
+		}
 	}
 
 	// Load or create tunable params from DB.

@@ -164,7 +164,9 @@ All strategies read timing intervals from `CompanyState.Params` (set by the opti
 ## Profitability Guards
 
 The heuristic agent enforces several guards to prevent money-losing trades:
-- **Cost basis tracking**: `ShipState.CargoCosts` records the weighted-average buy price (including tax) for each good on each ship. `CargoItem.BuyPrice` carries this to the agent for analytics. Costs are recorded in `executeBuys` and cleared in `executeSells`, persisted to Redis.
+- **Cost basis tracking**: `ShipState.CargoCosts` and `WarehouseState.ItemCosts` record weighted-average buy prices (including tax) for goods on ships and in warehouses. `CargoItem.BuyPrice` and `WarehouseItem.CostBasis` carry these to the agent. Costs are recorded in `executeBuys`, transferred on warehouse↔ship moves, cleared on sells, and persisted to Redis.
+- **Loss prevention (sells)**: `buildSmartSellOrders` checks `cargo.BuyPrice` against the current port's net sell price. If selling would be below cost, the cargo is held and routed to a profitable destination. After 3+ idle ticks, unprofitable cargo is force-sold to free capacity (cut losses rather than burn upkeep indefinitely).
+- **Warehouse cost basis**: warehouse goods use real purchase costs (not sunk-cost 0). `warehouseOps`, `warehouseSellProfit`, and `findBestWarehousePickup` all subtract `CostBasis` from sell revenue when computing profit. This prevents loading/routing to sell warehouse goods below their purchase price.
 - **Dynamic margin**: trades must exceed a margin that scales with good price — 8% for cheap goods, 15% for goods >100g, 20% for goods >500g. This protects against price volatility on expensive cargo.
 - **Price staleness discount**: destination sell prices older than 2 minutes are discounted by 10%/minute (up to 50%). This prevents buying based on stale price data that may have changed.
 - **Sell-side tax**: profit calculation includes both buy and sell port taxes
