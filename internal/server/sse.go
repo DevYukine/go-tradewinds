@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -235,8 +236,6 @@ func (s *Server) handleSSEGlobalEvents(c fiber.Ctx) error {
 
 		// Goroutine that subscribes to all runners and forwards events.
 		go func() {
-			defer close(merged)
-
 			type sub struct {
 				runner *bot.CompanyRunner
 				subID  int
@@ -244,6 +243,7 @@ func (s *Server) handleSSEGlobalEvents(c fiber.Ctx) error {
 			}
 
 			var subs []sub
+			var wg sync.WaitGroup
 
 			// Subscribe to all current runners.
 			companies := s.manager.Companies()
@@ -258,7 +258,9 @@ func (s *Server) handleSSEGlobalEvents(c fiber.Ctx) error {
 				}
 
 				// Forward events from this runner to merged channel.
+				wg.Add(1)
 				go func(ch <-chan bot.StateEvent, companyID uint) {
+					defer wg.Done()
 					for event := range ch {
 						select {
 						case merged <- globalEvent{
@@ -276,10 +278,15 @@ func (s *Server) handleSSEGlobalEvents(c fiber.Ctx) error {
 			// Block until client disconnects.
 			<-done
 
-			// Unsubscribe all.
+			// Unsubscribe all — this closes the per-runner channels,
+			// causing forwarder goroutines to exit via range loop.
 			for _, s := range subs {
 				s.runner.Events().Unsubscribe(s.subID)
 			}
+
+			// Wait for all forwarders to finish before closing merged.
+			wg.Wait()
+			close(merged)
 		}()
 
 		// Stream merged events to client.
