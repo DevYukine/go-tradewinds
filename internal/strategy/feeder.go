@@ -219,11 +219,12 @@ func (f *Feeder) postInflatedOrders(ctx context.Context, targetPort uuid.UUID) {
 		return
 	}
 
+	ownCompanyID := f.ctx.State.CompanyID
 	f.ctx.State.RLock()
 	treasury := f.ctx.State.Treasury
 	existingOrders := make(map[uuid.UUID]bool)
 	for _, o := range f.ctx.State.Orders {
-		if o.PortID == targetPort && o.Side == "buy" {
+		if o.CompanyID == ownCompanyID && o.PortID == targetPort && o.Side == "buy" {
 			existingOrders[o.GoodID] = true
 		}
 	}
@@ -312,10 +313,11 @@ func (f *Feeder) postInflatedOrders(ctx context.Context, targetPort uuid.UUID) {
 
 // cancelStaleOrders cancels any P2P orders at non-target ports.
 func (f *Feeder) cancelStaleOrders(ctx context.Context, targetPort uuid.UUID) {
+	companyID := f.ctx.State.CompanyID
 	f.ctx.State.RLock()
 	var toCancel []uuid.UUID
 	for _, o := range f.ctx.State.Orders {
-		if o.PortID != targetPort {
+		if o.CompanyID == companyID && o.PortID != targetPort {
 			toCancel = append(toCancel, o.ID)
 		}
 	}
