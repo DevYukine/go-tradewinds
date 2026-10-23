@@ -23,42 +23,60 @@ type freightObligation struct {
 	RewardPence     int64      `json:"reward_pence"`
 	CollateralPence int64      `json:"collateral_pence"`
 	TenderRefused   bool       `json:"tender_refused"`
+	TenderRetryAt   time.Time  `json:"tender_retry_at"`
 	Settled         bool       `json:"settled"`
 }
 
+type relocationIntent struct {
+	TargetContractID     string `json:"target_contract_id"`
+	TargetCommodity      string `json:"target_commodity"`
+	TargetDestination    string `json:"target_destination"`
+	ExpenseCapPence      int64  `json:"expense_cap_pence"`
+	ModeledExpensePence  int64  `json:"modeled_expense_pence"`
+	FundingRequiredPence int64  `json:"funding_required_pence"`
+	InspectUntilGameHour int64  `json:"inspect_until_game_hour"`
+}
+
 type missionData struct {
-	Plan                      Plan                `json:"plan"`
-	ProvenLane                string              `json:"proven_lane"`
-	Action                    *durableAction      `json:"action,omitempty"`
-	Sequence                  int64               `json:"sequence"`
-	StartedAt                 time.Time           `json:"started_at"`
-	StartedGameHours          int64               `json:"started_game_hours"`
-	InitialLedgerIDs          map[string]bool     `json:"initial_ledger_ids"`
-	Freight                   []freightObligation `json:"freight"`
-	Eligible                  map[string]int64    `json:"eligible"`
-	DepartedCargo             map[string]int64    `json:"departed_cargo"`
-	BoughtQuantity            int64               `json:"bought_quantity"`
-	DeliveredQuantity         int64               `json:"delivered_quantity"`
-	BuyDone                   bool                `json:"buy_done"`
-	ReturnJourney             bool                `json:"return_journey"`
-	AcquisitionPence          int64               `json:"acquisition_pence"`
-	ProceedsPence             int64               `json:"proceeds_pence"`
-	FeesPence                 int64               `json:"fees_pence"`
-	ProvisionsPence           int64               `json:"provisions_pence"`
-	ExpensesPence             int64               `json:"expenses_pence"`
-	CostsKnown                bool                `json:"costs_known"`
-	LastActionID              string              `json:"last_action_id"`
-	Settlement                *store.Settlement   `json:"settlement,omitempty"`
-	RejectedCharterIDs        map[string]bool     `json:"rejected_charter_ids"`
-	SettlementExpenseIDs      []string            `json:"settlement_expense_ids"`
-	CooldownUntil             time.Time           `json:"cooldown_until"`
-	BuildName                 string              `json:"build_name,omitempty"`
-	BuildClass                string              `json:"build_class,omitempty"`
-	BuiltShipID               string              `json:"built_ship_id,omitempty"`
-	BuildPort                 string              `json:"build_port,omitempty"`
-	TargetCannons             int64               `json:"target_cannons,omitempty"`
-	BuildCostPence            int64               `json:"build_cost_pence"`
-	GrowthWorkingCapitalPence int64               `json:"growth_working_capital_pence"`
+	Plan                      Plan                    `json:"plan"`
+	FinishAtDestination       bool                    `json:"finish_at_destination"`
+	Relocation                *relocationIntent       `json:"relocation,omitempty"`
+	SourcingHandoff           *relocationIntent       `json:"sourcing_handoff,omitempty"`
+	SourcingSpentPence        int64                   `json:"sourcing_spent_pence"`
+	SourcingGameDays          float64                 `json:"sourcing_game_days"`
+	ClosingObservedAt         time.Time               `json:"closing_observed_at"`
+	ProvenLane                string                  `json:"proven_lane"`
+	Action                    *durableAction          `json:"action,omitempty"`
+	Sequence                  int64                   `json:"sequence"`
+	StartedAt                 time.Time               `json:"started_at"`
+	StartedGameHours          int64                   `json:"started_game_hours"`
+	InitialLedgerIDs          map[string]bool         `json:"initial_ledger_ids"`
+	Freight                   []freightObligation     `json:"freight"`
+	Eligible                  map[string]int64        `json:"eligible"`
+	DepartedCargo             map[string]int64        `json:"departed_cargo"`
+	BoughtQuantity            int64                   `json:"bought_quantity"`
+	DeliveredQuantity         int64                   `json:"delivered_quantity"`
+	BuyDone                   bool                    `json:"buy_done"`
+	ReturnJourney             bool                    `json:"return_journey"`
+	AcquisitionPence          int64                   `json:"acquisition_pence"`
+	ProceedsPence             int64                   `json:"proceeds_pence"`
+	FeesPence                 int64                   `json:"fees_pence"`
+	ProvisionsPence           int64                   `json:"provisions_pence"`
+	ExpensesPence             int64                   `json:"expenses_pence"`
+	CostsKnown                bool                    `json:"costs_known"`
+	LastActionID              string                  `json:"last_action_id"`
+	Settlement                *store.Settlement       `json:"settlement,omitempty"`
+	RejectedCharterIDs        map[string]bool         `json:"rejected_charter_ids"`
+	RejectedCharterTerms      map[string]charterTerms `json:"rejected_charter_terms,omitempty"`
+	SettlementExpenseIDs      []string                `json:"settlement_expense_ids"`
+	CooldownUntil             time.Time               `json:"cooldown_until"`
+	BuildName                 string                  `json:"build_name,omitempty"`
+	BuildClass                string                  `json:"build_class,omitempty"`
+	BuiltShipID               string                  `json:"built_ship_id,omitempty"`
+	BuildPort                 string                  `json:"build_port,omitempty"`
+	TargetCannons             int64                   `json:"target_cannons,omitempty"`
+	BuildCostPence            int64                   `json:"build_cost_pence"`
+	GrowthWorkingCapitalPence int64                   `json:"growth_working_capital_pence"`
 }
 
 func (r *Runner) ship(id string) (ShipState, bool) {
@@ -84,14 +102,6 @@ func (r *Runner) loadMission(ctx context.Context, shipID string) (*store.Mission
 
 func (r *Runner) work(ctx context.Context) (bool, error) {
 	r.nextDeadline = time.Time{}
-	for _, key := range []string{"ships", "contracts", "vaults", "clock", "catalog", "factors", "warehouses", "orders", "fills", "ledger", "rates", "settings"} {
-		if !r.fresh(key) {
-			return false, r.hold(ctx, "", "mutation gate: missing, incomplete or stale "+key)
-		}
-	}
-	if r.stateCache.Clock.Paused {
-		return false, r.hold(ctx, "", "world paused; observation continues without mutations")
-	}
 	// Restore every durable plan before replaying even one request. An orphaned
 	// pending request blocks all new account mutations rather than being guessed.
 	missions := make(map[string]*store.Mission)
@@ -112,7 +122,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			r.wakeBy(data.CooldownUntil)
 			for _, obligation := range data.Freight {
 				if obligation.Deadline != nil {
-					r.wakeBy(*obligation.Deadline)
+					r.wakeAtServer(*obligation.Deadline, false)
 				}
 			}
 			changed := false
@@ -154,14 +164,26 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return false, r.hold(ctx, "", "orphaned unresolved journal request "+action.ID+"; original mission must be restored before any retry")
 		}
 	}
+	unresolved := false
 	for _, id := range ids {
 		data := dataByShip[id]
 		if data.Action != nil {
-			if time.Now().Before(data.CooldownUntil) {
-				return false, r.hold(ctx, id, "unresolved action waiting for persisted retry cooldown")
+			unresolved = true
+			if changed, err := r.dispatch(ctx, missions[id], &data); changed || err != nil {
+				return changed, err
 			}
-			return r.dispatch(ctx, missions[id], &data)
 		}
+	}
+	for _, key := range []string{"ships", "contracts", "vaults", "clock", "catalog", "factors", "warehouses", "orders", "fills", "ledger", "rates", "settings"} {
+		if !r.fresh(key) {
+			return false, r.hold(ctx, "", "mutation gate: missing, incomplete or stale "+key)
+		}
+	}
+	if r.stateCache.Clock.Paused {
+		return false, r.hold(ctx, "", "world paused; observation continues without mutations")
+	}
+	if unresolved {
+		return r.creditOnlyWork(ctx, missions, dataByShip)
 	}
 	if mission := missions["__growth"]; mission != nil {
 		data := dataByShip["__growth"]
@@ -183,13 +205,17 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 		}
 	}
-	if r.opts.Execute && missions["__treasury"] == nil {
+	sourcingActive := false
+	for _, data := range dataByShip {
+		sourcingActive = sourcingActive || data.Relocation != nil || data.SourcingHandoff != nil
+	}
+	if r.opts.Execute && missions["__treasury"] == nil && !sourcingActive {
 		changed, err := r.manageTreasury(ctx)
 		if changed || err != nil {
 			return changed, err
 		}
 	}
-	if r.opts.Execute && missions["__growth"] == nil && missions["__treasury"] == nil {
+	if r.opts.Execute && missions["__growth"] == nil && missions["__treasury"] == nil && !sourcingActive {
 		changed, err := r.considerGrowth(ctx)
 		if changed || err != nil {
 			return changed, err
@@ -248,6 +274,11 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			}
 			return r.startVoyage(ctx, ship, plans[0])
 		}
+		if !sourcingActive {
+			if changed, err := r.considerSourcing(ctx, ship); changed || err != nil {
+				return changed, err
+			}
+		}
 		reason := "no executable purchase-and-voyage alternative from " + ship.Ship.CurrentPortID
 		if len(plans) > 0 {
 			best := plans[0]
@@ -259,7 +290,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		if err := r.hold(ctx, ship.Ship.ID, reason); err != nil {
 			return false, err
 		}
-		if r.opts.Execute && ship.Ship.Status == "berthed" && unlocked(ship, time.Now()) {
+		if r.opts.Execute && ship.Ship.Status == "berthed" && r.shipUnlocked(ship) {
 			return r.startMaintenance(ctx, ship, "offshore", "/v1/fleet/offshore", map[string]any{"ship_id": ship.Ship.ID})
 		}
 	}
@@ -271,6 +302,11 @@ func unlocked(ship ShipState, now time.Time) bool {
 }
 
 func (r *Runner) startVoyage(ctx context.Context, ship ShipState, plan Plan) (bool, error) {
+	mission, data := r.newVoyage(ship, plan)
+	return true, r.saveMission(ctx, mission, &data)
+}
+
+func (r *Runner) newVoyage(ship ShipState, plan Plan) (*store.Mission, missionData) {
 	mission := &store.Mission{
 		AccountID:   r.account.ID,
 		ShipID:      ship.Ship.ID,
@@ -283,15 +319,16 @@ func (r *Runner) startVoyage(ctx context.Context, ship ShipState, plan Plan) (bo
 		Generation:  uuid.NewString(),
 	}
 	data := missionData{
-		Plan:             plan,
-		ProvenLane:       laneKey(plan),
-		StartedAt:        time.Now().UTC(),
-		StartedGameHours: r.stateCache.Clock.Calendar.TotalGameHours,
-		InitialLedgerIDs: r.ledgerIDs(),
-		CostsKnown:       true,
-		Eligible:         make(map[string]int64),
+		Plan:                plan,
+		FinishAtDestination: true,
+		ProvenLane:          laneKey(plan),
+		StartedAt:           time.Now().UTC(),
+		StartedGameHours:    r.stateCache.Clock.Calendar.TotalGameHours,
+		InitialLedgerIDs:    r.ledgerIDs(),
+		CostsKnown:          true,
+		Eligible:            make(map[string]int64),
 	}
-	return true, r.saveMission(ctx, mission, &data)
+	return mission, data
 }
 
 func (r *Runner) recoverShip(ctx context.Context, ship ShipState) (bool, error) {
@@ -364,12 +401,48 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 	if !r.opts.Execute {
 		return false, r.hold(ctx, ship.Ship.ID, "observe mode: durable mission retained without mutation")
 	}
-	if time.Now().Before(data.CooldownUntil) {
-		return false, r.hold(ctx, ship.Ship.ID, "mission waiting for persisted retry cooldown")
+	if data.Action != nil {
+		return r.dispatch(ctx, mission, data)
+	}
+	if data.Settlement == nil {
+		if changed, err := r.reconcileFreight(ctx, mission, data); changed || err != nil {
+			return changed, err
+		}
 	}
 	if ship.Ship.Status == "sunk" {
 		data.CostsKnown = false
 		return r.finishMission(ctx, ship, mission, data)
+	}
+	if time.Now().Before(data.CooldownUntil) {
+		return false, r.hold(ctx, ship.Ship.ID, "mission waiting for persisted retry cooldown")
+	}
+	if r.fresh("contracts") {
+		changed := false
+		for id := range data.RejectedCharterIDs {
+			contract, exists := r.contract(id)
+			if !exists || contract.Stale || contract.ContractType != "charter" {
+				continue
+			}
+			terms := observedCharterTerms(contract)
+			if prior, captured := data.RejectedCharterTerms[id]; captured {
+				if prior != terms {
+					delete(data.RejectedCharterIDs, id)
+					delete(data.RejectedCharterTerms, id)
+					changed = true
+				}
+			} else {
+				if data.RejectedCharterTerms == nil {
+					data.RejectedCharterTerms = make(map[string]charterTerms)
+				}
+				data.RejectedCharterTerms[id] = terms
+				changed = true
+			}
+		}
+		if changed {
+			if err := r.saveMission(ctx, mission, data); err != nil {
+				return false, err
+			}
+		}
 	}
 	if ship.Ship.ConvoyID != "" {
 		return false, r.hold(ctx, ship.Ship.ID, "ship is bound to a convoy; independent mission navigation is unsafe")
@@ -379,6 +452,12 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 	}
 	if mission.Phase == "settling" || mission.Phase == "settled" {
 		return r.finishMission(ctx, ship, mission, data)
+	}
+	if mission.Phase == "closing" {
+		return r.closeAtDestination(ctx, ship, mission, data)
+	}
+	if data.Relocation != nil {
+		return r.driveRelocation(ctx, ship, mission, data)
 	}
 	if mission.Phase == "sailing" || mission.Phase == "return_sailing" {
 		if ship.Ship.Status == "sailing" {
@@ -398,6 +477,28 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 		mission.Phase = "arrival"
 		return true, r.saveMission(ctx, mission, data)
 	}
+	if data.SourcingHandoff != nil && !data.BuyDone && (mission.Phase == "provision" || mission.Phase == "buy") {
+		input, err := r.sourcingInput(ctx, ship)
+		if err != nil {
+			return false, err
+		}
+		input.PaidProvisionsPence = data.ProvisionsPence
+		contract, exists := r.contract(data.SourcingHandoff.TargetContractID)
+		probe := data.Plan
+		probe.Economics.GameDays = data.SourcingGameDays
+		plan := sizeRelocationCargo(input, probe, contract, data.SourcingSpentPence)
+		if !exists || !plan.Accepted {
+			return r.unwindProcurement(ctx, ship, mission, data, "fresh post-settlement source prices no longer justify procurement: "+plan.Reason)
+		}
+		for region, required := range cargoFundingRequired(input, plan) {
+			if input.Balances[region] < required {
+				return r.unwindProcurement(ctx, ship, mission, data, "fresh sourced-cargo funding no longer preserves regional reserves and incumbent commitments")
+			}
+		}
+		data.Plan = plan
+		mission.Quantity = plan.Quantity
+		mission.PricePence = plan.BuyLimitPence
+	}
 	deliveryReady := false
 	if ship.Ship.CurrentPortID == data.Plan.Destination {
 		for _, obligation := range data.Freight {
@@ -409,7 +510,7 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 			if contract.ContractType == "charter" && contract.Status == "open" && !contract.Stale &&
 				contract.OriginPortID == ship.Ship.CurrentPortID && contract.RemainingQuantity > 0 &&
 				data.Eligible[contract.CommodityID] > 0 && !data.RejectedCharterIDs[contract.ID] &&
-				(contract.ExpiresAt == nil || contract.ExpiresAt.After(time.Now())) {
+				r.deadlineOpen(contract.ExpiresAt) {
 				deliveryReady = true
 			}
 		}
@@ -571,6 +672,10 @@ func (r *Runner) provisionMission(ctx context.Context, ship ShipState, mission *
 		return false, r.hold(ctx, ship.Ship.ID, "store order exceeds integer-pence funding bounds")
 	}
 	worstCost := quantity * fill.LimitPence
+	if data.Relocation != nil && (worstCost > data.Relocation.ExpenseCapPence || quantity > data.Relocation.ExpenseCapPence ||
+		!r.relocationBudget(data, worstCost+ceilBPS(worstCost, book.CustomsBPS)+quantity)) {
+		return r.abortRelocation(ctx, ship, mission, data, "additional sourcing provisions would exceed the durable exploration expense cap")
+	}
 	if !exists || input.Balances[catalogPort.BankingRegion]-worstCost-ceilBPS(worstCost, book.CustomsBPS)-quantity < input.ReserveByRegion[catalogPort.BankingRegion] {
 		return false, r.hold(ctx, ship.Ship.ID, "cannot replenish stores without spending protected regional bills reserve")
 	}
@@ -589,7 +694,7 @@ func (r *Runner) prepareDeparture(ctx context.Context, ship ShipState, mission *
 		}
 		return true, r.saveMission(ctx, mission, data)
 	}
-	if !unlocked(ship, time.Now()) {
+	if !r.shipUnlocked(ship) {
 		return false, r.hold(ctx, ship.Ship.ID, "turnaround lock active; purchases are complete and will not be repeated")
 	}
 	hull, exists := findHull(r.stateCache.Catalog, ship.Ship.ShipClass)
@@ -610,10 +715,15 @@ func (r *Runner) prepareDeparture(ctx context.Context, ship ShipState, mission *
 	if ship.Stores.ProvisionsTons+1e-9 < target {
 		return r.provisionMission(ctx, ship, mission, data, target)
 	}
+	if data.Relocation != nil {
+		if err := r.relocationDepartureReady(ctx, ship, data); err != nil {
+			return false, r.hold(ctx, ship.Ship.ID, err.Error())
+		}
+	}
 	if err := r.validateFreightDeparture(ship, mission.Destination, data, hull); err != nil {
 		return false, r.hold(ctx, ship.Ship.ID, err.Error())
 	}
-	if !data.ReturnJourney && data.Plan.Kind != "recovery" {
+	if data.Relocation == nil && !data.ReturnJourney && data.Plan.Kind != "recovery" {
 		input := r.planningInput(ship)
 		proceeds, reason := acquiredRevenue(input, data.Plan, data.BoughtQuantity, data.Freight)
 		if acquiredNet(data, proceeds) <= 0 {
@@ -623,7 +733,7 @@ func (r *Runner) prepareDeparture(ctx context.Context, ship ShipState, mission *
 			return r.unwindProcurement(ctx, ship, mission, data, reason)
 		}
 	}
-	if data.Plan.Kind != "recovery" && !data.ReturnJourney && data.BoughtQuantity == 0 && len(data.Freight) == 0 {
+	if data.Relocation == nil && data.Plan.Kind != "recovery" && !data.ReturnJourney && data.BoughtQuantity == 0 && len(data.Freight) == 0 {
 		return r.finishMission(ctx, ship, mission, data)
 	}
 	return true, r.stage(ctx, mission, data, ship, "depart", "/v1/fleet/depart", map[string]any{"ship_id": ship.Ship.ID, "dest_port_id": mission.Destination})
@@ -652,6 +762,82 @@ func arrivalEligibility(departed, actual, sealed map[string]int64, evidenced boo
 	return eligible
 }
 
+func emptyCargo(ship ShipState) bool {
+	if ship.CargoUsedTons != 0 {
+		return false
+	}
+	for _, quantity := range ship.CargoManifest {
+		if quantity > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func freightShortfall(ship ShipState, obligations []freightObligation, commodity string) string {
+	var required, collateral int64
+	for _, obligation := range obligations {
+		if !obligation.Settled && obligation.Commodity == commodity {
+			required += obligation.Quantity
+			collateral += obligation.CollateralPence
+		}
+	}
+	carried := ship.CargoManifest[commodity]
+	if carried < required {
+		return fmt.Sprintf("sealed freight shortfall for %s: required=%dt, carried=%dt, shortfall=%dt, collateral_at_risk=%dp; lost seal allocation is unknown", commodity, required, carried, required-carried, collateral)
+	}
+	return ""
+}
+
+func (r *Runner) reconcileFreight(ctx context.Context, mission *store.Mission, data *missionData) (bool, error) {
+	if !r.fresh("contracts") {
+		return false, nil
+	}
+	for i := range data.Freight {
+		obligation := &data.Freight[i]
+		if obligation.Settled {
+			continue
+		}
+		contract, exists := r.contract(obligation.ContractID)
+		if !exists || contract.Stale || contract.ContractType != "freight" {
+			continue
+		}
+		switch contract.Status {
+		case "completed", "cancelled", "defaulted":
+			obligation.Settled = true
+			data.CostsKnown = false
+			if contract.Status == "defaulted" {
+				data.ExpensesPence += obligation.CollateralPence
+			}
+			return true, r.saveMission(ctx, mission, data)
+		}
+	}
+	return false, nil
+}
+
+func (r *Runner) closeAtDestination(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData) (bool, error) {
+	if data.Action != nil || !emptyCargo(ship) || len(freightStops(data.Freight)) > 0 || len(r.activeFreight(ship.Ship.ID)) > 0 {
+		return false, r.hold(ctx, ship.Ship.ID, "destination closing requires empty cargo and resolved actions and seals")
+	}
+	if !r.fresh("ships") || ship.Voyage != nil || ship.Ship.CurrentPortID != data.Plan.Destination {
+		return false, r.hold(ctx, ship.Ship.ID, "destination closing requires fresh stationary arrival evidence")
+	}
+	if !r.shipUnlocked(ship) {
+		return false, r.hold(ctx, ship.Ship.ID, "destination closing waits for the turnaround lock")
+	}
+	mission.Phase = "closing"
+	if ship.Ship.Status == "berthed" {
+		return true, r.stage(ctx, mission, data, ship, "offshore", "/v1/fleet/offshore", map[string]any{"ship_id": ship.Ship.ID})
+	}
+	if ship.Ship.Status != "anchored_roadstead" || ship.Ship.DockQueuedAt != nil {
+		return false, r.hold(ctx, ship.Ship.ID, "destination closing waits for an authoritative unqueued roadstead")
+	}
+	if !r.fresh("ledger") || (!data.ClosingObservedAt.IsZero() && r.meta["ledger"].AttemptedAt.Before(data.ClosingObservedAt)) {
+		return false, r.hold(ctx, ship.Ship.ID, "destination closing requires fresh post-closing ledger reconciliation")
+	}
+	return r.finishMission(ctx, ship, mission, data)
+}
+
 func (r *Runner) deliverAtArrival(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData) (bool, error) {
 	if ship.Ship.CurrentPortID != data.Plan.Destination {
 		return false, r.hold(ctx, ship.Ship.ID, "delivery requires the actual destination port")
@@ -662,25 +848,34 @@ func (r *Runner) deliverAtArrival(ctx context.Context, ship ShipState, mission *
 			continue
 		}
 		contract, exists := r.contract(obligation.ContractID)
-		if exists && contract.Status != "active" {
-			// Terminal REST state proves the seal is gone, but cannot invent an
-			// unobserved payment. Exclude this recovery from growth evidence.
-			obligation.Settled = true
-			data.CostsKnown = false
-			if contract.Status == "defaulted" {
-				data.ExpensesPence += obligation.CollateralPence
+		if !r.fresh("contracts") || !exists || contract.Stale || contract.Status != "active" ||
+			contract.ContractType != "freight" || contract.CarrierShipID != ship.Ship.ID || contract.CarrierCompanyID != r.account.CompanyID {
+			return false, r.hold(ctx, ship.Ship.ID, "sealed freight requires its matching fresh active REST contract; missing or unknown state remains unresolved")
+		}
+		if reason := freightShortfall(ship, data.Freight, obligation.Commodity); reason != "" {
+			if err := r.hold(ctx, ship.Ship.ID, reason); err != nil {
+				return false, err
 			}
-			return true, r.saveMission(ctx, mission, data)
+			return r.maintain(ctx, ship, mission, data)
+		}
+		if !r.deadlineOpen(obligation.Deadline) {
+			return false, r.hold(ctx, ship.Ship.ID, "freight delivery_deadline has no conservative admission window; refresh terminal REST state")
 		}
 		if obligation.Destination != ship.Ship.CurrentPortID {
 			continue
 		}
 		if obligation.TenderRefused {
-			changed, err := r.maintain(ctx, ship, mission, data)
-			if changed || err != nil {
-				return changed, err
+			if time.Now().Before(obligation.TenderRetryAt) {
+				r.wakeBy(obligation.TenderRetryAt)
+				changed, err := r.maintain(ctx, ship, mission, data)
+				if changed || err != nil {
+					return changed, err
+				}
+				return false, r.hold(ctx, ship.Ship.ID, "freight tender temporarily refused; preserve the seal and retry only after fresh active/full-cargo authority and the bounded retry deadline")
 			}
-			return false, r.hold(ctx, ship.Ship.ID, "freight tender refused for issuer capacity: remain at destination, preserve seal and await breach/completion/default")
+			obligation.TenderRefused = false
+			obligation.TenderRetryAt = time.Time{}
+			return true, r.saveMission(ctx, mission, data)
 		}
 		return true, r.stage(ctx, mission, data, ship, "deliver-freight", "/v1/contract/deliver-freight", map[string]any{"contract_id": obligation.ContractID, "ship_id": ship.Ship.ID})
 	}
@@ -705,7 +900,7 @@ func (r *Runner) deliverAtArrival(ctx context.Context, ship ShipState, mission *
 				contract.RemainingQuantity > 0 &&
 				contract.RewardPerTonPence != nil &&
 				eligible > 0 &&
-				(contract.ExpiresAt == nil || contract.ExpiresAt.After(time.Now())) {
+				r.deadlineOpen(contract.ExpiresAt) {
 				if charter == nil || *contract.RewardPerTonPence > *charter.RewardPerTonPence {
 					charter = contract
 				}
@@ -744,6 +939,9 @@ func (r *Runner) deliverAtArrival(ctx context.Context, ship ShipState, mission *
 		mission.Phase = "depart"
 		return true, r.saveMission(ctx, mission, data)
 	}
+	if data.FinishAtDestination {
+		return r.closeAtDestination(ctx, ship, mission, data)
+	}
 	if data.Plan.Origin != "" && data.Plan.Origin != ship.Ship.CurrentPortID && data.Plan.Kind != "recovery" {
 		mission.Phase = "return"
 		return true, r.saveMission(ctx, mission, data)
@@ -765,10 +963,19 @@ func (r *Runner) finishMission(ctx context.Context, ship ShipState, mission *sto
 	if len(r.activeFreight(ship.Ship.ID)) > 0 {
 		return false, r.hold(ctx, ship.Ship.ID, "cannot settle mission while actual active sealed freight remains")
 	}
+	if data.Settlement == nil && (data.Action != nil || len(freightStops(data.Freight)) > 0) {
+		return false, r.hold(ctx, ship.Ship.ID, "cannot settle mission with unresolved action or sealed obligations")
+	}
+	if data.Settlement == nil && data.FinishAtDestination && ship.Ship.Status != "sunk" && !emptyCargo(ship) {
+		return false, r.hold(ctx, ship.Ship.ID, "cannot settle mission while actual cargo remains")
+	}
 	if data.Plan.Kind == "recovery" || data.Plan.Kind == "maintenance" {
 		return true, r.db.DeleteMission(ctx, r.account.ID, ship.Ship.ID)
 	}
 	if mission.Phase == "settled" {
+		if data.Plan.Kind == "relocation" && data.SourcingHandoff != nil && data.Settlement != nil {
+			return r.continueSourcing(ctx, ship, mission, data)
+		}
 		return true, r.db.DeleteMission(ctx, r.account.ID, ship.Ship.ID)
 	}
 	if data.LastActionID == "" {
@@ -854,6 +1061,15 @@ func laneKey(plan Plan) string {
 // overlapping missions. The claim is included in the durable settling mission
 // before it is published to the snapshot and before the settlement is inserted.
 func (r *Runner) claimBillsSince(data *missionData, generation string) (int64, []string) {
+	amount, ids := r.unclaimedBillsSince(data)
+	for _, id := range ids {
+		r.expenseOwners[id] = generation
+	}
+	r.snapshot["_expense_allocations"] = encode(r.expenseOwners)
+	return amount, ids
+}
+
+func (r *Runner) unclaimedBillsSince(data *missionData) (int64, []string) {
 	owned := make(map[string]bool)
 	for _, vault := range r.stateCache.Vaults {
 		owned[vault.AccountID] = true
@@ -874,13 +1090,51 @@ func (r *Runner) claimBillsSince(data *missionData, generation string) (int64, [
 			if strings.Contains(row.Reason, reason) {
 				amount += row.Amount
 				ids = append(ids, row.ID)
-				r.expenseOwners[row.ID] = generation
 				break
 			}
 		}
 	}
-	r.snapshot["_expense_allocations"] = encode(r.expenseOwners)
 	return amount, ids
 }
 
 var errUninterpretableResult = errors.New("committed action response is incomplete; authoritative reconciliation required")
+
+// Unknown economic effects prohibit further spending, but do not strand a
+// different ship's fully evidenced cash-credit-only contract deliveries.
+func (r *Runner) creditOnlyWork(ctx context.Context, missions map[string]*store.Mission, dataByShip map[string]missionData) (bool, error) {
+	for _, ship := range r.stateCache.Ships {
+		mission := missions[ship.Ship.ID]
+		data := dataByShip[ship.Ship.ID]
+		if mission == nil || data.Action != nil || time.Now().Before(data.CooldownUntil) || ship.Voyage != nil ||
+			ship.Ship.Status != "berthed" && ship.Ship.Status != "anchored_roadstead" {
+			continue
+		}
+		if changed, err := r.reconcileFreight(ctx, mission, &data); changed || err != nil {
+			return changed, err
+		}
+		if mission.Phase != "arrival" && mission.Phase != "tender_wait" || mission.Destination != ship.Ship.CurrentPortID {
+			continue
+		}
+		for _, obligation := range data.Freight {
+			contract, exists := r.contract(obligation.ContractID)
+			if !obligation.Settled && !obligation.TenderRefused && obligation.Destination == ship.Ship.CurrentPortID &&
+				exists && !contract.Stale && contract.Status == "active" && contract.CarrierShipID == ship.Ship.ID &&
+				contract.CarrierCompanyID == r.account.CompanyID && freightShortfall(ship, data.Freight, obligation.Commodity) == "" &&
+				r.deadlineOpen(obligation.Deadline) {
+				return true, r.stage(ctx, mission, &data, ship, "deliver-freight", "/v1/contract/deliver-freight", map[string]any{"contract_id": obligation.ContractID, "ship_id": ship.Ship.ID})
+			}
+		}
+		reserved := sealedReservations(data.Freight)
+		for _, contract := range r.stateCache.Contracts {
+			if contract.ContractType != "charter" || contract.Status != "open" || contract.Stale || contract.OriginPortID != ship.Ship.CurrentPortID ||
+				contract.RewardPerTonPence == nil || *contract.RewardPerTonPence <= 0 || data.RejectedCharterIDs[contract.ID] || !r.deadlineOpen(contract.ExpiresAt) {
+				continue
+			}
+			quantity := min(data.Eligible[contract.CommodityID], ship.CargoManifest[contract.CommodityID]-reserved[contract.CommodityID], contract.RemainingQuantity)
+			if quantity > 0 {
+				return true, r.stage(ctx, mission, &data, ship, "deliver-charter", "/v1/contract/deliver-charter", map[string]any{"contract_id": contract.ID, "ship_id": ship.Ship.ID, "quantity": quantity})
+			}
+		}
+	}
+	return false, nil
+}

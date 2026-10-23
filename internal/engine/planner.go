@@ -165,18 +165,31 @@ type PlanningInput struct {
 	Contracts             []Contract
 	Balances              map[string]int64
 	ReserveByRegion       map[string]int64
+	ReservePence          int64
+	PaidProvisionsPence   int64
 	Metadata              map[string]DatasetMeta
 	Generation            string
 	OwnedOrderIDs         map[string]bool
 	FleetDailyUpkeepPence int64
+	Rates                 []Rate
 }
 
 func (in PlanningInput) fresh(dataset string) bool {
 	meta, exists := in.Metadata[dataset]
-	return exists && meta.Complete && !meta.Stale && meta.Error == "" && !meta.UpdatedAt.IsZero() &&
-		(in.Generation == "" || meta.Generation == in.Generation) &&
-		!meta.UpdatedAt.After(in.Now.Add(time.Second)) && in.Now.Sub(meta.UpdatedAt) <= 2*time.Minute &&
-		(meta.UpstreamAsOf == nil || (!meta.UpstreamAsOf.After(in.Now.Add(time.Second)) && in.Now.Sub(*meta.UpstreamAsOf) <= 2*time.Minute))
+	if !exists || !meta.Complete || meta.Stale || meta.Error != "" || meta.UpdatedAt.IsZero() ||
+		(in.Generation != "" && meta.Generation != in.Generation) ||
+		meta.UpdatedAt.After(in.Now.Add(time.Second)) || in.Now.Sub(meta.UpdatedAt) > 2*time.Minute {
+		return false
+	}
+	if dataset == "clock" {
+		_, _, ok := in.serverBounds()
+		return ok
+	}
+	if meta.UpstreamAsOf != nil {
+		_, upper, ok := in.serverBounds()
+		return ok && !meta.UpstreamAsOf.After(upper.Add(time.Second)) && upper.Sub(*meta.UpstreamAsOf) <= 2*time.Minute
+	}
+	return true
 }
 
 func reject(plan Plan, reason string) Plan {
@@ -202,7 +215,7 @@ func betterPlan(candidate, other Plan) bool {
 func PlanVoyages(in PlanningInput) []Plan {
 	in.Markets = withoutOwnOrders(in.Markets, in.OwnedOrderIDs)
 	ship := in.Ship
-	if (ship.Ship.Status != "berthed" && ship.Ship.Status != "anchored_roadstead") || ship.Ship.ConvoyID != "" {
+	if (ship.Ship.Status != "berthed" && ship.Ship.Status != "anchored_roadstead") || ship.Ship.ConvoyID != "" || ship.Voyage != nil {
 		return []Plan{reject(Plan{ShipID: ship.Ship.ID, Kind: "hold"}, "ship must be in port and independently navigable")}
 	}
 	for _, dataset := range []string{"catalog", "clock", "zones", "vaults", "contracts", "ships"} {
@@ -392,9 +405,13 @@ func evaluatePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, 
 	portDays += float64(destinationDetail.QueuedShips+1) / float64(destinationDetail.EffectiveBerths) * 0.25
 	gameDays := sailingDays + portDays
 	outwardDays := float64(outward.TotalDistanceNM) / (float64(hull.BaseSpeedCentiknots) / 100 * 0.8) / 24
-	arrival := in.Now.Add(time.Duration((outwardDays+portDays)*86_400/float64(in.Clock.Calendar.TimeScale)) * time.Second)
+	_, upper, ok := in.serverBounds()
+	if !ok {
+		return reject(plan, "current server clock authority is unavailable")
+	}
+	arrival := upper.Add(gameDuration(outwardDays+portDays, in.Clock.Calendar.TimeScale))
 	plan.ExpectedArrival = arrival
-	if plan.Deadline != nil && !arrival.Add(time.Duration(86_400/float64(in.Clock.Calendar.TimeScale))*time.Second).Before(*plan.Deadline) {
+	if plan.Deadline != nil && !arrival.Add(gameDuration(1, in.Clock.Calendar.TimeScale)).Before(*plan.Deadline) {
 		return reject(plan, "charter deadline lacks one game day of delivery slack")
 	}
 	voyageStores := outward.SafeProvisionsTons + back.SafeProvisionsTons + float64(hull.CrewRequired)/200*portDays + 1
@@ -468,8 +485,8 @@ func evaluatePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, 
 	}
 	provisionExpense := max(storeCost, int64(math.Ceil(float64(consumptionFill.GrossPence+ceilBPS(consumptionFill.GrossPence, originBook.CustomsBPS))*consumed/float64(consumptionFill.Quantity))))
 	originBerthDays := max(0.25, portDays/2)
-	if in.Ship.Ship.BerthedAt != nil && !in.Ship.Ship.BerthedAt.After(in.Now) {
-		accruedDays := in.Now.Sub(*in.Ship.Ship.BerthedAt).Seconds() * float64(in.Clock.Calendar.TimeScale) / 86_400
+	if in.Ship.Ship.BerthedAt != nil && !in.Ship.Ship.BerthedAt.After(upper) {
+		accruedDays := upper.Sub(*in.Ship.Ship.BerthedAt).Seconds() * float64(in.Clock.Calendar.TimeScale) / 86_400
 		originBerthDays = max(originBerthDays, accruedDays+portDays/2)
 	}
 	berthCost := int64(math.Ceil(float64(in.Ports[origin.ID].BerthDuesPerDayPence)*originBerthDays +
@@ -532,6 +549,10 @@ func evaluatePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, 
 }
 
 func destinationRevenue(in PlanningInput, destination, commodity string, quantity int64) (int64, int64, int64, string, string) {
+	_, upper, ok := in.serverBounds()
+	if !ok {
+		return 0, 0, 0, "", "current server clock authority is unavailable"
+	}
 	if in.fresh("books/" + destination) {
 		book := in.Markets[destination]
 		entry := bookCommodity(book, commodity)
@@ -553,12 +574,12 @@ func destinationRevenue(in PlanningInput, destination, commodity string, quantit
 				if report.SubjectPortID != destination || report.SnapshotAt.IsZero() {
 					continue
 				}
-				age := in.Now.Sub(report.SnapshotAt)
+				age := upper.Sub(report.SnapshotAt)
 				if age < 0 || age.Seconds()*float64(in.Clock.Calendar.TimeScale) > 6*3_600 {
 					continue
 				}
 				for _, price := range report.Commodities {
-					priceAge := in.Now.Sub(price.SnapshotAt)
+					priceAge := upper.Sub(price.SnapshotAt)
 					if price.SnapshotAt.IsZero() || priceAge < 0 || priceAge.Seconds()*float64(in.Clock.Calendar.TimeScale) > 6*3_600 {
 						continue
 					}

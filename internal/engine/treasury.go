@@ -93,15 +93,23 @@ func (r *Runner) treasuryReserves(ctx context.Context) (map[string]int64, error)
 				required[destination.BankingRegion] = max(required[destination.BankingRegion], r.opts.ReservePence+3*state.Ports[destination.ID].BerthDuesPerDayPence)
 			}
 		}
-		// Fund a measured destination before the ordinary execution reserve gate.
-		input := r.planningInput(ship)
-		for _, port := range state.Catalog.Ports {
-			input.Balances[port.BankingRegion] = max(input.Balances[port.BankingRegion], input.ReserveByRegion[port.BankingRegion]+100_000)
-		}
-		plans := PlanVoyages(input)
-		if len(plans) > 0 && plans[0].Accepted {
-			if destination, exists := findPort(state.Catalog, plans[0].Destination); exists {
-				required[destination.BankingRegion] = max(required[destination.BankingRegion], r.opts.ReservePence+3*state.Ports[destination.ID].BerthDuesPerDayPence)
+		if mission == nil {
+			// Quote only affordable observed-fee transfers; a hypothetical
+			// regional balance is never executable funding evidence.
+			input := r.planningInput(ship)
+			for _, destination := range state.Catalog.Ports {
+				target := clonePence(input.ReserveByRegion)
+				target[destination.BankingRegion] = max(target[destination.BankingRegion], r.opts.ReservePence+3*state.Ports[destination.ID].BerthDuesPerDayPence)
+				balances, _, _, funded := measuredFunding(input.Balances, target, state.Rates)
+				if !funded {
+					continue
+				}
+				quoted := input
+				quoted.Balances = balances
+				plans := PlanVoyages(quoted)
+				if len(plans) > 0 && plans[0].Accepted && plans[0].Destination == destination.ID {
+					required[destination.BankingRegion] = max(required[destination.BankingRegion], target[destination.BankingRegion])
+				}
 			}
 		}
 	}
@@ -163,39 +171,8 @@ func (r *Runner) fundTreasury(ctx context.Context, balances, required map[string
 		if shortfall <= 0 {
 			continue
 		}
-		var best *Rate
-		var gross, net int64
-		for i := range state.Rates {
-			rate := &state.Rates[i]
-			if rate.ToRegion != destination || rate.FromRegion == destination {
-				continue
-			}
-			needed, err := GrossRemittance(shortfall, rate.FeeBPS)
-			if err != nil {
-				continue
-			}
-			// A donor never remits past its own protected reserve. When no
-			// single donor covers the whole shortfall, stage one partial
-			// remittance now; the next fresh-state pass combines further
-			// donors while aggregate surplus suffices.
-			surplus := balances[rate.FromRegion] - required[rate.FromRegion]
-			if surplus <= 0 {
-				continue
-			}
-			amount := min(needed, surplus)
-			// Observed server rounding charges gross times bps over 10,000,
-			// truncated; the diagnostic must promise only the surviving net.
-			delivered := amount - amount*rate.FeeBPS/10_000
-			if delivered <= 0 {
-				continue
-			}
-			if best == nil || rate.FeeBPS < best.FeeBPS {
-				best = rate
-				gross = amount
-				net = delivered
-			}
-		}
-		if best == nil {
+		best, gross, net, ok := bestRemittance(balances, required, state.Rates, destination)
+		if !ok {
 			if err := r.hold(ctx, "", "regional reserve shortfall in "+destination+"; no observed-fee remittance preserves source reserves"); err != nil {
 				return false, err
 			}
@@ -232,4 +209,65 @@ func (r *Runner) fundTreasury(ctx context.Context, balances, required map[string
 		return true, r.stage(ctx, mission, &data, ShipState{}, "remit", "/v1/treasury/remit", map[string]any{"from_region": best.FromRegion, "to_region": destination, "gross_amount_pence": gross})
 	}
 	return false, nil
+}
+
+func bestRemittance(balances, required map[string]int64, rates []Rate, destination string) (Rate, int64, int64, bool) {
+	shortfall := required[destination] - balances[destination]
+	var best Rate
+	var gross, net int64
+	found := false
+	for _, rate := range rates {
+		if rate.ToRegion != destination || rate.FromRegion == destination {
+			continue
+		}
+		needed, err := GrossRemittance(shortfall, rate.FeeBPS)
+		if err != nil {
+			continue
+		}
+		surplus := balances[rate.FromRegion] - required[rate.FromRegion]
+		amount := min(needed, surplus)
+		if amount <= 0 || amount > maximumPence {
+			continue
+		}
+		// This is the observed server's gross-fee rounding, not a hypothetical
+		// post-transfer balance. Every simulated penny has an affordable donor.
+		delivered := amount - amount*rate.FeeBPS/10_000
+		if delivered <= 0 {
+			continue
+		}
+		if !found || rate.FeeBPS < best.FeeBPS || rate.FeeBPS == best.FeeBPS && rate.FromRegion < best.FromRegion {
+			best, gross, net, found = rate, amount, delivered, true
+		}
+	}
+	return best, gross, net, found
+}
+
+type observedRemittance struct {
+	Rate  Rate
+	Gross int64
+	Net   int64
+}
+
+func measuredFunding(balances, required map[string]int64, rates []Rate) (map[string]int64, int64, []observedRemittance, bool) {
+	projected := clonePence(balances)
+	regions := make([]string, 0, len(required))
+	for region := range required {
+		regions = append(regions, region)
+	}
+	sort.Strings(regions)
+	var fees int64
+	var transfers []observedRemittance
+	for _, destination := range regions {
+		for projected[destination] < required[destination] {
+			rate, gross, net, ok := bestRemittance(projected, required, rates, destination)
+			if !ok {
+				return projected, fees, transfers, false
+			}
+			projected[rate.FromRegion] -= gross
+			projected[destination] += net
+			fees += gross - net
+			transfers = append(transfers, observedRemittance{Rate: rate, Gross: gross, Net: net})
+		}
+	}
+	return projected, fees, transfers, true
 }

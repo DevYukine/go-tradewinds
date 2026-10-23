@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,11 @@ type Options struct {
 	MaxPaybackDays float64
 }
 
+type decisionFingerprint struct {
+	hash      [sha256.Size]byte
+	writtenAt time.Time
+}
+
 type Runner struct {
 	api                *gameapi.Client
 	db                 *store.Store
@@ -32,7 +38,7 @@ type Runner struct {
 	stateCache         accountState
 	generation         string
 	holding            []string
-	decisionHashes     map[string]string
+	decisionHashes     map[string]decisionFingerprint
 	lastMutationStatus atomic.Int64
 	expenseOwners      map[string]string
 	nextDeadline       time.Time
@@ -59,7 +65,7 @@ func New(api *gameapi.Client, db *store.Store, account store.Account, log *zap.L
 		opts:             opts,
 		snapshot:         make(map[string]json.RawMessage),
 		meta:             make(map[string]DatasetMeta),
-		decisionHashes:   make(map[string]string),
+		decisionHashes:   make(map[string]decisionFingerprint),
 		holding:          make([]string, 0),
 		financialSession: uuid.NewString(),
 	}
@@ -367,18 +373,21 @@ func (r *Runner) verifyIdentity() error {
 }
 
 func (r *Runner) fresh(dataset string) bool {
-	return (PlanningInput{Now: time.Now().UTC(), Metadata: r.meta, Generation: r.generation}).fresh(dataset)
+	return (PlanningInput{Now: time.Now(), Clock: r.stateCache.Clock, Metadata: r.meta, Generation: r.generation}).fresh(dataset)
 }
 
 func (r *Runner) nextWake() time.Duration {
 	now := time.Now()
 	delay := 15 * time.Second
-	for _, ship := range r.stateCache.Ships {
-		if ship.Ship.TurnaroundUnlocksAt != nil && ship.Ship.TurnaroundUnlocksAt.After(now) {
-			delay = min(delay, ship.Ship.TurnaroundUnlocksAt.Sub(now))
-		}
-		if ship.Voyage != nil && ship.Voyage.EstimatedArrivalAt.After(now) {
-			delay = min(delay, ship.Voyage.EstimatedArrivalAt.Sub(now))
+	lower, upper, ok := serverBounds(now, r.stateCache.Clock, r.meta["clock"], r.generation)
+	if ok {
+		for _, ship := range r.stateCache.Ships {
+			if ship.Ship.TurnaroundUnlocksAt != nil && ship.Ship.TurnaroundUnlocksAt.After(lower) {
+				delay = min(delay, ship.Ship.TurnaroundUnlocksAt.Sub(lower))
+			}
+			if ship.Voyage != nil && ship.Voyage.EstimatedArrivalAt.After(upper) {
+				delay = min(delay, ship.Voyage.EstimatedArrivalAt.Sub(upper))
+			}
 		}
 	}
 	if r.nextDeadline.After(now) {
@@ -394,16 +403,52 @@ func (r *Runner) wakeBy(deadline time.Time) {
 }
 
 func (r *Runner) decision(ctx context.Context, shipID, kind, reason string, details any) error {
+	const retention = 7 * 24 * time.Hour
 	key := shipID + "|" + kind
-	fingerprint := reason + string(encode(details))
-	if r.decisionHashes[key] == fingerprint {
+	fingerprintDetails := details
+	if plan, ok := details.(Plan); ok && plan.Kind == "relocation" {
+		// A rolling ETA alone is not a new economic decision. Keep it in the
+		// stored plan, but do not let it defeat diagnostic deduplication.
+		plan.ExpectedArrival = time.Time{}
+		fingerprintDetails = plan
+	}
+	digest := sha256.New()
+	digest.Write([]byte(reason))
+	digest.Write([]byte{0})
+	digest.Write(encode(fingerprintDetails))
+	var fingerprint [sha256.Size]byte
+	digest.Sum(fingerprint[:0])
+	now := time.Now()
+	previous, exists := r.decisionHashes[key]
+	if exists && previous.hash == fingerprint && now.Sub(previous.writtenAt) < retention {
 		return nil
 	}
 	if err := r.db.RecordDecision(ctx, r.account.ID, shipID, kind, reason, details); err != nil {
 		return err
 	}
-	r.decisionHashes[key] = fingerprint
+	r.rememberDecision(key, fingerprint, now)
 	return nil
+}
+
+func (r *Runner) rememberDecision(key string, fingerprint [sha256.Size]byte, now time.Time) {
+	const capacity = 2048
+	const retention = 7 * 24 * time.Hour
+	_, exists := r.decisionHashes[key]
+	if !exists && len(r.decisionHashes) >= capacity {
+		var oldestKey string
+		var oldestTime time.Time
+		for cachedKey, cached := range r.decisionHashes {
+			if now.Sub(cached.writtenAt) >= retention {
+				delete(r.decisionHashes, cachedKey)
+			} else if oldestKey == "" || cached.writtenAt.Before(oldestTime) {
+				oldestKey, oldestTime = cachedKey, cached.writtenAt
+			}
+		}
+		if len(r.decisionHashes) >= capacity {
+			delete(r.decisionHashes, oldestKey)
+		}
+	}
+	r.decisionHashes[key] = decisionFingerprint{hash: fingerprint, writtenAt: now}
 }
 
 func (r *Runner) hold(ctx context.Context, shipID, reason string) error {
@@ -412,7 +457,10 @@ func (r *Runner) hold(ctx context.Context, shipID, reason string) error {
 }
 
 func (r *Runner) planningInput(ship ShipState) PlanningInput {
-	state := r.stateCache
+	return r.planningInputFrom(ship, r.stateCache)
+}
+
+func (r *Runner) planningInputFrom(ship ShipState, state accountState) PlanningInput {
 	balances := make(map[string]int64)
 	reserves := make(map[string]int64)
 	for _, vault := range state.Vaults {
@@ -426,7 +474,7 @@ func (r *Runner) planningInput(ship ShipState) PlanningInput {
 		reserves[home.BankingRegion] = r.opts.ReservePence + 3*upkeep
 	}
 	return PlanningInput{
-		Now:                   time.Now().UTC(),
+		Now:                   time.Now(),
 		CompanyID:             r.account.CompanyID,
 		Ship:                  ship,
 		Catalog:               state.Catalog,
@@ -438,8 +486,10 @@ func (r *Runner) planningInput(ship ShipState) PlanningInput {
 		Contracts:             state.Contracts,
 		Balances:              balances,
 		ReserveByRegion:       reserves,
+		ReservePence:          r.opts.ReservePence,
 		Metadata:              r.meta,
 		Generation:            r.generation,
 		FleetDailyUpkeepPence: upkeep,
+		Rates:                 state.Rates,
 	}
 }

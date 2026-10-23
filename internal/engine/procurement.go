@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"strings"
-	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/store"
 )
@@ -40,7 +39,11 @@ func acquiredRevenue(in PlanningInput, plan Plan, bought int64, obligations []fr
 			return 0, "current charter route is missing after procurement"
 		}
 		days := float64(route.TotalDistanceNM)/(float64(hull.BaseSpeedCentiknots)/100*0.8)/24 + 1
-		latestArrival := in.Now.Add(time.Duration(days*86_400/float64(in.Clock.Calendar.TimeScale)) * time.Second)
+		_, upper, ok := in.serverBounds()
+		if !ok {
+			return revenue, "current server clock authority is unavailable after procurement"
+		}
+		latestArrival := upper.Add(gameDuration(days, in.Clock.Calendar.TimeScale))
 		if charter.ExpiresAt != nil && !latestArrival.Before(*charter.ExpiresAt) {
 			return revenue, "charter expiry no longer has a game-day delivery buffer"
 		}
@@ -63,7 +66,7 @@ func acquiredNet(data *missionData, revenue int64) int64 {
 		max(data.ProvisionsPence, data.Plan.Economics.ProvisionsPence) +
 		data.Plan.Economics.BerthDuesPence +
 		data.Plan.Economics.UpkeepPence +
-		data.Plan.Economics.TollPence
+		data.Plan.Economics.TollPence + data.SourcingSpentPence
 	return revenue - costs
 }
 

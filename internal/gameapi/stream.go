@@ -190,7 +190,10 @@ func parseEvents(ctx context.Context, source io.Reader, afterID string, onEvent 
 		return err
 	}
 	if err := scanner.Err(); err != nil {
-		return &requestFailure{message: "cannot read game API SSE line (1 MiB limit)", cause: err}
+		if errors.Is(err, bufio.ErrTooLong) {
+			return &requestFailure{message: "cannot read game API SSE line (1 MiB limit)", cause: err}
+		}
+		return &requestFailure{message: "game API stream transport failed", cause: err}
 	}
 	if hasData || hasFields {
 		return &requestFailure{message: "game API SSE ended with an incomplete frame", cause: io.ErrUnexpectedEOF}

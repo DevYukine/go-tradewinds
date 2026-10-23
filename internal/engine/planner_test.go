@@ -52,6 +52,7 @@ func inputFixture(t *testing.T) engine.PlanningInput {
 	}
 	contract := fixture[engine.Contract](t, `{"id":"charter-a","contract_type":"charter","origin_port_id":"portsmouth","commodity_id":"provisions","quantity_required":1000,"remaining_quantity":1000,"reward_per_ton_pence":3000,"status":"open","is_public":true,"stale":false}`)
 	clock := fixture[engine.Clock](t, `{"unlocked_phase":1,"paused":false,"calendar":{"month":3,"day":5,"time_scale":60,"total_game_hours":118}}`)
+	clock.RealUTC = now
 	meta := make(map[string]engine.DatasetMeta)
 	for _, key := range []string{"catalog", "clock", "zones", "vaults", "contracts", "ships", "books/le_havre", "ports/le_havre", "ports/portsmouth", "routes/le_havre|portsmouth|hoy", "routes/portsmouth|le_havre|hoy"} {
 		meta[key] = engine.DatasetMeta{UpdatedAt: now, AttemptedAt: now, Generation: "sync-a", Complete: true}

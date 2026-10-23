@@ -189,7 +189,12 @@ func TestAcquiredCashMarginUsesActualFillNotStress(t *testing.T) {
 	reward := int64(21_958)
 	now := time.Date(2026, 10, 22, 17, 0, 0, 0, time.UTC)
 	in := PlanningInput{
-		Now: now,
+		Now:        now,
+		Generation: "sync-a",
+		Clock:      Clock{RealUTC: now},
+		Metadata: map[string]DatasetMeta{
+			"clock": {UpdatedAt: now, AttemptedAt: now, Complete: true, Generation: "sync-a"},
+		},
 		Catalog: Catalog{ShipClasses: []Hull{
 			{ID: "hoy", BaseSpeedCentiknots: 850},
 		}},
@@ -289,8 +294,10 @@ func TestGossipAcquiredRevenueDoesNotConvertPriceStressIntoExpense(t *testing.T)
 	in := PlanningInput{
 		Now: now, Generation: "sync-a",
 		Ports: map[string]PortDetail{"le_havre": detail},
+		Clock: Clock{RealUTC: now},
 		Metadata: map[string]DatasetMeta{
-			"ports/le_havre": {UpdatedAt: now, Complete: true, Generation: "sync-a"},
+			"ports/le_havre": {UpdatedAt: now, AttemptedAt: now, Complete: true, Generation: "sync-a"},
+			"clock":          {UpdatedAt: now, AttemptedAt: now, Complete: true, Generation: "sync-a"},
 		},
 	}
 	in.Clock.Calendar.TimeScale = 60

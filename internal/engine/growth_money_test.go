@@ -15,6 +15,7 @@ import (
 
 func TestGrowthReservesWholeOutstandingCharterLotBeforeRepeatDemand(t *testing.T) {
 	h := newRecoveryHarness(t)
+	h.api.setFactorPorts(recoveryHomePort, recoveryFarPort)
 	runner := h.runner(primaryTestKey)
 	runner.generation = uuid.NewString()
 	if err := runner.refresh(h.ctx); err != nil {
@@ -142,6 +143,7 @@ func TestGrowthReservesWholeOutstandingCharterLotBeforeRepeatDemand(t *testing.T
 
 func TestIdleUnderarmedShipRefitsBeforeEconomicPlanAndPurchase(t *testing.T) {
 	h := newRecoveryHarness(t)
+	h.api.setFactorPorts(recoveryFarPort)
 	idle := sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)
 	idle["ship"].(map[string]any)["status"] = "berthed"
 	idle["ship"].(map[string]any)["cannons_count"] = 0
@@ -227,10 +229,11 @@ func TestIdleUnderarmedShipRefitsBeforeEconomicPlanAndPurchase(t *testing.T) {
 func TestTreasuryCombinesPartialDonorsWithoutSpendingTheirReserves(t *testing.T) {
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
-	runner.stateCache.Rates = []Rate{
+	rates := []Rate{
 		{FromRegion: "north", ToRegion: "yard", FeeBPS: 100},
 		{FromRegion: "south", ToRegion: "yard", FeeBPS: 100},
 	}
+	h.api.setRates(rates...)
 	required := map[string]int64{"north": 100_000, "south": 100_000, "yard": 150_000}
 	h.api.setVaultBalance("north", 200_000)
 	h.api.setVaultBalance("south", 200_000)
@@ -243,6 +246,10 @@ func TestTreasuryCombinesPartialDonorsWithoutSpendingTheirReserves(t *testing.T)
 	var fees int64
 	donors := make(map[string]bool)
 	for range 2 {
+		runner.generation = uuid.NewString()
+		if err := runner.refresh(h.ctx); err != nil {
+			t.Fatalf("refresh observed funding rates and balances: %v", err)
+		}
 		before := balances()
 		if changed, err := runner.fundTreasury(h.ctx, before, required); err != nil || !changed {
 			t.Fatalf("aggregate surplus cannot fund yard sequentially: changed %t error %v balances %v holds %v", changed, err, before, runner.holding)
@@ -307,6 +314,7 @@ func TestGrowthChargesOutstandingCharterLotOnceAcrossPaybackCycles(t *testing.T)
 
 func TestGrowthMixedFreightKeepsOrdinarySpotBidReservation(t *testing.T) {
 	h := newRecoveryHarness(t)
+	h.api.setFactorPorts(recoveryHomePort, recoveryFarPort)
 	runner := h.runner(primaryTestKey)
 	runner.generation = uuid.NewString()
 	if err := runner.refresh(h.ctx); err != nil {
@@ -382,6 +390,7 @@ func TestGrowthIdleUnderarmedShipWithoutActionableRefitDoesNotVetoBuild(t *testi
 	for _, yard := range []bool{false, true} {
 		t.Run(fmt.Sprintf("shipyard_%t", yard), func(t *testing.T) {
 			h := newRecoveryHarness(t)
+			h.api.setFactorPorts(recoveryHomePort, recoveryFarPort)
 			idle := sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryFarPort, recoveryHomePort)
 			idle["ship"].(map[string]any)["status"] = "berthed"
 			idle["ship"].(map[string]any)["cannons_count"] = 0

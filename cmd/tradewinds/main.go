@@ -53,10 +53,11 @@ run observes by default; --execute enables trading and fleet growth.`)
 	if err != nil {
 		return err
 	}
+	log = log.Named("root")
 	defer log.Sync() // Terminal devices may reject Sync.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	db, err := store.Open(ctx, cfg.DatabaseURL, cfg.MasterKey, log)
+	db, err := store.Open(ctx, cfg.DatabaseURL, cfg.MasterKey, log.Named("store"))
 	cancel()
 	if err != nil {
 		return err
@@ -97,7 +98,7 @@ func run(cfg config.Config, db *store.Store, log *zap.Logger, args []string) err
 	app := fx.New(
 		fx.Supply(cfg, db, log),
 		fx.WithLogger(func(log *zap.Logger) fxevent.Logger {
-			events := &fxevent.ZapLogger{Logger: log}
+			events := &fxevent.ZapLogger{Logger: log.Named("fx")}
 			events.UseLogLevel(zapcore.DebugLevel)
 			events.UseErrorLevel(zapcore.ErrorLevel)
 			return events
@@ -113,9 +114,10 @@ func run(cfg config.Config, db *store.Store, log *zap.Logger, args []string) err
 func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Config, db *store.Store, log *zap.Logger, execute bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var workers sync.WaitGroup
+	apiLog := log.Named("api")
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           httpapi.NewHandler(db, log, cfg.HTTPAddr),
+		Handler:           httpapi.NewHandler(db, apiLog, cfg.HTTPAddr),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -154,13 +156,14 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 					accountLog.Warn("skipping account without an API key; resume register")
 					continue
 				}
-				client := gameapi.New(cfg.APIURL, credentials.APIKey, accountLog)
-				runner := engine.New(client, db, account, log.With(zap.String("account", account.Label)), engine.Options{
+				client := gameapi.New(cfg.APIURL, credentials.APIKey, accountLog.Named("api"))
+				engineLog := accountLog.Named("engine")
+				runner := engine.New(client, db, account, engineLog, engine.Options{
 					Execute:        execute,
 					ReservePence:   cfg.ReservePence,
 					MaxPaybackDays: cfg.MaxPaybackDays,
 				})
-				runners = append(runners, accountRunner{runner: runner, log: accountLog})
+				runners = append(runners, accountRunner{runner: runner, log: engineLog})
 			}
 
 			listener, err := net.Listen("tcp", cfg.HTTPAddr)
@@ -179,14 +182,14 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
-				prunePeriodically(ctx, db, log)
+				prunePeriodically(ctx, db, log.Named("store"))
 			}()
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
-				log.Info("dashboard API listening", zap.String("address", cfg.HTTPAddr), zap.Bool("execute", execute))
+				apiLog.Info("dashboard API listening", zap.String("address", cfg.HTTPAddr), zap.Bool("execute", execute))
 				if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-					log.Error("dashboard server stopped", zap.Error(err))
+					apiLog.Error("dashboard server stopped", zap.Error(err))
 					_ = shutdown.Shutdown(fx.ExitCode(1))
 				}
 			}()

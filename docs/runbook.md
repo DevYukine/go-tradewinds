@@ -104,6 +104,16 @@ Keep Go and Next.js supervised as separate processes. Both bind loopback by defa
 
 Ctrl+C shuts down the Fx lifecycle, cancels workers and streams, closes the HTTP listener, and releases database locks. After an unclean termination, start in observe mode if investigating unexpected funds or cargo; inspect the journal and authoritative account state before permitting new mutations.
 
+### Replacing the live executor
+
+Keep the existing binary running while developing and verifying its replacement. Important fixes may be deployed before the final commit once their regression checks and real CLI smoke run pass; never deploy an unfinished worktree merely because it builds. Build to a separate, versioned release path and retain the previous binary for recovery.
+
+For each cutover, identify the exact bot process and its launcher window. Send Ctrl+C to that executor, wait for shutdown and ownership-lock release, then close its old launcher window. Start exactly one replacement in a new visible terminal using the same live configuration and database. Do not close unrelated shells or editors, kill by executable name, or start a competing executor while the old one is shutting down.
+
+On Windows, automation must give the new shell fresh console standard handles, not inherit the automation host's redirected pipes. A visible window and a growing tee log do not prove that text reaches the screen. The verified native launch uses `CreateProcessW` with `CREATE_NEW_CONSOLE`, `bInheritHandles=false`, and `STARTF_USESTDHANDLES` unset. Check the actual console buffer for the startup message and a runtime log line; ordinary `Start-Process` or `CREATE_NEW_CONSOLE` alone can leave a blank window when launched from a redirected host.
+
+Confirm the replacement's executable path, readiness, and advancing account decisions or events. The dashboard's per-request `updated_at` and `/readyz` alone do not prove the worker is progressing. Inspect unresolved actions and fresh authoritative ship state before calling a recovery successful; a legitimately blocked or unprofitable voyage is not evidence of a deadlock. If startup fails, preserve its error log and reconcile any migrations or mutations before choosing a compatible rollback.
+
 ### Fleet scaling
 
 There is no ship-count ceiling. The runner assigns profitable work to compatible idle hulls before ordering more capacity and retains one durable `__growth` intent through construction, armament and provisioning. A restart or pending build is not permission to order a second hull.
@@ -114,12 +124,14 @@ Any negative vault or underfunded active/obligated region defers construction, n
 
 ### Console logs
 
-Zap writes readable console lines with ISO-8601 timestamps and uppercase levels, not JSON envelopes. `LOG_LEVEL=info` is the default; invalid values stop startup before opening the database.
+Zap writes `[time] [account] [category] [LEVEL] message` followed by the complete structured context as JSON. Root, store, API, engine and Fx records have named categories; account labels and IDs remain in the JSON even when the label appears in the header. `LOG_LEVEL=info` is the default; invalid values stop startup before opening the database.
 
 - **INFO:** service startup, established stream recovery, committed trading/treasury/fleet outcomes and recorded settlements. Amounts are integer pence; unknown costs never appear as measured profit.
-- **WARN:** recoverable connection failures, reconciliation-required actions, rejected operations and retention/read failures. Unresolved-action warnings are emitted once per action during a runner's lifetime; dashboard read warnings are limited to one per operation per minute.
+- **WARN:** recoverable connection failures, reconciliation-required actions, rejected operations and retention/read failures. Unchanged unresolved-action warnings are suppressed by the runner's bounded seven-day decision cache; they can recur after eviction or restart. Dashboard read warnings are limited to one per operation per minute.
 - **ERROR:** terminal account-worker, service or lifecycle failures.
 - **DEBUG:** request tracing, routine dispatch, dock/offshore transitions, Fx lifecycle and migration detail. Enable temporarily when investigating a problem.
+
+`LOG_COLOR=auto` (also the unset/empty default) enables colors only when stderr is a terminal and `TERM` is not `dumb`. `LOG_COLOR=always` also colors redirected output, useful for a visible PowerShell window that tees logs to a file. `LOG_COLOR=never` disables colors. The presence of `NO_COLOR`, even with an empty value, overrides every color mode. Other `LOG_COLOR` values fail startup. Levels receive distinct colors and structured context is dimmed; stripping the encoder's SGR sequences leaves the same records as plain mode. Control characters in upstream messages, labels, categories and fields are escaped so they cannot inject terminal lines or commands; invalid UTF-8 is normalized when represented as JSON.
 
 Normal polling and repeated no-op planning do not produce INFO lines. Upstream strings in committed outcomes use the store's credential and token scrubber; if credentials cannot be read, those strings are redacted while numeric outcome facts remain. Credentials, raw game payloads and database connection strings must not appear at any level. Console records are best-effort operational messages, not an exactly-once financial ledger; use the company Journal and permanent settlements for durable outcomes.
 
@@ -138,6 +150,16 @@ The browser must show per-dataset freshness and errors. A healthy HTTP process d
 Raw request/response diagnostics, events, and decisions are retained for seven days. Current state, mission recovery records, encrypted action journals, realized settlements, and metrics remain durable. Diagnostic retention runs periodically; it must not erase unresolved actions or turn an old mission into a new trade.
 
 ## Recovery cases
+
+### Repeated 409 responses or idle ships
+
+Inspect the action's identity, response classification, current ship state, contract state and persisted retry deadline together. A definitive tender refusal can rearm after its bounded wait when fresh REST still confirms an active obligation and its full sealed manifest. A charter refusal can reopen when its authoritative terms change. Neither requires deleting the mission or restarting to clear an in-memory latch.
+
+Short sealed cargo cannot be replaced with ordinary purchases. Keep the obligation until authoritative terminal state permits reconciliation; do not repeatedly submit the original full tender or interpret an error message as a default. A successful delivery or terminal settlement is recorded once across restarts.
+
+Terminal freight reconciliation also runs for sunk carriers before recording the mission's loss. Active or missing contract state remains unresolved; a sunk hull alone does not establish a contract payout.
+
+An ambiguous in-flight economic request retains its original key and body. Dependent spending remains blocked, but unrelated attributable delivery credits can continue only in an arrival/tender phase at the matching destination. A ship still preparing departure must not tender cargo early. If an outcome cannot be established before the safe replay window ends, operator reconciliation is still required: never clear that quarantine just to make a ship move.
 
 ### Timeout after a mutation
 

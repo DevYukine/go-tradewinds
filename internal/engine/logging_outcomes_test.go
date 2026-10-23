@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/DevYukine/go-tradewinds/internal/store"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -158,13 +159,7 @@ func TestDispatchCommittedInfoRedactsCredentialEchoFromSuccessfulResponse(t *tes
 	runner := h.runner(primaryTestKey)
 	core, logs := observer.New(zap.DebugLevel)
 	runner.log = zap.New(core)
-	h.putMission("__growth", "credential-echo", "growth_build", missionData{BuildName: "Lapras", BuildClass: recoveryHull})
-	mission, data := h.mission("__growth")
-	if err := runner.stage(h.ctx, mission, &data, ShipState{}, "build", "/v1/shipyard/build-ship", map[string]any{
-		"port_id": recoveryHomePort, "name": "Lapras", "ship_class": recoveryHull, "build_mode": "standard",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	mission, data := stageLoggingGrowth(t, h, runner)
 	if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed {
 		t.Fatalf("valid credential-echo outcome did not commit: changed %v, error %v", changed, err)
 	}
@@ -190,17 +185,23 @@ func TestDispatchCommittedInfoRedactsCredentialEchoFromSuccessfulResponse(t *tes
 
 func TestDispatchCommittedInfoFailsClosedWhenCredentialsBecomeUnreadable(t *testing.T) {
 	h := newRecoveryHarness(t)
-	runner := h.runner(primaryTestKey)
 	const accountSecret = "synthetic passphrase, never used against the real game"
 	const patternSecret = "tw_live_synthetic_unreadable_credentials"
-	name := "Lapras " + accountSecret + " " + patternSecret
-	h.putMission("__growth", "credentials-unreadable", "growth_build", missionData{BuildName: name, BuildClass: recoveryHull})
-	mission, data := h.mission("__growth")
-	if err := runner.stage(h.ctx, mission, &data, ShipState{}, "build", "/v1/shipyard/build-ship", map[string]any{
-		"port_id": recoveryHomePort, "name": name, "ship_class": recoveryHull, "build_mode": "standard",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	const returnedShipID = "built-" + accountSecret + "-" + patternSecret
+	interceptLoggingMutation(t, h, func(writer http.ResponseWriter, request *http.Request) {
+		result := httptest.NewRecorder()
+		h.api.handle(result, request)
+		var outcome map[string]any
+		if result.Code != http.StatusOK || json.Unmarshal(result.Body.Bytes(), &outcome) != nil {
+			t.Errorf("fixture build did not succeed: %d %s", result.Code, result.Body.String())
+		}
+		outcome["ship_id"] = returnedShipID
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(writer).Encode(outcome)
+	})
+	runner := h.runner(primaryTestKey)
+	mission, data := stageLoggingGrowth(t, h, runner)
 	actionID := data.Action.ID
 	core, logs := observer.New(zap.DebugLevel)
 	credentialsUnavailable := false
@@ -211,7 +212,7 @@ func TestDispatchCommittedInfoFailsClosedWhenCredentialsBecomeUnreadable(t *test
 			// must all succeed before loss of credential access is introduced.
 			persisted, outcome := h.mission("__growth")
 			if persisted.Phase != "growth_refit" || outcome.Action != nil || outcome.LastActionID != actionID ||
-				outcome.BuiltShipID != recoveryBuiltShipID || outcome.BuildCostPence != 60000 {
+				outcome.BuiltShipID != returnedShipID || outcome.BuildCostPence != 60000 {
 				t.Fatalf("credential failure was injected before durable success: phase %s, data %+v", persisted.Phase, outcome)
 			}
 			if err := h.db.Close(); err != nil {
@@ -272,8 +273,17 @@ func (core commitCredentialBarrierCore) Check(entry zapcore.Entry, checked *zapc
 	return core.Core.Check(entry, checked)
 }
 
+func refreshLoggingState(t *testing.T, h *recoveryHarness, runner *Runner) {
+	t.Helper()
+	runner.generation = uuid.NewString()
+	if err := runner.refresh(h.ctx); err != nil {
+		t.Fatalf("capture current first-send clock authority: %v", err)
+	}
+}
+
 func stageLoggingSettings(t *testing.T, h *recoveryHarness, runner *Runner, generation string) (*store.Mission, missionData) {
 	t.Helper()
+	refreshLoggingState(t, h, runner)
 	h.putMission("__treasury", generation, "settings", missionData{})
 	mission, data := h.mission("__treasury")
 	if err := runner.stage(h.ctx, mission, &data, ShipState{}, "settings", "/v1/company/settings", map[string]any{
@@ -285,6 +295,21 @@ func stageLoggingSettings(t *testing.T, h *recoveryHarness, runner *Runner, gene
 	// PostgreSQL JSONB normalizes embedded RawMessage whitespace when saved.
 	// Every subsequent replay must use those exact same request bytes.
 	return h.mission("__treasury")
+}
+
+func stageLoggingGrowth(t *testing.T, h *recoveryHarness, runner *Runner) (*store.Mission, missionData) {
+	t.Helper()
+	h.api.setVaultBalance("north", 500_000)
+	h.api.setVaultBalance("south", 100_000)
+	h.seedLaneProofs()
+	if _, err := h.tick(runner); err != nil {
+		t.Fatalf("stage funded growth with current quote and lane proof: %v", err)
+	}
+	mission, data := h.mission("__growth")
+	if data.Action == nil || data.Action.Stage != "build" {
+		t.Fatalf("expected a staged build, got %+v", data.Action)
+	}
+	return mission, data
 }
 
 func interceptLoggingMutation(t *testing.T, h *recoveryHarness, mutation http.HandlerFunc) {

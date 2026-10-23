@@ -134,6 +134,7 @@ type Gossip struct {
 		CommodityID  string    `json:"commodity_id"`
 		SnapshotAt   time.Time `json:"snapshot_at"`
 		BestBidPence *int64    `json:"best_bid_pence"`
+		BestAskPence *int64    `json:"best_ask_pence"`
 	} `json:"commodities"`
 }
 

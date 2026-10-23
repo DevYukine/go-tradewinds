@@ -47,6 +47,10 @@ func (r *Runner) validateFreightDeparture(ship ShipState, destination string, da
 	if len(stops) == 0 {
 		return nil
 	}
+	_, upper, ok := r.serverBounds()
+	if !ok || r.stateCache.Clock.Calendar.TimeScale <= 0 {
+		return fmt.Errorf("sealed freight delivery_deadline requires current server clock authority")
+	}
 	// The existing mission's next stop is immutable during an unresolved
 	// departure. Check it first, then every other outstanding seal.
 	foundDestination := false
@@ -83,7 +87,7 @@ func (r *Runner) validateFreightDeparture(ship ShipState, destination string, da
 			days += float64(route.TotalDistanceNM) / (float64(hull.BaseSpeedCentiknots) / 100 * 0.8) / 24
 		}
 		seconds := math.Ceil((days + 1) * 86_400 / float64(r.stateCache.Clock.Calendar.TimeScale))
-		arrival := time.Now().Add(time.Duration(seconds) * time.Second)
+		arrival := upper.Add(time.Duration(seconds) * time.Second)
 		if !arrival.Before(*stop.Deadline) {
 			return fmt.Errorf("sealed freight %s cannot meet its actual acceptance delivery_deadline after preceding stops", stop.ContractID)
 		}

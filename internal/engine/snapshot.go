@@ -40,7 +40,7 @@ func encode(value any) json.RawMessage {
 }
 
 func (r *Runner) capture(ctx context.Context, key, path string, paginated bool) bool {
-	now := time.Now().UTC()
+	now := time.Now()
 	var data json.RawMessage
 	var err error
 	if paginated {
@@ -76,7 +76,7 @@ func (r *Runner) capture(ctx context.Context, key, path string, paginated bool) 
 	}
 	_ = json.Unmarshal(data, &observed)
 	r.meta[key] = DatasetMeta{
-		UpdatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now(),
 		AttemptedAt:  now,
 		Generation:   r.generation,
 		Complete:     true,
@@ -151,7 +151,7 @@ func (r *Runner) captureContracts(ctx context.Context) {
 	combined = make([]json.RawMessage, 0)
 	meta := r.meta["contracts"]
 	failedBefore := meta.Stale || meta.Error != ""
-	meta.AttemptedAt = time.Now().UTC()
+	meta.AttemptedAt = time.Now()
 	meta.Complete = false
 	for _, status := range []string{"open", "active", "completed", "cancelled", "defaulted"} {
 		rows, err := r.readPages(ctx, "/v1/contract/list?status="+status)
@@ -196,7 +196,7 @@ func (r *Runner) captureContracts(ctx context.Context) {
 	}
 	r.snapshot["contracts"] = encode(combined)
 	r.meta["contracts"] = DatasetMeta{
-		UpdatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now(),
 		AttemptedAt: meta.AttemptedAt,
 		Generation:  r.generation,
 		Complete:    true,
@@ -240,9 +240,10 @@ func (r *Runner) finishGroup(group string, values map[string]json.RawMessage, ke
 		}
 	}
 	r.snapshot[group] = encode(values)
+	now := time.Now()
 	meta := DatasetMeta{
-		UpdatedAt:   time.Now().UTC(),
-		AttemptedAt: time.Now().UTC(),
+		UpdatedAt:   now,
+		AttemptedAt: now,
 		Generation:  r.generation,
 		Complete:    true,
 	}
@@ -305,6 +306,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 		usedSet[name] = true
 	}
 	presence := make(map[string]bool)
+	current := PlanningInput{Now: time.Now(), Clock: state.Clock, Metadata: r.meta, Generation: r.generation}
 	classes := make(map[string]bool)
 	shipKeys := make([]string, 0, len(state.Ships))
 	for _, ship := range state.Ships {
@@ -317,26 +319,15 @@ func (r *Runner) refresh(ctx context.Context) error {
 		cargo[ship.Ship.ID] = ship.CargoManifest
 		if ship.Ship.Status != "sunk" {
 			classes[ship.Ship.ShipClass] = true
-			if ship.Ship.CurrentPortID != "" {
+			if current.fresh("ships") && (ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") && ship.Voyage == nil && ship.Ship.CurrentPortID != "" {
 				presence[ship.Ship.CurrentPortID] = true
-			}
-		}
-		mission, err := r.db.GetMission(ctx, r.account.ID, ship.Ship.ID)
-		if err != nil {
-			return err
-		}
-		if mission != nil {
-			var data missionData
-			if err := json.Unmarshal(mission.Data, &data); err != nil {
-				return fmt.Errorf("decode durable mission %s: %w", ship.Ship.ID, err)
-			}
-			if data.Plan.Origin != "" {
-				presence[data.Plan.Origin] = true
 			}
 		}
 	}
 	for _, factor := range state.Factors {
-		presence[factor] = true
+		if current.fresh("factors") && factor != "" {
+			presence[factor] = true
+		}
 	}
 	r.finishGroup("ship_details", details, shipKeys)
 	r.snapshot["cargo"] = encode(cargo)
@@ -423,6 +414,53 @@ func (r *Runner) refresh(ctx context.Context) error {
 					path := "/v1/world/route?from=" + url.QueryEscape(pair[0]) + "&to=" + url.QueryEscape(pair[1]) + "&ship_class=" + url.QueryEscape(class)
 					r.captureChild(ctx, "routes", key, path, routes)
 				}
+			}
+		}
+	}
+	// Public source routes are limited to three evidence-backed pairs across
+	// the account. A sourcing origin never enters private presence.
+	state.Ports = decode[map[string]PortDetail](map[string]json.RawMessage{"ports": encode(ports)}, "ports")
+	state.Routes = decode[map[string]Route](map[string]json.RawMessage{"routes": encode(routes)}, "routes")
+	state.Markets = withoutOwnOrders(decode[map[string]Market](map[string]json.RawMessage{"books": encode(markets)}, "books"), r.ownedOrders())
+	sourcingInput := r.planningInputFrom(ShipState{}, state)
+	shortlisted := 0
+	for _, ship := range state.Ships {
+		mission, data, err := r.loadMission(ctx, ship.Ship.ID)
+		if err != nil {
+			return err
+		}
+		var pairs [][2]string
+		if mission != nil && data.Relocation != nil {
+			pairs = append(pairs, [2]string{data.Plan.Origin, data.Plan.Destination}, [2]string{data.Plan.Destination, data.Relocation.TargetDestination})
+		} else if mission == nil && shortlisted < 3 && current.fresh("ships") && emptyCargo(ship) && ship.Voyage == nil &&
+			(ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") && ship.Ship.ConvoyID == "" {
+			sourcingInput.Ship = ship
+			for _, plan := range sourcingPairs(sourcingInput) {
+				if !plan.Accepted || shortlisted >= 3 {
+					continue
+				}
+				for _, contract := range state.Contracts {
+					if contract.ID == plan.ContractID {
+						pairs = append(pairs, [2]string{plan.Destination, contract.OriginPortID})
+						shortlisted++
+						break
+					}
+				}
+			}
+		}
+		for _, pair := range pairs {
+			for _, endpoints := range [][2]string{pair, {pair[1], pair[0]}} {
+				if endpoints[0] == "" || endpoints[1] == "" || endpoints[0] == endpoints[1] {
+					continue
+				}
+				key := routeKey(endpoints[0], endpoints[1], ship.Ship.ShipClass)
+				if seenRoutes[key] {
+					continue
+				}
+				seenRoutes[key] = true
+				routeKeys = append(routeKeys, key)
+				path := "/v1/world/route?from=" + url.QueryEscape(endpoints[0]) + "&to=" + url.QueryEscape(endpoints[1]) + "&ship_class=" + url.QueryEscape(ship.Ship.ShipClass)
+				r.captureChild(ctx, "routes", key, path, routes)
 			}
 		}
 	}

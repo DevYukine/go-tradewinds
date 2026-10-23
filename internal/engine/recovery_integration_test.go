@@ -54,7 +54,7 @@ const (
 // recoveryIntegrationStore mirrors internal/store's isolated schema helper:
 // one random schema per test, dropped again on cleanup, never the live
 // database. A fixed synthetic master key encrypts the test journals.
-func recoveryIntegrationStore(t *testing.T) *store.Store {
+func recoveryIntegrationStore(t *testing.T) (*store.Store, string, string) {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -106,7 +106,7 @@ func recoveryIntegrationStore(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("open migrated test store: %v", err)
 	}
-	return db
+	return db, dsn, schema
 }
 
 type recordedMutation struct {
@@ -134,6 +134,8 @@ type fakeGameAPI struct {
 	minReserve   int64
 	vaultBalance map[string]int64
 	fleet        []map[string]any
+	factorPorts  []string
+	rates        []Rate
 	settingsMode string
 	remitMode    string
 	buildMode    string
@@ -148,6 +150,8 @@ func newFakeGameAPI(t *testing.T) *fakeGameAPI {
 		autoRemit:    true,
 		minReserve:   200_000,
 		vaultBalance: map[string]int64{"north": 50_000_000, "south": 500_000},
+		factorPorts:  []string{},
+		rates:        []Rate{{FromRegion: "north", ToRegion: "south", FeeBPS: 100}},
 		fleet: []map[string]any{
 			sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort),
 			sailingShipRow(recoveryShipCharizard, "Charizard", recoveryFarPort, recoveryHomePort),
@@ -288,7 +292,7 @@ func (f *fakeGameAPI) handleGet(writer http.ResponseWriter, request *http.Reques
 			},
 			"handle":       "Yukine",
 			"fleet_count":  len(f.fleet),
-			"factor_ports": []any{},
+			"factor_ports": f.factorPorts,
 			"vaults":       []any{},
 		})
 	case "/v1/company/settings":
@@ -306,21 +310,24 @@ func (f *fakeGameAPI) handleGet(writer http.ResponseWriter, request *http.Reques
 		f.writeJSON(writer, http.StatusOK, map[string]any{})
 	case "/v1/world/events", "/v1/treasury/ledger", "/v1/fleet/convoys",
 		"/v1/fleet/marques", "/v1/fleet/patrols", "/v1/warehouse/list",
-		"/v1/market/orders", "/v1/market/fills", "/v1/company/factors",
-		"/v1/insurance/list", "/v1/future/list", "/v1/contract/list":
+		"/v1/market/orders", "/v1/market/fills", "/v1/insurance/list",
+		"/v1/future/list", "/v1/contract/list":
 		f.writeJSON(writer, http.StatusOK, []any{})
+	case "/v1/company/factors":
+		f.writeJSON(writer, http.StatusOK, f.factorPorts)
 	case "/v1/treasury/vaults":
-		f.writeJSON(writer, http.StatusOK, map[string]any{
-			"company_id": recoveryCompanyID,
-			"vaults": []any{
-				map[string]any{"account_id": "vault-north", "banking_region": "north", "account_type": "vault", "balance_pence": f.vaultBalance["north"]},
-				map[string]any{"account_id": "vault-south", "banking_region": "south", "account_type": "vault", "balance_pence": f.vaultBalance["south"]},
-			},
-		})
+		vaults := []Vault{
+			{AccountID: "vault-north", BankingRegion: "north", AccountType: "vault", BalancePence: f.vaultBalance["north"]},
+			{AccountID: "vault-south", BankingRegion: "south", AccountType: "vault", BalancePence: f.vaultBalance["south"]},
+		}
+		for region, balance := range f.vaultBalance {
+			if region != "north" && region != "south" {
+				vaults = append(vaults, Vault{AccountID: "vault-" + region, BankingRegion: region, AccountType: "vault", BalancePence: balance})
+			}
+		}
+		f.writeJSON(writer, http.StatusOK, map[string]any{"company_id": recoveryCompanyID, "vaults": vaults})
 	case "/v1/treasury/rates":
-		f.writeJSON(writer, http.StatusOK, []any{
-			map[string]any{"from_region": "north", "to_region": "south", "fee_bps": 100},
-		})
+		f.writeJSON(writer, http.StatusOK, f.rates)
 	case "/v1/fleet/ships":
 		f.writeJSON(writer, http.StatusOK, f.fleet)
 	case "/v1/fleet/ship":
@@ -732,6 +739,18 @@ func (f *fakeGameAPI) setFleet(rows []map[string]any) {
 	f.fleet = rows
 }
 
+func (f *fakeGameAPI) setFactorPorts(ports ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.factorPorts = append(f.factorPorts[:0], ports...)
+}
+
+func (f *fakeGameAPI) setRates(rates ...Rate) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rates = append(f.rates[:0], rates...)
+}
+
 func (f *fakeGameAPI) setSettingsMode(mode string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -766,11 +785,13 @@ type recoveryHarness struct {
 	db      *store.Store
 	account store.Account
 	api     *fakeGameAPI
+	dsn     string
+	schema  string
 }
 
 func newRecoveryHarness(t *testing.T) *recoveryHarness {
 	t.Helper()
-	db := recoveryIntegrationStore(t)
+	db, dsn, schema := recoveryIntegrationStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	t.Cleanup(cancel)
 	account := store.Account{
@@ -787,7 +808,7 @@ func newRecoveryHarness(t *testing.T) *recoveryHarness {
 	if err := db.SaveAccount(ctx, account, credentials); err != nil {
 		t.Fatalf("save test account: %v", err)
 	}
-	return &recoveryHarness{t: t, ctx: ctx, db: db, account: account, api: newFakeGameAPI(t)}
+	return &recoveryHarness{t: t, ctx: ctx, db: db, account: account, api: newFakeGameAPI(t), dsn: dsn, schema: schema}
 }
 
 func (h *recoveryHarness) runner(apiKey string) *Runner {
@@ -875,11 +896,15 @@ func (h *recoveryHarness) putMission(shipID, generation, phase string, data miss
 		h.t.Fatalf("encode mission data: %v", err)
 	}
 	mission := &store.Mission{
-		AccountID:  h.account.ID,
-		ShipID:     shipID,
-		Phase:      phase,
-		Generation: generation,
-		Data:       payload,
+		AccountID:   h.account.ID,
+		ShipID:      shipID,
+		Phase:       phase,
+		Generation:  generation,
+		Destination: data.Plan.Destination,
+		Commodity:   data.Plan.Commodity,
+		Quantity:    data.Plan.Quantity,
+		PricePence:  data.Plan.BuyLimitPence,
+		Data:        payload,
 	}
 	if err := h.db.PutMission(h.ctx, mission); err != nil {
 		h.t.Fatalf("persist mission %s: %v", shipID, err)
@@ -907,6 +932,9 @@ func (h *recoveryHarness) expireCooldown(shipID string) {
 // lane so considerGrowth has durable evidence to evaluate.
 func (h *recoveryHarness) seedLaneProofs() {
 	h.t.Helper()
+	// Growth needs real private-data authority while incumbent ships sail.
+	// This setup is opt-in; the default recovery fleet has no factors.
+	h.api.setFactorPorts(recoveryHomePort, recoveryFarPort)
 	lane := laneKey(Plan{
 		Kind:        "spot",
 		Origin:      recoveryHomePort,
@@ -1140,6 +1168,7 @@ func TestRecoveryTreasuryThrottlePersistsCooldownThenReplans(t *testing.T) {
 		berthed,
 		sailingShipRow(recoveryShipCharizard, "Charizard", recoveryFarPort, recoveryHomePort),
 	})
+	h.api.setFactorPorts(recoveryFarPort)
 	for tick := range 16 {
 		if _, err := h.tick(runner); err != nil {
 			t.Fatalf("fleet recovery tick %d: %v", tick, err)
@@ -1626,6 +1655,7 @@ func TestRecoveryRestartReplaysImmutableRequestThenFreshAfterAuthStop(t *testing
 
 	// A restarted runner must replay the exact original request and key.
 	h.api.setSettingsMode("ok")
+	h.expireCooldown("__treasury")
 	restarted := h.runner(primaryTestKey)
 	mission, data = h.mission("__treasury")
 	if _, err := restarted.dispatch(h.ctx, mission, &data); err != nil {

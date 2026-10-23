@@ -36,6 +36,10 @@ Network ambiguity is not failure evidence. A timeout or upstream 5xx retains the
 
 The upstream replay window is 24 real hours. Stop unresolved retries before that window expires, with a margin for in-flight request duration. Authoritative reconciliation must establish an outcome before a replacement action is allowed. Retaining the old key forever does not make it safe to replay forever.
 
+Conflict recovery distinguishes definitive rejection from an ambiguous in-flight request. Freight tender refusals persist a bounded retry deadline; fresh active-contract and full-manifest evidence permit a new tender identity after that deadline. Fresh terminal contract states can settle the obligation without waiting for another tender. Charter refusals retain the observed offer terms and reopen when authoritative terms change. Response prose cannot prove a default, payment or delivery.
+
+An attributed unresolved ship action quarantines dependent spending, not unrelated safe delivery credits. An orphaned pending request whose resources cannot be identified still blocks execution. Reconciliation and replay always use the persisted request's contract, ship and payload, never a replacement plan's identity. Short sealed manifests are held, not replenished with ordinary cargo or repeatedly tendered as the originally accepted amount.
+
 Registration follows the same model. The generated passphrase is stored before registration; player creation, key creation, company incorporation, and company-key creation have stable independent action identities. A handle conflict cannot cause an automatic fallback name. Company creation is reconciled against the player's actual company list.
 
 ## Events and freshness
@@ -46,9 +50,15 @@ Publish a paginated dataset only after all pages succeed. Retain the last good v
 
 The runner must also wake without events for berth unlocks, cooldowns, deadlines, expected arrivals, and freshness expiry. Synchronous orders and unlocked berths are not guaranteed to produce the events a mission would need to progress.
 
+Private books and shipyard quotes require fresh authoritative stationary ship presence or factor access. A sailing ship's retained origin and a mission's intended origin are not presence. Public route discovery remains separate from private-data authorization.
+
+Clock bounds require a complete successful current-generation capture with valid request/completion ordering and a fresh host timestamp. Failed, future-dated or stale observations cannot authorize new mutations. A new-send preflight checks the same conditions after rate-limit waits; persisted ambiguous or completed actions retain their independent reconciliation path.
+
 Ordinary queued events request another capture without indefinitely vetoing a safe mutation after the current capture. Stream gaps, authorization controls, and stream closure remain barriers: their published control epoch prevents writes against an earlier capture, even while a control waits behind ordinary events. Company billing, remittance, tax, seizure and bankruptcy events use a separate financial epoch. Captured spending decisions carry that epoch and the runner instance through staging. A stale never-sent request is replanned after authoritative refresh; an existing journal identity remains authoritative for ambiguous or completed outcomes. A first-attempt guard runs after the transport's rate-limit wait. If it vetoes a newly journaled request before transport, durable explicit no-send evidence permits safe replanning across restart. This guards known local invalidation, not atomicity with upstream cash changes.
 
 Invalidated never-sent standalone maintenance intents are released so idle planning can reconsider the ship from fresh state. Voyage missions retain their cargo and obligations; ambiguous or completed journal requests are never discarded by this release.
+
+First-send monetary guards recheck fresh financial authority and the stage-specific funded commitment, including ship-less construction. Construction reuses the planner's quote, payback, spare depth and commissioning-reserve checks. The transport callback checks the captured financial epoch both before and after that work, so a financial event published during preflight invalidates the never-sent request. Missing or failed balance observations cannot authorize a new debit; already attempted requests retain their immutable recovery path.
 
 ## Rate limits and retry ownership
 
@@ -64,17 +74,23 @@ The transport owns individual attempts, bounded transient retries, and rate-limi
 
 Authentication, stream routes, and batch routes must be classified before the generic HTTP method. Every retry consumes applicable tokens. Apply cooldown to the affected bucket rather than blocking all reads and all accounts unnecessarily. Respect `Retry-After`; a cached mutation 429 is not a reason to rotate an ambiguous action key.
 
+SSE scanner errors preserve their original cause. Only `bufio.ErrTooLong` is reported as the 1 MiB line limit; interrupted chunks and connection failures are transport errors handled by the existing reconnect policy.
+
 These shared-IP limiters coordinate one process. Separate hosts or processes behind the same public IP still share the upstream allowance; PostgreSQL ownership protects a company, not the entire network's request budget.
 
 ## Persistence lifetime
 
 Raw request/response diagnostics, event payloads, and decision traces have a seven-day retention window. Current snapshots, encrypted credentials, mission recovery state, unresolved actions, idempotent settlement records, and metrics survive that window. Action journals are operational recovery records, not disposable request logs.
 
+Runner decision fingerprints use a bounded 2,048-entry cache with seven-day deduplication. Sourcing emits an aggregate count and at most three ranked details; only the rolling arrival estimate is excluded from the fingerprint, not the persisted diagnostic. Cache eviction can repeat a diagnostic but cannot discard recovery state.
+
 Diagnostic sanitization covers JSON member names as well as values, including nested event/request payloads and snapshot dataset names. Known account credentials, bearer tokens, API-key patterns, and credential assignments are scrubbed before persistence, so the same protections apply to history and dashboard read surfaces. Colliding sanitized member names receive distinct numeric suffixes without overwriting existing public names or dropping their values.
 
 Realized economic records use integer pence and stable settlement identities. Graph metrics may use floating-point values for presentation; they are not the ledger. Seed capital, remittance principal, and collateral refunds are not trading income.
 
 Mission accounting keeps durable claims on observed ledger expense IDs so a company-wide charge is not deducted by every concurrent voyage or charged again after a restart. Unknown acquisition costs remain unknown; they are not zero-cost profit. Reinvestment consumes known-cost settled results, including losses, rather than a filtered history of winning trades.
+
+New destination-completing missions explicitly persist that choice; older roundtrip missions keep their existing return semantics. Sourcing uses a durable zero-revenue relocation mission and separate settlement before any cargo handoff. Its restart gate queries the latest relocation and all subsequent account settlements, retaining losses and unknown-cost disqualifications rather than treating a bounded dashboard history as the capital ledger.
 
 ## Dashboard contract
 

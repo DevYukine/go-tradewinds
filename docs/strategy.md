@@ -13,6 +13,8 @@ This is a partially observed economy. Remote books may be hidden, NPC orders req
 
 All monetary calculations use integer pence: 100 pence = 1 Crown. Freight rewards are per contract; charter rewards are per delivered ton. Rates are basis points. Ship speed is centiknots. The current world clock reports its acceleration; at time scale 60, one game day takes 24 real minutes. Profit rates, operating costs, and payback use game days. HTTP timeouts, diagnostic retention, and the server's 24-hour idempotency window use real time.
 
+Server timestamps, not the workstation clock, govern berth unlocks and contract deadlines. A fresh clock fetch supplies a conservative interval from its request start, completion, and `real_utc`; unlocks use its lower bound and deadline admission uses its upper bound. The acceleration applies when converting elapsed real time to game durations, not a second time to server UTC. HTTP cooldowns and replay windows remain host-time deadlines.
+
 ## Starter company
 
 The account is `Yukine`, company `The Pokemon Pirates`, starter ship `Lapras`. Le Havre is the initial home port: it is a Phase 1 port with a short coastal route to Portsmouth and local provisions production. The observed Le Havre–Portsmouth route was 30 nautical miles. This is a route hypothesis, not a promise of profitable current prices.
@@ -81,6 +83,39 @@ With the recorded charter prices, 212,623 pence of regional capital supported a 
 
 The five actual retained settlements, including the first loss, totalled 59,167 pence net over 1,090,800 game seconds. A separate growth counterfactual assumed a **synthetic** 250,000-pence hull quote, 10,000 tons of source depth, 3,000,000 pence of capital, a charter lasting 100 game days, 46 tons of incumbent throughput per cycle and 1,192 pence/day of marginal upkeep. Its 832-pence initial-stores input used the **pre-fix consumption proxy**, not the full cost of provisioning an empty new hull. Adding zero or one synthetic healthy cycle (24 tons, 60,000 pence net, 43,200 game seconds each) failed the 30-day payback gate; adding two or three passed at 28.08 and 21.34 game days respectively. These historical replay results have not been recalculated with the corrected full-inventory commissioning budget. Those invented future cycles do not replace actual loss-inclusive proof or authorize a live build.
 
+### Shipment-margin sensitivity (2026-10-23)
+
+A bounded pre-change replay used the recorded generation whose server clock was `2026-10-23T11:09:00.813635555Z` and whose clock fetch completed at host time `11:09:34.8338318Z`. It ran the actual voyage planner offline, without orders or live account writes. The recorded Le Havre provisions ask was 229.91 Crowns/ton against a Portsmouth charter reward of 211.45 Crowns/ton: no positive executable charter was selected.
+
+The following counterfactuals changed only local provisions asks, retaining the recorded ship, routes, charter, customs and regional capital. They are synthetic price sensitivity, not observed remote supply or promised earnings. Each accepted lot was 29 tons; modeled net includes acquisition, customs, replacement of consumed stores and berth dues.
+
+| Synthetic ask, Crowns/ton | Modeled net, Crowns/shipment |
+| --- | --- |
+| 210.00 | Rejected |
+| 200.00 | 156.43 |
+| 190.00 | 454.94 |
+| 180.00 | 753.45 |
+| 175.00 | 902.71 |
+| 170.00 | 1,051.96 |
+
+The 902.71-Crown case has only 13.56 Crowns remaining under the separately disclosed 14.5% revenue stress scenario; that stress is not a measured hazard probability. This supports seeking better supply and evaluating all costs, not forcing an 800-Crown minimum or spending against an imaginary quote. A smaller profitable shipment can be the correct choice when faster turnover or current liquidity dominates. Leaderboard net worth also includes assets and capital and is not directly comparable with our realized shipment profit.
+
+The same recorded-price replay was repeated after the runtime changes and produced the same accepted quantities and net values. Improving execution cannot turn the recorded loss-making local spread into profit; better sourcing and avoiding unnecessary empty returns address that limitation.
+
+### Destination replanning and bounded sourcing
+
+New economic voyages settle at their delivery destination once cargo is empty, all sealed obligations are terminal, turnaround has elapsed, and authoritative offshore state is observed. They then compare opportunities from that port instead of automatically sailing empty to their original source. Previously persisted roundtrip missions retain their original return commitments and accounting.
+
+When no ordinary executable opportunity exists, an empty, stationary ship may inspect another source for an open charter. Compare at most three source/charter pairs using catalog production or fresh public ask gossip, legal routes and conservative deadline slack. Catalog production is evidence worth investigating, not an executable inventory promise; an unstocked local manufacturer does not veto a better evidenced remote source. Public evidence never grants private market access or creates forecast sale revenue.
+
+Only one sourcing probe may be active per account. Its modeled expense allowance is `min(20,000 pence, floor(uncommitted cash / 50))`: at most 200 Crowns or 2% of cash after protected funds. Include stores, customs, berth/upkeep exposure, measured funding fees and safe-return contingency; retain safe provisions for the intended laden leg. This allowance limits modeled exposure, not an unpublished hazard loss. The empty probe has zero revenue and quantity.
+
+On arrival, inspect fresh local executable depth for at most six observed game hours. Compare every feasible whole-ton quantity, including all probe and trading costs, and recheck funds and charter terms before purchase. Closed demand or an unprofitable fresh book ends the probe without speculative cargo or an automatic return. There is no 800-Crown hard floor: choose positive net per game day rather than rejecting useful smaller shipments.
+
+Record the probe's actual expenses separately, once, without counting treasury principal as cost or the later cargo shipment as duplicate revenue. Another probe requires a subsequent positive delivered shipment and sufficient loss-inclusive, known-cost net earnings since the last probe to fund its next exposure. This history is not truncated to the dashboard's recent-row limit. Zero-ton probes do not establish profitable throughput for ship purchases, and active sourcing commitments remain protected from fleet expansion.
+
+Sourcing diagnostics retain one candidate-count summary and at most three ranked candidate details per pass. Equivalent decisions are deduplicated without treating a rolling ETA as a changed economic assessment; materially changed retained offers remain visible.
+
 ## Treasury and reinvestment
 
 Cash is regional. Escrow is not spendable. Reserve enforcement includes outstanding obligations, collateral, near-term bills, and working capital in the billing region. Any negative vault, or any underfunded active/obligated region, blocks discretionary construction while safe income voyages continue. Empty unused regions need no artificial reserve. A remittance pays an observed fee and must preserve its source's protected funds. Several donors can fund a shortfall through sequential partial transfers; each durable transfer is followed by fresh balances before selecting the next donor.
@@ -101,7 +136,7 @@ A new hull needs all of:
 6. Incumbent working capital, two new trading cycles, full initial safe-store inventory, guns and regional reserves funded separately. Price a new hull's entire required provisions lot against executable local asks, including buyer customs and per-ton integer-rounding allowance; consumption replacement value is not its commissioning budget. Three days of marginal fleet upkeep belong in the home billing region, including any required remittance fees.
 7. A payback within the configured game-day horizon. There is no ship-count cap: recalculate the marginal economics and funded reserves for each additional hull.
 
-Shipyard quotes are exact observations, not binding price locks: the build endpoint has no quote token or maximum-price precondition. Settle the actual build result and treat build, refit, and provision as separate durable actions. Guns cost 15,000 pence each under the current guide and reduce cargo space.
+Shipyard quotes are exact observations, not binding price locks: the build endpoint has no quote token or maximum-price precondition. Before its first send, construction must still have current shipyard access, an available quote, sufficient executable demand and the full commissioning and incumbent funding protections above. Purchases, provisions, refits and collateral likewise require current financial authority and funded reserves. Already attempted requests retain their immutable replay identity instead of being repriced as new spending. Settle the actual build result and treat build, refit, and provision as separate durable actions.
 
 Allocate source, destination and contract reservations only to actual competing lanes, including committed sailing returns; unrelated hulls do not consume every lane's liquidity. Repeat throughput uses each committed lot and full cycle duration. Whole outstanding lots are reserved once, not once per future cycle; already delivered ordinary cargo on a returning ship consumes no remaining contract or bid capacity. Delivering sealed freight does not release ordinary trade reservations on a mixed voyage. Run actionable maintenance before sizing an idle hull's economic plan because guns reduce its hold; a hull without a local yard or funds for a refit must not veto otherwise viable construction. Assign compatible idle or newly commissioned capacity before buying another hull. One durable `__growth` mission controls construction, refit and provisioning across restarts.
 

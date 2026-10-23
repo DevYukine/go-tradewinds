@@ -132,3 +132,47 @@ func (s *Store) SettlementHistory(ctx context.Context, accountID, lane string, l
 	err := db.Order("completed_at DESC, id").Limit(limit).Find(&rows).Error
 	return rows, err
 }
+
+// RelocationRestart uses permanent settlements rather than the bounded display
+// history. The caller also charges Latest's own loss before allowing a retry.
+type RelocationRestart struct {
+	Latest                *Settlement
+	NetSincePence         int64
+	UnknownCostSince      bool
+	PositiveDeliverySince bool
+}
+
+func (s *Store) LatestRelocationRestart(ctx context.Context, accountID string) (RelocationRestart, error) {
+	var result RelocationRestart
+	if !validID(accountID) {
+		return result, fmt.Errorf("relocation restart account: %w", ErrInvalidInput)
+	}
+	db, cancel := s.query(ctx)
+	defer cancel()
+	var latest Settlement
+	err := db.Where("account_id = ? AND kind = ?", accountID, "relocation").
+		Order("completed_at DESC, id DESC").Take(&latest).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return result, nil
+	}
+	if err != nil {
+		return result, err
+	}
+	result.Latest = &latest
+	var totals struct {
+		NetSincePence         int64
+		UnknownCostSince      bool
+		PositiveDeliverySince bool
+	}
+	err = db.Raw(`
+		SELECT COALESCE(SUM(proceeds_pence::numeric - acquisition_pence - fees_pence - provisions_pence - expenses_pence), 0) AS net_since_pence,
+			COALESCE(BOOL_OR(NOT costs_known), false) AS unknown_cost_since,
+			COALESCE(BOOL_OR(costs_known AND quantity_tons > 0 AND proceeds_pence::numeric - acquisition_pence - fees_pence - provisions_pence - expenses_pence > 0), false) AS positive_delivery_since
+		FROM settlements
+		WHERE account_id = ? AND (completed_at > ? OR (completed_at = ? AND id > ?))`,
+		accountID, latest.CompletedAt, latest.CompletedAt, latest.ID).Scan(&totals).Error
+	result.NetSincePence = totals.NetSincePence
+	result.UnknownCostSince = totals.UnknownCostSince
+	result.PositiveDeliverySince = totals.PositiveDeliverySince
+	return result, err
+}

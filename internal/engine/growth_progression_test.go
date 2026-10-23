@@ -230,9 +230,8 @@ func TestGrowthProofRequiresPositiveLossInclusiveNet(t *testing.T) {
 // TestGrowthStagesBuildForThirteenShipFleetWithoutCeiling drives G1 through
 // the existing recovery runner fixture: an unconfigured runner (whose former
 // fallback ceiling was 4) must still authorize a viable build for a 13-ship
-// fleet, and staging must persist an intent without sending it. One hull
-// stays in flight from the destination port so refresh captures the south
-// book the spot lane plans against.
+// fleet, and staging must persist an intent without sending it. Fresh factors
+// authorize both private books and the yard while the incumbent fleet sails.
 func TestGrowthStagesBuildForThirteenShipFleetWithoutCeiling(t *testing.T) {
 	h := newRecoveryHarness(t)
 	fleet := make([]map[string]any, 0, 13)
@@ -256,6 +255,7 @@ func TestGrowthStagesBuildForThirteenShipFleetWithoutCeiling(t *testing.T) {
 		}
 	}
 	h.seedLaneProofs()
+	h.api.setAutoRemit(true, 1_000_000)
 	if _, err := h.tick(runner); err != nil {
 		t.Fatalf("growth tick with thirteen ships: %v", err)
 	}
@@ -297,6 +297,7 @@ func growthMissionWithHoldDiagnostics(t *testing.T, h *recoveryHarness, runner *
 // and manageTreasury's beneficial repair is not run here, not prohibited.
 func TestGrowthBlockedWhileAnyVaultIsNegative(t *testing.T) {
 	control := newRecoveryHarness(t)
+	control.api.setFactorPorts(recoveryHomePort, recoveryFarPort)
 	control.api.setVaultBalance("south", 1_000_000)
 	runner := control.runner(primaryTestKey)
 	runner.generation = uuid.NewString()
@@ -316,6 +317,7 @@ func TestGrowthBlockedWhileAnyVaultIsNegative(t *testing.T) {
 	}
 
 	blocked := newRecoveryHarness(t)
+	blocked.api.setFactorPorts(recoveryHomePort, recoveryFarPort)
 	blocked.api.setVaultBalance("south", -1)
 	restricted := blocked.runner(primaryTestKey)
 	restricted.generation = uuid.NewString()
