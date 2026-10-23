@@ -1,0 +1,1035 @@
+.workspace {
+  min-width: 0;
+  display: grid;
+  gap: 1.5rem;
+}
+
+.compact {
+  position: relative;
+  gap: 0.5rem;
+}
+
+.compact .chartSection > .sectionHeading {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 0;
+}
+
+.compact .chartSection > .sectionHeading > div {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.chartLayout {
+  min-width: 0;
+  display: grid;
+  align-items: start;
+}
+
+.chartSection,
+.ledger {
+  min-width: 0;
+}
+
+.sectionHeading,
+.inspectorHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.85rem 0;
+}
+
+.sectionHeading h2,
+.inspectorHeading h2,
+.dialogTitle {
+  margin: 0;
+  color: var(--color-ink);
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.sectionHeading p,
+.inspectorHeading p {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.sectionHeading h2,
+.portDetail h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chartToolbar,
+.filters {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  padding: 0.7rem 0;
+}
+
+.chartToolbar {
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0 0.5rem;
+}
+
+.chartActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.zoomActions,
+.viewSelect {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.viewSelect {
+  position: relative;
+  color: var(--muted);
+}
+
+.viewSelect > svg {
+  position: absolute;
+  left: 9px;
+  pointer-events: none;
+}
+
+.viewSelect select {
+  min-height: 2.25rem;
+  padding-left: 30px;
+  font-size: 0.875rem;
+}
+
+.chartSelection {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 3px 14px;
+  padding: 2px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chartSelection strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.chartSelection > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.button,
+.iconButton,
+.shipButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 2.25rem;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  padding: 0.4rem 0.65rem;
+  background: var(--surface);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.25;
+  cursor: pointer;
+}
+
+.button:hover,
+.iconButton:hover,
+.shipButton:hover {
+  border-color: var(--color-route);
+  color: var(--color-route);
+}
+
+.button:disabled {
+  cursor: not-allowed;
+  color: var(--muted);
+}
+
+.button:focus-visible,
+.iconButton:focus-visible,
+.shipButton:focus-visible,
+.portSelect select:focus-visible,
+.filters select:focus-visible,
+.chartSection a:focus-visible,
+.fleetHeading:focus-visible {
+  outline: 3px solid var(--color-route);
+  outline-offset: 3px;
+}
+
+.iconButton {
+  flex: 0 0 auto;
+  width: 2.25rem;
+  padding: 0.4rem;
+}
+
+.portSelect,
+.filterField {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  min-width: 0;
+}
+
+.portSelect {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1 1 12rem;
+  max-width: 19rem;
+}
+
+.portSelect select {
+  flex: 1;
+}
+
+.portSelect select,
+.filterField select {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.25rem;
+  padding: 0.4rem 2rem 0.4rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  background: var(--surface);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 0.875rem;
+}
+
+.filterField {
+  flex: 0 1 15rem;
+  min-width: min(12rem, 100%);
+}
+
+.mapFrame,
+.loadingChart {
+  height: clamp(25rem, 53vh, 43rem);
+  min-height: 25rem;
+  overflow: hidden;
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  background: var(--color-water);
+}
+
+.loadingChart {
+  display: grid;
+  place-items: center;
+  color: var(--color-ink);
+}
+
+.map {
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  background: var(--color-water);
+  font: inherit;
+}
+
+.map:global(.leaflet-container) {
+  background: var(--color-water);
+  font: inherit;
+}
+
+.map:global(.leaflet-container) :global(.leaflet-control-attribution),
+.map :global(.leaflet-control-scale-line) {
+  background: var(--surface);
+  color: var(--color-ink);
+  font-family: inherit;
+  font-size: 0.75rem;
+  box-shadow: none;
+  text-shadow: none;
+}
+
+.map :global(.leaflet-control-attribution a) {
+  color: var(--color-route);
+}
+
+.map :global(.leaflet-control-scale-line) {
+  border-color: var(--color-ink);
+}
+
+.map :global(.leaflet-marker-icon):focus-visible,
+.map:focus-visible {
+  outline: 3px solid var(--color-route);
+  outline-offset: 2px;
+}
+
+.land {
+  fill: var(--land);
+  fill-opacity: 1;
+  stroke: color-mix(in srgb, var(--ink) 30%, var(--land));
+  stroke-width: 0.9;
+}
+
+.graticule {
+  fill: none;
+  stroke: var(--muted);
+  opacity: 0.22;
+  stroke-width: 0.75;
+}
+
+.route {
+  stroke: var(--route);
+  stroke-width: 2;
+  stroke-dasharray: 6 8;
+  stroke-linecap: round;
+}
+
+.currentRoute {
+  stroke-width: 3;
+}
+
+.routeDirection svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: var(--route);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 1px 1px var(--water));
+}
+
+.map .portMarker,
+.map .shipMarker {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  color: var(--ink);
+  background: none;
+  border: 0;
+}
+
+.portDisc {
+  display: grid;
+  place-items: center;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--muted);
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 0 0 2px var(--water);
+}
+
+.portDisc svg {
+  display: none;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.portDetailed .portDisc {
+  width: 26px;
+  height: 26px;
+  border-width: 1px;
+}
+
+.portDetailed .portDisc svg {
+  display: block;
+}
+
+.portDetailed.port .portDisc {
+  width: calc(13px + var(--port-phase, 1) * 2px);
+  height: calc(13px + var(--port-phase, 1) * 2px);
+  border-style: double;
+  border-width: 3px;
+}
+
+.hub .portDisc {
+  color: var(--route);
+  border-color: var(--route);
+}
+
+.yard .portDisc {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.portSelected .portDisc {
+  outline: 2px solid var(--route);
+  outline-offset: 3px;
+}
+
+.map .shipMarker {
+  color: var(--muted);
+}
+
+.map .shipMarker[data-status="sailing"] {
+  color: var(--route);
+}
+
+.map .shipMarker[data-status="berthed"] {
+  color: var(--success);
+}
+
+.map .shipMarker[data-status="anchored_roadstead"] {
+  color: var(--warning);
+}
+
+.vessel {
+  position: relative;
+  width: 29px;
+  height: 36px;
+  overflow: visible;
+  transform: rotate(var(--bearing, 0deg));
+  filter: drop-shadow(
+    0 1px 2px color-mix(in srgb, var(--ink) 24%, transparent)
+  );
+}
+
+.vesselHull {
+  fill: currentColor;
+  stroke: var(--surface);
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+}
+
+.vesselDeck {
+  fill: none;
+  stroke: var(--surface);
+  stroke-width: 1.2;
+}
+
+.vesselSail {
+  fill: var(--surface);
+  stroke: currentColor;
+  stroke-width: 0.6;
+}
+
+.shipPulse {
+  position: absolute;
+  width: 36px;
+  height: 36px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  opacity: 0;
+}
+
+.shipEstimated .shipPulse {
+  opacity: 0.3;
+}
+
+.shipSelected .shipPulse {
+  width: 40px;
+  height: 40px;
+  opacity: 0.7;
+  border-width: 2px;
+}
+
+.shipWarning .vesselHull {
+  stroke: var(--attention);
+  stroke-width: 2.5;
+}
+
+.chartCoordinates {
+  position: absolute;
+  inset: 0;
+  z-index: 500;
+  pointer-events: none;
+}
+
+.chartCoordinates span {
+  position: absolute;
+  padding: 1px 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--water) 88%, transparent);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.chartLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 8px;
+}
+
+.chartLegend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  color: var(--route);
+  font-size: 11px;
+}
+
+.chartLegend .legendBerthed {
+  color: var(--success);
+}
+
+.chartLegend .legendAnchored {
+  color: var(--warning);
+}
+
+.chartLegend .legendFrozen {
+  color: var(--muted);
+}
+
+.chartLegend > span[data-active="false"] {
+  color: var(--muted);
+}
+
+.chartLegend > span[data-active="false"] > svg,
+.chartLegend > span[data-active="false"] > span {
+  opacity: 0.5;
+}
+
+.chartLegend strong {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  text-align: center;
+  font-weight: 600;
+}
+
+.legendPort {
+  width: 13px;
+  height: 13px;
+  border: 3px double currentColor;
+  border-radius: 50%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .shipEstimated .shipPulse {
+    animation: estimatePulse 3.5s ease-in-out infinite;
+  }
+}
+
+@keyframes estimatePulse {
+  0%,
+  100% {
+    transform: scale(0.9);
+    opacity: 0.2;
+  }
+  50% {
+    transform: scale(1.12);
+    opacity: 0.5;
+  }
+}
+
+.map .markerTooltip {
+  max-width: min(21rem, 75vw);
+  white-space: normal;
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  padding: 0.45rem 0.6rem;
+  background: var(--surface);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 0.75rem;
+  box-shadow: none;
+}
+
+.map .portLabel {
+  white-space: nowrap;
+  padding: 2px 5px;
+  border: 0;
+  background: color-mix(in srgb, var(--water) 92%, transparent);
+  font-size: 11px;
+}
+
+.map .portLabel::before {
+  display: none;
+}
+
+.chartCaption {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  padding: 0.65rem 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.chartCaption p {
+  flex: 1 1 25rem;
+  max-width: 75ch;
+  margin: 0;
+}
+
+.chartCaption a,
+.chartSection > a {
+  color: var(--color-route);
+  text-underline-offset: 0.2em;
+}
+
+.chartSources {
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.chartSources summary {
+  width: fit-content;
+  min-height: 2rem;
+  cursor: pointer;
+}
+
+.sourceAccount {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.65rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.sourceAccount strong {
+  color: var(--color-ink);
+  font-weight: 500;
+}
+
+.portDetail {
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.portDetail h3 {
+  margin: 0 0 0.5rem;
+  color: var(--color-ink);
+  font-size: 1rem;
+}
+
+.portDetails {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin: 0;
+}
+
+.portDetails div {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.portDetails dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.portDetails dd {
+  margin: 0;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.observations {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0 0 0.65rem;
+}
+
+.observation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.8rem;
+  font-size: 0.75rem;
+}
+
+.observation > strong {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.resultCount,
+.note {
+  margin: 0.5rem 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.shipButton {
+  justify-content: start;
+  width: 100%;
+  padding-inline: 0.55rem;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+  font-weight: 600;
+}
+
+.shipButton :global(.sprite-image) {
+  flex-shrink: 0;
+}
+
+.shipButton[aria-pressed="true"] {
+  color: var(--color-route);
+  border-color: var(--color-route);
+  background: color-mix(in srgb, var(--color-route) 7%, var(--surface));
+}
+
+.shipCell {
+  min-width: 10rem;
+}
+
+.numeric {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.location {
+  min-width: 9rem;
+}
+
+.cellSubtext {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+
+.inspector {
+  min-width: 0;
+  align-self: start;
+  border-top: 1px solid var(--border);
+  padding: 0 0 1rem;
+  margin: 1rem 0 0;
+  overflow-wrap: anywhere;
+}
+
+.inspectorColumns,
+.inspectorColumn {
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+  min-width: 0;
+}
+
+@media (min-width: 1024px) {
+  .inspector .inspectorColumns {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+    column-gap: 2rem;
+  }
+}
+
+.inspectorHeading {
+  align-items: start;
+  flex-wrap: nowrap;
+  position: relative;
+  background: var(--color-canvas);
+}
+
+.inspectorHeading h2,
+.dialogTitle {
+  overflow-wrap: anywhere;
+}
+
+.inspectorBody {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.shipIdentity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.shipIdentity > div {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.shipIdentity :global(.sprite-image) {
+  width: 48px;
+  height: 48px;
+}
+
+.shipIdentity :global(.sprite-image img) {
+  width: 44px;
+  height: 44px;
+  image-rendering: pixelated;
+}
+
+.vesselPicker {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+  max-width: calc(100% - 9.5rem);
+  min-height: 2.75rem;
+  color: var(--muted);
+}
+
+.vesselPicker select {
+  flex: 1;
+  min-width: 0;
+  min-height: 2.75rem;
+}
+
+.inspectorDisclosures > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.inspectorDisclosures > summary::after {
+  content: "+";
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.inspectorDisclosures[open] > summary::after {
+  content: "−";
+}
+
+.inspectorDisclosures .facts {
+  padding-top: 8px;
+}
+
+.inspectorSection {
+  min-width: 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.inspectorSection h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 0.8rem;
+  color: var(--color-ink);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.facts {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.facts > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 0.75rem;
+  align-items: baseline;
+}
+
+.facts dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.facts dd {
+  margin: 0;
+  color: var(--color-ink);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.cargo {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cargo li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  font-size: 0.875rem;
+}
+
+.cargo strong {
+  white-space: nowrap;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.warning {
+  display: flex;
+  align-items: start;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  border-left: 3px solid var(--color-attention);
+  color: var(--color-attention);
+  background: color-mix(in srgb, var(--color-attention) 7%, var(--surface));
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.warning svg {
+  flex-shrink: 0;
+  margin-top: 0.15rem;
+}
+
+.legs {
+  display: grid;
+  gap: 0;
+  padding: 0 0 0 1.1rem;
+  margin: 1rem 0 0;
+  font-size: 0.875rem;
+}
+
+.legs li {
+  padding: 0.45rem 0 0.45rem 0.35rem;
+  color: var(--muted);
+}
+
+.legs li[aria-current="step"] {
+  color: var(--color-route);
+  font-weight: 600;
+}
+
+.legs small {
+  display: block;
+  margin-top: 0.2rem;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.decisionReason {
+  margin: 0.65rem 0;
+  color: var(--color-ink);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.dialogOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: color-mix(in srgb, var(--color-ink) 38%, transparent);
+}
+
+.dialogContent {
+  position: fixed;
+  inset: 0;
+  z-index: 1001;
+  width: 100%;
+  min-height: 100dvh;
+  overflow-y: auto;
+  padding: 0 max(1.2rem, calc((100vw - 42rem) / 2))
+    max(1.2rem, env(safe-area-inset-bottom));
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  border-left: 1px solid var(--border);
+  box-shadow: -0.75rem 0 2rem
+    color-mix(in srgb, var(--color-ink) 12%, transparent);
+  scrollbar-width: none;
+}
+
+.dialogContent::-webkit-scrollbar {
+  display: none;
+}
+
+.dialogDescription {
+  margin: 0.3rem 0 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.compact .mapFrame,
+.compact .loadingChart {
+  height: clamp(25rem, 49vh, 37rem);
+}
+
+@media (max-width: 639px) {
+  .chartActions {
+    width: 100%;
+  }
+
+  .portSelect {
+    max-width: none;
+  }
+
+  .mapFrame,
+  .loadingChart,
+  .compact .mapFrame,
+  .compact .loadingChart {
+    height: 25rem;
+  }
+
+  .sectionHeading {
+    align-items: start;
+  }
+
+  .filterField {
+    flex-grow: 1;
+  }
+}
+
+@media (max-height: 600px) and (min-width: 640px) {
+  .mapFrame,
+  .loadingChart,
+  .compact .mapFrame,
+  .compact .loadingChart {
+    height: 22rem;
+    min-height: 22rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map :global(.leaflet-zoom-animated),
+  .map :global(.leaflet-marker-icon),
+  .dialogContent,
+  .dialogOverlay {
+    animation: none;
+    transition: none;
+  }
+}

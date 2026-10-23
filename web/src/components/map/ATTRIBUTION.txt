@@ -1,0 +1,14 @@
+Made with Natural Earth.
+
+Asset: ne_50m_land.json (GeoJSON FeatureCollection; upstream filename ne_50m_land.geojson)
+Dataset: Natural Earth 1:50m physical land polygons
+Primary source: https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_land.geojson
+Project: https://www.naturalearthdata.com/
+Terms: https://www.naturalearthdata.com/about/terms-of-use/
+Retrieved: 2026-10-23
+
+Natural Earth raster and vector map data are in the public domain. Primary authors Tom Patterson and Nathaniel Vaughn Kelso and all other contributors renounce financial claims to the maps. No permission is required for personal, educational, or commercial use. The dataset is supplied without warranties of accuracy or fitness.
+
+The GeoJSON is bundled locally and is not fetched from the source at runtime. The chart uses no remote tile service. This generalized coastline is context, not a navigation aid.
+
+Port coordinates in lib/geography.ts are approximate WGS84 harbour/city coordinates. Sea-zone centres and straight connections between recorded route nodes are schematic estimates, not recorded tracks. Sailing positions interpolate only the current recorded leg using its real UTC departure and arrival timestamps. Clock and ship observation age, pause state, unknown endpoints, and missing metadata can prevent or freeze an estimate. Reaching a scheduled ETA never confirms arrival.

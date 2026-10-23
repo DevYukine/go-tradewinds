@@ -1,0 +1,536 @@
+.workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  min-width: 0;
+  color: var(--color-ink);
+}
+
+.section {
+  min-width: 0;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 1.5rem;
+  min-width: 0;
+}
+
+.toolbar,
+.tabs,
+.context {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.65rem 1rem;
+}
+
+.toolbar {
+  padding-block: 0.75rem;
+}
+
+.toolbar label {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.toolbar :global(.search-field) {
+  flex-wrap: nowrap;
+}
+
+.toolbar select,
+.tabs button,
+.reset,
+.link {
+  min-height: 2.5rem;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  background: var(--surface);
+  padding: 0.45rem 0.7rem;
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 0.875rem;
+}
+
+.toolbar select {
+  min-width: 0;
+}
+
+.tabs {
+  gap: 0.35rem;
+  padding-block: 0.25rem;
+}
+
+.tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  background: transparent;
+  border-color: transparent;
+}
+
+.tabs button[aria-pressed="true"] {
+  color: var(--color-route);
+  background: color-mix(in srgb, var(--color-route) 9%, var(--surface));
+  border-color: var(--color-route);
+  font-weight: 500;
+}
+
+.tabs button:hover,
+.reset:hover,
+.link:hover {
+  border-color: var(--color-route);
+}
+
+.workspace :is(button, select, input, summary):focus-visible,
+.section :is(button, select, input, summary):focus-visible {
+  outline: 2px solid var(--color-route);
+  outline-offset: 3px;
+}
+
+.reset,
+.link {
+  cursor: pointer;
+  color: var(--color-route);
+}
+
+.note,
+.coverage {
+  max-width: 80ch;
+  margin: 0.7rem 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.warning {
+  margin-block: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-inline-start: 3px solid var(--color-attention);
+  background: color-mix(in srgb, var(--color-attention) 7%, var(--surface));
+  color: var(--color-ink);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.75rem 2rem;
+  margin: 0;
+  padding-block: 0.8rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.facts > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.facts dt,
+.details dt {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.facts dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.details {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  margin-block: 0.5rem 1rem;
+}
+
+.details > div {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.8fr) minmax(0, 1.2fr);
+  align-items: baseline;
+  gap: 1rem;
+  padding-block: 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.primary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.primary small,
+.context {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.numeric {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.numeric > .primary {
+  align-items: flex-end;
+}
+
+.identifier {
+  overflow-wrap: anywhere;
+  font-size: 0.75rem;
+}
+
+.treasuryAccounts {
+  margin: 0.5rem 0 0;
+}
+
+.treasuryAccounts > div {
+  padding-block: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.treasuryAccounts dt {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+}
+
+.treasuryAccounts dd {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.negative {
+  color: var(--color-attention);
+}
+
+.subsection {
+  min-width: 0;
+  padding-block: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.subsection h3 {
+  margin: 0 0 0.6rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.context {
+  margin-block: 0.5rem;
+}
+
+.chart {
+  min-width: 0;
+  margin-block: 0.75rem;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-canvas) 65%, var(--surface));
+}
+
+.chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 10rem;
+}
+
+.gridline {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.axis {
+  fill: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chartLine {
+  fill: none;
+  stroke: var(--color-route);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chartDot,
+.chartBar {
+  fill: var(--color-route);
+}
+
+.sample {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  padding-block: 0.75rem;
+  border-block: 1px solid var(--border);
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.sample label {
+  display: flex;
+  flex: 1 1 12rem;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.sample input {
+  min-width: 5rem;
+  width: 100%;
+  accent-color: var(--color-route);
+}
+
+.model {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+  margin-block: 0.75rem;
+}
+
+.model h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.875rem;
+}
+
+.cardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  align-items: start;
+  gap: 1rem;
+  padding-block: 1rem;
+}
+
+.warehouseCard,
+.quoteCard {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--water) 14%, var(--surface));
+}
+
+.cardLabel,
+.iconLabel {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.cardLabel {
+  flex-wrap: wrap;
+}
+
+.cardLabel > svg,
+.iconLabel > svg,
+.materialList svg {
+  color: var(--route);
+}
+
+.cardLabel h3 {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cardLabel h3,
+.materialList strong {
+  font-size: 14px;
+}
+
+.balance {
+  margin-block: 1rem 0.75rem;
+  font-size: 24px;
+  line-height: 1.25;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.capacityLabel {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin-block: 1rem 0.4rem;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.capacity {
+  display: block;
+  width: 100%;
+  height: 7px;
+  border: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--border);
+  accent-color: var(--route);
+}
+
+.capacity::-webkit-progress-bar {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.capacity::-webkit-progress-value {
+  background: var(--route);
+  border-radius: 4px;
+}
+
+.capacity::-moz-progress-bar {
+  background: var(--route);
+  border-radius: 4px;
+}
+
+.disclosure {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+}
+
+.disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding-block: 1rem;
+  color: var(--muted);
+  font-weight: 500;
+  list-style: none;
+}
+
+.disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.disclosure > summary::after {
+  content: "+";
+  margin-left: auto;
+  color: var(--route);
+}
+
+.disclosure[open] > summary::after {
+  content: "Close";
+  font-size: 12px;
+}
+
+.inlineDetails {
+  min-width: 0;
+  font-size: 12px;
+}
+
+.inlineDetails > summary {
+  color: var(--route);
+  padding-block: 0.4rem;
+}
+
+.inlineDetails[open] {
+  min-width: min(18rem, 100%);
+}
+
+.inlineDetails .details > div {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.materialList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.materialList li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-block: 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.materialList li > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.materialList strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pagination > span {
+  margin-right: auto;
+}
+
+@media (max-width: 68rem) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 42rem) {
+  .workspace {
+    gap: 1rem;
+  }
+
+  .toolbar {
+    align-items: stretch;
+  }
+
+  .toolbar > label {
+    flex: 1 1 12rem;
+  }
+
+  .toolbar select {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+
+  .details > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.3rem;
+  }
+
+  .model {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1rem;
+  }
+}

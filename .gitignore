@@ -1,27 +1,17 @@
-# Environment
 .env
 .env.*
 !.env.example
-
-# IDE
 .idea/
 .vscode/
-*.swp
-*.swo
-
-# Go
-/vendor/
+.claude/
 *.exe
-
-# OS
+*.test
+*.dump
+coverage.out
+node_modules/
+.next/
+out/
+dist/
+*.tsbuildinfo
 .DS_Store
 Thumbs.db
-
-# Node / Dashboard
-node_modules/
-.nuxt/
-.output/
-dist/
-
-# Claude
-.claude/
