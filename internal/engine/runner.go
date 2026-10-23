@@ -38,6 +38,7 @@ type Runner struct {
 	stateCache         accountState
 	generation         string
 	holding            []string
+	lastStatusAt       time.Time
 	decisionHashes     map[string]decisionFingerprint
 	lastMutationStatus atomic.Int64
 	expenseOwners      map[string]string
@@ -316,6 +317,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
 			return err
 		}
+		r.logStatus(ctx, time.Now())
 		financialStale = financialStale || captureFinancial != publishedFinancial.Load()
 		delay := r.nextWake()
 		if changed {
