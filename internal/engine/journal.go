@@ -144,7 +144,7 @@ func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission,
 	if err := r.hold(ctx, mission.ShipID, "never-sent action's preconditions were invalidated; authoritative resynchronization and replanning precede new spending"); err != nil {
 		return false, err
 	}
-	if data.Plan.Kind == "maintenance" {
+	if data.Plan.Kind == "maintenance" && data.Action.Stage == "offshore" {
 		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 	}
 	data.Action = nil
@@ -794,11 +794,11 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 		}
 	case "dock":
 		if data.Plan.Kind == "maintenance" {
-			mission.Phase = "maintenance_done"
+			mission.Phase = "maintenance"
 		}
 	case "refit":
 		if data.Plan.Kind == "maintenance" {
-			mission.Phase = "maintenance_done"
+			mission.Phase = "maintenance"
 		} else if mission.ShipID == "__growth" {
 			mission.Phase = "growth_provision"
 		}
@@ -912,12 +912,36 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		var input PlanningInput
 		var err error
 		if action.Stage == "sourcing-remit" {
+			if ship.Ship.ID == "" || !r.fresh("ships") {
+				return errors.New("new sourcing remittance requires its matching fresh ship")
+			}
+			if err := r.insuranceActionReady(ship, "depart", mission.Destination); err != nil {
+				return err
+			}
 			input, err = r.sourcingInput(ctx, ship)
 		} else {
 			input, err = r.committedPlanningInput(ctx, ship)
 		}
 		if err != nil {
 			return err
+		}
+		if data.Plan.Kind == "maintenance" {
+			hull, exists := findHull(input.Catalog, ship.Ship.ShipClass)
+			if !exists || !r.fresh("ships") || ship.Voyage != nil || ship.Ship.ConvoyID != "" ||
+				ship.Ship.Status != "berthed" || ship.Ship.CurrentPortID != data.Plan.Origin {
+				return errors.New("new store funding requires its matching fresh independent berthed ship")
+			}
+			quote, err := quoteProvisions(input, 1+float64(hull.CrewRequired)/200*2)
+			if err != nil {
+				return err
+			}
+			transfer, err := provisionFunding(input, quote)
+			if err != nil {
+				return err
+			}
+			if request.FromRegion != transfer.Rate.FromRegion || request.ToRegion != transfer.Rate.ToRegion || request.Gross != transfer.Gross {
+				return errors.New("new store funding no longer matches the current reserve-safe replenishment quote")
+			}
 		}
 		required := input.ReserveByRegion
 		if input.Balances[request.FromRegion]-request.Gross < required[request.FromRegion] {
@@ -941,6 +965,9 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 	ship, exists := r.ship(request.ShipID)
 	if !exists || !r.fresh("ships") || request.ShipID != mission.ShipID && mission.ShipID != "__growth" {
 		return errors.New("new action requires the matching fresh ship")
+	}
+	if err := r.insuranceActionReady(ship, action.Stage, request.Destination); err != nil {
+		return err
 	}
 	if action.Stage == "buy" || action.Stage == "provision" || action.Stage == "depart" || action.Stage == "dock" {
 		if err := r.growthAllocationReady(ctx, ship, data, action); err != nil {
@@ -1075,6 +1102,13 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			}
 			if request.Quantity <= 0 || request.Price <= 0 || request.Price > math.MaxInt64/request.Quantity {
 				return errors.New("new purchase exceeds integer-pence funding bounds")
+			}
+			if action.Stage == "provision" && data.Plan.Kind == "maintenance" {
+				hull, exists := findHull(input.Catalog, ship.Ship.ShipClass)
+				if !exists || ship.Ship.Status != "berthed" ||
+					request.Quantity != max(0, int64(math.Ceil(1+float64(hull.CrewRequired)/200*2-ship.Stores.ProvisionsTons))) {
+					return errors.New("new idle provision order no longer matches the current store deficit")
+				}
 			}
 			entry := bookCommodity(input.Markets[request.PortID], request.Commodity)
 			if entry == nil || entry.Depth == nil {

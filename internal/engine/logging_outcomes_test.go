@@ -619,16 +619,25 @@ func TestRejectedActionPolicyRedactsBeforeBoundingAndKeepsReplaySilent(t *testin
 			h.api.setVaultBalance("north", 500_000)
 			fleet := berthedLaprasRow()
 			fleet["ship"].(map[string]any)["name"] = accountSecret + "-tw_live_rejected_actor_secret"
+			fleet["stores"] = map[string]any{"provisions_tons": 1.05, "sea_days_remaining": 10.5}
 			h.api.setFleet([]map[string]any{fleet})
 			refreshLoggingState(t, h, runner)
 			ship, _ := runner.ship(recoveryShipLapras)
-			if changed, err := runner.startMaintenance(h.ctx, ship, "provision", "/v1/market/place-order", map[string]any{
-				"ship_id": ship.Ship.ID, "port_id": ship.Ship.CurrentPortID,
-				"commodity_id": "provisions", "side": "bid", "into_stores": true, "quantity": 1, "price_pence": 100,
-			}); err != nil || !changed {
-				t.Fatalf("stage provision: changed %t error %v", changed, err)
+			if changed, err := runner.maintain(h.ctx, ship, nil, nil); err != nil || !changed {
+				t.Fatalf("admit real idle replenishment: changed %t error %v", changed, err)
 			}
 			mission, data := h.mission(recoveryShipLapras)
+			for range 3 {
+				if data.Action != nil {
+					break
+				}
+				if changed, err := runner.driveMission(h.ctx, ship, mission, &data); err != nil || !changed {
+					t.Fatalf("stage quoted idle replenishment: changed %t error %v", changed, err)
+				}
+			}
+			if data.Action == nil || data.Action.Stage != "provision" {
+				t.Fatalf("real store deficit did not stage a valid standalone provision order: %+v", data)
+			}
 			replayMission, replayData := h.mission(recoveryShipLapras)
 			actionID := data.Action.ID
 			if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed {

@@ -94,8 +94,11 @@ func (r *Runner) growthSourceAuthority(input PlanningInput, portID string) bool 
 // Only unpaid cash is committed. Existing cargo, hardware and completed store
 // orders do not reserve their original purchase price a second time.
 func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mission, data *missionData, ship ShipState) {
-	if data.Plan.Kind == "maintenance" || data.Plan.Kind == "recovery" ||
-		mission.Phase == "maintenance_done" || mission.Phase == "done" {
+	if data.Plan.Kind == "recovery" || mission.Phase == "maintenance_done" || mission.Phase == "done" ||
+		data.Plan.Kind == "maintenance" && data.Plan.StoresToBuy == 0 {
+		return
+	}
+	if r.loadingReservationSuspended(mission, data, ship) {
 		return
 	}
 	if data.Relocation != nil {
@@ -147,6 +150,12 @@ func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mi
 		stores := int64(0)
 		if ship.Voyage == nil && (ship.Ship.CurrentPortID == data.Plan.Origin || mission.ShipID == "__growth") {
 			stores = max(0, int64(math.Ceil(data.Plan.TargetStoresTons-ship.Stores.ProvisionsTons)))
+			if data.Plan.Kind == "maintenance" {
+				stores = min(stores, data.Plan.StoresToBuy)
+				if data.Action != nil && data.Action.Stage == "provision" {
+					stores = data.Plan.StoresToBuy
+				}
+			}
 		}
 		unbought := !data.BuyDone && (data.Plan.Kind != "freight" || mission.Phase == "provision" ||
 			mission.Phase == "buy" || mission.Phase == "freight")
@@ -420,6 +429,12 @@ func reserveGrowthCommissioning(input *PlanningInput, data *missionData) {
 }
 
 func (r *Runner) refreshGrowthProcurement(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData) (bool, bool, error) {
+	if err := r.insuranceActionReady(ship, "buy", data.Plan.Destination); err != nil {
+		if changed, maintenanceErr := r.maintain(ctx, ship, mission, data); changed || maintenanceErr != nil {
+			return false, changed, maintenanceErr
+		}
+		return false, false, r.hold(ctx, ship.Ship.ID, err.Error())
+	}
 	input, err := r.committedPlanningInput(ctx, ship)
 	if err != nil {
 		return false, false, err

@@ -67,6 +67,14 @@ Use route `safe_provisions_tons`, not the optimistic expected requirement, plus 
 
 Berth handling imposes a minimum 30-game-minute lock, with extra handling time per ton. A departure refusal after a successful purchase must schedule a fresh departure attempt after unlock, never repeat the purchase. Port dues have a minimum six-game-hour berth charge. Anchored roadstead can avoid berth costs but does not erase provisioning needs.
 
+Idle replenishment owns a durable maintenance intent. Roadstead observations may hide executable provisions asks, so one dock can be necessary to inspect the quay. A missing or unaffordable quote then retains the intent instead of repeatedly docking and going offshore. The wait is not free: berth dues and crew upkeep remain protected obligations.
+
+At the quay, the controller quotes the whole residual store requirement at current depth, including buyer customs and conservative integer rounding. If local cash is insufficient, measured regional fees and donor surpluses must cover the complete requirement without consuming any incumbent commitment or operating reserve. Only one immutable remittance is staged at a time; every receipt is followed by fresh pricing and funding checks. Invalidating a never-sent order does not release its still-needed funded cash.
+
+Standalone idle replenishment can use stock claimed only by another unsubmitted idle quote; otherwise shrinking depth can make both ships wait forever. Serialized execution persists the winner's request before another consumer runs. Every attached request keeps its depth claim, other economic consumers still reserve maintenance depth, and all cash commitments remain protected. Held maintenance is reusable fleet capacity, not justification to buy a replacement.
+
+Partial fills, refusals and lost docking receipts resume maintenance; confirmed sufficient stores retire it rather than wait for optional guns. Gun-only docking checks refit affordability and hold capacity first. Mandatory commissioning armament is unchanged. Actual transfer fees and store purchases are expenses, never the transferred principal.
+
 Sound-toll routes are always rejected until an authoritative toll-cost observation source exists. Hazard odds are not published, so the planner must not invent a loss probability from a zone label or deduct an arbitrary percentage of gross revenue as an expected expense. Rank observable cash margins and preserve the hard hull, provision, deadline, liquidity, and reserve constraints. Show hazard and price-uncertainty stress scenarios separately from the expected-net calculation, with `probability_estimate: null` when unknown. A stress scenario is not a profitability gate.
 
 Live calibration exposed why this distinction matters: the initial Le Havre to Portsmouth provision charter had a modeled 36,055-pence cash margin for 24 tons, but an unsupported 14.5% revenue haircut rejected it. Those prices are a dated observation, not a standing trade signal. Every order must still use refreshed depth and current charter terms.
@@ -154,6 +162,8 @@ Underwriting is an executable strategy, not a display-only market. It runs after
 
 At least five valid closed hull-only policies on the same directed lane are required. Duplicate IDs do not increase the sample; changed terms, contradictory terminal outcomes and later nonterminal observations are censored, not counted as safe returns. A Beta(1,1) estimate uses `(losses + 1) / (closed policies + 2)`. Premium must exceed modeled claims and the opportunity cost of currently observed shipping. A fixed-look nominal 95% Wilson upper sensitivity is disclosed separately: neither estimator is a calibrated promise about hull, season, correlation or future traffic. Creation-to-last-update duration is a lock-time proxy, not a settlement deadline.
 
+This cohort pools all recorded eras. It is **not calibrated to the announced cargo-value targeting and ship-capture rules**. The published contract has no reliable deployment boundary or historical cargo, gun, convoy and zone observations with which to reconstruct a comparable post-patch cohort. A hull-only declaration does not prove that a foreign ship is empty or that its whole cargo was declared. The positive-net decision therefore remains a bounded model-based pilot, not measured post-patch expected profit; it must not justify increasing the slice or the permanent loss allowance.
+
 Reserve the full possible collateral loss. The permanent pilot starts at 10% of uncommitted cash; active collateral and realized losses consume it, and only 10% of positive settled underwriting net replenishes it. It does not reset on restart. Before the debit region is known, the slice must fit protected cash in the home region, policy-origin region and every other capable vault. After the first accepted slice, further underwriting waits for a unique, identity-linked collateral debit to an owned vault. An equal-sized unrelated transfer is not proof. Actual vault cash already excludes escrow; do not deduct accepted collateral from that cash a second time.
 
 The immutable 200 response must identify one exact owned slice with present, bounded collateral and premium amounts. Membership or aggregate coverage cannot reconstruct a lost receipt. Preserve ambiguous requests under their original key while unrelated safe fleet work continues. Premium remains an entitlement until an unchanged terminal hull-policy observation establishes earned premium and claims. Safe closure returns principal; loss closure consumes collateral. Net is earned premium minus claims and fees, never collateral returned plus premium. No undocumented insurance fee or voluntary release endpoint is assumed.
@@ -170,6 +180,22 @@ The immutable 200 response must identify one exact owned slice with present, bou
 | Marques, patrols and privateering | Unpublished encounter odds and recovery/ammunition costs prevent a measured positive-net claim |
 | Convoys | Require economic justification and an owner-provided naming theme before creation |
 | Ship disposal | No published voluntary sale, scrap or transfer operation |
+
+### Announced piracy update (2026-10-24)
+
+The owner's announcement adds cargo-value targeting, variable seizures, capture, stronger corsairs, single-victim convoy raids, full-cargo declarations and more collier armament. At this audit, the [published guide](https://tradewinds.kibb.io/skill.md) still describes fixed quarter-loss raids, and the [OpenAPI schema](https://tradewinds.kibb.io/api-docs/openapi.json) still lists only `berthed`, `anchored_roadstead`, `sailing` and `sunk`. These documents do not establish whether the announced server behavior is already deployed.
+
+| Area | Controller treatment and remaining limit |
+| --- | --- |
+| Rich cargo and variable raids | Use actual remaining manifests and preserve sealed reservations; neither a fixed 25% loss nor an invented cargo-value encounter multiplier is used to settle a voyage. Unpublished attack and capture odds remain unpriced. |
+| Stronger corsairs | Require fresh live zone observations and a legal route before a new departure, including the post-rate-wait preflight. A zone rating is not a calibrated encounter probability. |
+| Ship capture | Existing `claimed_loss` underwriting closure consumes the full recorded collateral, irrespective of the loss's cause. The ship-status, ownership-transfer and event representation of capture is not yet established by the published contract; missing ships are not invented sinkings or completed settlements. |
+| Convoys | Observe existing membership and prohibit independent departure while bound. Do not assume equal `1/N` victim risk when valuable holds are weighted, create convoys automatically, or invent a pooled-gun probability discount. |
+| Own voyage policies | Protect every observed own open/active policy from new cargo loading and a conflicting departure. This preserves the observed declaration prospectively; without the original manifest it cannot prove that earlier external loading was compliant. |
+| Premiums and underwriting | Use observed policy premiums, not a fixed premium estimate. Preserve full-loss, shared-capital and permanent-pilot limits; all-era policy outcomes do not establish post-patch capture risk. |
+| Collier guns | The [live catalog](https://tradewinds.kibb.io/v1/world/catalog) reports `max_cannons: 4`. Existing maintenance targets `min(4, max_cannons)` before new economic work. A larger future cap alone is not evidence that the extra cost and displaced cargo pay back. |
+
+Recheck the authoritative contract before adding capture-specific terminal handling or changing the hazard model. Preserve unresolved ownership, policy terms and payments rather than assuming that a cancelled policy returned collateral.
 
 ### Recorded comparison and bounded simulation (2026-10-24)
 

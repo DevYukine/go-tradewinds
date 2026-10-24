@@ -322,15 +322,21 @@ func (r *Runner) reserveGrowthMission(evidence *growthEvidence, mission *store.M
 	if data.Relocation != nil || mission.Phase == "maintenance_done" {
 		return false
 	}
-	if data.Plan.Kind == "recovery" || data.Plan.Kind == "maintenance" {
+	if data.Plan.Kind == "recovery" {
 		return true
 	}
+	owner, _ := r.ship(mission.ShipID)
+	if mission.ShipID == "__growth" {
+		owner, _ = r.ship(data.BuiltShipID)
+	}
+	if r.loadingReservationSuspended(mission, data, owner) {
+		return false
+	}
 	if evidence.workingByRegion != nil {
-		owner, _ := r.ship(mission.ShipID)
-		if mission.ShipID == "__growth" {
-			owner, _ = r.ship(data.BuiltShipID)
-		}
 		r.reserveMissionCash(evidence.workingByRegion, mission, data, owner)
+	}
+	if data.Plan.Kind == "maintenance" && data.Plan.StoresToBuy == 0 {
+		return false
 	}
 	if data.Settlement == nil && mission.Phase != "settling" && mission.Phase != "settled" {
 		deliveredTrade := data.DeliveredQuantity
@@ -346,6 +352,12 @@ func (r *Runner) reserveGrowthMission(evidence *growthEvidence, mission *store.M
 		plan := data.Plan
 		if ship, exists := r.ship(mission.ShipID); exists && ship.Ship.CurrentPortID == plan.Origin && ship.Voyage == nil {
 			plan.StoresToBuy = max(0, int64(math.Ceil(plan.TargetStoresTons-ship.Stores.ProvisionsTons)))
+			if data.Plan.Kind == "maintenance" {
+				plan.StoresToBuy = min(plan.StoresToBuy, data.Plan.StoresToBuy)
+				if data.Action != nil && data.Action.Stage == "provision" {
+					plan.StoresToBuy = data.Plan.StoresToBuy
+				}
+			}
 		} else if mission.ShipID != "__growth" {
 			plan.StoresToBuy = 0
 		}
@@ -363,7 +375,7 @@ func (r *Runner) reserveGrowthMission(evidence *growthEvidence, mission *store.M
 		})
 		return true
 	}
-	return mission.Phase != "settling" && mission.Phase != "settled"
+	return data.Plan.Kind != "maintenance" && mission.Phase != "settling" && mission.Phase != "settled"
 }
 
 func (r *Runner) growthFunding(ctx context.Context, evidence *growthEvidence) (string, error) {

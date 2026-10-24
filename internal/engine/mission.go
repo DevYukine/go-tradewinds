@@ -281,6 +281,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 				return false, err
 			}
 		}
+		voyageHeld := false
 		if len(plans) > 0 && plans[0].Accepted {
 			if !r.opts.Execute {
 				if err := r.hold(ctx, ship.Ship.ID, "observe mode: profitable measured plan is not executed"); err != nil {
@@ -288,7 +289,10 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 				}
 				continue
 			}
-			return r.startVoyage(ctx, ship, plans[0])
+			if changed, err := r.startVoyage(ctx, ship, plans[0]); changed || err != nil {
+				return changed, err
+			}
+			voyageHeld = true
 		}
 		holdsBeforeSourcing := len(r.holding)
 		if !sourcingActive {
@@ -303,7 +307,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 				break
 			}
 		}
-		if !sourcingHeld {
+		if !sourcingHeld && !voyageHeld {
 			reason := "no executable purchase-and-voyage alternative from " + ship.Ship.CurrentPortID
 			if len(plans) > 0 {
 				best := plans[0]
@@ -332,7 +336,61 @@ func unlocked(ship ShipState, now time.Time) bool {
 	return ship.Ship.TurnaroundUnlocksAt == nil || !ship.Ship.TurnaroundUnlocksAt.After(now)
 }
 
+// Policies on the general board insure ships; insurance_owned instead lists
+// this company's underwriting. Only observed policies are protected here.
+func (r *Runner) insuranceActionReady(ship ShipState, stage, destination string) error {
+	if stage != "buy" && stage != "accept-freight" && stage != "depart" {
+		return nil
+	}
+	for _, policy := range r.stateCache.InsurancePolicies {
+		if !strings.EqualFold(policy.InsuredCompanyID, r.account.CompanyID) ||
+			!strings.EqualFold(policy.ShipID, ship.Ship.ID) ||
+			(policy.Status != "open" && policy.Status != "active") {
+			continue
+		}
+		if stage != "depart" {
+			return fmt.Errorf("insurance policy %s protects this ship's declared cargo; new loading must wait for the policy to close", policy.ID)
+		}
+		if !r.fresh("insurance") {
+			return errors.New("insured departure requires a fresh insurance observation")
+		}
+		if policy.OriginPortID != ship.Ship.CurrentPortID || policy.DestPortID != destination {
+			return fmt.Errorf("insurance policy %s covers %s to %s; the proposed departure would void it", policy.ID, policy.OriginPortID, policy.DestPortID)
+		}
+	}
+	return nil
+}
+
+// An insured, unstarted cargo plan is not executable working capital. Actual
+// cargo, pending outcomes, navigation and commissioning obligations stay reserved.
+func (r *Runner) loadingReservationSuspended(mission *store.Mission, data *missionData, ship ShipState) bool {
+	if !r.fresh("ships") || !r.fresh("contracts") || ship.Ship.ID == "" ||
+		mission.ShipID != ship.Ship.ID || data.Plan.ShipID != ship.Ship.ID ||
+		ship.Voyage != nil || ship.Ship.Status != "berthed" && ship.Ship.Status != "anchored_roadstead" ||
+		!emptyCargo(ship) {
+		return false
+	}
+	if data.Action != nil || data.Relocation != nil || data.Settlement != nil || data.ReturnJourney ||
+		data.BuyDone || data.BoughtQuantity != 0 || data.AcquisitionPence != 0 ||
+		len(data.Freight) != 0 || len(r.activeFreight(ship.Ship.ID)) != 0 ||
+		data.GrowthLane != nil && data.GrowthLane.NextPlan != nil {
+		return false
+	}
+	if mission.Phase != "provision" && mission.Phase != "buy" && mission.Phase != "freight" {
+		return false
+	}
+	switch data.Plan.Kind {
+	case "spot", "charter", "freight", "spot+freight", "charter+freight":
+		return r.insuranceActionReady(ship, "buy", data.Plan.Destination) != nil
+	default:
+		return false
+	}
+}
+
 func (r *Runner) startVoyage(ctx context.Context, ship ShipState, plan Plan) (bool, error) {
+	if err := r.insuranceActionReady(ship, "buy", plan.Destination); err != nil {
+		return false, r.hold(ctx, ship.Ship.ID, err.Error())
+	}
 	mission, data := r.newVoyage(ship, plan)
 	return true, r.saveMission(ctx, mission, &data)
 }
@@ -481,6 +539,9 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 	if mission.Phase == "maintenance_done" {
 		return true, r.db.DeleteMission(ctx, r.account.ID, ship.Ship.ID)
 	}
+	if mission.Phase == "maintenance" && data.Plan.Kind == "maintenance" {
+		return r.maintain(ctx, ship, mission, data)
+	}
 	if mission.Phase == "settling" || mission.Phase == "settled" {
 		return r.finishMission(ctx, ship, mission, data)
 	}
@@ -592,6 +653,9 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 			mission.Phase = "freight"
 			return true, r.saveMission(ctx, mission, data)
 		}
+		if err := r.insuranceActionReady(ship, "buy", data.Plan.Destination); err != nil {
+			return false, r.hold(ctx, ship.Ship.ID, err.Error())
+		}
 		if ship.Ship.Status != "berthed" {
 			return r.dockForMission(ctx, ship, mission, data)
 		}
@@ -647,9 +711,6 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 				}
 				return true, r.saveMission(ctx, mission, data)
 			}
-			if ship.Ship.Status != "berthed" {
-				return r.dockForMission(ctx, ship, mission, data)
-			}
 			if contract.QuantityRequired > ship.EffectiveHoldCapacityTons-ship.CargoUsedTons {
 				removeFreightCandidate(&data.Plan, id)
 				if err := r.decision(ctx, ship.Ship.ID, "freight-reselection", "unaccepted freight no longer fits the actual hold; no sealed obligation was created", map[string]any{"contract_id": id}); err != nil {
@@ -670,6 +731,12 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 					}
 					return true, r.saveMission(ctx, mission, data)
 				}
+			}
+			if err := r.insuranceActionReady(ship, "accept-freight", data.Plan.Destination); err != nil {
+				return false, r.hold(ctx, ship.Ship.ID, err.Error())
+			}
+			if ship.Ship.Status != "berthed" {
+				return r.dockForMission(ctx, ship, mission, data)
 			}
 			return true, r.stage(ctx, mission, data, ship, "accept-freight", "/v1/contract/accept-freight", map[string]any{"contract_id": id, "ship_id": ship.Ship.ID})
 		}
@@ -706,18 +773,74 @@ func (r *Runner) dockForMission(ctx context.Context, ship ShipState, mission *st
 	return true, r.stage(ctx, mission, data, ship, "dock", "/v1/fleet/dock", map[string]any{"ship_id": ship.Ship.ID})
 }
 
+type provisionOrderQuote struct {
+	quantity int64
+	limit    int64
+	cash     int64
+	region   string
+}
+
+func quoteProvisions(input PlanningInput, target float64) (provisionOrderQuote, error) {
+	var quote provisionOrderQuote
+	ship := input.Ship
+	quantity := math.Ceil(target - ship.Stores.ProvisionsTons)
+	if math.IsNaN(quantity) || math.IsInf(quantity, 0) || quantity > float64(maximumPence) {
+		return quote, errors.New("store quantity exceeds supported funding bounds")
+	}
+	if quantity <= 0 {
+		return quote, nil
+	}
+	quote.quantity = int64(quantity)
+	if quote.quantity > ship.EffectiveHoldCapacityTons-ship.CargoUsedTons {
+		return quote, errors.New("safe stores do not fit beside actual cargo and sealed reservations")
+	}
+	portID := ship.Ship.CurrentPortID
+	book := input.Markets[portID]
+	if !input.fresh("ships") || !input.fresh("books/"+portID) || book.Visibility != "quay" {
+		return quote, errors.New("provisions need fresh ship state and executable local quay depth")
+	}
+	port, exists := findPort(input.Catalog, portID)
+	if !exists || port.BankingRegion == "" {
+		return quote, errors.New("provisions lack an authoritative banking region")
+	}
+	entry := bookCommodity(book, "provisions")
+	if entry == nil || entry.Depth == nil {
+		return quote, errors.New("provisions have no uncommitted executable local asks")
+	}
+	fill, err := WalkDepth(entry.Depth.Asks, quote.quantity, true)
+	if err != nil {
+		return quote, fmt.Errorf("provisions: %w", err)
+	}
+	quote.limit = fill.LimitPence
+	quote.cash = growthCargoCash(Plan{Quantity: quote.quantity, BuyLimitPence: quote.limit}, book.CustomsBPS)
+	if quote.cash > maximumPence {
+		return quote, errors.New("store order exceeds supported integer-pence funding bounds")
+	}
+	quote.region = port.BankingRegion
+	return quote, nil
+}
+
+func provisionFunding(input PlanningInput, quote provisionOrderQuote) (observedRemittance, error) {
+	if !input.fresh("rates") || !input.fresh("vaults") {
+		return observedRemittance{}, errors.New("store funding needs fresh balances and observed regional fees")
+	}
+	required := clonePence(input.ReserveByRegion)
+	required[quote.region] = growthCashTotal(required[quote.region], quote.cash)
+	if quote.quantity == 0 || input.Balances[quote.region] >= required[quote.region] {
+		return observedRemittance{}, errors.New("stores no longer require remittance funding")
+	}
+	_, _, transfers, funded := measuredFunding(input.Balances, required, input.Rates)
+	if !funded || len(transfers) == 0 {
+		return observedRemittance{}, errors.New("waiting for store funding that preserves all regional bills and incumbent commitments")
+	}
+	return transfers[0], nil
+}
+
 func (r *Runner) provisionMission(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData, target float64) (bool, error) {
 	if ship.Ship.Status != "berthed" {
 		return r.dockForMission(ctx, ship, mission, data)
 	}
-	quantity := max(0, int64(math.Ceil(target-ship.Stores.ProvisionsTons)))
-	if quantity == 0 {
-		return false, nil
-	}
 	port := ship.Ship.CurrentPortID
-	if !r.fresh("books/" + port) {
-		return false, r.hold(ctx, ship.Ship.ID, "provisions need fresh local depth")
-	}
 	var input PlanningInput
 	var err error
 	if data.Relocation != nil {
@@ -728,30 +851,43 @@ func (r *Runner) provisionMission(ctx context.Context, ship ShipState, mission *
 	if err != nil {
 		return false, err
 	}
-	book := input.Markets[port]
-	entry := bookCommodity(book, "provisions")
-	if entry == nil || entry.Depth == nil {
-		return false, r.hold(ctx, ship.Ship.ID, "provisions have no uncommitted executable local asks")
-	}
-	fill, err := WalkDepth(entry.Depth.Asks, quantity, true)
+	quote, err := quoteProvisions(input, target)
 	if err != nil {
-		return false, r.hold(ctx, ship.Ship.ID, "provisions: "+err.Error())
+		return false, r.hold(ctx, ship.Ship.ID, err.Error())
 	}
-	catalogPort, exists := findPort(input.Catalog, port)
-	if fill.LimitPence > math.MaxInt64/quantity {
-		return false, r.hold(ctx, ship.Ship.ID, "store order exceeds integer-pence funding bounds")
+	if quote.quantity == 0 {
+		return false, nil
 	}
-	worstCost := quantity * fill.LimitPence
-	if data.Relocation != nil && !r.relocationProvisionBudget(data, ship, input, quantity, fill.LimitPence) {
+	if data.Relocation != nil && !r.relocationProvisionBudget(data, ship, input, quote.quantity, quote.limit) {
 		return r.abortRelocation(ctx, ship, mission, data, "additional sourcing provisions would exceed the durable exploration expense cap")
 	}
-	if !exists || input.Balances[catalogPort.BankingRegion]-worstCost-ceilBPS(worstCost, book.CustomsBPS)-quantity < input.ReserveByRegion[catalogPort.BankingRegion] {
-		return false, r.hold(ctx, ship.Ship.ID, "cannot replenish stores without spending protected regional bills reserve")
+	if data.Plan.Kind == "maintenance" &&
+		(data.Plan.Origin != port || data.Plan.TargetStoresTons != target ||
+			data.Plan.StoresToBuy != quote.quantity || data.Plan.StoresLimitPence != quote.limit ||
+			data.Plan.Economics.StoreCashPence != quote.cash) {
+		data.Plan.Origin = port
+		data.Plan.TargetStoresTons = target
+		data.Plan.StoresToBuy = quote.quantity
+		data.Plan.StoresLimitPence = quote.limit
+		data.Plan.Economics.StoreCashPence = quote.cash
+		if err := r.saveMission(ctx, mission, data); err != nil {
+			return false, err
+		}
 	}
-	if quantity > ship.EffectiveHoldCapacityTons-ship.CargoUsedTons {
-		return false, r.hold(ctx, ship.Ship.ID, "safe stores do not fit beside actual cargo and sealed reservations")
+	if input.Balances[quote.region]-quote.cash < input.ReserveByRegion[quote.region] {
+		if data.Plan.Kind != "maintenance" {
+			return false, r.hold(ctx, ship.Ship.ID, "cannot replenish stores without spending protected regional bills reserve")
+		}
+		transfer, err := provisionFunding(input, quote)
+		if err != nil {
+			return false, r.hold(ctx, ship.Ship.ID, err.Error())
+		}
+		return true, r.stage(ctx, mission, data, ship, "remit", "/v1/treasury/remit", map[string]any{
+			"from_region": transfer.Rate.FromRegion, "to_region": transfer.Rate.ToRegion,
+			"gross_amount_pence": transfer.Gross,
+		})
 	}
-	return true, r.stage(ctx, mission, data, ship, "provision", "/v1/market/place-order", orderBody(ship, "provisions", "bid", quantity, fill.LimitPence, true))
+	return true, r.stage(ctx, mission, data, ship, "provision", "/v1/market/place-order", orderBody(ship, "provisions", "bid", quote.quantity, quote.limit, true))
 }
 
 func (r *Runner) prepareDeparture(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData) (bool, error) {
@@ -783,6 +919,9 @@ func (r *Runner) prepareDeparture(ctx context.Context, ship ShipState, mission *
 	target := route.SafeProvisionsTons + 1
 	if ship.Stores.ProvisionsTons+1e-9 < target {
 		return r.provisionMission(ctx, ship, mission, data, target)
+	}
+	if err := r.insuranceActionReady(ship, "depart", mission.Destination); err != nil {
+		return false, r.hold(ctx, ship.Ship.ID, err.Error())
 	}
 	if data.Relocation != nil {
 		if err := r.relocationDepartureReady(ctx, ship, data); err != nil {

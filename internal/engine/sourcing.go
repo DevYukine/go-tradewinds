@@ -229,9 +229,11 @@ func planSourcingRelocation(in PlanningInput) []Plan {
 	if in.Clock.Paused || in.Clock.Calendar.TimeScale <= 0 {
 		return []Plan{reject(base, "sourcing requires an unpaused authoritative game clock")}
 	}
-	ordinary := PlanVoyages(in)
-	if len(ordinary) > 0 && ordinary[0].Accepted {
-		return []Plan{reject(base, "an ordinary measured opportunity takes priority over sourcing")}
+	if !in.SourcingLoadingBlocked {
+		ordinary := PlanVoyages(in)
+		if len(ordinary) > 0 && ordinary[0].Accepted {
+			return []Plan{reject(base, "an ordinary measured opportunity takes priority over sourcing")}
+		}
 	}
 	return sourcingPairs(in)
 }
@@ -522,6 +524,7 @@ func (r *Runner) sourcingInput(ctx context.Context, ship ShipState) (PlanningInp
 	if err != nil {
 		return input, err
 	}
+	input.SourcingLoadingBlocked = r.insuranceActionReady(ship, "buy", "") != nil
 	if err := r.loadSourcingHistory(ctx, &input); err != nil {
 		return input, err
 	}
@@ -545,8 +548,12 @@ func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipStat
 	ids := make([]string, 0, len(r.stateCache.Ships)+1)
 	for _, incumbent := range r.stateCache.Ships {
 		ids = append(ids, incumbent.Ship.ID)
+		if incumbent.Ship.ID == ship.Ship.ID && len(ids) > 1 {
+			ids[0], ids[len(ids)-1] = ids[len(ids)-1], ids[0]
+		}
 	}
 	ids = append(ids, "__growth")
+	maintenance := false
 	for _, id := range ids {
 		if excludedMission != "" && id == excludedMission {
 			continue
@@ -555,8 +562,14 @@ func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipStat
 		if err != nil {
 			return input, err
 		}
-		if mission == nil || ship.Ship.ID != "" && (id == ship.Ship.ID ||
-			id == "__growth" && data.BuiltShipID == ship.Ship.ID) {
+		if mission == nil {
+			continue
+		}
+		if ship.Ship.ID != "" && id == ship.Ship.ID {
+			maintenance = mission.Phase == "maintenance" && data.Plan.Kind == "maintenance"
+			continue
+		}
+		if ship.Ship.ID != "" && id == "__growth" && data.BuiltShipID == ship.Ship.ID {
 			continue
 		}
 		owner, _ := r.ship(id)
@@ -564,6 +577,12 @@ func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipStat
 			owner, _ = r.ship(data.BuiltShipID)
 		}
 		r.reserveMissionCash(required, mission, &data, owner)
+		// Unsubmitted idle quotes must not mutually block scarce stores.
+		// Work serializes the winner's staged action before another consumer;
+		// attached requests and every mission's cash remain protected.
+		if maintenance && mission.Phase == "maintenance" && data.Plan.Kind == "maintenance" && data.Action == nil {
+			continue
+		}
 		r.reserveGrowthMission(&reservations, mission, &data)
 	}
 	input.ReserveByRegion = required
@@ -699,7 +718,24 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, er
 	if !r.opts.Execute {
 		return false, r.hold(ctx, ship.Ship.ID, "observe mode: funded sourcing inspection is not executed")
 	}
-	plan := plans[0]
+	planIndex := 0
+	insuranceErr := r.insuranceActionReady(ship, "depart", plans[0].Destination)
+	if insuranceErr != nil {
+		for i := 1; i < len(plans); i++ {
+			if !plans[i].Accepted {
+				continue
+			}
+			if r.insuranceActionReady(ship, "depart", plans[i].Destination) == nil {
+				planIndex = i
+				insuranceErr = nil
+				break
+			}
+		}
+	}
+	if insuranceErr != nil {
+		return false, r.hold(ctx, ship.Ship.ID, insuranceErr.Error())
+	}
+	plan := plans[planIndex]
 	source, _ := findPort(input.Catalog, plan.Destination)
 	input.ReserveByRegion = sourcingReserves(input, source)
 	provisions := bookCommodity(input.Markets[plan.Origin], "provisions")
@@ -934,6 +970,9 @@ func (r *Runner) driveRelocation(ctx context.Context, ship ShipState, mission *s
 	}
 	switch mission.Phase {
 	case "sourcing_fund":
+		if err := r.insuranceActionReady(ship, "depart", mission.Destination); err != nil {
+			return false, r.hold(ctx, ship.Ship.ID, err.Error())
+		}
 		input, err := r.sourcingInput(ctx, ship)
 		if err != nil {
 			return false, err
@@ -1007,6 +1046,9 @@ func (r *Runner) driveRelocation(ctx context.Context, ship ShipState, mission *s
 		spent := relocationCashCost(data) + bills
 		plan := sizeRelocationCargo(input, data.Plan, contract, spent)
 		if plan.Accepted {
+			if err := r.insuranceActionReady(ship, "buy", plan.Destination); err != nil {
+				return false, r.hold(ctx, ship.Ship.ID, err.Error())
+			}
 			required := cargoFundingRequired(input, plan)
 			if changed, err := r.stageSourcingFunding(ctx, ship, mission, data, input, required); changed || err != nil {
 				return changed, err

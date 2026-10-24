@@ -193,6 +193,7 @@ type PlanningInput struct {
 	ReservePence           int64
 	SourcingAllowancePence *int64
 	SourcingProbeLanes     map[string]bool
+	SourcingLoadingBlocked bool
 	Metadata               map[string]DatasetMeta
 	Generation             string
 	OwnedOrderIDs          map[string]bool

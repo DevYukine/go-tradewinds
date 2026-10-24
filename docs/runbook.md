@@ -142,6 +142,34 @@ Money shows owned underwriting exposure and settled outcomes above financial his
 
 `underwriting_selected` records the estimate. Confirmed `game action committed` records the exact owned slice, collateral and premium entitlement; `underwriting settled` records earned premium, claims, returned principal and net separately. Missing receipt, changed terms or unexplained ownership remains unresolved. After an accepted slice, further underwriting waits for a unique identity-linked debit to an owned vault. This hold does not disable unrelated safe fleet work. Do not replace an ambiguous idempotency key or infer payment from policy coverage.
 
+### Ships with voyage insurance
+
+The engine does not buy policies for its own ships, but an owner can insure one through the game. Such policies appear on the general insurance board; `insurance_owned` records this company's underwriting of other ships, not its own voyage cover.
+
+Load the intended cargo before taking out a policy. Once an own `open` or `active` policy is observed, the engine holds new cargo purchases and freight acceptance for that ship. Provisions bought directly into stores, deliveries, sales and safe maintenance remain available. Matching loaded departures and empty source-inspection voyages are still permitted; a conflicting origin or destination holds the departure and any new source-inspection funding. Other ships continue working, and an insurance-held idle hull is not treated as a reason to buy replacement capacity.
+
+Source inspections use the highest-ranked candidate compatible with every observed live policy, not simply the first candidate. If no candidate matches, the ship waits; stale policy evidence is not permission to sail.
+
+An insurance hold appears with the ship's current reasons in Overview and its recorded decisions. Inspect the policy's ship, origin, destination and REST status. Wait for a matching legal insured voyage or an authoritative terminal/absent policy observation; do not clear the journal, modify policy timestamps or infer expiry from local time. A retained live policy continues to block loading when refresh fails, and departure waits for fresh policy evidence. A never-observed policy or an unavailable board alone does not globally disable uninsured trading.
+
+An insurance-held, wholly unattempted cargo plan does not keep hypothetical cash, source stock or charter capacity away from eligible ships. Paid cargo, accepted freight, commissioning, return commitments and unresolved requests remain protected. A later admission uses current funds and depth, not the obsolete quantity. Closed, unaccepted optional freight is pruned before applying the loading hold; already-carried cargo can still depart on its matching insured route.
+
+Protection is based on cached REST observations, rechecked before staging and first send, including after a rate-limit wait. It cannot detect a policy created externally after the last observation, nor prove the completeness of an earlier declaration without its original manifest. Avoid changing insurance while the controller is staging work. Already-attempted ambiguous actions retain their immutable payload and idempotency key; completed responses are consumed normally. Recovery can therefore finish a previously attempted cargo action rather than pretend it never happened. Reconcile the actual cargo and policy in that case before relying on coverage.
+
+The published contract does not yet establish how captured ships appear in fleet status or ownership events. Missing fleet rows and cancelled insurance are not proof of a paid claim or returned collateral. Keep those outcomes unresolved until authoritative evidence establishes them; see the piracy compatibility audit in `docs/strategy.md`.
+
+### Idle store replenishment
+
+A low-store ship can dock once to obtain executable provisions prices unavailable at roadstead. If the complete replenishment cannot be funded without spending regional or incumbent reserves, its durable maintenance intent waits in berth and re-evaluates recorded REST observations. It does not repeatedly go offshore and redock. Berth dues and crew consumption still accrue; a wait is not cost-free.
+
+Current company reasons identify missing quay depth, unavailable rates, insufficient reserve-safe funding or hold capacity. Once measured donor liquidity covers the full current quote, the ship stages a remittance, refreshes, then buys stores. The donor's reserve and funded store money are protected from competing work. Logs show actual transfers and purchases; remittance principal is not a fee or profit.
+
+A fresh price or stock change can cancel a never-sent order without releasing its still-needed funding. That money remains protected until the observed store need is satisfied. Waiting idle-maintenance quotes do not block each other from using scarce executable provisions; attached requests retain their depth, and other spending still respects all maintenance cash commitments.
+
+Restarting, a lost docking receipt, a partial/zero fill or a definite refusal does not discard the replenishment purpose. Pending requests keep their immutable identity; only proven-unsent requests can be replaced. Fresh observed stores satisfy and retire maintenance, including an external replenishment. Do not delete the mission or lower reserves to force progress.
+
+Sufficient stores finish the standalone replenishment intent even if optional guns remain unaffordable. Gun-only maintenance checks cash and hold capacity before docking; it does not keep an otherwise viable income voyage trapped behind an optional refit. Mandatory armament for newly commissioned ships is unchanged.
+
 ### Console logs
 
 Zap writes `[time] [account] [category] [LEVEL] message` followed by the complete structured context as JSON. Root, store, API, engine and Fx records have named categories; account labels and IDs remain in the JSON even when the label appears in the header. `LOG_LEVEL=info` is the default; invalid values stop startup before opening the database.
@@ -276,7 +304,7 @@ Protect the dump as sensitive operational data and move it out of the repository
 ```sh
 gofmt -w cmd internal
 go vet ./...
-go test ./...
+go test -p 1 -timeout 30m ./...
 go build ./cmd/tradewinds
 pnpm --dir web format:check
 pnpm --dir web lint
@@ -292,8 +320,10 @@ The HTTP suite checks exact middleware denials for hostile and genuinely missing
 
 Production is skipped only when `web/.next/BUILD_ID` is missing, with instructions to build; an existing but unusable build fails. The post-build production command above must run against fresh output so coverage cannot remain skipped or validate a stale build. Production rewrites are build-time artifacts: changing `API_INTERNAL_URL` at `next start` does not retarget them. The HTTP suite never builds Next itself.
 
-Run database integration tests with the disposable URL, then smoke the actual CLI and database API. For concurrency changes, run `go test -race ./...` when a working C compiler is installed. Report an unavailable race toolchain instead of calling that check passed.
+Run database integration tests with the disposable URL, then smoke the actual CLI and database API. For concurrency changes, run `go test -race -p 1 -timeout 30m ./...` when a working C compiler is installed. Report an unavailable race toolchain instead of calling that check passed.
 
 Run the fixed-company logging and underwriting CLI fixtures serially with each other and with the entire Go suite. Different disposable schemas do not isolate PostgreSQL company advisory locks. A competing fixture can make `Runner.Run` return `ErrAccountLocked` before its first request; a REST-capture timeout is not proof that the HTTP path stalled.
+
+Go's timeout covers an entire package, not each test. The serialized PostgreSQL scenarios can exceed shorter package-wide limits even while individual cases continue passing. Keep their bounded waits and assertions intact, and preserve per-test output when diagnosing a suite timeout.
 
 For dashboard changes, start both real services, exercise account selection, map selection, fleet detail, data views, diagnostics filters, themes, and keyboard navigation. In the automation ledger, expand route economics, confirm collateral and stress disclosures, and sort the cash header in both directions: amounts must sort numerically, with unavailable values last. Inspect screenshots at the viewports in `AGENTS.md`, verify no page overflow, and check browser console output. Production data must never be replaced by demo fixtures to hide an integration problem.

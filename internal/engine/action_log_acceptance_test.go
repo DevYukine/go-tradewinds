@@ -109,9 +109,9 @@ func TestActionLogDockAndOffshoreOutcomesAreInfoOnceWithSilentReplay(t *testing.
 			if fields["port_id"] != recoveryHomePort {
 				t.Fatalf("%s commit must carry the safe port context: %+v", stage, fields)
 			}
-			persisted, persistedData := h.mission(recoveryShipLapras)
-			if persisted.Phase != "maintenance_done" || persistedData.Action != nil || persistedData.LastActionID != actionID {
-				t.Fatalf("commit log must describe the durable transition: phase %s data %+v", persisted.Phase, persistedData)
+			_, persistedData := h.mission(recoveryShipLapras)
+			if persistedData.Action != nil || persistedData.LastActionID != actionID {
+				t.Fatalf("commit log must describe the durable action consumption: %+v", persistedData)
 			}
 			if sends.Load() != 1 {
 				t.Fatalf("fresh logical action sent %d mutations, want one", sends.Load())

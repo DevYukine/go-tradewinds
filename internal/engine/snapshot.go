@@ -13,18 +13,19 @@ import (
 )
 
 type accountState struct {
-	Catalog    Catalog
-	Clock      Clock
-	Ships      []ShipState
-	Markets    map[string]Market
-	Ports      map[string]PortDetail
-	Routes     map[string]Route
-	Contracts  []Contract
-	Vaults     []Vault
-	Rates      []Rate
-	Factors    []string
-	Quotes     map[string]YardQuote
-	HomePortID string
+	Catalog           Catalog
+	Clock             Clock
+	Ships             []ShipState
+	Markets           map[string]Market
+	Ports             map[string]PortDetail
+	Routes            map[string]Route
+	Contracts         []Contract
+	Vaults            []Vault
+	InsurancePolicies []InsurancePolicy
+	Rates             []Rate
+	Factors           []string
+	Quotes            map[string]YardQuote
+	HomePortID        string
 }
 
 func decode[T any](data map[string]json.RawMessage, key string) T {
@@ -512,16 +513,17 @@ func (r *Runner) refresh(ctx context.Context) error {
 
 func (r *Runner) state() accountState {
 	state := accountState{
-		Catalog:   decode[Catalog](r.snapshot, "catalog"),
-		Clock:     decode[Clock](r.snapshot, "clock"),
-		Ships:     decode[[]ShipState](r.snapshot, "ships"),
-		Markets:   decode[map[string]Market](r.snapshot, "books"),
-		Ports:     decode[map[string]PortDetail](r.snapshot, "ports"),
-		Routes:    decode[map[string]Route](r.snapshot, "routes"),
-		Contracts: decode[[]Contract](r.snapshot, "contracts"),
-		Rates:     decode[[]Rate](r.snapshot, "rates"),
-		Factors:   decode[[]string](r.snapshot, "factors"),
-		Quotes:    decode[map[string]YardQuote](r.snapshot, "yard_quotes"),
+		Catalog:           decode[Catalog](r.snapshot, "catalog"),
+		Clock:             decode[Clock](r.snapshot, "clock"),
+		Ships:             decode[[]ShipState](r.snapshot, "ships"),
+		Markets:           decode[map[string]Market](r.snapshot, "books"),
+		Ports:             decode[map[string]PortDetail](r.snapshot, "ports"),
+		Routes:            decode[map[string]Route](r.snapshot, "routes"),
+		Contracts:         decode[[]Contract](r.snapshot, "contracts"),
+		InsurancePolicies: decode[[]InsurancePolicy](r.snapshot, "insurance"),
+		Rates:             decode[[]Rate](r.snapshot, "rates"),
+		Factors:           decode[[]string](r.snapshot, "factors"),
+		Quotes:            decode[map[string]YardQuote](r.snapshot, "yard_quotes"),
 	}
 	var vaults struct {
 		Vaults []Vault `json:"vaults"`

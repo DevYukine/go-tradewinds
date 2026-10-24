@@ -227,9 +227,9 @@ func EvaluateUnderwriting(policy InsurancePolicy, history []InsurancePolicy, bud
 		decision.EstimatedLockGameDays = totalObservedHours * budget.TimeScale / (24 * n)
 	}
 	decision.Accepted = decision.ExpectedNetPence > 0
-	decision.Reason = "minimum hull-only pilot has positive modeled net after claims and opportunity cost; full loss remains affordable"
+	decision.Reason = "minimum hull-only pilot has positive modeled net after claims and opportunity cost; full loss remains affordable; all-era history is not calibrated to the announced capture risk"
 	if !decision.Accepted {
-		decision.Reason = "modeled underwriting net is not positive after claims and opportunity cost"
+		decision.Reason = "modeled underwriting net is not positive after claims and opportunity cost; all-era history is not calibrated to the announced capture risk"
 	}
 	return decision
 }

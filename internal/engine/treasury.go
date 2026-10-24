@@ -31,20 +31,16 @@ func (r *Runner) maintain(ctx context.Context, ship ShipState, mission *store.Mi
 		if mission == nil {
 			mission = &store.Mission{AccountID: r.account.ID, ShipID: ship.Ship.ID, Phase: "maintenance", Generation: uuid.NewString()}
 			data = &missionData{Plan: Plan{Kind: "maintenance", ShipID: ship.Ship.ID}, CostsKnown: true}
+			return true, r.saveMission(ctx, mission, data)
 		}
 		return r.provisionMission(ctx, ship, mission, data, targetStores)
 	}
+	if mission != nil && data.Plan.Kind == "maintenance" {
+		mission.Phase = "maintenance_done"
+		return true, r.saveMission(ctx, mission, data)
+	}
 	port, exists := findPort(r.stateCache.Catalog, ship.Ship.CurrentPortID)
 	if !exists || !port.HasShipyard || ship.Ship.CannonsCount >= min(4, hull.MaxCannons) {
-		return false, nil
-	}
-	if ship.Ship.Status != "berthed" {
-		if mission != nil {
-			return r.dockForMission(ctx, ship, mission, data)
-		}
-		if ship.Ship.DockQueuedAt == nil {
-			return r.startMaintenance(ctx, ship, "dock", "/v1/fleet/dock", map[string]any{"ship_id": ship.Ship.ID})
-		}
 		return false, nil
 	}
 	target := min(int64(4), hull.MaxCannons)
@@ -58,6 +54,15 @@ func (r *Runner) maintain(ctx context.Context, ship ShipState, mission *store.Mi
 	}
 	if (target-ship.Ship.CannonsCount)*2 > ship.EffectiveHoldCapacityTons-ship.CargoUsedTons {
 		return false, r.hold(ctx, ship.Ship.ID, "cannon displacement does not fit beside actual cargo and stores")
+	}
+	if ship.Ship.Status != "berthed" {
+		if mission != nil {
+			return r.dockForMission(ctx, ship, mission, data)
+		}
+		if ship.Ship.DockQueuedAt == nil {
+			return r.startMaintenance(ctx, ship, "dock", "/v1/fleet/dock", map[string]any{"ship_id": ship.Ship.ID})
+		}
+		return false, nil
 	}
 	body := map[string]any{"ship_id": ship.Ship.ID, "target_cannons_count": target}
 	if mission != nil {
@@ -132,11 +137,11 @@ func (r *Runner) treasuryReserves(ctx context.Context) (map[string]int64, error)
 		if ship.Ship.Status == "sunk" {
 			continue
 		}
-		mission, err := r.db.GetMission(ctx, r.account.ID, ship.Ship.ID)
+		mission, data, err := r.loadMission(ctx, ship.Ship.ID)
 		if err != nil {
 			return nil, err
 		}
-		if mission != nil {
+		if mission != nil && !r.loadingReservationSuspended(mission, &data, ship) {
 			if destination, exists := findPort(state.Catalog, mission.Destination); exists {
 				required[destination.BankingRegion] = max(required[destination.BankingRegion],
 					r.opts.ReservePence+3*state.Ports[destination.ID].BerthDuesPerDayPence)

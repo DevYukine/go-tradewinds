@@ -123,7 +123,12 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 		case "provision":
 			recordRelocationStores(data, result)
 			if data.Plan.Kind == "maintenance" {
-				mission.Phase = "maintenance_done"
+				mission.Phase = "maintenance"
+				data.Plan.StoresToBuy = max(0, data.Plan.StoresToBuy-filled)
+				data.Plan.Economics.StoreCashPence = max(0, data.Plan.Economics.StoreCashPence-*result.TotalGrossPence-*result.CustomsDutyPence)
+				if data.Plan.StoresToBuy == 0 {
+					data.Plan.Economics.StoreCashPence = 0
+				}
 			}
 		}
 		if filled == 0 {
@@ -230,7 +235,7 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 		}
 	case "dock":
 		if data.Plan.Kind == "maintenance" {
-			mission.Phase = "maintenance_done"
+			mission.Phase = "maintenance"
 		}
 	case "offshore":
 		if mission.Phase == "closing" {
@@ -280,7 +285,7 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 		mission.Phase = "growth_refit"
 	case "refit":
 		if data.Plan.Kind == "maintenance" {
-			mission.Phase = "maintenance_done"
+			mission.Phase = "maintenance"
 		} else if mission.ShipID == "__growth" {
 			mission.Phase = "growth_provision"
 		}
@@ -350,7 +355,10 @@ func applyRejectedResult(mission *store.Mission, data *missionData, status int, 
 	} else if stage == "settings" || stage == "remit" && mission.ShipID == "__treasury" {
 		mission.Phase = "done"
 	} else if data.Plan.Kind == "maintenance" {
-		mission.Phase = "maintenance_done"
+		mission.Phase = "maintenance"
+		if stage == "offshore" {
+			mission.Phase = "maintenance_done"
+		}
 	}
 	if status == 401 || status == 403 || status == 429 {
 		return
