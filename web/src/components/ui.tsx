@@ -17,6 +17,7 @@ import { useState, type ReactNode } from "react";
 import { useNow } from "@/app/providers";
 import { dataset, metadata } from "@/lib/data";
 import { age, dateTime, humanize } from "@/lib/format";
+import { datasetObservation, observationLabel } from "@/lib/operations";
 import type { Account } from "@/lib/types";
 import { pokemonSprite } from "@/lib/sprites";
 export { DataTable, type Column } from "./data-table";
@@ -49,9 +50,14 @@ export function StatusBadge({ status }: { status: string }) {
     "good",
   ].includes(status)
     ? "good"
-    : ["sunk", "defaulted", "claimed_loss", "error", "rejected"].includes(
-          status,
-        )
+    : [
+          "sunk",
+          "starving",
+          "defaulted",
+          "claimed_loss",
+          "error",
+          "rejected",
+        ].includes(status)
       ? "danger"
       : [
             "anchored_roadstead",
@@ -60,6 +66,8 @@ export function StatusBadge({ status }: { status: string }) {
             "pending",
             "held",
             "warning",
+            "frozen",
+            "paused",
           ].includes(status)
         ? "warning"
         : "neutral";
@@ -70,7 +78,7 @@ export function StatusBadge({ status }: { status: string }) {
         ? Anchor
         : status === "sunk"
           ? Skull
-          : tone === "danger" || status === "warning"
+          : tone === "danger" || ["warning", "frozen"].includes(status)
             ? AlertTriangle
             : ["waiting", "pending", "held"].includes(status)
               ? Clock3
@@ -147,38 +155,19 @@ export function DatasetStatus({
   const now = useNow();
   const meta = metadata(account, name);
   const present = dataset(account, name) !== undefined;
-  const timestamp = meta.updated_at;
-  const elapsed = timestamp ? now - Date.parse(timestamp) : undefined;
-  const dynamic =
-    name === "ships" ||
-    name.startsWith("ship_details/") ||
-    name === "clock" ||
-    name === "vaults";
-  const stale =
-    meta.stale ||
-    meta.complete === false ||
-    (dynamic && elapsed !== undefined && elapsed > 120_000);
-  const delayed = dynamic && elapsed !== undefined && elapsed > 30_000;
+  const observation = datasetObservation(account, name, now);
+  const timestamp = observation.timestamp;
+  const impaired = !["current", "delayed"].includes(observation.state);
 
   return (
     <div className={`dataset-status ${meta.error ? "has-error" : ""}`}>
-      {meta.error || stale ? (
+      {impaired ? (
         <AlertTriangle size={13} strokeWidth={1.7} aria-hidden="true" />
       ) : (
         <Clock3 size={13} strokeWidth={1.7} aria-hidden="true" />
       )}
       <span>
-        {!present
-          ? "Not recorded"
-          : meta.complete === false
-            ? "Incomplete recorded data"
-            : stale
-              ? "Stale recorded data"
-              : delayed
-                ? "Delayed recorded data"
-                : timestamp
-                  ? "Recorded"
-                  : "Freshness unknown"}
+        {observationLabel(observation.state)}
         {timestamp && ` ${age(timestamp, now)}`}
       </span>
       {meta.error && (

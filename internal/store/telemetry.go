@@ -153,7 +153,7 @@ func (s *Store) RecordDecision(ctx context.Context, accountID, shipID, kind, rea
 	}
 	row := Decision{
 		AccountID: accountID,
-		ShipID:    shipID,
+		ShipID:    scrubText(shipID, secrets),
 		Kind:      scrubText(kind, secrets),
 		Reason:    boundedText(scrubText(reason, secrets), 8192),
 		Details:   encoded,

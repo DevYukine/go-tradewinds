@@ -6,8 +6,8 @@ import {
   BookOpen,
   Bot,
   Boxes,
-  ChartNoAxesCombined,
   ChartCandlestick,
+  ChartNoAxesCombined,
   Compass,
   FileText,
   Globe2,
@@ -29,11 +29,11 @@ import {
   combineMetrics,
   dataset,
   fleet,
-  metadata,
   useDashboard,
   useHistory,
 } from "@/lib/data";
-import { age, count, money } from "@/lib/format";
+import { age, count } from "@/lib/format";
+import { datasetObservation } from "@/lib/operations";
 import type {
   Account,
   Catalog,
@@ -41,7 +41,6 @@ import type {
   CompanyProfile,
   DashboardData,
   Metric,
-  Vault,
 } from "@/lib/types";
 import { useUI, type View } from "@/lib/ui-store";
 import { ContractsView } from "./contracts";
@@ -51,10 +50,12 @@ import { HoldingsView, TreasuryView } from "./economy";
 import { ExchangeView } from "./exchange";
 import { FleetPanel } from "./fleet";
 import { Journal } from "./journal";
+import { OperationsOverview } from "./operations-overview";
 import { Performance } from "./performance";
 import { ShipyardView } from "./shipyard";
 import { StandingsView } from "./standings";
-import { DatasetStatus, EmptyState } from "./ui";
+import { EmptyState } from "./ui";
+import { UnderwritingLedger } from "./underwriting";
 import { VoyagesView } from "./voyages";
 import { WorldView } from "./world";
 
@@ -63,13 +64,19 @@ const navigationGroups: {
   items: { id: View; label: string; icon: LucideIcon }[];
 }[] = [
   {
-    label: "Operations",
+    label: "Overview",
+    items: [{ id: "chart", label: "Overview", icon: Compass }],
+  },
+  {
+    label: "Fleet",
     items: [
-      { id: "chart", label: "Fleet chart", icon: Compass },
-      { id: "voyages", label: "Voyages", icon: Sailboat },
       { id: "fleet", label: "Vessels", icon: Ship },
-      { id: "journal", label: "Journal", icon: BookOpen },
+      { id: "voyages", label: "Voyages", icon: Sailboat },
     ],
+  },
+  {
+    label: "Journal",
+    items: [{ id: "journal", label: "Journal", icon: BookOpen }],
   },
   {
     label: "Money",
@@ -126,33 +133,34 @@ export function Dashboard() {
   const activeView =
     navigation.find((item) => item.id === view) ?? navigation[0];
   const ViewIcon = activeView.icon;
+  const activeGroup =
+    navigationGroups.find((group) =>
+      group.items.some((item) => item.id === view),
+    ) ?? navigationGroups[0];
   const now = useNow();
-  const observations = scoped.map((account) => metadata(account, "ships"));
+  const observations = scoped.map((account) =>
+    datasetObservation(account, "ships", now),
+  );
   const knownTimes = observations
-    .map((meta) => meta.updated_at)
-    .filter(
-      (value): value is string =>
-        Boolean(value) && Number.isFinite(Date.parse(value!)),
-    );
+    .map((observation) => observation.timestamp)
+    .filter((value): value is string => Boolean(value));
   const oldest =
     knownTimes.length === scoped.length && knownTimes.length
       ? knownTimes.reduce((left, right) =>
           Date.parse(left) < Date.parse(right) ? left : right,
         )
       : undefined;
-  const observationAge = oldest && now ? now - Date.parse(oldest) : undefined;
-  const unavailable = observations.some(
-    (meta) => meta.error || meta.complete === false || meta.stale,
-  );
-  const freshness = unavailable
+  const freshness = observations.some((item) =>
+    ["error", "incomplete", "stale"].includes(item.state),
+  )
     ? "Fleet records incomplete or stale"
-    : observationAge === undefined
-      ? "Freshness unknown"
-      : observationAge > 120_000
-        ? "Fleet records stale"
-        : observationAge > 30_000
-          ? "Fleet records delayed"
-          : "Fleet records current";
+    : observations.some((item) =>
+          ["unknown", "missing"].includes(item.state),
+        ) || !observations.length
+      ? "Fleet freshness unknown"
+      : observations.some((item) => item.state === "delayed")
+        ? "Fleet records delayed"
+        : "Fleet records current";
 
   return (
     <div className="application-shell">
@@ -194,9 +202,10 @@ export function Dashboard() {
               )}
           </select>
         </label>
-        <div className="topbar-status">
+        <div className="topbar-status" role="status">
           <span
             className={`connection-dot ${query.isError ? "is-offline" : query.isPending ? "is-pending" : ""}`}
+            aria-hidden="true"
           />
           <span>
             {query.isError
@@ -233,22 +242,21 @@ export function Dashboard() {
         id="main-navigation"
       >
         <nav aria-label="Main navigation">
-          {navigationGroups.map((group) => (
-            <div className="navigation-group" key={group.label}>
-              <p className="navigation-label">{group.label}</p>
-              {group.items.map(({ id, label, icon: Icon }) => (
-                <button
-                  key={id}
-                  className={`nav-item ${view === id ? "is-active" : ""}`}
-                  aria-current={view === id ? "page" : undefined}
-                  onClick={() => setView(id)}
-                >
-                  <Icon size={17} strokeWidth={1.7} aria-hidden="true" />
-                  <span>{label}</span>
-                </button>
-              ))}
-            </div>
-          ))}
+          {navigationGroups.map((group) => {
+            const Icon = group.items[0].icon;
+            const active = group === activeGroup;
+            return (
+              <button
+                key={group.label}
+                className={`nav-item ${active ? "is-active" : ""}`}
+                aria-current={active ? "page" : undefined}
+                onClick={() => setView(active ? view : group.items[0].id)}
+              >
+                <Icon size={17} strokeWidth={1.7} aria-hidden="true" />
+                <span>{group.label}</span>
+              </button>
+            );
+          })}
         </nav>
         <div className="navigation-footer">
           <span>Read-only operations</span>
@@ -262,27 +270,48 @@ export function Dashboard() {
               <ViewIcon size={22} strokeWidth={1.7} aria-hidden="true" />
               {activeView.label}
             </h1>
-            <p>
-              {scoped.length === 1
-                ? (dataset<CompanyProfile>(scoped[0], "profile")?.company
-                    .name ?? scoped[0].label)
-                : `${count(scoped.length)} configured accounts`}
-            </p>
+            {view !== "chart" && (
+              <p>
+                {scoped.length === 1
+                  ? (dataset<CompanyProfile>(scoped[0], "profile")?.company
+                      .name ?? scoped[0].label)
+                  : `${count(scoped.length)} configured accounts`}
+              </p>
+            )}
           </div>
           <div className="observation-status">
-            <span>
-              {freshness}
-              {oldest ? `, ${age(oldest, now)}` : ""}
-            </span>
+            {view !== "chart" && (
+              <span>
+                {freshness}
+                {oldest ? `, ${age(oldest, now)}` : ""}
+              </span>
+            )}
             {clock && (
               <span>
                 Day {clock.calendar.day}, month {clock.calendar.month},{" "}
                 {clock.calendar.year}
-                {clock.paused ? " / Simulation paused" : ""}
+                {clock.paused && view !== "chart" ? " / Recorded paused" : ""}
               </span>
             )}
           </div>
         </div>
+        {activeGroup.items.length > 1 && (
+          <nav
+            className="secondary-navigation"
+            aria-label={`${activeGroup.label} views`}
+          >
+            {activeGroup.items.map(({ id, label }) => (
+              <button
+                type="button"
+                key={id}
+                aria-current={view === id ? "page" : undefined}
+                onClick={() => setView(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+        )}
         {query.isError && (
           <div className="notice notice-danger" role="alert">
             <strong>Updates interrupted.</strong> {query.error.message} Last
@@ -314,12 +343,13 @@ export function Dashboard() {
         ) : (
           <>
             {view === "chart" && (
-              <FleetSummary accounts={scoped} dashboard={query.data} />
+              <OperationsOverview accounts={scoped} dashboard={query.data} />
             )}
             {(view === "chart" || view === "fleet") && (
               <FleetPanel
                 accounts={scoped}
                 catalog={catalog}
+                dashboard={query.data}
                 compact={view === "chart"}
               />
             )}
@@ -335,106 +365,6 @@ export function Dashboard() {
           </>
         )}
       </main>
-    </div>
-  );
-}
-
-function FleetSummary({
-  accounts,
-  dashboard,
-}: {
-  accounts: Account[];
-  dashboard: DashboardData;
-}) {
-  const vaultSets = accounts.map((account) =>
-    dataset<{ vaults: Vault[] }>(account, "vaults"),
-  );
-  const cash = vaultSets.every(Boolean)
-    ? vaultSets
-        .flatMap((item) => item!.vaults)
-        .filter((vault) => vault.account_type === "vault")
-        .reduce((sum, vault) => sum + vault.balance_pence, 0)
-    : undefined;
-  const ships = accounts.flatMap(fleet);
-  const observedFleet = accounts.every(
-    (account) => dataset(account, "ships") !== undefined,
-  );
-  const accountIDs = new Set(accounts.map((account) => account.id));
-  const settlements = (dashboard.settlements ?? []).filter((item) =>
-    accountIDs.has(item.account_id),
-  );
-  const known = settlements.filter((item) => item.costs_known);
-  const settledNet = known.length
-    ? known.reduce(
-        (sum, item) =>
-          sum +
-          item.proceeds_pence -
-          item.acquisition_pence -
-          item.fees_pence -
-          item.provisions_pence -
-          item.expenses_pence,
-        0,
-      )
-    : undefined;
-  return (
-    <div className="fleet-summary" aria-label="Scoped company statistics">
-      <div>
-        <span>Recorded cash</span>
-        <strong>{money(cash)}</strong>
-      </div>
-      <div>
-        <span>Ships afloat</span>
-        <strong>
-          {observedFleet
-            ? count(ships.filter((item) => item.ship.status !== "sunk").length)
-            : "Not recorded"}
-        </strong>
-      </div>
-      <div>
-        <span>At sea</span>
-        <strong>
-          {observedFleet
-            ? count(
-                ships.filter((item) => item.ship.status === "sailing").length,
-              )
-            : "Not recorded"}
-        </strong>
-      </div>
-      <div>
-        <span>Settled net, loaded sample</span>
-        <strong
-          className={
-            settledNet === undefined || settledNet === 0
-              ? undefined
-              : settledNet < 0
-                ? "negative"
-                : "positive"
-          }
-        >
-          {money(settledNet)}
-        </strong>
-        <small>
-          {known.length} known-cost settlements
-          {settlements.length !== known.length
-            ? ` / ${settlements.length - known.length} costs unknown`
-            : ""}
-        </small>
-      </div>
-      <details className="summary-sources">
-        <summary>Recording sources</summary>
-        {accounts.map((account) => (
-          <div key={account.id}>
-            <strong>{account.label}</strong>
-            <DatasetStatus account={account} name="vaults" />
-            <DatasetStatus account={account} name="ships" />
-          </div>
-        ))}
-        <p>
-          Cash excludes escrow. Settlement subtotal covers only returned
-          records, not complete period profit. Recording freshness does not
-          prove runner connectivity.
-        </p>
-      </details>
     </div>
   );
 }
@@ -486,11 +416,18 @@ function AccountWorkspace({
       break;
     case "performance":
       content = (
-        <Performance
-          metrics={combineMetrics(dashboard.metrics, history.data, account.id)}
-          error={history.error?.message}
-          fetching={history.isFetching}
-        />
+        <>
+          <UnderwritingLedger account={account} />
+          <Performance
+            metrics={combineMetrics(
+              dashboard.metrics,
+              history.data,
+              account.id,
+            )}
+            error={history.error?.message}
+            fetching={history.isFetching}
+          />
+        </>
       );
       break;
     case "decisions":

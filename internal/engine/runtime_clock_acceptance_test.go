@@ -246,7 +246,7 @@ func TestDepartureUnlockFollowsConservativeServerTime(t *testing.T) {
 			if _, err := runner.driveMission(h.ctx, ship, mission, &data); err != nil {
 				t.Fatalf("drive departure mission: %v", err)
 			}
-			holding := strings.Join(runner.holding, "; ")
+			holding := joinedHoldReasons(runner.holding)
 			if test.wantDepart {
 				if data.Action == nil || data.Action.Stage != "depart" {
 					t.Fatalf("server time had passed the unlock, yet no departure was staged: holding %q", holding)
@@ -333,7 +333,7 @@ func TestFreightDeadlineAdmissionUsesConservativeServerUpper(t *testing.T) {
 			if _, err := runner.driveMission(h.ctx, ship, mission, &data); err != nil {
 				t.Fatalf("drive deadline mission: %v", err)
 			}
-			holding := strings.Join(runner.holding, "; ")
+			holding := joinedHoldReasons(runner.holding)
 			if test.wantAdmit {
 				if data.Action == nil || data.Action.Stage != "depart" {
 					t.Fatalf("server upper projection cleared the deadline, yet departure was held: %q", holding)

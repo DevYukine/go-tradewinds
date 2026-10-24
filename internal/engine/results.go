@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/store"
@@ -82,6 +83,14 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 	}
 	stage := data.Action.Stage
 	switch stage {
+	case "underwrite":
+		if status != http.StatusOK {
+			return false, r.hold(ctx, mission.ShipID, "underwriting requires its documented HTTP 200 receipt")
+		}
+		if err := r.acceptUnderwriting(ctx, data, response); err != nil {
+			return false, r.hold(ctx, mission.ShipID, err.Error())
+		}
+		mission.Phase = "done"
 	case "buy", "sell", "provision":
 		var result tradeResult
 		if err := json.Unmarshal(response, &result); err != nil || !validTrade(result) {
@@ -100,6 +109,9 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 		case "buy":
 			data.BoughtQuantity = filled
 			data.BuyDone = true
+			if data.GrowthLane != nil {
+				data.GrowthLane.InitialProcurementComplete = true
+			}
 			data.Plan.Quantity = filled
 			mission.Quantity = filled
 			mission.Phase = "freight"
@@ -109,6 +121,7 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 				data.DeliveredQuantity += filled
 			}
 		case "provision":
+			recordRelocationStores(data, result)
 			if data.Plan.Kind == "maintenance" {
 				mission.Phase = "maintenance_done"
 			}
@@ -249,7 +262,7 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 			return false, r.hold(ctx, mission.ShipID, errUninterpretableResult.Error())
 		}
 		data.FeesPence += *result.Fee
-		if stage == "remit" {
+		if stage == "remit" && mission.ShipID == "__treasury" {
 			mission.Phase = "done"
 		}
 	case "build":
@@ -316,7 +329,7 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 		return false, err
 	}
 	if status == 401 || status == 403 || (stage == "settings" && status != 429) {
-		return false, fmt.Errorf("execution stopped after definitive HTTP %d %s; journal and mission retained", status, problem.Code)
+		return false, fmt.Errorf("execution stopped after definitive HTTP %d; journal and mission retained", status)
 	}
 	return true, nil
 }
@@ -334,7 +347,7 @@ func applyRejectedResult(mission *store.Mission, data *missionData, status int, 
 	// This is not evidence that cargo, a charter or a quote is unavailable.
 	if stage == "build" {
 		mission.Phase = "growth_rejected"
-	} else if stage == "settings" || stage == "remit" {
+	} else if stage == "settings" || stage == "remit" && mission.ShipID == "__treasury" {
 		mission.Phase = "done"
 	} else if data.Plan.Kind == "maintenance" {
 		mission.Phase = "maintenance_done"
@@ -356,6 +369,9 @@ func applyRejectedResult(mission *store.Mission, data *missionData, status int, 
 		mission.Phase = "tender_wait"
 	} else if stage == "buy" {
 		data.BuyDone = true
+		if data.GrowthLane != nil {
+			data.GrowthLane.InitialProcurementComplete = true
+		}
 		mission.Phase = "freight"
 	} else if stage == "accept-freight" {
 		var request struct {

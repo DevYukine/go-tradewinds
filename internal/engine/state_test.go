@@ -202,7 +202,7 @@ func TestAcquiredCashMarginUsesActualFillNotStress(t *testing.T) {
 			{ID: "charter-a", Status: "open", RewardPerTonPence: &reward, RemainingQuantity: 9391},
 		},
 		Routes: map[string]Route{
-			"le_havre|portsmouth|hoy": {TotalDistanceNM: 30},
+			routeKey(recoveryHomePort, recoveryFarPort, "hoy"): {TotalDistanceNM: 30},
 		},
 	}
 	in.Ship.Ship.ShipClass = "hoy"
@@ -221,7 +221,7 @@ func TestAcquiredCashMarginUsesActualFillNotStress(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			data := missionData{
 				Plan: Plan{
-					Kind: "charter", Origin: "le_havre", Destination: "portsmouth", ContractID: "charter-a",
+					Kind: "charter", Origin: recoveryHomePort, Destination: recoveryFarPort, ContractID: "charter-a",
 					Quantity: 24,
 					Economics: Economics{
 						ProvisionsPence: 1_342, BerthDuesPence: 2_664,
@@ -229,7 +229,7 @@ func TestAcquiredCashMarginUsesActualFillNotStress(t *testing.T) {
 						StressHaircutPence: 76_414,
 					},
 				},
-				BoughtQuantity: test.bought,
+				BoughtQuantity: test.bought, DeliveredQuantity: test.bought, CostsKnown: true,
 			}
 			recordTradeCosts(&data, "buy", tradeResult{
 				CommodityID:      "provisions",
@@ -241,36 +241,62 @@ func TestAcquiredCashMarginUsesActualFillNotStress(t *testing.T) {
 			if reason != "" || revenue != test.bought*reward {
 				t.Fatalf("current receivable ignored the actual fill: %d, %s", revenue, reason)
 			}
-			if got := acquiredNet(&data, revenue); got != test.wantNet {
-				t.Fatalf("actual procurement net = %d, want %d", got, test.wantNet)
+			provisionGross, provisionCustoms, provisionQuantity := int64(1_300), int64(42), int64(1)
+			recordTradeCosts(&data, "provision", tradeResult{
+				CommodityID: "provisions", FilledQuantity: &provisionQuantity,
+				TotalGrossPence: &provisionGross, CustomsDutyPence: &provisionCustoms,
+			})
+			data.ProceedsPence = revenue
+			settled := procurementReviewSettlement(t, data, []map[string]any{{
+				"id": "actual-berth-bill", "debit_account_id": "vault-north",
+				"credit_account_id": "harbour", "amount_pence": 2_664, "reason": "berth_dues",
+			}})
+			net := settled.ProceedsPence - settled.AcquisitionPence - settled.FeesPence - settled.ProvisionsPence - settled.ExpensesPence
+			if settled.AcquisitionPence != test.paid || settled.FeesPence != test.customs ||
+				settled.QuantityTons != test.bought || settled.ProvisionsPence != 1_342 || net != test.wantNet {
+				t.Fatalf("actual full/partial procurement settlement = %+v, net %d; want %d", settled, net, test.wantNet)
 			}
 		})
 	}
 }
 
 func TestProvisionCustomsArePaidOnceAndKnownTollsStillReduceNet(t *testing.T) {
-	data := missionData{
-		Plan: Plan{Economics: Economics{
-			ProvisionsPence: 10_290, BerthDuesPence: 1_000,
-		}},
-		AcquisitionPence: 40_000,
-		FeesPence:        1_000,
-	}
-	provisionGross := int64(10_000)
-	provisionCustoms := int64(290)
-	provisionQuantity := int64(1)
-	recordTradeCosts(&data, "provision", tradeResult{
-		CommodityID:      "provisions",
-		FilledQuantity:   &provisionQuantity,
-		TotalGrossPence:  &provisionGross,
-		CustomsDutyPence: &provisionCustoms,
-	})
-	if net := acquiredNet(&data, 52_500); net != 210 {
-		t.Fatalf("provision fee was omitted or deducted twice: net %d", net)
-	}
-	data.Plan.Economics.TollPence = 300
-	if net := acquiredNet(&data, 52_500); net != -90 {
-		t.Fatalf("known toll was treated like diagnostic stress: net %d", net)
+	for _, test := range []struct {
+		name       string
+		actualToll int64
+		wantNet    int64
+	}{
+		{name: "planned toll is not a paid bill", wantNet: 210},
+		{name: "actual toll reduces settlement once", actualToll: 300, wantNet: -90},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data := missionData{
+				Plan: Plan{Kind: "spot", Origin: recoveryHomePort, Destination: recoveryFarPort,
+					Economics: Economics{ProvisionsPence: 10_290, BerthDuesPence: 1_000, TollPence: 300}},
+				AcquisitionPence: 40_000, FeesPence: 1_000, ProceedsPence: 52_500, CostsKnown: true,
+			}
+			provisionGross, provisionCustoms, provisionQuantity := int64(10_000), int64(290), int64(1)
+			recordTradeCosts(&data, "provision", tradeResult{
+				CommodityID: "provisions", FilledQuantity: &provisionQuantity,
+				TotalGrossPence: &provisionGross, CustomsDutyPence: &provisionCustoms,
+			})
+			ledger := []map[string]any{{
+				"id": "actual-berth-bill", "debit_account_id": "vault-north",
+				"credit_account_id": "harbour", "amount_pence": 1_000, "reason": "berth_dues",
+			}}
+			if test.actualToll > 0 {
+				ledger = append(ledger, map[string]any{
+					"id": "actual-toll-bill", "debit_account_id": "vault-north",
+					"credit_account_id": "toll-house", "amount_pence": test.actualToll, "reason": "toll",
+				})
+			}
+			settled := procurementReviewSettlement(t, data, ledger)
+			net := settled.ProceedsPence - settled.AcquisitionPence - settled.FeesPence - settled.ProvisionsPence - settled.ExpensesPence
+			if settled.ProvisionsPence != 10_290 || settled.FeesPence != 1_000 ||
+				settled.ExpensesPence != 1_000+test.actualToll || net != test.wantNet {
+				t.Fatalf("provisions/customs/toll settlement = %+v net %d, want %d", settled, net, test.wantNet)
+			}
+		})
 	}
 }
 
@@ -367,5 +393,80 @@ func TestActualCharterDomainRefusalStillRejectsOnlyThatCharter(t *testing.T) {
 	if !data.RejectedCharterIDs["charter-a"] || data.Eligible["provisions"] != 24 ||
 		mission.Phase != "arrival" || data.Action != nil {
 		t.Fatalf("actual refusal either remained retryable or invalidated all cargo: %+v", data)
+	}
+}
+
+func TestFreightDepartureChecksDetourBeforeImmutableStop(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(*Runner, string)
+	}{
+		{"missing detour", func(r *Runner, key string) {
+			delete(r.stateCache.Routes, key)
+		}},
+		{"stale detour", func(r *Runner, key string) {
+			meta := r.meta["routes/"+key]
+			meta.Stale = true
+			r.meta["routes/"+key] = meta
+		}},
+		{"under-rated detour", func(r *Runner, key string) {
+			route := r.stateCache.Routes[key]
+			route.Legs = append([]RouteLeg(nil), route.Legs...)
+			route.Legs[0].EdgeClass = "oceanic"
+			r.stateCache.Routes[key] = route
+		}},
+		{"unpriced detour toll", func(r *Runner, key string) {
+			route := r.stateCache.Routes[key]
+			route.Legs = append([]RouteLeg(nil), route.Legs...)
+			route.Legs[0].IsSoundToll = true
+			r.stateCache.Routes[key] = route
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC().Add(-time.Millisecond)
+			hull := Hull{ID: "hoy", HullCategory: "coastal", BaseSpeedCentiknots: 600}
+			firstKey := routeKey("origin", "detour", hull.ID)
+			secondKey := routeKey("detour", "sealed", hull.ID)
+			r := &Runner{
+				generation: "freight-detour",
+				meta:       map[string]DatasetMeta{},
+				stateCache: accountState{
+					Clock: Clock{RealUTC: now},
+					Routes: map[string]Route{
+						firstKey: {
+							TotalDistanceNM: 30,
+							Legs:            []RouteLeg{{FromNode: "origin", ToNode: "detour", DistanceNM: 30, EdgeClass: "coastal"}},
+						},
+						secondKey: {
+							TotalDistanceNM: 30,
+							Legs:            []RouteLeg{{FromNode: "detour", ToNode: "sealed", DistanceNM: 30, EdgeClass: "coastal"}},
+						},
+					},
+				},
+			}
+			r.stateCache.Clock.Calendar.TimeScale = 60
+			for _, key := range []string{"clock", "routes/" + firstKey, "routes/" + secondKey} {
+				r.meta[key] = DatasetMeta{UpdatedAt: now, AttemptedAt: now, Complete: true, Generation: r.generation}
+			}
+			ship := ShipState{}
+			ship.Ship.CurrentPortID = "origin"
+			deadline := now.Add(time.Hour)
+			data := missionData{Freight: []freightObligation{{
+				ContractID: "immutable-seal", Destination: "sealed",
+				Quantity: 6, Deadline: &deadline, RewardPence: 5000, CollateralPence: 2000,
+			}}}
+			if err := r.validateFreightDeparture(ship, "detour", &data, hull); err != nil {
+				t.Fatalf("fresh legal detour control failed: %v", err)
+			}
+			original := data.Freight[0]
+			test.change(r, firstKey)
+			if err := r.validateFreightDeparture(ship, "detour", &data, hull); err == nil {
+				t.Fatal("unverified detour bypassed the accepted freight itinerary")
+			}
+			if data.Freight[0] != original {
+				t.Fatalf("detour validation rewrote immutable freight terms: %+v", data.Freight[0])
+			}
+		})
 	}
 }

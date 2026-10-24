@@ -109,3 +109,36 @@ func TestRedactOversizedDiagnosticIsExplicitAndBounded(t *testing.T) {
 		t.Fatalf("diagnostic cap or redaction failed: bytes=%d", len(clean))
 	}
 }
+
+func TestRedactSupportedTokenPrefixesAcrossDiagnosticSurfaces(t *testing.T) {
+	for _, token := range []string{
+		"tw_live_other_account_Ab9-xy",
+		"tw_test_expired_Ab9-xy",
+		"tw_sk_other_account_Ab9-xy",
+		"tw_sk_test_expired_Ab9-xy",
+	} {
+		t.Run(token, func(t *testing.T) {
+			raw := []byte(`{"` + token + `":"public value","detail":"echo ` + token + `","count":7}`)
+			body, err := redactJSON(raw, nil, maxDiagnosticBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, value := range []string{
+				string(body),
+				scrubText("upstream echoed "+token, nil),
+				redactPath("/v1/example?detail="+token+"&"+token+"=public&limit=7", nil),
+			} {
+				if strings.Contains(value, token) {
+					t.Fatalf("supported credential prefix survived diagnostic scrubbing: %s", value)
+				}
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded[redacted] != "public value" || decoded["count"] != float64(7) {
+				t.Fatalf("scrubbing discarded public diagnostic data: %s", body)
+			}
+		})
+	}
+}

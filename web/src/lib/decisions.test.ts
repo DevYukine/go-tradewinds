@@ -187,6 +187,105 @@ describe("recorded decision cash", () => {
   );
 });
 
+describe("destination delivery economics", () => {
+  it("keeps consumed stores and the full cash purchase distinct", () => {
+    const view = buildDecisionView({
+      ...plan,
+      economics: {
+        ...plan.economics,
+        basis: "destination",
+        provisions_pence: 404,
+        store_cash_pence: 82002,
+        ballast_repeat_game_days: 4,
+        ballast_repeat_net_pence: 7000,
+      },
+    });
+    expect(view.basis).toBe("destination");
+    expect(view.expectedNetPence).toBe(7456);
+    expect(view.dailyPence).toBe(2982.4);
+    expect(
+      view.cashRows.find((row) => row.key === "provisions_pence")?.pence,
+    ).toBe(404);
+    expect(
+      view.cashRows.find((row) => row.key === "provisions_pence")?.label,
+    ).toMatch(/consum/i);
+    expect(
+      view.cashRows.find((row) => row.key === "store_cash_pence")?.pence,
+    ).toBe(82002);
+    expect(
+      view.cashRows.find((row) => row.key === "store_cash_pence")?.label,
+    ).toMatch(/cash/i);
+    expect(view.netLabel).toMatch(/delivery/i);
+    expect(view.durationLabel).toMatch(/delivery/i);
+    expect(view.ballastRepeatGameDays).toBe(4);
+    expect(view.ballastRepeatNetPence).toBe(7000);
+    expect(view.cashRows.map((row) => row.key)).not.toContain(
+      "ballast_repeat_net_pence",
+    );
+  });
+
+  it("does not reinterpret historical rows as destination valuations", () => {
+    const legacy = buildDecisionView(plan);
+    const view = buildDecisionView({
+      economics: {
+        ...plan.economics,
+        store_cash_pence: 5000,
+        ballast_repeat_game_days: 4,
+        ballast_repeat_net_pence: 7000,
+      },
+    });
+    expect(view.basis).toBe("legacy");
+    expect(view.cashRows).toEqual(legacy.cashRows);
+    expect(view.dailyLabel).toBe(legacy.dailyLabel);
+    expect(view.expectedNetPence).toBe(legacy.expectedNetPence);
+    expect(view.ballastRepeatGameDays).toBeUndefined();
+    expect(view.ballastRepeatNetPence).toBeUndefined();
+  });
+
+  it.each([
+    {},
+    { ballast_repeat_game_days: 4 },
+    { ballast_repeat_net_pence: 7000 },
+    { ballast_repeat_game_days: 0, ballast_repeat_net_pence: 7000 },
+    { ballast_repeat_game_days: -1, ballast_repeat_net_pence: 7000 },
+    { ballast_repeat_game_days: Infinity, ballast_repeat_net_pence: 7000 },
+    { ballast_repeat_game_days: 4, ballast_repeat_net_pence: NaN },
+  ])(
+    "keeps incomplete or unsafe repeat forecasts unavailable: %j",
+    (repeat) => {
+      const view = buildDecisionView({
+        economics: {
+          basis: "destination",
+          expected_net_pence: 1000,
+          ...repeat,
+        },
+      });
+      expect(view.ballastRepeatGameDays).toBeUndefined();
+      expect(view.ballastRepeatNetPence).toBeUndefined();
+      expect(view.expectedNetPence).toBe(1000);
+    },
+  );
+
+  it("retains a costed zero or loss repeat without using it as delivery profit", () => {
+    for (const repeatNet of [0, -1000]) {
+      const view = buildDecisionView({
+        economics: {
+          basis: "destination",
+          expected_net_pence: 1000,
+          ballast_repeat_game_days: 4,
+          ballast_repeat_net_pence: repeatNet,
+          store_cash_pence: 0,
+        },
+      });
+      expect(view.ballastRepeatNetPence).toBe(repeatNet);
+      expect(view.expectedNetPence).toBe(1000);
+      expect(
+        view.cashRows.find((row) => row.key === "store_cash_pence")?.pence,
+      ).toBe(0);
+    }
+  });
+});
+
 describe("diagnostics-only decision stress", () => {
   it("keeps collateral and stress separate from the expected cash net", () => {
     const view = buildDecisionView(plan);

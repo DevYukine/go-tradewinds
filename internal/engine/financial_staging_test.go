@@ -352,9 +352,15 @@ func TestFinancialReplanningRechecksUnsentBuyAndFreightCollateral(t *testing.T) 
 				berthed["cargo_manifest"] = map[string]any{recoveryGrain: 2}
 				berthed["cargo_used_tons"] = 2
 			}
+			// Make destination receipts observable; this case isolates the
+			// later cash invalidation, not missing remote price authority.
+			destinationShip := sailingShipRow(recoveryShipCharizard, "Charizard", recoveryFarPort, recoveryHomePort)
+			destinationShip["ship"].(map[string]any)["status"] = "berthed"
+			destinationShip["route_legs"] = []any{}
+			destinationShip["voyage"] = nil
 			h.api.setFleet([]map[string]any{
 				berthed,
-				sailingShipRow(recoveryShipCharizard, "Charizard", recoveryFarPort, recoveryHomePort),
+				destinationShip,
 			})
 			candidate := Contract{
 				ID: "unaccepted-collateral", ContractType: "freight", Status: "open",

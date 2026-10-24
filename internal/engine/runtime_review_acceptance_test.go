@@ -576,6 +576,7 @@ func TestSpendingFirstSendRequiresFreshVaultAuthority(t *testing.T) {
 		// in the buy phase at fresh captured state and let the production
 		// r.stage call produce the real immutable intent.
 		h.api.setFleet([]map[string]any{berthedLaprasRow()})
+		h.api.setFactorPorts(recoveryFarPort)
 		runner := refreshedRunner(t, h)
 		h.putMission(recoveryShipLapras, "review-spending-generation", "buy", missionData{
 			Plan: Plan{

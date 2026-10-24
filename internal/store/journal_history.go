@@ -47,6 +47,7 @@ func (s *Store) journalHistory(ctx context.Context, accountID string, limit int)
 	var actions []actionRow
 	var rows []JournalRow
 	err := db.Transaction(func(tx *gorm.DB) error {
+		scrubber := displayScrubber{store: s, tx: tx}
 		var account Account
 		if err := tx.Select("id, company_id").Where("id = ?", accountID).Take(&account).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -54,8 +55,9 @@ func (s *Store) journalHistory(ctx context.Context, accountID string, limit int)
 			}
 			return err
 		}
-		if err := tx.Select("id, account_id, ship_id, kind, origin, destination, commodity, quantity_tons, costs_known, acquisition_pence, proceeds_pence, fees_pence, provisions_pence, expenses_pence, completed_at").
-			Where("account_id = ?", accountID).Order("completed_at DESC, id DESC").Limit(limit).Find(&settlements).Error; err != nil {
+		var err error
+		settlements, err = s.settlementRows(tx.Where("account_id = ?", accountID).Order("completed_at DESC, id DESC").Limit(limit))
+		if err != nil {
 			return err
 		}
 		if account.CompanyID != "" {
@@ -89,8 +91,6 @@ func (s *Store) journalHistory(ctx context.Context, accountID string, limit int)
 		}
 
 		rows = make([]JournalRow, 0, limit)
-		var secrets []string
-		var secretsLoaded bool
 		// Fetch, decrypt and project one bounded outcome at a time so each
 		// row's ciphertext bytes are unreachable again before the next fetch.
 		projectOutcome := func(meta actionRow) (JournalRow, error) {
@@ -104,29 +104,24 @@ func (s *Store) journalHistory(ctx context.Context, accountID string, limit int)
 			// A missing row means the durable response exceeded the budget;
 			// report honest unavailable metadata instead of materializing it.
 			oversized := err != nil
-			if !oversized && !secretsLoaded {
-				credentials, credentialErr := s.credentials(tx, accountID)
-				if credentialErr != nil {
-					return JournalRow{}, credentialErr
-				}
-				secrets = credentialSecrets(credentials)
-				secretsLoaded = true
-			}
 			action := &Action{
 				ID: meta.ID, AccountID: meta.AccountID,
 				Method: meta.Method, Path: meta.Path, UpdatedAt: meta.UpdatedAt,
 			}
 			if !oversized {
+				credentials := scrubber.credentials(accountID)
+				if credentials.err != nil {
+					return JournalRow{}, credentials.err
+				}
 				if action, err = s.decodeAction(record); err != nil {
 					return JournalRow{}, err
 				}
 			}
-			row := journalActionRow(action, secrets)
-			row.ShipID = boundedText(scrubText(row.ShipID, secrets), 255)
-			row.Origin = boundedText(scrubText(row.Origin, secrets), 255)
-			row.Destination = boundedText(scrubText(row.Destination, secrets), 255)
-			row.Commodity = boundedText(scrubText(row.Commodity, secrets), 255)
-			row.Summary = boundedText(scrubText(row.Summary, secrets), 512)
+			if oversized {
+				return journalActionRow(action, nil), nil
+			}
+			row := journalActionRow(action, scrubber.credentials(accountID).secrets)
+			scrubber.journal(&row)
 			return row, nil
 		}
 		eventIndex, settlementIndex, actionIndex := 0, 0, 0
@@ -148,14 +143,19 @@ func (s *Store) journalHistory(ctx context.Context, accountID string, limit int)
 			}
 			switch source {
 			case "settlement":
+				scrubber.settlement(&settlements[settlementIndex])
 				row, err := journalSettlementRow(settlements[settlementIndex])
 				if err != nil {
 					return err
 				}
+				scrubber.journal(&row)
 				rows = append(rows, row)
 				settlementIndex++
 			case "event":
-				rows = append(rows, journalEventRow(events[eventIndex]))
+				row := journalEventRow(events[eventIndex])
+				// Events are redacted diagnostics, not decrypted outcomes. Do not
+				// require credentials for an event that excludes an older action.
+				rows = append(rows, row)
 				eventIndex++
 			case "action":
 				row, err := projectOutcome(actions[actionIndex])

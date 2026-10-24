@@ -1,7 +1,6 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { useQuery } from "@tanstack/react-query";
 import {
   Anchor,
   Box,
@@ -13,8 +12,10 @@ import {
   X,
 } from "lucide-react";
 import { useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useNow } from "@/app/providers";
 import { dataset, fleet, shipSource } from "@/lib/data";
 import { count, dateTime, humanize } from "@/lib/format";
+import { observationLabel, shipOperation } from "@/lib/operations";
 import type {
   Account,
   Catalog,
@@ -25,7 +26,9 @@ import type {
 } from "@/lib/types";
 import { useUI } from "@/lib/ui-store";
 import { FleetMap } from "./fleet-map";
+import { ShipCurrentHold } from "./operations-overview";
 import {
+  Badge,
   DataTable,
   DatasetStatus,
   EmptyState,
@@ -67,25 +70,23 @@ function destination(detail: ShipDetail) {
 export function FleetPanel({
   accounts,
   catalog,
+  dashboard,
   compact = false,
 }: {
   accounts: Account[];
   catalog?: Catalog;
+  dashboard: DashboardData;
   compact?: boolean;
 }) {
+  const now = useNow();
   const [statusFilter, setStatusFilter] = useState("");
   const [portFilter, setPortFilter] = useState("");
   const selectedShipID = useUI((state) => state.selectedShipID);
   const selectedShipAccountID = useUI((state) => state.selectedShipAccountID);
   const selectShip = useUI((state) => state.selectShip);
-  const { data } = useQuery<DashboardData>({
-    queryKey: ["dashboard"],
-    enabled: false,
-  });
   const wide = useSyncExternalStore(subscribeWidth, wideSnapshot, serverWidth);
   const ledgerHeading = useRef<HTMLHeadingElement | null>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
-  const vesselPicker = useRef<HTMLSelectElement | null>(null);
   const headingID = useId();
   const rows = useMemo(
     () =>
@@ -163,7 +164,7 @@ export function FleetPanel({
   );
   const latestDecision = useMemo(
     () =>
-      data?.decisions.reduce<Decision | undefined>((latest, decision) => {
+      dashboard.decisions.reduce<Decision | undefined>((latest, decision) => {
         if (
           decision.account_id !== selectedShipAccountID ||
           decision.ship_id !== selectedShipID
@@ -175,7 +176,7 @@ export function FleetPanel({
           ? decision
           : latest;
       }, undefined),
-    [data?.decisions, selectedShipAccountID, selectedShipID],
+    [dashboard.decisions, selectedShipAccountID, selectedShipID],
   );
   const columns = useMemo<Column<FleetRow>[]>(
     () => [
@@ -212,18 +213,38 @@ export function FleetPanel({
         ),
       },
       {
-        label: "Status",
+        label: "Observed activity",
         value: ({ detail }) =>
           `${humanize(detail.ship.status)}${detail.voyage?.legs?.some((leg) => leg.starving) ? " starving" : ""}`,
-        render: ({ detail }) => (
-          <>
-            <StatusBadge status={detail.ship.status} />
-            {detail.voyage?.legs?.some((leg) => leg.starving) && (
+        render: ({ account, detail }) => {
+          const operation = shipOperation(account, detail, now);
+          return (
+            <span>
+              {operation.observation.current ? (
+                <StatusBadge status={detail.ship.status} />
+              ) : (
+                <Badge>Last recorded: {operation.activity}</Badge>
+              )}
               <span className={styles.cellSubtext}>
-                Starvation in voyage estimate
+                {observationLabel(operation.observation.state)}
               </span>
-            )}
-          </>
+              {operation.starving && (
+                <span className={styles.cellSubtext}>
+                  Starvation in recorded voyage estimate
+                </span>
+              )}
+            </span>
+          );
+        },
+      },
+      {
+        label: "Ship hold",
+        value: ({ account, detail }) =>
+          shipOperation(account, detail, now)
+            .holds.map((hold) => hold.reason)
+            .join("; ") || undefined,
+        render: ({ account, detail }) => (
+          <ShipCurrentHold operation={shipOperation(account, detail, now)} />
         ),
       },
       {
@@ -278,7 +299,7 @@ export function FleetPanel({
             : "No active voyage",
       },
     ],
-    [selectedShipID, selectedShipAccountID, selectShip],
+    [selectedShipID, selectedShipAccountID, selectShip, now],
   );
   const description = selected
     ? `${selected.company}, configured account ${selected.account.label}`
@@ -300,31 +321,14 @@ export function FleetPanel({
 
   return (
     <div className={`${styles.workspace} ${compact ? styles.compact : ""}`}>
-      {compact && (
-        <label className={styles.vesselPicker}>
-          <Ship size={15} strokeWidth={1.7} aria-hidden="true" />
-          <span>Vessel</span>
-          <select
-            ref={vesselPicker}
-            value={selected ? fleetRowKey(selected) : ""}
-            onChange={(event) => {
-              const row = rows.find(
-                (item) => fleetRowKey(item) === event.target.value,
-              );
-              selectShip(row?.detail.ship.id ?? "", row?.account.id);
-            }}
-          >
-            <option value="">Choose a recorded vessel</option>
-            {rows.map((row) => (
-              <option key={fleetRowKey(row)} value={fleetRowKey(row)}>
-                {row.detail.ship.name}, {row.company || row.account.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
       <div className={styles.chartLayout}>
-        {compact && <FleetMap accounts={accounts} catalog={catalog} />}
+        {compact && (
+          <FleetMap
+            accounts={accounts}
+            catalog={catalog}
+            snapshotUTC={dashboard.updated_at}
+          />
+        )}
         {!compact && (
           <section
             className={styles.ledger}
@@ -469,9 +473,7 @@ export function FleetPanel({
               event.preventDefault();
               const target = returnFocus.current?.isConnected
                 ? returnFocus.current
-                : compact
-                  ? vesselPicker.current
-                  : ledgerHeading.current;
+                : ledgerHeading.current;
               target?.focus({ preventScroll: true });
             }}
           >
@@ -512,6 +514,7 @@ export function ShipInspector({
   catalog?: Catalog;
   decision?: Decision;
 }) {
+  const now = useNow();
   const shipClass = catalog?.ship_classes.find(
     (item) => item.id === detail.ship.ship_class,
   );
@@ -550,6 +553,7 @@ export function ShipInspector({
         account={account}
         name={shipSource(account, detail.ship.id)}
       />
+      <ShipCurrentHold operation={shipOperation(account, detail, now)} />
       {starvingLegs && starvingLegs.length > 0 && (
         <p className={styles.warning}>
           <TriangleAlert size={15} strokeWidth={1.7} aria-hidden="true" />
@@ -859,7 +863,7 @@ export function ShipInspector({
           <section className={styles.inspectorSection}>
             <h3>
               <ScrollText size={17} strokeWidth={1.7} aria-hidden="true" />{" "}
-              Latest decision
+              Latest recorded decision
             </h3>
             {decision ? (
               <>
@@ -867,8 +871,8 @@ export function ShipInspector({
                 <p className={styles.note}>{dateTime(decision.created_at)}</p>
                 <p className={styles.decisionReason}>{decision.reason}</p>
                 <p className={styles.note}>
-                  Latest matching decision in the dashboard&apos;s recent
-                  records. This is not a guaranteed next action.
+                  Historical evaluation in the dashboard&apos;s recent records,
+                  not the current ship hold or a guaranteed next action.
                 </p>
               </>
             ) : (

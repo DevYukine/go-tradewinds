@@ -128,7 +128,7 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 		OnStart: func(startCtx context.Context) error {
 			accounts, err := db.Accounts(startCtx)
 			if err != nil {
-				return err
+				return fmt.Errorf("load runtime accounts: %w", err)
 			}
 			type accountRunner struct {
 				runner *engine.Runner
@@ -168,13 +168,13 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 
 			listener, err := net.Listen("tcp", cfg.HTTPAddr)
 			if err != nil {
-				return err
+				return fmt.Errorf("listen for dashboard API on %s: %w", cfg.HTTPAddr, err)
 			}
 			for _, runner := range runners {
 				workers.Add(1)
 				go func() {
 					defer workers.Done()
-					if err := runner.runner.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+					if err := runner.runner.Run(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
 						runner.log.Error("account runner stopped", zap.Error(err))
 					}
 				}()
@@ -198,6 +198,9 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 		OnStop: func(stopCtx context.Context) error {
 			cancel()
 			err := server.Shutdown(stopCtx)
+			if err != nil {
+				err = fmt.Errorf("shut down dashboard API: %w", err)
+			}
 			done := make(chan struct{})
 			go func() {
 				workers.Wait()
@@ -207,7 +210,7 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 			case <-done:
 				return err
 			case <-stopCtx.Done():
-				return stopCtx.Err()
+				return fmt.Errorf("wait for runtime workers: %w", stopCtx.Err())
 			}
 		},
 	})

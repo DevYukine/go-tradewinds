@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ type GrowthInput struct {
 	ContractGameDaysRemaining   *float64
 	IncrementalDailyUpkeepPence int64
 	InitialStoresPence          int64
+	FundingFeesPence            int64
 	MaxPaybackDays              float64
 }
 
@@ -58,76 +60,195 @@ type GrowthDecision struct {
 	CannonsPence                  int64   `json:"cannons_pence"`
 	InitialStoresPence            int64   `json:"initial_stores_pence"`
 	WorkingCapitalPence           int64   `json:"working_capital_pence"`
+	FundingFeesPence              int64   `json:"funding_fees_pence"`
 	IncrementalUpkeepPence        int64   `json:"incremental_upkeep_pence"`
+	UpkeepReservePence            int64   `json:"upkeep_reserve_pence"`
 	IncrementalNetPencePerGameDay float64 `json:"incremental_net_pence_per_game_day"`
 	PaybackGameDays               float64 `json:"payback_game_days"`
+	EvidenceBasis                 string  `json:"evidence_basis"`
 }
 
 func growthWorkingCapital(plan Plan) int64 {
-	return 2 * (plan.Economics.PurchasePence + plan.Economics.CustomsPence +
-		plan.Economics.CollateralPence + plan.Economics.BerthDuesPence +
-		plan.Economics.ProvisionsPence + plan.Economics.TollPence)
+	stores := plan.Economics.StoreCashPence
+	if plan.Economics.Basis != "destination" {
+		stores = plan.Economics.ProvisionsPence
+	}
+	purchase, customs := plan.Economics.PurchasePence, plan.Economics.CustomsPence
+	if plan.Quantity > 0 && plan.BuyLimitPence > 0 {
+		if plan.BuyLimitPence > math.MaxInt64/plan.Quantity {
+			return math.MaxInt64
+		}
+		worstPurchase := max(purchase, plan.Quantity*plan.BuyLimitPence)
+		if worstPurchase > purchase && customs > 0 {
+			if purchase <= 0 {
+				return math.MaxInt64
+			}
+			// Existing per-fill rounding makes this effective customs ratio
+			// conservative at the immutable IOC limit. Keep it integer exact.
+			high, low := bits.Mul64(uint64(customs), uint64(worstPurchase))
+			if high >= uint64(purchase) {
+				return math.MaxInt64
+			}
+			quotient, remainder := bits.Div64(high, low, uint64(purchase))
+			if quotient >= math.MaxInt64 {
+				return math.MaxInt64
+			}
+			customs = int64(quotient)
+			if remainder != 0 {
+				customs++
+			}
+		}
+		purchase = worstPurchase
+	}
+	return growthCashTotal(purchase, customs, plan.Economics.CollateralPence,
+		plan.Economics.BerthDuesPence, stores, plan.Economics.TollPence)
 }
 
-// EvaluateGrowth separates sunk capital from refundable working capital and
-// requires spare observed throughput after existing ships' cycle reservations.
+func growthCashTotal(costs ...int64) int64 {
+	var total int64
+	for _, cost := range costs {
+		if cost < 0 || cost > math.MaxInt64-total {
+			return math.MaxInt64
+		}
+		total += cost
+	}
+	return total
+}
+
+type growthProof struct {
+	positiveCycles  int64
+	quantity        int64
+	positiveSeconds int64
+	seconds         int64
+	net             int64
+	positiveNet     int64
+	unknown         bool
+	newLane         bool
+}
+
+// EvaluateGrowth keeps the pure proof-slice seam; production feeds the same
+// calculation with exact permanent SQL aggregates instead of display history.
 func EvaluateGrowth(in GrowthInput) GrowthDecision {
+	var proof growthProof
+	for _, row := range in.Proofs {
+		if !row.CostsKnown || row.GameSeconds <= 0 || row.QuantityTons < 0 ||
+			row.GameSeconds > math.MaxInt64-proof.seconds ||
+			row.NetPence > 0 && proof.net > math.MaxInt64-row.NetPence ||
+			row.NetPence < 0 && proof.net < math.MinInt64-row.NetPence {
+			proof.unknown = true
+			break
+		}
+		proof.seconds += row.GameSeconds
+		proof.net += row.NetPence
+		if row.NetPence <= 0 || row.QuantityTons == 0 {
+			continue
+		}
+		if row.QuantityTons > math.MaxInt64-proof.quantity ||
+			row.GameSeconds > math.MaxInt64-proof.positiveSeconds ||
+			row.NetPence > math.MaxInt64-proof.positiveNet {
+			proof.unknown = true
+			break
+		}
+		proof.positiveCycles++
+		proof.quantity += row.QuantityTons
+		proof.positiveSeconds += row.GameSeconds
+		proof.positiveNet += row.NetPence
+	}
+	return evaluateGrowth(in, proof)
+}
+
+func evaluateGrowth(in GrowthInput, proof growthProof) GrowthDecision {
 	decision := GrowthDecision{Reason: "growth requires a fresh available turnkey quote and an accepted executable lane"}
-	if !in.Plan.Accepted || !in.Quote.Available || in.Quote.BuildMode != "turnkey_cash" || in.Quote.TotalCostPence == nil || *in.Quote.TotalCostPence <= 0 {
+	if !in.Plan.Accepted || !in.Quote.Available || in.Quote.BuildMode != "turnkey_cash" ||
+		in.Quote.TotalCostPence == nil || *in.Quote.TotalCostPence <= 0 ||
+		*in.Quote.TotalCostPence > maximumPence || len(in.Plan.FreightIDs) > 0 {
 		return decision
 	}
-	var provenQuantity, provenSeconds, provenNet int64
-	var count int
-	for _, proof := range in.Proofs {
-		if !proof.CostsKnown || proof.GameSeconds <= 0 {
-			decision.Reason = "lane history contains unresolved costs or capital loss; cannot establish positive realized net"
-			return decision
-		}
-		// Failed procurement and loss-making voyages remain in the denominator
-		// and integer net; selecting only winners would manufacture evidence.
-		provenSeconds += proof.GameSeconds
-		provenNet += proof.NetPence
-		if proof.NetPence > 0 && proof.QuantityTons > 0 {
-			count++
-			provenQuantity += proof.QuantityTons
-		}
-	}
-	if count < 2 {
-		decision.Reason = "lane needs two durable positive realized settlements with known integer cost basis"
+	if proof.unknown {
+		decision.Reason = "permanent execution history contains unresolved costs or unmeasured duration"
 		return decision
 	}
-	if provenNet <= 0 {
-		decision.Reason = "actual lane net including failed procurement and loss-making voyages is not positive"
+	if proof.positiveCycles < 2 || proof.quantity <= 0 || proof.seconds <= 0 || proof.positiveSeconds <= 0 {
+		decision.Reason = "growth needs two durable positive delivered cycles with known integer cost basis"
 		return decision
 	}
-	if in.Plan.Quantity <= 0 || in.ObservedAskCapacityTons < 2*(in.ExistingCycleTons+in.OtherSourceCycleTons+in.Plan.Quantity)+in.UnboughtSourceTons {
+	if proof.net <= 0 {
+		decision.Reason = "permanent realized net including failed procurement, probes and loss-making voyages is not positive"
+		return decision
+	}
+	sourceCycle := growthCashTotal(in.ExistingCycleTons, in.OtherSourceCycleTons, in.Plan.Quantity)
+	sourceRequired := growthCashTotal(sourceCycle, sourceCycle, in.UnboughtSourceTons)
+	if in.Plan.Quantity <= 0 || sourceRequired == math.MaxInt64 || in.ObservedAskCapacityTons < sourceRequired {
 		decision.Reason = "measured source depth cannot fund two cycles after competing source demand"
 		return decision
 	}
-	// Do not extrapolate a large hull's productivity beyond demonstrated
-	// throughput. New capacity must be filled by an observed profitable lot.
-	averageLot := float64(provenQuantity) / float64(count)
-	if float64(in.Plan.Quantity) < averageLot*0.8 {
-		decision.Reason = "marginal lane lot is below 80% of proven throughput; existing capacity is not saturated"
+	cycleDays := in.Plan.Economics.GameDays
+	forecastRate := in.Plan.Economics.NetPencePerGameDay
+	if in.Plan.Economics.Basis == "destination" {
+		cycleDays = in.Plan.Economics.BallastRepeatGameDays
+		if cycleDays > 0 {
+			forecastRate = float64(in.Plan.Economics.BallastRepeatNetPence) / cycleDays
+		}
+	}
+	if cycleDays <= 0 || math.IsNaN(cycleDays) || math.IsInf(cycleDays, 0) ||
+		forecastRate <= 0 || math.IsNaN(forecastRate) || math.IsInf(forecastRate, 0) {
+		decision.Reason = "growth requires a positive candidate-specific forecast with a funded safe empty return"
 		return decision
 	}
-	provenRate := float64(provenNet) * 86_400 / float64(provenSeconds)
-	scaledRate := provenRate * min(1, float64(in.Plan.Quantity)/averageLot)
-	netRate := min(scaledRate, in.Plan.Economics.NetPencePerGameDay) - float64(in.IncrementalDailyUpkeepPence)
+	// Scale only the live candidate's supported throughput. Losses reduce both
+	// the realized unit margin and productive-time fraction; a larger or faster
+	// candidate is no longer capped at the incumbent's absolute earning rate.
+	utilization := float64(proof.positiveSeconds) / float64(proof.seconds)
+	scaledRate := float64(proof.net) / float64(proof.quantity) * float64(in.Plan.Quantity) / cycleDays * utilization
+	basis := "loss-inclusive measured lane margin capped by live candidate ballast-repeat forecast"
+	if proof.newLane {
+		// General execution is not a price or rate for an untraveled lane.
+		// Its own measured depth and terms provide the forecast; historical
+		// loss retention can only reduce, never enhance, that forecast.
+		scaledRate = forecastRate * min(1, float64(proof.net)/float64(proof.positiveNet)) * utilization
+		basis = "new-lane live candidate forecast discounted by loss-inclusive execution evidence"
+	}
+	netRate := min(scaledRate, forecastRate) - float64(in.IncrementalDailyUpkeepPence)
 	if netRate <= 0 {
 		decision.Reason = "nonlinear marginal fleet upkeep eliminates conservative incremental profit"
 		return decision
 	}
 	guns := min(int64(4), in.Hull.MaxCannons)
-	if guns < 1 || in.Hull.HoldCapacityTons <= 2*guns+in.Plan.Quantity {
+	if guns < 1 || in.Hull.HoldCapacityTons <= 2*guns ||
+		in.Plan.Quantity > in.Hull.HoldCapacityTons-2*guns ||
+		in.Plan.TargetStoresTons < 0 || math.IsNaN(in.Plan.TargetStoresTons) || math.IsInf(in.Plan.TargetStoresTons, 0) ||
+		float64(in.Hull.HoldCapacityTons-2*guns-in.Plan.Quantity) < max(1, math.Ceil(in.Plan.TargetStoresTons)) {
 		decision.Reason = "new hull cannot carry adequate cannons, safe stores and the profitable lot"
 		return decision
 	}
 	hullPrice := *in.Quote.TotalCostPence
 	slippage := ceilBPS(hullPrice, 1_000)
 	gunPrice := guns * 15_000
-	working := growthWorkingCapital(in.Plan)
-	capital := hullPrice + slippage + gunPrice + in.InitialStoresPence
+	stores := in.Plan.Economics.StoreCashPence
+	if in.Plan.Economics.Basis != "destination" {
+		stores = in.Plan.Economics.ProvisionsPence
+	}
+	if in.InitialStoresPence < stores || in.InitialStoresPence < 0 || in.FundingFeesPence < 0 {
+		decision.Reason = "growth initial stores or measured funding fees lack a complete cash budget"
+		return decision
+	}
+	// Initial store cash is committed once, as commissioning capital. The
+	// recoverable cargo/collateral cycle must not purchase the same stores again.
+	cycleCash := growthWorkingCapital(in.Plan)
+	upkeepDays := math.Ceil(max(3, cycleDays))
+	if cycleCash == math.MaxInt64 || in.IncrementalDailyUpkeepPence < 0 ||
+		upkeepDays >= float64(math.MaxInt64) ||
+		in.IncrementalDailyUpkeepPence > math.MaxInt64/int64(upkeepDays) {
+		decision.Reason = "growth cash commitments exceed integer-pence bounds"
+		return decision
+	}
+	upkeepReserve := int64(upkeepDays) * in.IncrementalDailyUpkeepPence
+	working := cycleCash - stores
+	capital := growthCashTotal(hullPrice, slippage, gunPrice, in.InitialStoresPence, in.FundingFeesPence)
+	if capital == math.MaxInt64 {
+		decision.Reason = "growth capital exceeds integer-pence bounds"
+		return decision
+	}
 	payback := float64(capital) / netRate
 	decision = GrowthDecision{
 		QuotedHullPence:               hullPrice,
@@ -135,39 +256,47 @@ func EvaluateGrowth(in GrowthInput) GrowthDecision {
 		CannonsPence:                  gunPrice,
 		InitialStoresPence:            in.InitialStoresPence,
 		WorkingCapitalPence:           working,
+		FundingFeesPence:              in.FundingFeesPence,
 		IncrementalUpkeepPence:        in.IncrementalDailyUpkeepPence,
+		UpkeepReservePence:            upkeepReserve,
 		IncrementalNetPencePerGameDay: netRate,
 		PaybackGameDays:               payback,
+		EvidenceBasis:                 basis,
 	}
-	if in.MaxPaybackDays <= 0 || payback > in.MaxPaybackDays {
-		decision.Reason = "turnkey hull, cannon and store capital exceeds maximum game-day payback"
+	if in.MaxPaybackDays <= 0 || math.IsNaN(in.MaxPaybackDays) || math.IsInf(in.MaxPaybackDays, 0) || payback > in.MaxPaybackDays {
+		decision.Reason = "turnkey hull, cannon, store and measured funding capital exceeds maximum game-day payback"
 		return decision
 	}
-	if in.Plan.Economics.GameDays <= 0 {
-		decision.Reason = "growth lane has no measured repeatable cycle duration"
+	cycleCount := math.Ceil(payback/cycleDays) + 1
+	cycleDemand := growthCashTotal(in.ExistingCycleTons, in.OtherContractCycleTons, in.Plan.Quantity)
+	if cycleCount >= float64(math.MaxInt64) || cycleDemand == math.MaxInt64 ||
+		in.OutstandingContractTons < 0 || max(2, int64(cycleCount)) > (math.MaxInt64-in.OutstandingContractTons)/cycleDemand {
+		decision.Reason = "growth payback demand exceeds measured finite capacity bounds"
 		return decision
 	}
-	cycles := max(int64(2), int64(math.Ceil(payback/in.Plan.Economics.GameDays))+1)
-	paybackTons := cycles*(in.ExistingCycleTons+in.OtherContractCycleTons+in.Plan.Quantity) + in.OutstandingContractTons
+	cycles := max(int64(2), int64(cycleCount))
+	paybackTons := cycles*cycleDemand + in.OutstandingContractTons
 	if in.ContractRemainingTons >= 0 && in.ContractRemainingTons < paybackTons {
 		decision.Reason = "finite charter capacity does not cover competing contract demand through capital payback plus a cycle"
 		return decision
 	}
-	if in.Plan.Kind == "spot" && in.ObservedBidCapacityTons < 2*(in.ExistingCycleTons+in.OtherDestinationCycleTons+in.Plan.Quantity)+in.OutstandingDestinationTons {
+	destinationCycle := growthCashTotal(in.ExistingCycleTons, in.OtherDestinationCycleTons, in.Plan.Quantity)
+	destinationRequired := growthCashTotal(destinationCycle, destinationCycle, in.OutstandingDestinationTons)
+	if in.Plan.Kind == "spot" && (destinationRequired == math.MaxInt64 || in.ObservedBidCapacityTons < destinationRequired) {
 		decision.Reason = "spot growth needs two cycles of measured spare destination bids; gossip has no executable capacity"
 		return decision
 	}
-	if in.ContractGameDaysRemaining != nil && *in.ContractGameDaysRemaining < payback+in.Plan.Economics.GameDays {
+	if in.ContractGameDaysRemaining != nil && *in.ContractGameDaysRemaining < payback+cycleDays {
 		decision.Reason = "charter expires before capital payback plus a delivery cycle"
 		return decision
 	}
-	required := capital + working + in.ExistingWorkingCapitalPence + 3*in.IncrementalDailyUpkeepPence + in.ReservePence
-	if in.BalancePence < required {
-		decision.Reason = "growth cannot preserve existing working capital, two new cycles, upkeep horizon and regional reserve"
+	required := growthCashTotal(capital, working, in.ExistingWorkingCapitalPence, upkeepReserve, in.ReservePence)
+	if required == math.MaxInt64 || in.BalancePence < required {
+		decision.Reason = "growth cannot preserve existing working capital, one new cycle, upkeep horizon and regional reserve"
 		return decision
 	}
 	decision.Accepted = true
-	decision.Reason = "two measured profitable cycles, spare live depth, marginal upkeep, armed/store budget and game-day payback pass; quote has no atomic price cap so 10% slippage remains reserved"
+	decision.Reason = "two positive delivered cycles and all historical losses, live spare demand, funded repeat stores, marginal upkeep and capital payback pass; 10% quote slippage remains reserved"
 	return decision
 }
 
@@ -182,33 +311,59 @@ type growthEvidence struct {
 	workingByRegion map[string]int64
 	required        map[string]int64
 	balances        map[string]int64
-	history         []store.Settlement
+	history         store.EconomicHistory
+	lanes           map[string]store.EconomicHistory
+	markets         map[string]Market
 	home            Port
 	available       int64
 }
 
 func (r *Runner) reserveGrowthMission(evidence *growthEvidence, mission *store.Mission, data *missionData) bool {
-	if data.Relocation != nil || mission.Phase == "settling" || mission.Phase == "settled" || mission.Phase == "maintenance_done" {
+	if data.Relocation != nil || mission.Phase == "maintenance_done" {
 		return false
 	}
 	if data.Plan.Kind == "recovery" || data.Plan.Kind == "maintenance" {
 		return true
 	}
-	deliveredTrade := data.DeliveredQuantity
-	for _, obligation := range data.Freight {
-		if obligation.Settled {
-			deliveredTrade = max(0, deliveredTrade-obligation.Quantity)
+	if evidence.workingByRegion != nil {
+		owner, _ := r.ship(mission.ShipID)
+		if mission.ShipID == "__growth" {
+			owner, _ = r.ship(data.BuiltShipID)
+		}
+		r.reserveMissionCash(evidence.workingByRegion, mission, data, owner)
+	}
+	if data.Settlement == nil && mission.Phase != "settling" && mission.Phase != "settled" {
+		deliveredTrade := data.DeliveredQuantity
+		for _, obligation := range data.Freight {
+			if obligation.Settled {
+				deliveredTrade = max(0, deliveredTrade-obligation.Quantity)
+			}
+		}
+		unbought := int64(0)
+		if !data.BuyDone && data.Plan.Kind != "freight" {
+			unbought = max(0, data.Plan.Quantity-data.BoughtQuantity)
+		}
+		plan := data.Plan
+		if ship, exists := r.ship(mission.ShipID); exists && ship.Ship.CurrentPortID == plan.Origin && ship.Voyage == nil {
+			plan.StoresToBuy = max(0, int64(math.Ceil(plan.TargetStoresTons-ship.Stores.ProvisionsTons)))
+		} else if mission.ShipID != "__growth" {
+			plan.StoresToBuy = 0
+		}
+		outstanding := max(0, data.Plan.Quantity-deliveredTrade)
+		if unbought > 0 || outstanding > 0 || data.GrowthLane == nil || data.GrowthLane.NextPlan == nil {
+			evidence.incumbents = append(evidence.incumbents, growthCommitment{
+				plan: plan, unbought: unbought, outstanding: outstanding,
+			})
 		}
 	}
-	evidence.incumbents = append(evidence.incumbents, growthCommitment{
-		plan:        data.Plan,
-		unbought:    max(int64(0), data.Plan.Quantity-data.BoughtQuantity),
-		outstanding: max(int64(0), data.Plan.Quantity-deliveredTrade),
-	})
-	if origin, exists := findPort(r.stateCache.Catalog, data.Plan.Origin); exists {
-		evidence.workingByRegion[origin.BankingRegion] += growthWorkingCapital(data.Plan)
+	if data.GrowthLane != nil && data.GrowthLane.NextPlan != nil {
+		plan := *data.GrowthLane.NextPlan
+		evidence.incumbents = append(evidence.incumbents, growthCommitment{
+			plan: plan, unbought: plan.Quantity, outstanding: plan.Quantity,
+		})
+		return true
 	}
-	return true
+	return mission.Phase != "settling" && mission.Phase != "settled"
 }
 
 func (r *Runner) growthFunding(ctx context.Context, evidence *growthEvidence) (string, error) {
@@ -234,17 +389,22 @@ func (r *Runner) growthFunding(ctx context.Context, evidence *growthEvidence) (s
 	if !exists {
 		return "growth requires the authoritative home billing region", nil
 	}
-	history, err := r.db.SettlementHistory(ctx, r.account.ID, "", 500)
+	history, err := r.db.EconomicHistory(ctx, r.account.ID, "")
 	if err != nil {
 		return "", err
 	}
-	if len(history) < 2 {
-		return "no two permanent realized lane settlements yet; chart balances are not proof of profit", nil
+	if history.PositiveCycles < 2 {
+		return "no two permanent positive delivered cycles yet; chart balances are not proof of profit", nil
+	}
+	if history.UnknownCosts || history.UnmeasuredDuration || history.NetPence <= 0 {
+		return "growth requires positive permanent realized net after every loss and probe, with no unknown costs or cycle duration", nil
 	}
 	evidence.required = required
 	evidence.balances = balances
 	evidence.home = home
 	evidence.history = history
+	evidence.lanes = make(map[string]store.EconomicHistory)
+	evidence.markets = withoutOwnOrders(r.stateCache.Markets, r.ownedOrders())
 	for region, balance := range balances {
 		evidence.available += max(0, balance-required[region])
 	}
@@ -290,44 +450,63 @@ func (r *Runner) growthQuote(port Port, hull Hull) (YardQuote, error) {
 	return YardQuote{}, errors.New("growth requires fresh stationary ship or factor presence at the quoted yard")
 }
 
-func (r *Runner) evaluateGrowthCandidate(port Port, hull Hull, plan Plan, quote YardQuote, deltaUpkeep int64, evidence *growthEvidence) (GrowthDecision, map[string]int64) {
-	book := r.stateCache.Markets[port.ID]
-	provisions := bookCommodity(book, "provisions")
-	if provisions == nil || provisions.Depth == nil {
-		return GrowthDecision{Reason: "growth lacks executable depth for the new hull's full safe stores"}, nil
-	}
-	storesFill, err := WalkDepth(provisions.Depth.Asks, plan.StoresToBuy, true)
-	if err != nil {
-		return GrowthDecision{Reason: "growth cannot fund the new hull's full safe stores: " + err.Error()}, nil
-	}
-	initialStores := storesFill.GrossPence + ceilBPS(storesFill.GrossPence, book.CustomsBPS) + plan.StoresToBuy
-	var proofs []LaneProof
-	for _, settlement := range evidence.history {
-		if settlement.Lane == laneKey(plan) {
-			proofs = append(proofs, LaneProof{
-				QuantityTons: settlement.QuantityTons,
-				GameSeconds:  settlement.GameSeconds,
-				NetPence: settlement.ProceedsPence - settlement.AcquisitionPence -
-					settlement.FeesPence - settlement.ProvisionsPence - settlement.ExpensesPence,
-				CostsKnown: settlement.CostsKnown,
-			})
+func (r *Runner) evaluateGrowthCandidate(ctx context.Context, port Port, hull Hull, plan *Plan, quoted PlanningInput, quote YardQuote, deltaUpkeep int64, evidence *growthEvidence) (GrowthDecision, map[string]int64, error) {
+	lane := laneKey(*plan)
+	history, exists := evidence.lanes[lane]
+	if !exists {
+		var err error
+		history, err = r.db.EconomicHistory(ctx, r.account.ID, lane)
+		if err != nil {
+			return GrowthDecision{}, nil, err
 		}
+		evidence.lanes[lane] = history
 	}
+	newLane := history.PositiveCycles < 2
+	unknownLane := history.UnknownCosts || history.UnmeasuredDuration
+	if newLane {
+		history = evidence.history
+	}
+	proof := growthProof{
+		positiveCycles:  history.PositiveCycles,
+		quantity:        history.PositiveQuantityTons,
+		positiveSeconds: history.PositiveGameSeconds,
+		seconds:         history.GameSeconds,
+		net:             history.NetPence,
+		positiveNet:     history.PositiveNetPence,
+		unknown:         history.UnknownCosts || history.UnmeasuredDuration || unknownLane,
+		newLane:         newLane,
+	}
+	book := evidence.markets[port.ID]
+	cycleDays := plan.Economics.BallastRepeatGameDays
+	storeDemand := 2 * plan.StoresToBuy
 	var existingTons, otherSourceTons, otherDestinationTons, otherContractTons int64
 	var outstandingDestination, outstandingContract, unboughtSource int64
 	for _, incumbent := range evidence.incumbents {
 		sameSource := incumbent.plan.Origin == plan.Origin && incumbent.plan.Commodity == plan.Commodity
 		kind, _, _ := strings.Cut(incumbent.plan.Kind, "+")
+		incumbentDays := incumbent.plan.Economics.GameDays
+		if incumbent.plan.Economics.Basis == "destination" && incumbent.plan.Economics.BallastRepeatGameDays > 0 {
+			incumbentDays = incumbent.plan.Economics.BallastRepeatGameDays
+		}
+		if incumbent.plan.Origin == plan.Origin && incumbent.plan.StoresToBuy > 0 {
+			if incumbentDays <= 0 || cycleDays <= 0 {
+				return GrowthDecision{Reason: "growth cannot allocate shared safe-store demand without a measured cycle duration"}, nil, nil
+			}
+			storeDemand += int64(math.Ceil(2 * float64(incumbent.plan.StoresToBuy) * cycleDays / incumbentDays))
+		}
+		if kind != "spot" && kind != "charter" {
+			continue
+		}
 		sameDestination := kind == "spot" && incumbent.plan.Destination == plan.Destination && incumbent.plan.Commodity == plan.Commodity
 		sameContract := plan.ContractID != "" && incumbent.plan.ContractID == plan.ContractID
 		if incumbent.plan.Quantity <= 0 || (!sameSource && !sameDestination && !sameContract) {
 			continue
 		}
-		if incumbent.plan.Economics.GameDays <= 0 {
-			return GrowthDecision{Reason: "growth cannot allocate competing committed throughput without its full cycle duration"}, nil
+		if incumbentDays <= 0 || cycleDays <= 0 {
+			return GrowthDecision{Reason: "growth cannot allocate competing committed throughput without its full cycle duration"}, nil, nil
 		}
-		tons := int64(math.Ceil(float64(incumbent.plan.Quantity) * plan.Economics.GameDays / incumbent.plan.Economics.GameDays))
-		if laneKey(incumbent.plan) == laneKey(plan) && incumbent.plan.ContractID == plan.ContractID {
+		tons := int64(math.Ceil(float64(incumbent.plan.Quantity) * cycleDays / incumbentDays))
+		if laneKey(incumbent.plan) == laneKey(*plan) && incumbent.plan.ContractID == plan.ContractID {
 			// The undelivered lot lands once before repeat demand scales.
 			existingTons += tons
 			unboughtSource += incumbent.unbought
@@ -351,24 +530,41 @@ func (r *Runner) evaluateGrowthCandidate(port Port, hull Hull, plan Plan, quote 
 			outstandingContract += incumbent.outstanding
 		}
 	}
+	// Price the marginal supported lot, not a cheap first lot repeatedly.
+	// Incumbent repeat demand and outstanding lots reserve depth once in their
+	// respective pools; this candidate's first lot precedes its second quote.
+	reservedSource := growthCashTotal(existingTons, existingTons, otherSourceTons, otherSourceTons, unboughtSource, plan.Quantity)
+	reservedBids := growthCashTotal(existingTons, existingTons, otherDestinationTons, otherDestinationTons, outstandingDestination, plan.Quantity)
+	originBook := reserveGrowthBook(book, plan.Commodity, reservedSource, 0, max(0, storeDemand-plan.StoresToBuy))
+	reservedDestination := int64(0)
+	if plan.Kind == "spot" {
+		reservedDestination = reservedBids
+	}
+	destinationBook := reserveGrowthBook(evidence.markets[plan.Destination], plan.Commodity, 0, reservedDestination, 0)
+	quoted.Markets = map[string]Market{port.ID: originBook, plan.Destination: destinationBook}
+	*plan = evaluatePlan(quoted, hull, port, *plan, plan.Economics.RevenuePence, 0)
+	if !plan.Accepted {
+		return GrowthDecision{Reason: "marginal repeat lot: " + plan.Reason}, nil, nil
+	}
 	entry := bookCommodity(book, plan.Commodity)
 	var depthTons int64
 	if entry != nil && entry.Depth != nil {
-		for _, level := range entry.Depth.Asks {
-			if level.PricePence <= plan.BuyLimitPence {
-				depthTons += max(0, level.RemainingQuantity)
-			}
-		}
+		depthTons = depthCapacity(entry.Depth.Asks, plan.BuyLimitPence, true)
+	}
+	provisions := bookCommodity(book, "provisions")
+	if provisions == nil || provisions.Depth == nil {
+		return GrowthDecision{Reason: "growth lacks executable depth for shared safe stores"}, nil, nil
+	}
+	if plan.Commodity == "provisions" {
+		depthTons = max(0, depthTons-storeDemand)
+	} else if _, err := WalkDepth(provisions.Depth.Asks, storeDemand, true); err != nil {
+		return GrowthDecision{Reason: "growth safe-store depth is already consumed by competing store demand"}, nil, nil
 	}
 	var bidTons int64
 	if plan.Kind == "spot" && r.fresh("books/"+plan.Destination) {
-		demand := bookCommodity(r.stateCache.Markets[plan.Destination], plan.Commodity)
+		demand := bookCommodity(evidence.markets[plan.Destination], plan.Commodity)
 		if demand != nil && demand.Depth != nil {
-			for _, level := range demand.Depth.Bids {
-				if level.PricePence >= plan.SellLimitPence {
-					bidTons += max(0, level.RemainingQuantity)
-				}
-			}
+			bidTons = depthCapacity(demand.Depth.Bids, plan.SellLimitPence, false)
 		}
 	}
 	remaining := int64(-1)
@@ -378,17 +574,16 @@ func (r *Runner) evaluateGrowthCandidate(port Port, hull Hull, plan Plan, quote 
 		if contract.ExpiresAt != nil {
 			_, upper, ok := r.serverBounds()
 			if !ok {
-				return GrowthDecision{Reason: "growth requires current clock authority for charter payback"}, nil
+				return GrowthDecision{Reason: "growth requires current clock authority for charter payback"}, nil, nil
 			}
 			days := contract.ExpiresAt.Sub(upper).Seconds() * float64(r.stateCache.Clock.Calendar.TimeScale) / 86_400
 			daysRemaining = &days
 		}
 	}
-	decision := EvaluateGrowth(GrowthInput{
-		Plan:                        plan,
+	input := GrowthInput{
+		Plan:                        *plan,
 		Quote:                       quote,
 		Hull:                        hull,
-		Proofs:                      proofs,
 		BalancePence:                evidence.available,
 		ExistingCycleTons:           existingTons,
 		OtherSourceCycleTons:        otherSourceTons,
@@ -402,33 +597,196 @@ func (r *Runner) evaluateGrowthCandidate(port Port, hull Hull, plan Plan, quote 
 		ContractRemainingTons:       remaining,
 		ContractGameDaysRemaining:   daysRemaining,
 		IncrementalDailyUpkeepPence: deltaUpkeep,
-		InitialStoresPence:          initialStores,
+		InitialStoresPence:          plan.Economics.StoreCashPence,
 		MaxPaybackDays:              r.opts.MaxPaybackDays,
-	})
+	}
+	decision := evaluateGrowth(input, proof)
 	if !decision.Accepted {
-		return decision, nil
+		return decision, nil, nil
 	}
 	required := clonePence(evidence.required)
 	required[port.BankingRegion] = max(required[port.BankingRegion], r.opts.ReservePence)
 	required[port.BankingRegion] += decision.QuotedHullPence + decision.SlippageReservePence +
 		decision.CannonsPence + decision.InitialStoresPence + decision.WorkingCapitalPence
-	required[evidence.home.BankingRegion] += 3 * deltaUpkeep
+	required[evidence.home.BankingRegion] += decision.UpkeepReservePence
 	if destination, exists := findPort(r.stateCache.Catalog, plan.Destination); exists {
 		required[destination.BankingRegion] = max(required[destination.BankingRegion],
 			r.opts.ReservePence+3*r.stateCache.Ports[destination.ID].BerthDuesPerDayPence)
-	}
-	for region, protected := range required {
-		if evidence.balances[region] < protected {
-			decision.Accepted = false
-			decision.Reason = "growth awaits funded regional working capital and home-billed incremental upkeep including observed remittance fees"
-			break
+		if destination.BankingRegion != port.BankingRegion {
+			required[destination.BankingRegion] = growthCashTotal(required[destination.BankingRegion],
+				r.stateCache.Ports[destination.ID].BerthDuesPerDayPence)
 		}
 	}
-	return decision, required
+	_, fees, transfers, funded := measuredFunding(evidence.balances, required, r.stateCache.Rates)
+	if !funded {
+		decision.Accepted = false
+		decision.Reason = "growth cannot fund the candidate regions without spending protected obligations and measured remittance fees"
+		return decision, nil, nil
+	}
+	if fees > 0 {
+		input.FundingFeesPence = fees
+		decision = evaluateGrowth(input, proof)
+		if !decision.Accepted {
+			return decision, nil, nil
+		}
+	}
+	if len(transfers) > 0 {
+		decision.Reason += "; regional funding must complete before build"
+	}
+	return decision, required, nil
+}
+
+type growthPackage struct {
+	port           Port
+	hull           Hull
+	plan           Plan
+	decision       GrowthDecision
+	required       map[string]int64
+	committedPence int64
+}
+
+func betterGrowthPackage(candidate, other growthPackage) bool {
+	candidateReturn := candidate.decision.IncrementalNetPencePerGameDay / float64(candidate.committedPence)
+	otherReturn := other.decision.IncrementalNetPencePerGameDay / float64(other.committedPence)
+	if candidateReturn != otherReturn {
+		return candidateReturn > otherReturn
+	}
+	if candidate.decision.IncrementalNetPencePerGameDay != other.decision.IncrementalNetPencePerGameDay {
+		return candidate.decision.IncrementalNetPencePerGameDay > other.decision.IncrementalNetPencePerGameDay
+	}
+	if candidate.port.ID != other.port.ID {
+		return candidate.port.ID < other.port.ID
+	}
+	if candidate.hull.ID != other.hull.ID {
+		return candidate.hull.ID < other.hull.ID
+	}
+	return betterPlan(candidate.plan, other.plan)
+}
+
+// growthAtYard compares each whole-ton package on capital return. Voyage
+// contribution alone cannot choose the best size once cargo cash is tied up.
+func (r *Runner) growthAtYard(ctx context.Context, port Port, hull Hull, quote YardQuote, deltaUpkeep int64, evidence *growthEvidence, pinned *Plan) (growthPackage, bool, error) {
+	var best growthPackage
+	found := false
+	input := r.planningInput(growthCandidate(port, hull))
+	input.Markets = evidence.markets
+	input.FleetDailyUpkeepPence = 0
+	for _, dataset := range []string{"catalog", "clock", "zones", "vaults", "contracts", "ships", "rates"} {
+		if !input.fresh(dataset) {
+			return best, false, nil
+		}
+	}
+	if input.Clock.Paused || input.Clock.Calendar.TimeScale <= 0 ||
+		input.Clock.Calendar.Month < 1 || input.Clock.Calendar.Month > 12 ||
+		input.Clock.Calendar.Day < 1 || input.Clock.Calendar.Day > 30 {
+		return best, false, nil
+	}
+	consider := func(base Plan, maximum, rewardPerTon int64) error {
+		if pinned != nil && (laneKey(base) != laneKey(*pinned) || base.ContractID != pinned.ContractID) {
+			return nil
+		}
+		quoted := input
+		quoted.ReserveByRegion = clonePence(evidence.required)
+		quoted.ReserveByRegion[port.BankingRegion] = max(quoted.ReserveByRegion[port.BankingRegion], r.opts.ReservePence)
+		destination, exists := findPort(input.Catalog, base.Destination)
+		if !exists {
+			return nil
+		}
+		quoted.ReserveByRegion[destination.BankingRegion] = max(quoted.ReserveByRegion[destination.BankingRegion],
+			r.opts.ReservePence+3*input.Ports[destination.ID].BerthDuesPerDayPence)
+		target := clonePence(quoted.ReserveByRegion)
+		if destination.BankingRegion != port.BankingRegion {
+			// The delivery bill is payable cash above the protected reserve.
+			// Do not sweep it to the yard while finding maximum source funds.
+			target[destination.BankingRegion] = growthCashTotal(target[destination.BankingRegion],
+				input.Ports[destination.ID].BerthDuesPerDayPence)
+		}
+		balances, _, _, funded := measuredFunding(evidence.balances, target, input.Rates)
+		if !funded {
+			return nil
+		}
+		// Push only affordable observed-fee surplus toward this yard for the
+		// sizing bound. Final packages reprice the exact required transfers.
+		target[port.BankingRegion] += evidence.available
+		quoted.Balances, _, _, _ = measuredFunding(balances, target, input.Rates)
+		first := int64(1)
+		maximum = min(maximum, quoted.Ship.EffectiveHoldCapacityTons)
+		if pinned != nil {
+			first = pinned.Quantity
+			maximum = min(maximum, pinned.Quantity)
+		}
+		for quantity := first; quantity <= maximum; quantity++ {
+			if quantity <= 0 || rewardPerTon > 0 && quantity > math.MaxInt64/rewardPerTon {
+				continue
+			}
+			plan := base
+			plan.Quantity = quantity
+			stores, err := ballastRepeatStoreTarget(quoted, hull, plan)
+			if err != nil {
+				continue
+			}
+			plan.TargetStoresTons = stores
+			plan = evaluatePlan(quoted, hull, port, plan, quantity*rewardPerTon, 0)
+			if !plan.Accepted || plan.Economics.BallastRepeatGameDays <= 0 || plan.Economics.BallastRepeatNetPence <= 0 {
+				continue
+			}
+			decision, required, err := r.evaluateGrowthCandidate(ctx, port, hull, &plan, quoted, quote, deltaUpkeep, evidence)
+			if err != nil {
+				return err
+			}
+			if !decision.Accepted {
+				continue
+			}
+			committed := growthCashTotal(decision.FundingFeesPence)
+			for region, protected := range required {
+				committed = growthCashTotal(committed, max(0, protected-evidence.required[region]))
+			}
+			if committed <= 0 || committed == math.MaxInt64 {
+				continue
+			}
+			candidate := growthPackage{
+				port: port, hull: hull, plan: plan, decision: decision,
+				required: required, committedPence: committed,
+			}
+			if !found || betterGrowthPackage(candidate, best) {
+				best, found = candidate, true
+			}
+		}
+		return nil
+	}
+	for _, contract := range input.Contracts {
+		if contract.ContractType != "charter" || contract.OriginPortID == port.ID ||
+			contract.Status != "open" || contract.Stale || contract.RemainingQuantity <= 0 ||
+			contract.RewardPerTonPence == nil || *contract.RewardPerTonPence <= 0 {
+			continue
+		}
+		plan := Plan{Kind: "charter", ShipID: input.Ship.Ship.ID, Origin: port.ID,
+			Destination: contract.OriginPortID, Commodity: contract.CommodityID,
+			ContractID: contract.ID, Deadline: contract.ExpiresAt}
+		if err := consider(plan, contract.RemainingQuantity, *contract.RewardPerTonPence); err != nil {
+			return best, found, err
+		}
+	}
+	for _, destination := range input.Catalog.Ports {
+		if destination.ID == port.ID || destination.Phase > input.Clock.UnlockedPhase {
+			continue
+		}
+		for _, commodity := range input.Markets[port.ID].Books {
+			if commodity.Depth == nil || len(commodity.Depth.Asks) == 0 || !portTrades(destination, commodity.CommodityID) {
+				continue
+			}
+			plan := Plan{Kind: "spot", ShipID: input.Ship.Ship.ID, Origin: port.ID,
+				Destination: destination.ID, Commodity: commodity.CommodityID}
+			if err := consider(plan, input.Ship.EffectiveHoldCapacityTons, 0); err != nil {
+				return best, found, err
+			}
+		}
+	}
+	return best, found, nil
 }
 
 func (r *Runner) growthBuildReady(ctx context.Context, data *missionData) error {
-	for _, dataset := range []string{"vaults", "ships", "catalog", "factors", "profile", "warehouses", "contracts"} {
+	for _, dataset := range []string{"vaults", "ships", "catalog", "clock", "zones", "rates", "factors", "profile", "warehouses", "contracts"} {
 		if !r.fresh(dataset) {
 			return fmt.Errorf("new build requires current successful %s authority", dataset)
 		}
@@ -461,7 +819,11 @@ func (r *Runner) growthBuildReady(ctx context.Context, data *missionData) error 
 			continue
 		}
 		if ship.Ship.Status != "sailing" && ship.Ship.ConvoyID == "" && ship.CargoUsedTons == 0 && len(r.activeFreight(ship.Ship.ID)) == 0 {
-			plans := PlanVoyages(r.planningInput(ship))
+			input, err := r.committedPlanningInputExcept(ctx, ship, "__growth")
+			if err != nil {
+				return err
+			}
+			plans := PlanVoyages(input)
 			if len(plans) > 0 && plans[0].Accepted {
 				return errors.New("new build must reuse an idle ship's currently executable profitable lane first")
 			}
@@ -480,19 +842,25 @@ func (r *Runner) growthBuildReady(ctx context.Context, data *missionData) error 
 	grownFleet[len(grownFleet)-1] = candidate
 	oldUpkeep := DailyUpkeep(r.stateCache.Ships, r.stateCache.Catalog, len(r.stateCache.Factors))
 	deltaUpkeep := DailyUpkeep(grownFleet, r.stateCache.Catalog, len(r.stateCache.Factors)) - oldUpkeep
-	input := r.planningInput(candidate)
-	input.FleetDailyUpkeepPence = 0
-	for _, plan := range PlanVoyages(input) {
-		if !plan.Accepted || len(plan.FreightIDs) > 0 || laneKey(plan) != laneKey(data.Plan) || plan.ContractID != data.Plan.ContractID {
-			continue
-		}
-		decision, _ := r.evaluateGrowthCandidate(port, hull, plan, quote, deltaUpkeep, &evidence)
-		if decision.Accepted {
-			return nil
-		}
-		return errors.New("new build lost its full current growth case: " + decision.Reason)
+	pack, found, err := r.growthAtYard(ctx, port, hull, quote, deltaUpkeep, &evidence, &data.Plan)
+	if err != nil {
+		return err
 	}
-	return errors.New("new build no longer has its matching executable profitable lane")
+	if !found {
+		return errors.New("new build no longer has its exact quantity's funded positive repeat and permanent execution evidence")
+	}
+	if data.GrowthLane == nil || data.GrowthLane.QuantityLimit != data.Plan.Quantity ||
+		pack.plan.Quantity > data.GrowthLane.QuantityLimit ||
+		growthCargoCash(pack.plan, r.stateCache.Markets[port.ID].CustomsBPS) > data.GrowthLane.InitialProcurementLimitPence ||
+		pack.plan.TargetStoresTons > data.Plan.TargetStoresTons+1e-9 {
+		return errors.New("new build no longer fits its frozen own cargo, customs and safe-store allocation")
+	}
+	for region, required := range pack.required {
+		if evidence.balances[region] < required {
+			return errors.New("new build must await completed regional funding before transport")
+		}
+	}
+	return nil
 }
 
 func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
@@ -522,7 +890,11 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 		if changed, err := r.maintain(ctx, ship, nil, nil); changed || err != nil {
 			return changed, err
 		}
-		plans := PlanVoyages(r.planningInput(ship))
+		input, err := r.committedPlanningInput(ctx, ship)
+		if err != nil {
+			return false, err
+		}
+		plans := PlanVoyages(input)
 		if len(plans) > 0 && plans[0].Accepted {
 			return r.startVoyage(ctx, ship, plans[0])
 		}
@@ -535,44 +907,45 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 	oldUpkeep := DailyUpkeep(r.stateCache.Ships, r.stateCache.Catalog, len(r.stateCache.Factors))
 	grownFleet := make([]ShipState, len(r.stateCache.Ships)+1)
 	copy(grownFleet, r.stateCache.Ships)
+	var best growthPackage
+	found := false
 	for _, port := range r.stateCache.Catalog.Ports {
 		if !port.HasShipyard || !r.fresh("books/"+port.ID) || r.stateCache.Markets[port.ID].Visibility != "quay" {
 			continue
 		}
 		for _, hull := range r.stateCache.Catalog.ShipClasses {
-			key := port.ID + "|" + hull.ID
 			quote, err := r.growthQuote(port, hull)
 			if err != nil {
 				continue
 			}
 			candidate := growthCandidate(port, hull)
-			input := r.planningInput(candidate)
 			grownFleet[len(grownFleet)-1] = candidate
 			deltaUpkeep := DailyUpkeep(grownFleet, r.stateCache.Catalog, len(r.stateCache.Factors)) - oldUpkeep
-			input.FleetDailyUpkeepPence = 0
-			plans := PlanVoyages(input)
-			for _, plan := range plans {
-				if !plan.Accepted || len(plan.FreightIDs) > 0 {
-					continue
-				}
-				decision, growthRequired := r.evaluateGrowthCandidate(port, hull, plan, quote, deltaUpkeep, &evidence)
-				if err := r.decision(ctx, "", "growth:"+key+":"+laneKey(plan), decision.Reason, decision); err != nil {
-					return false, err
-				}
-				if !decision.Accepted && growthRequired != nil {
-					changed, err := r.fundTreasury(ctx, evidence.balances, growthRequired)
-					if changed || err != nil {
-						return changed, err
-					}
-					continue
-				}
-				if decision.Accepted {
-					return r.startGrowth(ctx, port, hull, plan, decision.WorkingCapitalPence+evidence.workingByRegion[port.BankingRegion])
-				}
+			pack, feasible, err := r.growthAtYard(ctx, port, hull, quote, deltaUpkeep, &evidence, nil)
+			if err != nil {
+				return false, err
+			}
+			if feasible && (!found || betterGrowthPackage(pack, best)) {
+				best, found = pack, true
 			}
 		}
 	}
-	return false, nil
+	if !found {
+		return false, nil
+	}
+	key := "growth:" + best.port.ID + "|" + best.hull.ID + ":" + laneKey(best.plan)
+	if err := r.decision(ctx, "", key, best.decision.Reason, best.decision); err != nil {
+		return false, err
+	}
+	if changed, err := r.fundTreasury(ctx, evidence.balances, best.required); changed || err != nil {
+		return changed, err
+	}
+	for region, required := range best.required {
+		if evidence.balances[region] < required {
+			return false, r.hold(ctx, "", "best capital-return package awaits completed regional funding")
+		}
+	}
+	return r.startGrowth(ctx, best.port, best.hull, best.plan, best.decision.WorkingCapitalPence)
 }
 
 func (r *Runner) startGrowth(ctx context.Context, port Port, hull Hull, plan Plan, workingCapital int64) (bool, error) {
@@ -589,13 +962,21 @@ func (r *Runner) startGrowth(ctx context.Context, port Port, hull Hull, plan Pla
 		Destination: port.ID,
 	}
 	data := missionData{
-		Plan:                      plan,
+		Plan: plan,
+		GrowthLane: &growthLaneIntent{
+			AdmissionID:                  mission.Generation,
+			QuantityLimit:                plan.Quantity,
+			InitialProcurementLimitPence: growthCargoCash(plan, r.stateCache.Markets[port.ID].CustomsBPS),
+		},
 		BuildName:                 name,
 		BuildClass:                hull.ID,
 		BuildPort:                 port.ID,
 		TargetCannons:             min(4, hull.MaxCannons),
 		GrowthWorkingCapitalPence: workingCapital,
 		CostsKnown:                true,
+		ProvenLane:                laneKey(plan),
+		StartedGameHours:          r.stateCache.Clock.Calendar.TotalGameHours,
+		InitialLedgerIDs:          r.ledgerIDs(),
 		StartedAt:                 time.Now().UTC(),
 	}
 	// The generated name and complete payload become durable before dispatch.
@@ -609,57 +990,211 @@ func (r *Runner) driveGrowth(ctx context.Context, mission *store.Mission, data *
 	if time.Now().Before(data.CooldownUntil) {
 		return false, r.hold(ctx, "", "commissioning waits for persisted retry cooldown")
 	}
+	if data.Action != nil {
+		return false, r.hold(ctx, "", "commissioning retains its unresolved immutable action before any allocation transition")
+	}
+	if mission.Phase == "settling" || mission.Phase == "settled" {
+		return r.finishGrowthControl(ctx, mission, data)
+	}
 	if data.Action == nil &&
 		(mission.Phase == "growth_rejected" || (mission.Phase == "growth_build" && data.BuiltShipID == "")) {
-		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+		return r.finishGrowthControl(ctx, mission, data)
 	}
 	ship, exists := r.ship(data.BuiltShipID)
 	if !exists {
 		return false, r.hold(ctx, "", "build outcome not yet present in authoritative fleet; no duplicate build")
 	}
 	if ship.Ship.Status == "sunk" {
-		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+		return r.finishGrowthControl(ctx, mission, data)
+	}
+	if data.GrowthLane == nil || data.GrowthLane.AdmissionID != mission.Generation {
+		return false, r.hold(ctx, ship.Ship.ID, "commissioning lacks its durable admitted cargo allocation")
+	}
+	if data.GrowthLane.withdrawn() && (data.Plan.Kind != "aborted" || mission.Phase != "commissioning") {
+		data.Plan = Plan{
+			Kind: "aborted", ShipID: ship.Ship.ID, Destination: ship.Ship.CurrentPortID,
+			Reason: "the unsupported allocation was explicitly withdrawn; close the actual paid hull without further discretionary commissioning",
+		}
+		data.GrowthWorkingCapitalPence = 0
+		mission.Phase = "commissioning"
+		return true, r.saveMission(ctx, mission, data)
+	}
+	if mission.Phase == "commissioning" && data.Plan.Kind == "aborted" {
+		if ship.Voyage != nil || ship.Ship.Status != "berthed" && ship.Ship.Status != "anchored_roadstead" {
+			return false, r.hold(ctx, ship.Ship.ID, "withdrawn commissioning waits for the actual hull's authoritative stationary arrival")
+		}
+		if !emptyCargo(ship) || len(r.activeFreight(ship.Ship.ID)) > 0 {
+			return false, r.hold(ctx, ship.Ship.ID, "withdrawn commissioning preserves actual cargo and sealed obligations")
+		}
+		data.Plan.Destination = ship.Ship.CurrentPortID
+		return r.handoffGrowthVoyage(ctx, ship, mission, data)
 	}
 	if ship.Ship.CurrentPortID != data.BuildPort || ship.Ship.Status != "berthed" {
 		return false, r.hold(ctx, ship.Ship.ID, "new hull moved before commissioning; refit/provision awaits actual build port berth")
 	}
-	// A new hull consumes stores even while its cannon work is waiting.
-	if ship.Stores.ProvisionsTons+1e-9 < math.Max(1, data.Plan.TargetStoresTons) {
-		return r.provisionMission(ctx, ship, mission, data, math.Max(1, data.Plan.TargetStoresTons))
+	input, err := r.committedPlanningInput(ctx, ship)
+	if err != nil {
+		return false, err
+	}
+	if !r.growthSourceAuthority(input, data.BuildPort) {
+		return false, r.hold(ctx, ship.Ship.ID, "commissioning requires current lawful source quay access")
+	}
+	if err := growthOperatingAuthority(input, data.Plan); err != nil {
+		return false, r.hold(ctx, ship.Ship.ID, err.Error())
+	}
+	port, exists := findPort(input.Catalog, data.BuildPort)
+	if !exists {
+		return false, r.hold(ctx, ship.Ship.ID, "commissioning source is absent from the current catalog")
+	}
+	addedCannons := max(0, data.TargetCannons-ship.Ship.CannonsCount)
+	reserveGrowthCommissioning(&input, data)
+	quote := quoteGrowthDelivery(input, data.Plan, data.GrowthLane, true, nil)
+	if !quote.plan.Accepted {
+		data.Plan = Plan{
+			Kind: "aborted", ShipID: ship.Ship.ID, Destination: ship.Ship.CurrentPortID,
+			Reason: "fresh commissioning economics no longer fit the admitted allocation: " + quote.plan.Reason,
+		}
+		data.GrowthLane.QuantityLimit = 0
+		data.GrowthLane.InitialProcurementLimitPence = 0
+		data.GrowthLane.InitialProcurementComplete = true
+		data.GrowthLane.NextPlan = nil
+		data.GrowthWorkingCapitalPence = 0
+		mission.Phase = "commissioning"
+		return true, r.saveMission(ctx, mission, data)
+	}
+	data.Plan = quote.plan
+	data.GrowthWorkingCapitalPence = data.GrowthLane.InitialProcurementLimitPence
+	if len(quote.transfers) > 0 {
+		return true, r.stageGrowthFunding(ctx, ship, mission, data, quote.transfers[0])
 	}
 	if mission.Phase == "growth_refit" {
 		if ship.Ship.CannonsCount < data.TargetCannons {
-			input := r.planningInput(ship)
-			port, exists := findPort(input.Catalog, ship.Ship.CurrentPortID)
-			cost := (data.TargetCannons - ship.Ship.CannonsCount) * 15_000
-			if !exists || input.Balances[port.BankingRegion]-cost-data.GrowthWorkingCapitalPence < input.ReserveByRegion[port.BankingRegion] {
-				return false, r.hold(ctx, ship.Ship.ID, "commissioning cannons must preserve incumbent/new working capital and regional upkeep reserve; existing fleet may continue earning")
+			cost := addedCannons * 15_000
+			if input.Balances[port.BankingRegion]-cost-data.GrowthWorkingCapitalPence < input.ReserveByRegion[port.BankingRegion]-cost {
+				return false, r.hold(ctx, ship.Ship.ID, "commissioning cannons must preserve incumbent commitments, own cargo allocation and regional reserves")
 			}
 			return true, r.stage(ctx, mission, data, ship, "refit", "/v1/shipyard/modify-ship", map[string]any{"ship_id": ship.Ship.ID, "target_cannons_count": data.TargetCannons})
 		}
 		mission.Phase = "growth_provision"
 		return true, r.saveMission(ctx, mission, data)
 	}
+	if ship.Stores.ProvisionsTons+1e-9 < math.Max(1, data.Plan.TargetStoresTons) {
+		return r.provisionMission(ctx, ship, mission, data, math.Max(1, data.Plan.TargetStoresTons))
+	}
 	if mission.Phase == "growth_provision" {
-		if ship.Stores.ProvisionsTons+1e-9 < data.Plan.TargetStoresTons {
-			return r.provisionMission(ctx, ship, mission, data, math.Max(1, data.Plan.TargetStoresTons))
-		}
-		var actualHullCost *int64
-		if data.CostsKnown {
-			actualHullCost = &data.BuildCostPence
-		}
-		details := map[string]any{
-			"ship_id":                ship.Ship.ID,
-			"actual_hull_cost_pence": actualHullCost,
-			"costs_known":            data.CostsKnown,
-			"name":                   data.BuildName,
-			"cannons":                ship.Ship.CannonsCount,
-			"stores_tons":            ship.Stores.ProvisionsTons,
-		}
-		if err := r.decision(ctx, ship.Ship.ID, "growth_commissioned", "actual built hull is armed and safely provisioned; ordinary lane optimizer will fund the first cargo independently", details); err != nil {
-			return false, err
-		}
-		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+		mission.Phase = "commissioning"
+		return true, r.saveMission(ctx, mission, data)
+	}
+	if mission.Phase == "commissioning" {
+		return r.handoffGrowthVoyage(ctx, ship, mission, data)
 	}
 	return false, r.hold(ctx, "", "persisted growth stage has no safe transition")
+}
+
+func (r *Runner) handoffGrowthVoyage(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData) (bool, error) {
+	r.normalizeGrowthAccounting(data)
+	plan := data.Plan
+	plan.ShipID = ship.Ship.ID
+	next, nextData := r.newVoyage(ship, plan)
+	next.Generation = growthHandoffGeneration(mission.Generation, ship.Ship.ID)
+	lane := *data.GrowthLane
+	nextData.GrowthLane = &lane
+	// Retain committed capital as first-episode provenance, not a future
+	// reservation or an operating expense.
+	nextData.BuiltShipID = data.BuiltShipID
+	nextData.BuildCostPence = data.BuildCostPence
+	nextData.AcquisitionPence = data.AcquisitionPence
+	nextData.ProceedsPence = data.ProceedsPence
+	nextData.FeesPence = data.FeesPence
+	nextData.ProvisionsPence = data.ProvisionsPence
+	nextData.ExpensesPence = data.ExpensesPence
+	nextData.CostsKnown = data.CostsKnown
+	nextData.LastActionID = data.LastActionID
+	nextData.StartedAt = data.StartedAt
+	nextData.StartedGameHours = data.StartedGameHours
+	nextData.InitialLedgerIDs = data.InitialLedgerIDs
+	if data.ProvenLane != "" {
+		nextData.ProvenLane = data.ProvenLane
+	}
+	reason := "actual built hull is armed, safely provisioned and atomically assigned its admitted bounded first cargo"
+	if plan.Kind == "aborted" {
+		next.Phase = "closing"
+		nextData.BuyDone = true
+		lane.InitialProcurementComplete = true
+		reason = "freshly disproved initial lane released the actual built hull through an atomic action-free closing handoff"
+	}
+	next.Data = encode(nextData)
+	if _, err := r.db.HandoffGrowthMission(ctx, r.account.ID, mission.Generation, next); err != nil {
+		return false, err
+	}
+	var actualHullCost *int64
+	if data.CostsKnown {
+		actualHullCost = &data.BuildCostPence
+	}
+	return true, r.decision(ctx, ship.Ship.ID, "growth_commissioned", reason, map[string]any{
+		"ship_id":                         ship.Ship.ID,
+		"actual_hull_cost_pence":          actualHullCost,
+		"costs_known":                     data.CostsKnown,
+		"name":                            data.BuildName,
+		"cannons":                         ship.Ship.CannonsCount,
+		"stores_tons":                     ship.Stores.ProvisionsTons,
+		"quantity_limit":                  lane.QuantityLimit,
+		"initial_procurement_limit_pence": lane.InitialProcurementLimitPence,
+	})
+}
+
+// Older accounting boundaries cannot authorize assigning unrelated old ledger
+// debits to this mission. Keep measured payments and expose the missing basis.
+func (r *Runner) normalizeGrowthAccounting(data *missionData) bool {
+	changed := false
+	if data.InitialLedgerIDs == nil {
+		data.InitialLedgerIDs = r.ledgerIDs()
+		data.StartedGameHours = r.stateCache.Clock.Calendar.TotalGameHours
+		data.CostsKnown = false
+		changed = true
+	}
+	if data.StartedAt.IsZero() {
+		data.StartedAt = time.Now().UTC()
+		data.CostsKnown = false
+		changed = true
+	}
+	return changed
+}
+
+func (r *Runner) finishGrowthControl(ctx context.Context, mission *store.Mission, data *missionData) (bool, error) {
+	if data.Action != nil {
+		return false, r.hold(ctx, "", "growth closeout preserves the unresolved original action")
+	}
+	if data.Settlement == nil {
+		basisChanged := r.normalizeGrowthAccounting(data)
+		if data.LastActionID == "" {
+			if data.CostsKnown && data.BuiltShipID == "" && data.BuildCostPence == 0 &&
+				(mission.Phase == "growth_build" || mission.Phase == "growth_rejected") &&
+				data.AcquisitionPence == 0 && data.ProceedsPence == 0 && data.FeesPence == 0 &&
+				data.ProvisionsPence == 0 && data.ExpensesPence == 0 {
+				return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+			}
+			if basisChanged {
+				return true, r.saveMission(ctx, mission, data)
+			}
+			return false, r.hold(ctx, data.BuiltShipID, "growth closeout retains paid or uncertain exposure without genuine terminal action evidence")
+		}
+		data.Plan.Kind = "aborted"
+		data.Plan.Quantity = 0
+		data.DeliveredQuantity = 0
+		data.ReturnJourney = false
+		data.FinishAtDestination = false
+		if data.GrowthLane != nil {
+			data.GrowthLane.QuantityLimit = 0
+			data.GrowthLane.InitialProcurementLimitPence = 0
+			data.GrowthLane.InitialProcurementComplete = true
+			data.GrowthLane.NextPlan = nil
+		}
+	}
+	actor, exists := r.ship(data.BuiltShipID)
+	if !exists {
+		// Empty means company-only accounting, not an invented built ship.
+		actor.Ship.ID = data.BuiltShipID
+	}
+	return r.finishMission(ctx, actor, mission, data)
 }

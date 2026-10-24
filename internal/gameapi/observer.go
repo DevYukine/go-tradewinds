@@ -15,7 +15,7 @@ import (
 	"go.uber.org/zap"
 )
 
-var credentialPattern = regexp.MustCompile(`tw_(?:live|sk)_[A-Za-z0-9_-]+`)
+var credentialPattern = regexp.MustCompile(`tw_(?:live|test|sk)_[A-Za-z0-9_-]+`)
 
 func (c *Client) observe(method, path string, status int, duration time.Duration, request, response []byte, err error) {
 	c.mu.RLock()
@@ -30,14 +30,10 @@ func (c *Client) observe(method, path string, status int, duration time.Duration
 	if c.apiKey != "" {
 		secrets[c.apiKey] = struct{}{}
 	}
-	var requestValue, responseValue any
-	var requestValid, responseValid bool
-	if fn != nil {
-		requestValue, requestValid = diagnosticJSON(request)
-		responseValue, responseValid = diagnosticJSON(response)
-		collectSecrets(requestValue, secrets)
-		collectSecrets(responseValue, secrets)
-	}
+	requestValue, requestValid := diagnosticJSON(request)
+	responseValue, responseValid := diagnosticJSON(response)
+	collectSecrets(requestValue, secrets)
+	collectSecrets(responseValue, secrets)
 	secretValues := make([]string, 0, len(secrets))
 	for secret := range secrets {
 		secretValues = append(secretValues, secret)

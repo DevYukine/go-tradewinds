@@ -67,7 +67,16 @@ func (r *Runner) validateFreightDeparture(ship ShipState, destination string, da
 	days := 0.0
 	if !foundDestination && from != destination {
 		key := routeKey(from, destination, hull.ID)
-		route := r.stateCache.Routes[key]
+		if !r.fresh("routes/" + key) {
+			return fmt.Errorf("sealed freight itinerary needs fresh route %s", key)
+		}
+		route, exists := r.stateCache.Routes[key]
+		if !exists {
+			return fmt.Errorf("sealed freight itinerary has no route %s", key)
+		}
+		if err := ValidateRoute(route, hull, r.stateCache.Catalog.SeaZones); err != nil {
+			return fmt.Errorf("sealed freight itinerary: %w", err)
+		}
 		days = float64(route.TotalDistanceNM)/(float64(hull.BaseSpeedCentiknots)/100*0.8)/24 + 0.5
 		from = destination
 	}

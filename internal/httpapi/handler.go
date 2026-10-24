@@ -45,8 +45,8 @@ func NewHandler(db *store.Store, log *zap.Logger, addr string) http.Handler {
 			allowed[net.JoinHostPort(host, port)] = true
 		}
 	}
-	// Dashboard polls can fail together during an outage. Bound identical read
-	// warnings to one per minute per operation, including with LOG_LEVEL=debug.
+	// Dashboard polls can fail together during an outage or client disconnects.
+	// Bound identical read/write warnings to one per minute, even at debug.
 	readLog := log.WithOptions(zap.WrapCore(func(core zapcore.Core) zapcore.Core {
 		return zapcore.NewSamplerWithOptions(core, time.Minute, 1, 0)
 	}))
@@ -240,6 +240,6 @@ func (h *handler) json(w http.ResponseWriter, status int, value any) {
 func (h *handler) write(w http.ResponseWriter, body []byte) {
 	n, err := w.Write(body)
 	if err != nil || n != len(body) {
-		h.log.Warn("write read response", zap.Error(err), zap.Int("written_bytes", n), zap.Int("expected_bytes", len(body)))
+		h.readLog.Warn("write read response", zap.Error(err), zap.Int("written_bytes", n), zap.Int("expected_bytes", len(body)))
 	}
 }

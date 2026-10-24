@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/store"
 	"github.com/google/uuid"
@@ -325,4 +327,342 @@ func interceptLoggingMutation(t *testing.T, h *recoveryHarness, mutation http.Ha
 	// runner() still installs the fixture's real request observer and durable
 	// store. Only the upstream success body or in-flight outcome is varied.
 	h.api.server = server
+}
+
+func TestDispatchLogsTypedMutationFamiliesWithActualOutcomesAndSilentReplay(t *testing.T) {
+	cases := []struct {
+		stage    string
+		path     string
+		body     string
+		response string
+		expected map[string]any
+	}{
+		{
+			stage: "buy", path: "/v1/market/place-order",
+			body:     `{"side":"bid","quantity":4,"price_pence":110,"commodity_id":"grain"}`,
+			response: `{"commodity_id":"grain","filled_quantity":3,"total_gross_pence":300,"customs_duty_pence":6}`,
+			expected: map[string]any{"quantity_tons": int64(3), "gross_pence": int64(300), "customs_pence": int64(6), "side": "bid"},
+		},
+		{
+			stage: "sell", path: "/v1/market/place-order",
+			body:     `{"side":"ask","quantity":4,"price_pence":110,"commodity_id":"grain"}`,
+			response: `{"commodity_id":"grain","filled_quantity":3,"total_gross_pence":345,"customs_duty_pence":0}`,
+			expected: map[string]any{"quantity_tons": int64(3), "gross_pence": int64(345), "customs_pence": int64(0), "side": "ask"},
+		},
+		{
+			stage: "provision", path: "/v1/market/place-order",
+			body:     `{"side":"bid","quantity":4,"price_pence":110,"commodity_id":"provisions","into_stores":true}`,
+			response: `{"commodity_id":"provisions","filled_quantity":0,"total_gross_pence":0,"customs_duty_pence":0}`,
+			expected: map[string]any{"quantity_tons": int64(0), "gross_pence": int64(0), "customs_pence": int64(0)},
+		},
+		{
+			stage: "accept-freight", path: "/v1/contract/accept-freight",
+			body:     `{"contract_id":"freight-contract"}`,
+			response: `{"contract_id":"freight-contract","commodity_id":"grain","quantity":3,"reward_pence":1290,"collateral_pence":200,"delivery_deadline":"2030-01-01T00:00:00Z"}`,
+			expected: map[string]any{"contract_id": "freight-contract", "quantity_tons": int64(3), "reward_pence": int64(1290), "collateral_pence": int64(200)},
+		},
+		{
+			stage: "deliver-freight", path: "/v1/contract/deliver-freight",
+			body:     `{"contract_id":"freight-contract"}`,
+			response: `{"contract_id":"freight-contract","commodity_id":"grain","delivered_quantity":3,"reward_paid_pence":1290}`,
+			expected: map[string]any{"contract_id": "freight-contract", "quantity_tons": int64(3), "reward_pence": int64(1290)},
+		},
+		{
+			stage: "deliver-charter", path: "/v1/contract/deliver-charter",
+			body:     `{"contract_id":"charter-contract","quantity":4}`,
+			response: `{"contract_id":"charter-contract","commodity_id":"grain","delivered_quantity":3,"reward_paid_pence":1380}`,
+			expected: map[string]any{"contract_id": "charter-contract", "quantity_tons": int64(3), "reward_pence": int64(1380)},
+		},
+		{
+			stage: "depart", path: "/v1/fleet/depart", body: `{}`,
+			response: `{"berth_dues_pence":120,"berth_dues_debt_pence":0}`,
+			expected: map[string]any{"berth_dues_pence": int64(120), "berth_dues_debt_pence": int64(0), "cargo_tons": int64(7)},
+		},
+		{
+			stage: "dock", path: "/v1/fleet/dock", body: `{}`, response: `{}`,
+			expected: map[string]any{},
+		},
+		{
+			stage: "offshore", path: "/v1/fleet/offshore", body: `{}`,
+			response: `{"berth_dues_pence":125,"berth_dues_debt_pence":0}`,
+			expected: map[string]any{"berth_dues_pence": int64(125), "berth_dues_debt_pence": int64(0)},
+		},
+		{
+			stage: "build", path: "/v1/shipyard/build-ship",
+			body:     `{"name":"Pikachu","ship_class":"hoy","build_mode":"turnkey_cash"}`,
+			response: `{"name":"Pikachu","ship_class":"hoy","total_cost_pence":60000}`,
+			expected: map[string]any{"built_ship_id": recoveryBuiltShipID, "ship_name": "Pikachu", "ship_class": "hoy", "cost_pence": int64(60000)},
+		},
+		{
+			stage: "refit", path: "/v1/shipyard/modify-ship",
+			body: `{"target_cannons_count":4}`, response: `{}`,
+			expected: map[string]any{"target_cannons_count": int64(4), "cost_known": false},
+		},
+		{
+			stage: "settings", path: "/v1/company/settings",
+			body:     `{"auto_remit_for_bills":true,"auto_remit_min_reserve_pence":234567}`,
+			response: `{"auto_remit_for_bills":true,"auto_remit_min_reserve_pence":234567}`,
+			expected: map[string]any{"auto_remit_for_bills": true, "reserve_pence": int64(234567)},
+		},
+		{
+			stage: "remit", path: "/v1/treasury/remit",
+			body:     `{"from_region":"north","to_region":"south","gross_amount_pence":1000}`,
+			response: `{"gross_amount_pence":1000,"fee_pence":10,"net_credited_pence":990}`,
+			expected: map[string]any{"from_region": "north", "to_region": "south", "gross_pence": int64(1000), "fee_pence": int64(10), "net_credited_pence": int64(990)},
+		},
+		{
+			stage: "sourcing-remit", path: "/v1/treasury/remit",
+			body:     `{"from_region":"north","to_region":"south","gross_amount_pence":1000}`,
+			response: `{"gross_amount_pence":1000,"fee_pence":10,"net_credited_pence":990}`,
+			expected: map[string]any{"from_region": "north", "to_region": "south", "gross_pence": int64(1000), "fee_pence": int64(10), "net_credited_pence": int64(990)},
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.stage, func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			var sends atomic.Int64
+			interceptLoggingMutation(t, h, func(writer http.ResponseWriter, request *http.Request) {
+				sends.Add(1)
+				if request.URL.Path != test.path {
+					t.Errorf("unexpected mutation %s", request.URL.Path)
+				}
+				var response map[string]any
+				if err := json.Unmarshal([]byte(test.response), &response); err != nil {
+					t.Errorf("invalid fixture outcome: %v", err)
+					http.Error(writer, "invalid fixture outcome", http.StatusInternalServerError)
+					return
+				}
+				switch test.stage {
+				case "build":
+					response["ship_id"] = recoveryBuiltShipID
+				case "accept-freight":
+					response["carrier_ship_id"] = recoveryShipLapras
+					response["dest_port_id"] = recoveryFarPort
+				case "depart":
+					response["ship_id"] = recoveryShipLapras
+					response["dest_port_id"] = recoveryFarPort
+				}
+				h.api.writeJSON(writer, http.StatusOK, response)
+			})
+			runner := h.runner(primaryTestKey)
+			core, logs := observer.New(zap.DebugLevel)
+			runner.log = zap.New(core)
+			h.api.setFleet([]map[string]any{berthedLaprasRow()})
+			refreshLoggingState(t, h, runner)
+			ship, _ := runner.ship(recoveryShipLapras)
+			ship.CargoManifest = map[string]int64{recoveryGrain: 7}
+			data := missionData{
+				Plan:      Plan{Kind: "spot", ShipID: recoveryShipLapras, Destination: recoveryFarPort, Commodity: recoveryGrain},
+				Eligible:  map[string]int64{recoveryGrain: 7},
+				BuildName: "Pikachu", BuildClass: "hoy", BuildPort: recoveryHomePort,
+				CostsKnown: true,
+			}
+			if test.stage == "deliver-freight" {
+				data.Freight = []freightObligation{{ContractID: "freight-contract", Commodity: recoveryGrain, Quantity: 3}}
+			}
+			shipID := recoveryShipLapras
+			if test.stage == "build" {
+				shipID, ship = "__growth", ShipState{}
+			} else if test.stage == "settings" || test.stage == "remit" {
+				shipID, ship = "__treasury", ShipState{}
+			}
+			h.putMission(shipID, uuid.NewString(), test.stage, data)
+			mission, data := h.mission(shipID)
+			var body map[string]any
+			if err := json.Unmarshal([]byte(test.body), &body); err != nil {
+				t.Fatal(err)
+			}
+			if ship.Ship.ID != "" {
+				body["ship_id"] = ship.Ship.ID
+			}
+			if test.stage == "buy" || test.stage == "sell" || test.stage == "provision" || test.stage == "build" {
+				body["port_id"] = recoveryHomePort
+			}
+			if test.stage == "depart" {
+				body["dest_port_id"] = recoveryFarPort
+			}
+			if err := runner.stage(h.ctx, mission, &data, ship, test.stage, test.path, body); err != nil {
+				t.Fatal(err)
+			}
+			mission, data = h.mission(shipID)
+			replayMission, replayData := h.mission(shipID)
+			action := data.Action
+			// An existing pending journal is a supported send path. Economic
+			// first-send admission is covered separately from outcome logging.
+			if _, err := h.db.BeginAction(h.ctx, &store.Action{ID: action.ID, AccountID: h.account.ID, Method: action.Method, Path: action.Path, Body: action.Body}); err != nil {
+				t.Fatal(err)
+			}
+			if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed {
+				t.Fatalf("typed outcome was not consumed: changed %t error %v", changed, err)
+			}
+			commits := logs.FilterMessage("action committed").All()
+			if len(commits) != 1 || commits[0].Level != zap.InfoLevel {
+				t.Fatalf("typed outcome did not announce once at INFO: %+v", commits)
+			}
+			fields := commits[0].ContextMap()
+			if fields["action_id"] != action.ID || fields["stage"] != test.stage {
+				t.Fatalf("outcome lost immutable action identity: %+v", fields)
+			}
+			if ship.Ship.ID != "" && (fields["ship_id"] != ship.Ship.ID || fields["ship"] != ship.Ship.Name || fields["port_id"] != recoveryHomePort) {
+				t.Fatalf("outcome lost its authoritative actor and port: %+v", fields)
+			}
+			for key, want := range test.expected {
+				if fields[key] != want {
+					t.Errorf("%s = %v, want %v", key, fields[key], want)
+				}
+			}
+			_, persisted := h.mission(shipID)
+			if persisted.Action != nil || persisted.LastActionID != action.ID {
+				t.Fatalf("announcement preceded durable consumption: %+v", persisted)
+			}
+			if changed, err := runner.dispatch(h.ctx, replayMission, &replayData); err != nil || !changed {
+				t.Fatalf("completed replay: changed %t error %v", changed, err)
+			}
+			if sends.Load() != 1 || logs.FilterMessage("action committed").Len() != 1 {
+				t.Fatal("completed replay repeated a mutation or outcome")
+			}
+		})
+	}
+}
+
+func TestNamedBuildRecoveryLogsEverySupportedJournalPathWithoutInventingCost(t *testing.T) {
+	for _, state := range []string{"pending_expiry", "committed_uninterpreted", "persisted_reconciliation"} {
+		t.Run(state, func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			runner := h.runner(primaryTestKey)
+			mission, data := stageLoggingGrowth(t, h, runner)
+			core, logs := observer.New(zap.DebugLevel)
+			runner.log = zap.New(core)
+			action := data.Action
+			persisted, err := h.db.BeginAction(h.ctx, &store.Action{ID: action.ID, AccountID: h.account.ID, Method: action.Method, Path: action.Path, Body: action.Body})
+			if err != nil {
+				t.Fatal(err)
+			}
+			built := berthedLaprasRow()
+			actor := built["ship"].(map[string]any)
+			actor["id"], actor["name"], actor["ship_class"] = recoveryBuiltShipID, data.BuildName, data.BuildClass
+			actor["current_port_id"] = data.BuildPort
+			// startGrowth names the hull with the first free catalog name,
+			// which is "Lapras" for this fixture fleet, so the untouched decoy
+			// row must not keep that name: exactly one hull may carry the
+			// durable build name for the authoritative name+class scan.
+			decoy := berthedLaprasRow()
+			decoy["ship"].(map[string]any)["name"] = "Charizard"
+			h.api.setFleet([]map[string]any{decoy, built})
+			refreshLoggingState(t, h, runner)
+			observed, _ := runner.ship(recoveryBuiltShipID)
+			switch state {
+			case "committed_uninterpreted":
+				err = h.db.CompleteAction(h.ctx, action.ID, http.StatusOK, json.RawMessage(`{"committed_uninterpreted":true}`), nil)
+			case "persisted_reconciliation":
+				err = h.db.ReconcileAction(h.ctx, action.ID, encode(map[string]any{"kind": "authoritative_named_build", "ship": observed}))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var changed bool
+			if state == "pending_expiry" {
+				changed, err = runner.reconcileExpired(h.ctx, mission, &data, persisted)
+			} else {
+				changed, err = runner.dispatch(h.ctx, mission, &data)
+			}
+			if err != nil || !changed {
+				t.Fatalf("recover named build: changed %t error %v", changed, err)
+			}
+			recoveries := logs.FilterMessage("action recovered").All()
+			if len(recoveries) != 1 || recoveries[0].Level != zap.InfoLevel {
+				t.Fatalf("named build recovery missing: %+v", recoveries)
+			}
+			fields := recoveries[0].ContextMap()
+			if fields["action_id"] != action.ID || fields["stage"] != "build" || fields["built_ship_id"] != recoveryBuiltShipID || fields["ship"] != data.BuildName || fields["port_id"] != data.BuildPort {
+				t.Fatalf("recovery lost its observed identity: %+v", fields)
+			}
+			for key := range fields {
+				if strings.HasSuffix(key, "_pence") {
+					t.Fatalf("recovery invented a receipt field: %s", key)
+				}
+			}
+			_, saved := h.mission("__growth")
+			if saved.Action != nil || saved.LastActionID != action.ID || saved.BuiltShipID != recoveryBuiltShipID {
+				t.Fatalf("recovery announcement preceded its durable transition: %+v", saved)
+			}
+			if len(h.api.mutationsFor("/v1/shipyard/build-ship")) != 0 || logs.FilterMessage("action committed").Len() != 0 {
+				t.Fatal("recovery resent a build or claimed a fresh receipt")
+			}
+		})
+	}
+}
+
+func TestRejectedActionPolicyRedactsBeforeBoundingAndKeepsReplaySilent(t *testing.T) {
+	const accountSecret = "synthetic passphrase, never used against the real game"
+	for _, test := range []struct {
+		code   string
+		status int
+		level  zapcore.Level
+	}{
+		{code: "ship_not_berthed", status: http.StatusConflict, level: zap.DebugLevel},
+		{code: "conflict", status: http.StatusConflict, level: zap.WarnLevel},
+		{code: "unexpected_conflict", status: http.StatusConflict, level: zap.WarnLevel},
+		{code: "rate_limit_exceeded", status: http.StatusTooManyRequests, level: zap.DebugLevel},
+	} {
+		t.Run(test.code, func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			var sends atomic.Int64
+			interceptLoggingMutation(t, h, func(writer http.ResponseWriter, request *http.Request) {
+				sends.Add(1)
+				writer.Header().Set("Retry-After", "0")
+				h.api.writeProblem(writer, test.status, test.code, strings.Repeat("界", 500)+accountSecret+" tw_live_rejected_reason_secret")
+			})
+			runner := h.runner(primaryTestKey)
+			core, logs := observer.New(zap.DebugLevel)
+			runner.log = zap.New(core)
+			h.api.setVaultBalance("north", 500_000)
+			fleet := berthedLaprasRow()
+			fleet["ship"].(map[string]any)["name"] = accountSecret + "-tw_live_rejected_actor_secret"
+			h.api.setFleet([]map[string]any{fleet})
+			refreshLoggingState(t, h, runner)
+			ship, _ := runner.ship(recoveryShipLapras)
+			if changed, err := runner.startMaintenance(h.ctx, ship, "provision", "/v1/market/place-order", map[string]any{
+				"ship_id": ship.Ship.ID, "port_id": ship.Ship.CurrentPortID,
+				"commodity_id": "provisions", "side": "bid", "into_stores": true, "quantity": 1, "price_pence": 100,
+			}); err != nil || !changed {
+				t.Fatalf("stage provision: changed %t error %v", changed, err)
+			}
+			mission, data := h.mission(recoveryShipLapras)
+			replayMission, replayData := h.mission(recoveryShipLapras)
+			actionID := data.Action.ID
+			if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed {
+				t.Fatalf("consume rejection: changed %t error %v", changed, err)
+			}
+			rejections := logs.FilterMessage("action rejected").All()
+			if len(rejections) != 1 || rejections[0].Level != test.level {
+				t.Fatalf("wrong audited rejection severity: %+v", rejections)
+			}
+			fields := rejections[0].ContextMap()
+			reason, _ := fields["reason"].(string)
+			if fields["action_id"] != actionID || fields["port_id"] != recoveryHomePort || !strings.Contains(reason, "[REDACTED]") || !strings.HasSuffix(reason, "...") {
+				t.Fatalf("rejection lost safe context or bounded-before-redacting: %+v", fields)
+			}
+			if _, ok := fields["retry_at"].(time.Time); !ok {
+				t.Fatalf("handled wait lost its recorded cooldown: %+v", fields)
+			}
+			for _, entry := range logs.All() {
+				encoded, err := json.Marshal(entry.ContextMap())
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, secret := range []string{accountSecret, "tw_live_rejected_actor_secret", "tw_live_rejected_reason_secret", primaryTestKey} {
+					if strings.Contains(string(encoded), secret) {
+						t.Fatalf("rejection context exposed credential %q", secret)
+					}
+				}
+			}
+			if changed, err := runner.dispatch(h.ctx, replayMission, &replayData); err != nil || !changed {
+				t.Fatalf("replay rejection: changed %t error %v", changed, err)
+			}
+			if sends.Load() != 1 || logs.FilterMessage("action rejected").Len() != 1 {
+				t.Fatal("completed rejection replay repeated a POST or announcement")
+			}
+		})
+	}
 }

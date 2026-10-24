@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -27,25 +28,37 @@ type decisionFingerprint struct {
 	writtenAt time.Time
 }
 
+type currentHold struct {
+	ShipID string `json:"ship_id"`
+	Reason string `json:"reason"`
+}
+
 type Runner struct {
-	api                *gameapi.Client
-	db                 *store.Store
-	account            store.Account
-	log                *zap.Logger
-	opts               Options
-	snapshot           map[string]json.RawMessage
-	meta               map[string]DatasetMeta
-	stateCache         accountState
-	generation         string
-	holding            []string
-	lastStatusAt       time.Time
-	decisionHashes     map[string]decisionFingerprint
-	lastMutationStatus atomic.Int64
-	expenseOwners      map[string]string
-	nextDeadline       time.Time
-	publishedFinancial atomic.Uint64
-	capturedFinancial  uint64
-	financialSession   string
+	api                    *gameapi.Client
+	db                     *store.Store
+	account                store.Account
+	log                    *zap.Logger
+	opts                   Options
+	snapshot               map[string]json.RawMessage
+	meta                   map[string]DatasetMeta
+	stateCache             accountState
+	generation             string
+	holding                []currentHold
+	assessedShipIDs        []string
+	fleetObserved          bool
+	lastShipStatus         map[string]string
+	decisionHashes         map[string]decisionFingerprint
+	lastMutationStatus     atomic.Int64
+	expenseOwners          map[string]string
+	nextDeadline           time.Time
+	publishedFinancial     atomic.Uint64
+	capturedFinancial      uint64
+	publishedControl       atomic.Uint64
+	capturedControl        uint64
+	financialSession       string
+	requestJournalMu       sync.Mutex
+	requestJournalCauses   map[[sha256.Size]byte]struct{}
+	requestJournalFailures int
 }
 
 func New(api *gameapi.Client, db *store.Store, account store.Account, log *zap.Logger, opts Options) *Runner {
@@ -62,12 +75,14 @@ func New(api *gameapi.Client, db *store.Store, account store.Account, log *zap.L
 		api:              api,
 		db:               db,
 		account:          account,
-		log:              log.With(zap.String("account_id", account.ID)),
+		log:              log.With(zap.String("company_id", account.CompanyID)),
 		opts:             opts,
 		snapshot:         make(map[string]json.RawMessage),
 		meta:             make(map[string]DatasetMeta),
 		decisionHashes:   make(map[string]decisionFingerprint),
-		holding:          make([]string, 0),
+		holding:          make([]currentHold, 0),
+		assessedShipIDs:  make([]string, 0),
+		lastShipStatus:   make(map[string]string),
 		financialSession: uuid.NewString(),
 	}
 }
@@ -91,6 +106,10 @@ var financialEvents = map[string]bool{
 	"crown_bailiff_warehouse_seizure": true,
 	"crown_bailiff_upkeep_seizure":    true,
 	"company_bankruptcy_reset":        true,
+	"insurance_underwritten":          true,
+	"insurance_cover_reduced":         true,
+	"insurance_claim_paid":            true,
+	"insurance_policy_closed":         true,
 }
 
 // Run owns the account's one mutation loop. SSE only invalidates REST state;
@@ -106,12 +125,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer release()
 	ctx = owner
 	r.api.SetObserver(func(method, path string, status int, duration time.Duration, request, response []byte, errText string) {
-		if method != "GET" {
-			r.lastMutationStatus.Store(int64(status))
-		}
-		if err := r.db.RecordRequest(ctx, r.account.ID, method, path, status, duration, request, response, errText); err != nil && ctx.Err() == nil {
-			r.log.Warn("record request", zap.Error(err))
-		}
+		r.observeRequest(ctx, method, path, status, duration, request, response, errText)
 	})
 	snapshot, err := r.db.Snapshot(ctx, r.account.ID)
 	if err != nil {
@@ -129,7 +143,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.expenseOwners = make(map[string]string)
 	}
 	messages := make(chan streamMessage, 256)
-	var publishedControl atomic.Uint64
+	publishedControl := &r.publishedControl
 	var handledControl uint64
 	// Financial events publish before enqueue like controls, so a barrier
 	// behind a full ordinary queue still vetoes work against an earlier
@@ -142,7 +156,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		reconnecting := stopStream != nil
 		streamContext, cancel := context.WithCancel(ctx)
 		stopStream = cancel
 		go func() {
@@ -159,9 +172,6 @@ func (r *Runner) Run(ctx context.Context) error {
 					// control the stream stays open and ordinary events keep
 					// flowing.
 					message.financialEpoch = publishedFinancial.Add(1)
-				} else if reconnecting {
-					r.log.Info("event stream reconnected")
-					reconnecting = false
 				}
 				select {
 				case messages <- message:
@@ -195,6 +205,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer timer.Stop()
 	backoff := time.Second
 	var reconnectAt time.Time
+	streamDegraded := false
 	handleMessage := func(message streamMessage) error {
 		if message.controlEpoch != 0 {
 			handledControl = message.controlEpoch
@@ -211,7 +222,15 @@ func (r *Runner) Run(ctx context.Context) error {
 			reconnectAt = time.Now().Add(backoff + jitter)
 			backoff = min(30*time.Second, backoff*2)
 			if message.err != nil {
-				r.log.Warn("event stream disconnected; REST resync required", zap.Error(message.err))
+				level := zap.WarnLevel
+				if streamDegraded {
+					level = zap.DebugLevel
+				}
+				if entry := r.log.Check(level, "event stream disconnected; REST resync required"); entry != nil {
+					cause := r.db.ScrubOutcomeTexts(ctx, r.account.ID, []string{message.err.Error()})[0]
+					entry.Write(zap.String("cause", cause))
+				}
+				streamDegraded = true
 			}
 			return nil
 		}
@@ -226,7 +245,10 @@ func (r *Runner) Run(ctx context.Context) error {
 			if err := r.db.ResetCursor(ctx, r.account.ID); err != nil {
 				return err
 			}
-			r.log.Warn("event stream cursor gap; cursor reset and full REST resync required")
+			if !streamDegraded {
+				r.log.Warn("event stream cursor gap; cursor reset and full REST resync required")
+			}
+			streamDegraded = true
 			return r.decision(ctx, "", "stream_gap", "rejected cursor reset to 0; full REST resynchronization precedes any mutation", event.Data)
 		}
 		if event.ID != "" {
@@ -234,6 +256,10 @@ func (r *Runner) Run(ctx context.Context) error {
 				return err
 			}
 			backoff = time.Second
+			if streamDegraded {
+				r.log.Info("event stream reconnected")
+				streamDegraded = false
+			}
 		}
 		return nil
 	}
@@ -266,6 +292,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.generation = uuid.NewString()
 		captureControl := handledControl
 		captureFinancial := handledFinancial
+		r.capturedControl = captureControl
 		r.capturedFinancial = captureFinancial
 		if err := r.refresh(ctx); err != nil {
 			return err
@@ -289,6 +316,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		// ordinary events continue.
 		financialStale := captureFinancial != handledFinancial || handledFinancial != publishedFinancial.Load()
 		r.holding = r.holding[:0]
+		r.assessedShipIDs = r.assessedShipIDs[:0]
 		changed := false
 		identityReady := r.fresh("whoami") && r.fresh("profile") && r.fresh("player")
 		if financialStale {
@@ -309,15 +337,6 @@ func (r *Runner) Run(ctx context.Context) error {
 				return err
 			}
 		}
-		mode := "observe"
-		if r.opts.Execute {
-			mode = "execute"
-		}
-		r.snapshot["_engine"] = encode(map[string]any{"mode": mode, "holding_reasons": r.holding, "generation": r.generation})
-		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
-			return err
-		}
-		r.logStatus(ctx, time.Now())
 		financialStale = financialStale || captureFinancial != publishedFinancial.Load()
 		delay := r.nextWake()
 		if changed {
@@ -329,6 +348,28 @@ func (r *Runner) Run(ctx context.Context) error {
 		if !reconnectAt.IsZero() {
 			delay = min(delay, max(0, time.Until(reconnectAt)))
 		}
+		mode := "observe"
+		if r.opts.Execute {
+			mode = "execute"
+		}
+		observedAt := time.Now().UTC()
+		r.snapshot["_engine"] = encode(map[string]any{
+			"mode":              mode,
+			"holds":             r.holding,
+			"assessed_ship_ids": r.assessedShipIDs,
+			"generation":        r.generation,
+			"observed_at":       observedAt,
+			"next_check_at":     observedAt.Add(delay),
+		})
+		r.meta["_engine"] = DatasetMeta{
+			Generation: r.generation, AttemptedAt: observedAt,
+			UpdatedAt: observedAt, Complete: true,
+		}
+		r.snapshot["_meta"] = encode(r.meta)
+		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+			return err
+		}
+		r.logStatus(ctx, observedAt)
 		if !timer.Stop() {
 			select {
 			case <-timer.C:
@@ -336,6 +377,47 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 		timer.Reset(delay)
+	}
+}
+
+func (r *Runner) observeRequest(ctx context.Context, method, path string, status int, duration time.Duration, request, response []byte, errText string) {
+	if method != "GET" {
+		r.lastMutationStatus.Store(int64(status))
+	}
+	err := r.db.RecordRequest(ctx, r.account.ID, method, path, status, duration, request, response, errText)
+	if ctx.Err() != nil {
+		return
+	}
+	r.requestJournalMu.Lock()
+	defer r.requestJournalMu.Unlock()
+	if err == nil {
+		if r.requestJournalFailures > 0 {
+			r.log.Info("request journal persistence recovered", zap.Int("failed_requests", r.requestJournalFailures))
+			r.requestJournalCauses = nil
+			r.requestJournalFailures = 0
+		}
+		return
+	}
+	r.requestJournalFailures++
+	cause := err.Error()
+	var sqlState interface{ SQLState() string }
+	if errors.As(err, &sqlState) {
+		cause = sqlState.SQLState()
+	}
+	fingerprint := sha256.Sum256([]byte(cause))
+	if _, warned := r.requestJournalCauses[fingerprint]; warned {
+		return
+	}
+	if r.requestJournalCauses == nil {
+		r.requestJournalCauses = make(map[[sha256.Size]byte]struct{})
+	}
+	r.requestJournalCauses[fingerprint] = struct{}{}
+	if entry := r.log.Check(zap.WarnLevel, "record request"); entry != nil {
+		fields := []zap.Field{zap.String("method", method), zap.Int("status", status)}
+		entry.Write(r.scrubOutcomeFields(ctx, fields, []outcomeText{
+			{field: "path", value: path},
+			{field: "cause", value: err.Error()},
+		})...)
 	}
 }
 
@@ -454,7 +536,12 @@ func (r *Runner) rememberDecision(key string, fingerprint [sha256.Size]byte, now
 }
 
 func (r *Runner) hold(ctx context.Context, shipID, reason string) error {
-	r.holding = append(r.holding, reason)
+	holdShipID := shipID
+	switch shipID {
+	case "__treasury", "__growth", "__underwriting":
+		holdShipID = ""
+	}
+	r.holding = append(r.holding, currentHold{ShipID: holdShipID, Reason: reason})
 	return r.decision(ctx, shipID, "hold", reason, nil)
 }
 
@@ -464,17 +551,13 @@ func (r *Runner) planningInput(ship ShipState) PlanningInput {
 
 func (r *Runner) planningInputFrom(ship ShipState, state accountState) PlanningInput {
 	balances := make(map[string]int64)
-	reserves := make(map[string]int64)
+	reserves := obligationReserves(state, r.snapshot, r.opts.ReservePence)
 	for _, vault := range state.Vaults {
 		if vault.AccountType == "vault" {
 			balances[vault.BankingRegion] += vault.BalancePence
-			reserves[vault.BankingRegion] = r.opts.ReservePence
 		}
 	}
 	upkeep := DailyUpkeep(state.Ships, state.Catalog, len(state.Factors))
-	if home, exists := findPort(state.Catalog, state.HomePortID); exists {
-		reserves[home.BankingRegion] = r.opts.ReservePence + 3*upkeep
-	}
 	return PlanningInput{
 		Now:                   time.Now(),
 		CompanyID:             r.account.CompanyID,

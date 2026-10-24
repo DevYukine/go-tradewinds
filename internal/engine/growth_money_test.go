@@ -67,8 +67,9 @@ func TestGrowthReservesWholeOutstandingCharterLotBeforeRepeatDemand(t *testing.T
 		t.Fatalf("unallocated 100t charter must support the proven candidate: changed %t error %v; holds %v", changed, err, runner.holding)
 	}
 	_, control := growthMissionWithHoldDiagnostics(t, h, runner)
-	if control.Plan.Quantity != 20 || math.Abs(control.Plan.Economics.GameDays-1) > 1e-9 {
-		t.Fatalf("fixture must offer a 20t daily candidate, got %+v", control.Plan)
+	if control.Plan.Quantity != 20 || control.Plan.Economics.GameDays <= 0 ||
+		control.Plan.Economics.BallastRepeatGameDays <= control.Plan.Economics.GameDays {
+		t.Fatalf("fixture must offer a 20t candidate with an explicitly costed repeat, got %+v", control.Plan)
 	}
 	if err := h.db.DeleteMission(h.ctx, h.account.ID, "__growth"); err != nil {
 		t.Fatalf("release control build intent: %v", err)
@@ -78,6 +79,7 @@ func TestGrowthReservesWholeOutstandingCharterLotBeforeRepeatDemand(t *testing.T
 	incumbent.ShipID = recoveryShipBlastoise
 	incumbent.Quantity = 100
 	incumbent.Economics.GameDays = 10
+	incumbent.Economics.BallastRepeatGameDays = 10
 	h.putMission(recoveryShipBlastoise, "whole-outstanding-lot", "sailing", missionData{Plan: incumbent, CostsKnown: true})
 	state.Catalog.ShipClasses = append(state.Catalog.ShipClasses, Hull{ID: "incumbent-barge", HoldCapacityTons: 120, CrewRequired: 10})
 	state.Ships[0].Ship.ShipClass = "incumbent-barge"
@@ -100,6 +102,7 @@ func TestGrowthReservesWholeOutstandingCharterLotBeforeRepeatDemand(t *testing.T
 	incumbent.Kind = "charter+freight"
 	incumbent.FreightIDs = []string{"sealed-freight"}
 	incumbent.Economics.GameDays = 100
+	incumbent.Economics.BallastRepeatGameDays = 100
 	state.Catalog.ShipClasses[1].HoldCapacityTons = 240
 	state.Ships[0].Ship.Status = "berthed"
 	state.Ships[0].Ship.CurrentPortID = recoveryFarPort
@@ -335,6 +338,7 @@ func TestGrowthMixedFreightKeepsOrdinarySpotBidReservation(t *testing.T) {
 	incumbent.FreightIDs = []string{"sealed-freight"}
 	incumbent.Quantity = 100
 	incumbent.Economics.GameDays = 100 * control.Plan.Economics.GameDays
+	incumbent.Economics.BallastRepeatGameDays = 100 * control.Plan.Economics.BallastRepeatGameDays
 	state := &runner.stateCache
 	state.Catalog.ShipClasses = append(state.Catalog.ShipClasses, Hull{ID: "incumbent-barge", HoldCapacityTons: 240, CrewRequired: 10})
 	state.Ships[0].Ship.ShipClass = "incumbent-barge"
@@ -355,10 +359,17 @@ func TestGrowthMixedFreightKeepsOrdinarySpotBidReservation(t *testing.T) {
 		Freight: []freightObligation{{ContractID: "sealed-freight", Commodity: recoveryGrain, Quantity: 100, Destination: recoveryFarPort, Settled: true}},
 	}
 	h.putMission(recoveryShipBlastoise, "freight-before-spot", "arrival", mixed)
-	if changed, err := runner.considerGrowth(h.ctx); err != nil || changed {
-		t.Fatalf("sealed freight delivery released ordinary spot bids: changed %t error %v", changed, err)
+	if changed, err := runner.considerGrowth(h.ctx); err != nil || !changed {
+		t.Fatalf("one missing bid ton must permit a smaller funded package without releasing the ordinary lot: changed %t error %v", changed, err)
 	}
-	h.missingMission("__growth")
+	_, smaller := growthMissionWithHoldDiagnostics(t, h, runner)
+	if smaller.Plan.Quantity >= control.Plan.Quantity ||
+		2*(smaller.Plan.Quantity+1)+100 > bids[0].RemainingQuantity {
+		t.Fatalf("mixed freight released ordinary outstanding bids instead of reducing the package: %+v", smaller.Plan)
+	}
+	if err := h.db.DeleteMission(h.ctx, h.account.ID, "__growth"); err != nil {
+		t.Fatal(err)
+	}
 	_, retained := h.mission(recoveryShipBlastoise)
 	if retained.DeliveredQuantity != 100 || len(retained.Freight) != 1 || retained.Freight[0].Quantity != 100 || !retained.Freight[0].Settled {
 		t.Fatalf("growth changed mixed delivery accounting: %+v", retained)
@@ -380,8 +391,20 @@ func TestGrowthMixedFreightKeepsOrdinarySpotBidReservation(t *testing.T) {
 		t.Fatalf("release partial-delivery build intent: %v", err)
 	}
 	bids[0].RemainingQuantity--
+	if changed, err := runner.considerGrowth(h.ctx); err != nil || !changed {
+		t.Fatalf("one missing bid ton should resize the best funded package: changed %t error %v", changed, err)
+	}
+	_, smaller = growthMissionWithHoldDiagnostics(t, h, runner)
+	if smaller.Plan.Quantity >= control.Plan.Quantity ||
+		2*(smaller.Plan.Quantity+1)+90 > bids[0].RemainingQuantity {
+		t.Fatalf("partial package exceeded the remaining bid pool: %+v", smaller.Plan)
+	}
+	if err := h.db.DeleteMission(h.ctx, h.account.ID, "__growth"); err != nil {
+		t.Fatal(err)
+	}
+	bids[0].RemainingQuantity = 90 + 2
 	if changed, err := runner.considerGrowth(h.ctx); err != nil || changed {
-		t.Fatalf("one missing bid ton funded repeat demand and the remaining ordinary lot: changed %t error %v", changed, err)
+		t.Fatalf("ordinary outstanding lot and incumbent cycles leave no candidate bid capacity: changed %t error %v", changed, err)
 	}
 	h.missingMission("__growth")
 }
@@ -428,5 +451,183 @@ func TestGrowthIdleUnderarmedShipWithoutActionableRefitDoesNotVetoBuild(t *testi
 				t.Fatal("growth consideration sent a mutation instead of staging the build")
 			}
 		})
+	}
+}
+
+func TestGrowthChoosesCapitalReturnAcrossHullCatalogOrders(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reverse_%t", reverse), func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			h.seedLaneProofs()
+			runner := h.runner(primaryTestKey)
+			runner.generation = uuid.NewString()
+			if err := runner.refresh(h.ctx); err != nil {
+				t.Fatal(err)
+			}
+			state := &runner.stateCache
+			original := state.Catalog.ShipClasses[0]
+			efficient := original
+			efficient.ID = "capital-efficient-cutter"
+			state.Catalog.ShipClasses = []Hull{original, efficient}
+			if reverse {
+				state.Catalog.ShipClasses[0], state.Catalog.ShipClasses[1] = state.Catalog.ShipClasses[1], state.Catalog.ShipClasses[0]
+			}
+			price := int64(20_000)
+			for _, origin := range state.Catalog.Ports {
+				oldQuoteKey := origin.ID + "|" + original.ID
+				if quote, exists := state.Quotes[oldQuoteKey]; exists {
+					key := origin.ID + "|" + efficient.ID
+					quote.ShipClass = efficient.ID
+					quote.TotalCostPence = &price
+					state.Quotes[key] = quote
+					runner.meta["yard_quotes/"+key] = runner.meta["yard_quotes/"+oldQuoteKey]
+				}
+				for _, destination := range state.Catalog.Ports {
+					oldRouteKey := routeKey(origin.ID, destination.ID, original.ID)
+					if route, exists := state.Routes[oldRouteKey]; exists {
+						key := routeKey(origin.ID, destination.ID, efficient.ID)
+						route.ShipClass = efficient.ID
+						state.Routes[key] = route
+						runner.meta["routes/"+key] = runner.meta["routes/"+oldRouteKey]
+					}
+				}
+			}
+			if changed, err := runner.considerGrowth(h.ctx); err != nil || !changed {
+				t.Fatalf("funded hull comparison did not stage a build: changed %t error %v holds %v", changed, err, runner.holding)
+			}
+			_, data := growthMissionWithHoldDiagnostics(t, h, runner)
+			if data.BuildClass != efficient.ID || data.BuildPort != recoveryHomePort {
+				t.Fatalf("catalog order selected the poorer capital return: %+v", data)
+			}
+			if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
+				t.Fatal("capital comparison sent a build instead of staging")
+			}
+		})
+	}
+}
+
+func TestGrowthFundsOneCycleAndInitialStoresOnce(t *testing.T) {
+	input := fundedGrowthFixture()
+	input.Plan.Economics.Basis = "destination"
+	input.Plan.Economics.PurchasePence = 10_000
+	input.Plan.Economics.CustomsPence = 500
+	input.Plan.Economics.ProvisionsPence = 100
+	input.Plan.Economics.StoreCashPence = 5_000
+	input.Plan.Economics.BallastRepeatGameDays = 1
+	input.Plan.Economics.BallastRepeatNetPence = 100_000
+	input.InitialStoresPence = 5_000
+	input.BalancePence = 283_500
+	decision := EvaluateGrowth(input)
+	if !decision.Accepted || decision.WorkingCapitalPence != 10_500 || decision.InitialStoresPence != 5_000 {
+		t.Fatalf("initial store cash was charged again as cycle expense: %+v", decision)
+	}
+	input.BalancePence--
+	if decision := EvaluateGrowth(input); decision.Accepted {
+		t.Fatalf("one-penny short commissioning package spent protected obligations: %+v", decision)
+	}
+}
+
+func TestGrowthReservesFullRepeatUpkeepAndRejectsOverflow(t *testing.T) {
+	input := fundedGrowthFixture()
+	input.Plan.Economics.Basis = "destination"
+	input.Plan.Economics.BallastRepeatGameDays = 5
+	input.Plan.Economics.BallastRepeatNetPence = 500_000
+	decision := EvaluateGrowth(input)
+	if !decision.Accepted || decision.UpkeepReservePence != 5_000 {
+		t.Fatalf("five-day supported repeat lacked a full upkeep cash horizon: %+v", decision)
+	}
+	input.Proofs = []LaneProof{
+		{QuantityTons: 20, GameSeconds: 86_400, NetPence: math.MaxInt64, CostsKnown: true},
+		{QuantityTons: 20, GameSeconds: 86_400, NetPence: math.MaxInt64, CostsKnown: true},
+	}
+	if decision := EvaluateGrowth(input); decision.Accepted {
+		t.Fatal("overflowing public proof slice became positive growth evidence")
+	}
+}
+
+func TestGrowthPricesMarginalRepeatInsteadOfCloningCheapFirstStock(t *testing.T) {
+	h := newRecoveryHarness(t)
+	h.seedLaneProofs()
+	runner := h.runner(primaryTestKey)
+	runner.generation = uuid.NewString()
+	if err := runner.refresh(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	state := &runner.stateCache
+	asks := bookCommodity(state.Markets[recoveryHomePort], recoveryGrain)
+	asks.Depth.Asks = []Level{
+		{OrderID: "cheap-twenty", PricePence: 100, RemainingQuantity: 20},
+		{OrderID: "deep-expensive", PricePence: 900, RemainingQuantity: 10_000},
+	}
+	bookCommodity(state.Markets[recoveryFarPort], recoveryGrain).Depth.Bids[0].PricePence = 1_000
+	key := recoveryHomePort + "|" + recoveryHull
+	quote := state.Quotes[key]
+	price := int64(20_000)
+	quote.TotalCostPence = &price
+	state.Quotes[key] = quote
+	if changed, err := runner.considerGrowth(h.ctx); err != nil || !changed {
+		t.Fatalf("a funded marginal partial lot did not stage: changed %t error %v holds %v", changed, err, runner.holding)
+	}
+	_, data := growthMissionWithHoldDiagnostics(t, h, runner)
+	if data.Plan.Quantity <= 0 || data.Plan.Quantity >= 20 {
+		t.Fatalf("growth repeated the cheap first 20t rather than pricing the next supported lot: %+v", data.Plan)
+	}
+	cheapRemaining := max(int64(0), 20-data.Plan.Quantity)
+	cheapTons := min(data.Plan.Quantity, cheapRemaining)
+	marginalPurchase := cheapTons*100 + (data.Plan.Quantity-cheapTons)*900
+	if data.Plan.Economics.PurchasePence != marginalPurchase {
+		t.Fatalf("repeat purchase used the first ladder slice: got %d, marginal second lot %d", data.Plan.Economics.PurchasePence, marginalPurchase)
+	}
+	if asks.Depth.Asks[0].RemainingQuantity != 20 || asks.Depth.Asks[1].RemainingQuantity != 10_000 {
+		t.Fatal("capital simulation depleted the authoritative source observation")
+	}
+}
+
+func TestGrowthPackageChargesOnlyNewRegionalCommitments(t *testing.T) {
+	h := newRecoveryHarness(t)
+	h.seedLaneProofs()
+	runner := h.runner(primaryTestKey)
+	runner.generation = uuid.NewString()
+	if err := runner.refresh(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	evidence := growthEvidence{workingByRegion: make(map[string]int64)}
+	if reason, err := runner.growthFunding(h.ctx, &evidence); err != nil || reason != "" {
+		t.Fatalf("funded package history unavailable: %s, %v", reason, err)
+	}
+	port, _ := findPort(runner.stateCache.Catalog, recoveryHomePort)
+	hull, _ := findHull(runner.stateCache.Catalog, recoveryHull)
+	quote, err := runner.growthQuote(port, hull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grown := append(append([]ShipState(nil), runner.stateCache.Ships...), growthCandidate(port, hull))
+	deltaUpkeep := DailyUpkeep(grown, runner.stateCache.Catalog, len(runner.stateCache.Factors)) -
+		DailyUpkeep(runner.stateCache.Ships, runner.stateCache.Catalog, len(runner.stateCache.Factors))
+	existing, found, err := runner.growthAtYard(h.ctx, port, hull, quote, deltaUpkeep, &evidence, nil)
+	if err != nil || !found {
+		t.Fatalf("established-region package unavailable: found %t error %v", found, err)
+	}
+	destination, _ := findPort(runner.stateCache.Catalog, existing.plan.Destination)
+	protected := evidence.required[destination.BankingRegion]
+	if destination.BankingRegion == port.BankingRegion || protected <= 0 {
+		t.Fatalf("fixture lacks an independently protected destination: %+v", evidence.required)
+	}
+	// Evaluate the same immutable lot when that destination floor is newly
+	// committed, rather than already supporting an incumbent operation.
+	newRegion := evidence
+	newRegion.required = clonePence(evidence.required)
+	delete(newRegion.required, destination.BankingRegion)
+	newRegion.available += protected
+	marginal, found, err := runner.growthAtYard(h.ctx, port, hull, quote, deltaUpkeep, &newRegion, &existing.plan)
+	if err != nil || !found {
+		t.Fatalf("newly dedicated regional package unavailable: found %t error %v", found, err)
+	}
+	if marginal.committedPence-existing.committedPence != protected {
+		t.Fatalf("new floor was omitted or existing floor charged twice: existing %d, new %d, regional floor %d",
+			existing.committedPence, marginal.committedPence, protected)
+	}
+	if !betterGrowthPackage(existing, marginal) || betterGrowthPackage(marginal, existing) {
+		t.Fatal("equally productive package with extra dedicated regional cash ranked first")
 	}
 }

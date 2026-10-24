@@ -11,11 +11,8 @@ import {
 } from "leaflet";
 import {
   Anchor,
-  Box,
   CircleHelp,
   Crosshair,
-  Clock3,
-  Globe2,
   Hammer,
   Minus,
   Plus,
@@ -43,7 +40,7 @@ import {
   useMapEvents,
 } from "react-leaflet";
 import { dataset, fleet, metadata, shipSource } from "@/lib/data";
-import { count, dateTime, humanize } from "@/lib/format";
+import { humanize } from "@/lib/format";
 import {
   PORT_COORDINATES,
   nodeCoordinate,
@@ -69,10 +66,6 @@ import "leaflet/dist/leaflet.css";
 const EUROPE: [LatLngTuple, LatLngTuple] = [
   [35, -13],
   [63, 31],
-];
-const WORLD: [LatLngTuple, LatLngTuple] = [
-  [-65, -180],
-  [80, 180],
 ];
 const GRATICULE: LatLngTuple[][] = [
   ...Array.from({ length: 15 }, (_, index): LatLngTuple[] => {
@@ -139,23 +132,16 @@ interface TrackedShip {
 }
 
 interface LegendCounts {
-  sailing: number;
-  berthed: number;
-  anchored: number;
   frozen: number;
   unavailable: number;
 }
 
 const EMPTY_LEGEND: LegendCounts = {
-  sailing: 0,
-  berthed: 0,
-  anchored: 0,
   frozen: 0,
   unavailable: 0,
 };
 
-const INITIAL_STATUS =
-  "Sea positions need usable ship and clock recordings. Choose a vessel to inspect recorded facts.";
+const INITIAL_STATUS = "Waiting for usable ship and clock recordings.";
 
 export default function FleetChart({
   accounts,
@@ -178,9 +164,6 @@ export default function FleetChart({
     (status: string, counts: LegendCounts) => {
       setPositionSummary(status);
       setLegendCounts((previous) =>
-        previous.sailing === counts.sailing &&
-        previous.berthed === counts.berthed &&
-        previous.anchored === counts.anchored &&
         previous.frozen === counts.frozen &&
         previous.unavailable === counts.unavailable
           ? previous
@@ -194,24 +177,6 @@ export default function FleetChart({
   const selectedShipAccountID = useUI((state) => state.selectedShipAccountID);
   const selectPort = useUI((state) => state.selectPort);
   const ports = catalog?.ports ?? EMPTY_PORTS;
-  const portCounts = useMemo(
-    () =>
-      ports.reduce(
-        (counts, port) => {
-          if (PORT_COORDINATES[port.id]) {
-            const kind = port.is_hub
-              ? "hub"
-              : port.has_shipyard
-                ? "yard"
-                : "port";
-            counts[kind] += 1;
-          }
-          return counts;
-        },
-        { hub: 0, yard: 0, port: 0 },
-      ),
-    [ports],
-  );
   const selectedDetail = useMemo(
     () =>
       fleet(
@@ -238,11 +203,6 @@ export default function FleetChart({
     }
     return ids;
   }, [accounts, selectedDetail]);
-  const selectedLeg =
-    selectedDetail?.route_legs?.[selectedDetail.ship.current_leg_idx];
-  const selectedETA =
-    selectedDetail?.voyage?.estimated_arrival_at ??
-    selectedDetail?.ship.leg_arrives_at;
   const [initialBounds] = useState(() => {
     const points: LatLngTuple[] = [];
     for (const account of accounts) {
@@ -275,7 +235,7 @@ export default function FleetChart({
     );
     if (points.length === 0) {
       setNotice(
-        "No fleet position is available. Choose a vessel to inspect its recorded facts.",
+        "No fleet position is available. Open the vessel ledger to inspect recorded facts.",
       );
       return;
     }
@@ -312,25 +272,6 @@ export default function FleetChart({
             <Crosshair size={15} strokeWidth={1.7} aria-hidden="true" /> Fit
             fleet
           </button>
-          <label className={styles.viewSelect}>
-            <Globe2 size={15} strokeWidth={1.7} aria-hidden="true" />
-            <span className="sr-only">Chart extent preset</span>
-            <select
-              value=""
-              onChange={(event) =>
-                map.current?.fitBounds(
-                  event.target.value === "world" ? WORLD : EUROPE,
-                  { animate: false },
-                )
-              }
-            >
-              <option value="" disabled>
-                View
-              </option>
-              <option value="europe">Europe</option>
-              <option value="world">World</option>
-            </select>
-          </label>
           <div
             className={styles.zoomActions}
             role="group"
@@ -376,36 +317,6 @@ export default function FleetChart({
           </select>
         </label>
       </div>
-      {selectedDetail && (
-        <div
-          className={styles.chartSelection}
-          aria-label="Selected vessel route"
-        >
-          <strong>{selectedDetail.ship.name}</strong>
-          <span>Recorded: {humanize(selectedDetail.ship.status)}</span>
-          <span>
-            <Box size={13} strokeWidth={1.7} aria-hidden="true" />
-            {count(selectedDetail.cargo_used_tons)} /{" "}
-            {count(selectedDetail.effective_hold_capacity_tons)} t cargo
-          </span>
-          <span>
-            {selectedLeg
-              ? `${humanize(selectedLeg.from_node)} to ${humanize(selectedLeg.to_node)}`
-              : selectedDetail.ship.current_port_id
-                ? humanize(selectedDetail.ship.current_port_id)
-                : "Route not recorded"}
-          </span>
-          {selectedDetail.ship.status === "sailing" && (
-            <span>
-              <Clock3 size={13} strokeWidth={1.7} aria-hidden="true" />
-              {selectedDetail.voyage?.estimated_arrival_at
-                ? "Voyage ETA"
-                : "Leg ETA"}{" "}
-              {dateTime(selectedETA)} (recorded estimate)
-            </span>
-          )}
-        </div>
-      )}
       {notice && (
         <p className={styles.note} role="status">
           {notice}
@@ -504,59 +415,36 @@ export default function FleetChart({
         </MapContainer>
       </div>
       <div className={styles.chartLegend} aria-label="Chart legend">
-        <span data-active={legendCounts.sailing > 0}>
+        <span>
           <Navigation2 size={15} strokeWidth={1.7} aria-hidden="true" />
-          Sailing with heading
-          {legendCounts.sailing > 0 && <strong>{legendCounts.sailing}</strong>}
+          Estimated at sea
         </span>
-        <span
-          className={styles.legendBerthed}
-          data-active={legendCounts.berthed > 0}
-        >
+        <span className={styles.legendBerthed}>
           <Anchor size={15} strokeWidth={1.7} aria-hidden="true" /> Berthed
-          {legendCounts.berthed > 0 && <strong>{legendCounts.berthed}</strong>}
         </span>
-        <span
-          className={styles.legendAnchored}
-          data-active={legendCounts.anchored > 0}
-        >
+        <span className={styles.legendAnchored}>
           <Anchor size={15} strokeWidth={1.7} aria-hidden="true" /> Anchored
-          {legendCounts.anchored > 0 && (
-            <strong>{legendCounts.anchored}</strong>
-          )}
         </span>
-        <span
-          className={styles.legendFrozen}
-          data-active={legendCounts.frozen > 0}
-        >
-          <Snowflake size={15} strokeWidth={1.7} aria-hidden="true" />
-          Frozen estimate
-          {legendCounts.frozen > 0 && <strong>{legendCounts.frozen}</strong>}
-        </span>
-        <span
-          className={styles.legendFrozen}
-          data-active={legendCounts.unavailable > 0}
-        >
-          <CircleHelp size={15} strokeWidth={1.7} aria-hidden="true" />
-          Position unavailable
-          {legendCounts.unavailable > 0 && (
-            <strong>{legendCounts.unavailable}</strong>
-          )}
-        </span>
-        <span data-active={portCounts.hub > 0}>
+        {legendCounts.frozen > 0 && (
+          <span className={styles.legendFrozen}>
+            <Snowflake size={15} strokeWidth={1.7} aria-hidden="true" />
+            Frozen estimate
+          </span>
+        )}
+        {legendCounts.unavailable > 0 && (
+          <span className={styles.legendFrozen}>
+            <CircleHelp size={15} strokeWidth={1.7} aria-hidden="true" />
+            Position unavailable
+          </span>
+        )}
+        <span>
           <Anchor size={15} strokeWidth={1.7} aria-hidden="true" /> Hub
-          {portCounts.hub > 0 && <strong>{portCounts.hub}</strong>}
         </span>
-        <span
-          className={styles.legendAnchored}
-          data-active={portCounts.yard > 0}
-        >
+        <span className={styles.legendAnchored}>
           <Hammer size={15} strokeWidth={1.7} aria-hidden="true" /> Shipyard
-          {portCounts.yard > 0 && <strong>{portCounts.yard}</strong>}
         </span>
-        <span data-active={portCounts.port > 0}>
-          <span className={styles.legendPort} /> Port, phase ring
-          {portCounts.port > 0 && <strong>{portCounts.port}</strong>}
+        <span>
+          <span className={styles.legendPort} /> Port (rings show phase)
         </span>
       </div>
       <p className={styles.note} role="status">
@@ -578,13 +466,77 @@ const Ports = memo(function Ports({
   const map = useMap();
   const [zoom, setZoom] = useState(() => map.getZoom());
   useMapEvents({ zoomend: () => setZoom(map.getZoom()) });
+  const labeledPorts = useMemo(() => {
+    const candidates = ports
+      .filter(
+        (port) =>
+          PORT_COORDINATES[port.id] &&
+          (port.id === selectedPortID ||
+            relevantPortIDs.has(port.id) ||
+            zoom >= 9 ||
+            (zoom >= 6 && port.is_hub)),
+      )
+      .map((port) => ({
+        port,
+        priority:
+          port.id === selectedPortID
+            ? 0
+            : relevantPortIDs.has(port.id)
+              ? 1
+              : port.is_hub
+                ? 2
+                : 3,
+      }))
+      .sort(
+        (left, right) =>
+          left.priority - right.priority ||
+          left.port.id.localeCompare(right.port.id),
+      );
+    const labeled = new Set<string>();
+    const placed: {
+      left: number;
+      right: number;
+      top: number;
+      bottom: number;
+    }[] = [];
+    for (const { port } of candidates) {
+      const coordinate = PORT_COORDINATES[port.id];
+      const point = map.project(
+        [coordinate.latitude, coordinate.longitude],
+        zoom,
+      );
+      // Conservative bounds for the 11px port label include breathing room.
+      // Projected collisions are pan-invariant, so only zoom needs tracking.
+      const halfWidth = Math.max(48, port.name.length * 8 + 16) / 2;
+      const box = {
+        left: point.x - halfWidth,
+        right: point.x + halfWidth,
+        top: point.y - 40,
+        bottom: point.y - 8,
+      };
+      if (
+        placed.some(
+          (other) =>
+            box.left < other.right &&
+            box.right > other.left &&
+            box.top < other.bottom &&
+            box.bottom > other.top,
+        )
+      ) {
+        continue;
+      }
+      labeled.add(port.id);
+      placed.push(box);
+    }
+    return labeled;
+  }, [map, ports, relevantPortIDs, selectedPortID, zoom]);
   return ports.map((port) =>
     PORT_COORDINATES[port.id] ? (
       <PortMarker
         key={port.id}
         port={port}
         selected={port.id === selectedPortID}
-        relevant={relevantPortIDs.has(port.id)}
+        showLabel={labeledPorts.has(port.id)}
         zoom={zoom}
       />
     ) : null,
@@ -594,12 +546,12 @@ const Ports = memo(function Ports({
 const PortMarker = memo(function PortMarker({
   port,
   selected,
-  relevant,
+  showLabel,
   zoom,
 }: {
   port: Port;
   selected: boolean;
-  relevant: boolean;
+  showLabel: boolean;
   zoom: number;
 }) {
   const reference = useRef<LeafletMarker | null>(null);
@@ -611,8 +563,6 @@ const PortMarker = memo(function PortMarker({
     [port.id, selectPort],
   );
   const label = `${port.name}. ${kind === "hub" ? "Hub port" : kind === "yard" ? "Shipyard port" : "Port"}. Phase ${port.phase}. ${humanize(port.banking_region)}. Select port details.`;
-  const showLabel =
-    selected || relevant || zoom >= 9 || (zoom >= 7 && port.is_hub);
 
   useEffect(() => {
     const element = reference.current?.getElement();
@@ -720,12 +670,6 @@ function ShipMarkers({
         counts[position.kind] += 1;
         if (position.kind === "frozen") {
           legendCounts.frozen += 1;
-        } else if (row.detail.ship.status === "sailing") {
-          legendCounts.sailing += 1;
-        } else if (row.detail.ship.status === "berthed") {
-          legendCounts.berthed += 1;
-        } else if (row.detail.ship.status === "anchored_roadstead") {
-          legendCounts.anchored += 1;
         }
         const starving =
           row.detail.voyage?.legs?.some((leg) => leg.starving) ?? false;
@@ -951,7 +895,7 @@ function ViewportSize() {
     container.setAttribute("role", "region");
     container.setAttribute(
       "aria-label",
-      "Fleet chart. Arrow keys pan, plus and minus zoom. Ship positions at sea are estimates. Use the vessel selector to inspect any ship.",
+      "Fleet chart. Arrow keys pan, plus and minus zoom. Ship positions at sea are estimates. Select a ship marker to inspect recorded facts; the Fleet view lists every ship.",
     );
     const observer = new ResizeObserver(() =>
       map.invalidateSize({ pan: false, animate: false }),

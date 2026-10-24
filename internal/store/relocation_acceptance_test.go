@@ -1,17 +1,14 @@
 package store
 
-// Acceptance contract for the durable relocation restart guard (plan E13):
-// the first bounded sourcing probe is permitted, but after a settled
-// relocation the engine must see, account-scoped and without any latest-500
-// history window, the latest probe, the loss-inclusive net of every settlement
-// completed afterwards, whether any later settlement has unknown costs, and
-// whether a later known-cost positive delivery re-earned the allowance. The
-// query below fails to compile until the implementation lands.
+// Permanent economic history must retain bounded-probe spending, every known
+// commercial loss and unknown costs independently of the display window.
+// Profitable deliveries never reset already spent exploration expense.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go.uber.org/zap"
 	"net/http"
 	"testing"
 	"time"
@@ -58,77 +55,52 @@ func relocationGuardSeed(t *testing.T, db *Store, ctx context.Context, accountID
 	}
 }
 
-func TestRelocationRestartGuardTracksLatestProbeAndLaterEarnings(t *testing.T) {
-	db, _, _ := integrationStore(t)
+func TestRelocationPermanentHistoryRetainsLossesAndUncertaintyAcrossRestart(t *testing.T) {
+	db, dsn, key := integrationStore(t)
 	ctx := context.Background()
 	const accountID = "relocation-guard"
 	saveTestAccount(t, db, accountID)
-	base := time.Now().UTC().Add(-6 * time.Hour)
-
-	// No relocation has ever settled: the first bounded probe is permitted.
-	guard, err := db.LatestRelocationRestart(ctx, accountID)
-	if err != nil {
-		t.Fatal(err)
+	base := time.Now().UTC().Add(-6 * time.Hour).Truncate(time.Microsecond)
+	history, err := db.EconomicHistory(ctx, accountID, "")
+	if err != nil || history != (EconomicHistory{}) {
+		t.Fatalf("empty account reported economic evidence: %+v, %v", history, err)
 	}
-	if guard.Latest != nil || guard.NetSincePence != 0 || guard.UnknownCostSince || guard.PositiveDeliverySince {
-		t.Fatalf("empty account reported a relocation history: %+v", guard)
-	}
-
-	// A profitable delivered shipment precedes the probe: it must never
-	// unlock a restart by itself.
 	relocationGuardSeed(t, db, ctx, accountID, "guard-earn-0", "charter", base, 48, 30_000, 4_800, 350, true)
 	relocationGuardSeed(t, db, ctx, accountID, "guard-probe-1", "relocation", base.Add(time.Hour), 0, 0, 0, 18_500, true)
-	guard, err = db.LatestRelocationRestart(ctx, accountID)
-	if err != nil {
-		t.Fatal(err)
+	history, err = db.EconomicHistory(ctx, accountID, "")
+	if err != nil || history.NetPence != 6_350 || history.ProbeExpensePence != 18_500 || history.PositiveCycles != 1 {
+		t.Fatalf("probe cash loss or permanent spending disappeared: %+v, %v", history, err)
 	}
-	if guard.Latest == nil || guard.Latest.Kind != "relocation" || guard.Latest.ID != "guard-probe-1" {
-		t.Fatalf("latest relocation probe not identified: %+v", guard.Latest)
-	}
-	if guard.NetSincePence != 0 || guard.UnknownCostSince || guard.PositiveDeliverySince {
-		t.Fatalf("a failed probe with no later settlement looked restartable: %+v", guard)
-	}
-
-	// A later known-cost positive delivery re-earns the exploration
-	// allowance, including the probe loss in the interval net.
 	relocationGuardSeed(t, db, ctx, accountID, "guard-earn-2", "charter", base.Add(2*time.Hour), 30, 40_000, 5_000, 400, true)
-	guard, err = db.LatestRelocationRestart(ctx, accountID)
-	if err != nil {
-		t.Fatal(err)
+	relocationGuardSeed(t, db, ctx, accountID, "guard-aborted-3", "aborted", base.Add(3*time.Hour), 0, 0, 1_500, 0, true)
+	relocationGuardSeed(t, db, ctx, accountID, "guard-unknown-4", "aborted", base.Add(4*time.Hour), 0, 0, 0, 0, false)
+	history, err = db.EconomicHistory(ctx, accountID, "")
+	if err != nil || history.NetPence != 39_450 || history.CommercialNetPence != 57_950 ||
+		history.ProbeExpensePence != 18_500 || !history.UnknownCosts || history.UnknownProbeCosts ||
+		history.PositiveCycles != 2 || history.GameSeconds != 5*43_200 {
+		t.Fatalf("earnings reset probes or aborted loss/uncertainty vanished: %+v, %v", history, err)
 	}
-	if guard.NetSincePence != 34_600 || !guard.PositiveDeliverySince || guard.UnknownCostSince {
-		t.Fatalf("later earnings did not restore the allowance: %+v", guard)
-	}
-
-	// An unknown-cost record inside the funding interval blocks again.
-	relocationGuardSeed(t, db, ctx, accountID, "guard-unknown-3", "spot", base.Add(3*time.Hour), 0, 0, 0, 0, false)
-	guard, err = db.LatestRelocationRestart(ctx, accountID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !guard.UnknownCostSince {
-		t.Fatalf("unknown-cost settlement did not block the restart: %+v", guard)
-	}
-	if guard.NetSincePence != 34_600 {
-		t.Fatalf("unknown-cost settlement was valued instead of flagged: %+v", guard)
-	}
-
-	// The query is account-scoped and never windowed: a fresh account with
-	// more than 500 later settlements still resolves its own probe.
 	const windowAccount = "relocation-guard-window"
 	saveTestAccount(t, db, windowAccount)
 	relocationGuardSeed(t, db, ctx, windowAccount, "window-probe-1", "relocation", base, 0, 0, 0, 18_500, true)
 	for i := range 505 {
 		relocationGuardSeed(t, db, ctx, windowAccount, fmt.Sprintf("window-earn-%03d", i), "charter", base.Add(time.Duration(i+1)*time.Minute), 10, 8_000, 1_000, 100, true)
 	}
-	guard, err = db.LatestRelocationRestart(ctx, windowAccount)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(ctx, dsn, key, zap.NewNop())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if guard.Latest == nil || guard.Latest.ID != "window-probe-1" {
-		t.Fatalf("windowed history lost the latest relocation: %+v", guard.Latest)
+	defer reopened.Close()
+	if err := reopened.Prune(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if guard.NetSincePence != 505*(8_000-1_000-100) || !guard.PositiveDeliverySince || guard.UnknownCostSince {
-		t.Fatalf("post-probe accounting did not cover the full interval beyond the history window: %+v", guard)
+	history, err = reopened.EconomicHistory(ctx, windowAccount, "")
+	if err != nil || history.NetPence != 505*(8_000-1_000-100)-18_500 ||
+		history.ProbeExpensePence != 18_500 || history.PositiveCycles != 505 ||
+		history.UnknownCosts || history.LastProbeCompletion == nil || !history.LastProbeCompletion.Equal(base) {
+		t.Fatalf("restart/windowing lost permanent account-scoped evidence: %+v, %v", history, err)
 	}
 }

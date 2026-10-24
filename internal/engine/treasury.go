@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"time"
 
@@ -48,7 +49,10 @@ func (r *Runner) maintain(ctx context.Context, ship ShipState, mission *store.Mi
 	}
 	target := min(int64(4), hull.MaxCannons)
 	cost := (target - ship.Ship.CannonsCount) * 15_000
-	input := r.planningInput(ship)
+	input, err := r.committedPlanningInput(ctx, ship)
+	if err != nil {
+		return false, err
+	}
 	if input.Balances[port.BankingRegion]-cost < input.ReserveByRegion[port.BankingRegion] {
 		return false, r.hold(ctx, ship.Ship.ID, "armed maintenance deferred: measured gun cost would spend regional bills reserve")
 	}
@@ -62,22 +66,71 @@ func (r *Runner) maintain(ctx context.Context, ship ShipState, mission *store.Mi
 	return r.startMaintenance(ctx, ship, "refit", "/v1/shipyard/modify-ship", body)
 }
 
-func (r *Runner) treasuryReserves(ctx context.Context) (map[string]int64, error) {
-	state := r.stateCache
+// obligationReserves protects observed obligations, not every vault or every
+// hypothetical destination. Candidate-specific funding adds its chosen ports.
+func obligationReserves(state accountState, snapshot map[string]json.RawMessage, base int64) map[string]int64 {
 	required := make(map[string]int64)
-	upkeep := DailyUpkeep(state.Ships, state.Catalog, len(state.Factors))
 	if home, exists := findPort(state.Catalog, state.HomePortID); exists {
-		required[home.BankingRegion] = r.opts.ReservePence + upkeep*3
+		required[home.BankingRegion] = base + 3*DailyUpkeep(state.Ships, state.Catalog, len(state.Factors))
 	}
+	ships := make(map[string]bool, len(state.Ships))
 	for _, ship := range state.Ships {
 		if ship.Ship.Status == "sunk" {
 			continue
 		}
-		if port, exists := findPort(state.Catalog, ship.Ship.CurrentPortID); exists {
-			required[port.BankingRegion] = max(required[port.BankingRegion], r.opts.ReservePence)
-			if detail, exists := state.Ports[port.ID]; exists {
-				required[port.BankingRegion] += 3 * detail.BerthDuesPerDayPence
+		ships[ship.Ship.ID] = true
+		portID := ship.Ship.CurrentPortID
+		if ship.Ship.Status == "sailing" {
+			// A sailing ship retains its departed origin in current_port_id.
+			// Protect its observed arrival, not another berth at that origin.
+			if len(ship.RouteLegs) == 0 {
+				continue
 			}
+			portID = ship.RouteLegs[len(ship.RouteLegs)-1].ToNode
+		} else if ship.Voyage != nil || ship.Ship.Status != "berthed" && ship.Ship.Status != "anchored_roadstead" {
+			continue
+		}
+		if port, exists := findPort(state.Catalog, portID); exists {
+			required[port.BankingRegion] = max(required[port.BankingRegion], base)
+			required[port.BankingRegion] += 3 * state.Ports[port.ID].BerthDuesPerDayPence
+		}
+	}
+	for _, contract := range state.Contracts {
+		if contract.ContractType != "freight" || contract.Status != "active" || !ships[contract.CarrierShipID] {
+			continue
+		}
+		if destination, exists := findPort(state.Catalog, contract.DestPortID); exists {
+			required[destination.BankingRegion] = max(required[destination.BankingRegion],
+				base+3*state.Ports[destination.ID].BerthDuesPerDayPence)
+		}
+	}
+	warehouses := decode[[]struct {
+		PortID        string `json:"port_id"`
+		LeasedTonnage int64  `json:"leased_tonnage"`
+	}](snapshot, "warehouses")
+	for _, warehouse := range warehouses {
+		if warehouse.LeasedTonnage <= 0 {
+			continue
+		}
+		if port, exists := findPort(state.Catalog, warehouse.PortID); exists {
+			required[port.BankingRegion] = max(required[port.BankingRegion], base)
+		}
+	}
+	pending := decode[underwritingPending](snapshot, "_underwriting_pending")
+	if pending.CollateralPence > 0 && pending.CollateralPence <= maximumPence {
+		for _, region := range pending.Regions {
+			required[region] += pending.CollateralPence
+		}
+	}
+	return required
+}
+
+func (r *Runner) treasuryReserves(ctx context.Context) (map[string]int64, error) {
+	state := r.stateCache
+	required := obligationReserves(state, r.snapshot, r.opts.ReservePence)
+	for _, ship := range state.Ships {
+		if ship.Ship.Status == "sunk" {
+			continue
 		}
 		mission, err := r.db.GetMission(ctx, r.account.ID, ship.Ship.ID)
 		if err != nil {
@@ -85,44 +138,9 @@ func (r *Runner) treasuryReserves(ctx context.Context) (map[string]int64, error)
 		}
 		if mission != nil {
 			if destination, exists := findPort(state.Catalog, mission.Destination); exists {
-				required[destination.BankingRegion] = max(required[destination.BankingRegion], r.opts.ReservePence+3*state.Ports[destination.ID].BerthDuesPerDayPence)
+				required[destination.BankingRegion] = max(required[destination.BankingRegion],
+					r.opts.ReservePence+3*state.Ports[destination.ID].BerthDuesPerDayPence)
 			}
-		}
-		for _, obligation := range r.activeFreight(ship.Ship.ID) {
-			if destination, exists := findPort(state.Catalog, obligation.DestPortID); exists {
-				required[destination.BankingRegion] = max(required[destination.BankingRegion], r.opts.ReservePence+3*state.Ports[destination.ID].BerthDuesPerDayPence)
-			}
-		}
-		if mission == nil {
-			// Quote only affordable observed-fee transfers; a hypothetical
-			// regional balance is never executable funding evidence.
-			input := r.planningInput(ship)
-			for _, destination := range state.Catalog.Ports {
-				target := clonePence(input.ReserveByRegion)
-				target[destination.BankingRegion] = max(target[destination.BankingRegion], r.opts.ReservePence+3*state.Ports[destination.ID].BerthDuesPerDayPence)
-				balances, _, _, funded := measuredFunding(input.Balances, target, state.Rates)
-				if !funded {
-					continue
-				}
-				quoted := input
-				quoted.Balances = balances
-				plans := PlanVoyages(quoted)
-				if len(plans) > 0 && plans[0].Accepted && plans[0].Destination == destination.ID {
-					required[destination.BankingRegion] = max(required[destination.BankingRegion], target[destination.BankingRegion])
-				}
-			}
-		}
-	}
-	warehouses := decode[[]struct {
-		PortID        string `json:"port_id"`
-		LeasedTonnage int64  `json:"leased_tonnage"`
-	}](r.snapshot, "warehouses")
-	for _, warehouse := range warehouses {
-		if warehouse.LeasedTonnage <= 0 {
-			continue
-		}
-		if port, exists := findPort(state.Catalog, warehouse.PortID); exists {
-			required[port.BankingRegion] = max(required[port.BankingRegion], r.opts.ReservePence)
 		}
 	}
 	return required, nil
@@ -133,10 +151,21 @@ func (r *Runner) manageTreasury(ctx context.Context) (bool, error) {
 		return false, r.hold(ctx, "", "treasury requires live regional fee matrix, settings and company home")
 	}
 	state := r.stateCache
-	balances := r.planningInput(ShipState{}).Balances
-	required, err := r.treasuryReserves(ctx)
+	input, err := r.committedPlanningInput(ctx, ShipState{})
 	if err != nil {
 		return false, err
+	}
+	balances := input.Balances
+	required := input.ReserveByRegion
+	baseRequired, err := r.treasuryReserves(ctx)
+	if err != nil {
+		return false, err
+	}
+	for region, protected := range required {
+		// Ship controllers fund selected cargo/return commitments with their
+		// own journal so transfer fees belong to that operating mission. The
+		// company controller still protects those funds from other donors.
+		required[region] = max(baseRequired[region], min(protected, balances[region]))
 	}
 	upkeep := DailyUpkeep(state.Ships, state.Catalog, len(state.Factors))
 	settings := decode[struct {

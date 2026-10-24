@@ -17,22 +17,27 @@ import (
 )
 
 type durableAction struct {
-	ID               string          `json:"id"`
-	Stage            string          `json:"stage"`
-	Method           string          `json:"method"`
-	Path             string          `json:"path"`
-	Body             json.RawMessage `json:"body"`
-	CreatedAt        time.Time       `json:"created_at"`
-	Before           ShipState       `json:"before"`
-	FinancialSession string          `json:"financial_session"`
-	FinancialEpoch   uint64          `json:"financial_epoch"`
+	ID     string `json:"id"`
+	Stage  string `json:"stage"`
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	// Nested JSON marshaling must not normalize an already-journaled request.
+	// The mission stores bytes; the action journal still sends the original JSON.
+	Body             []byte    `json:"body"`
+	CreatedAt        time.Time `json:"created_at"`
+	Before           ShipState `json:"before"`
+	FinancialSession string    `json:"financial_session"`
+	FinancialEpoch   uint64    `json:"financial_epoch"`
+	ControlEpoch     uint64    `json:"control_epoch"`
 }
 
 var errFinancialCaptureInvalidated = errors.New("financial event invalidated the captured funds")
+var errControlCaptureInvalidated = errors.New("stream control invalidated the captured state")
 
 const neverSentFinancialEvent = "never_sent_financial_event"
 
 const neverSentPrecondition = "never_sent_precondition"
+const neverSentControlEvent = "never_sent_control_event"
 
 var errActionPrecondition = errors.New("new action preconditions changed")
 
@@ -74,12 +79,18 @@ func (r *Runner) stage(ctx context.Context, mission *store.Mission, data *missio
 	if data.Action != nil {
 		return errors.New("cannot replace an unresolved persisted action")
 	}
+	if r.capturedControl != r.publishedControl.Load() {
+		return r.hold(ctx, mission.ShipID, "stream control invalidated the captured state; authoritative resynchronization precedes staging")
+	}
 	if r.capturedFinancial != r.publishedFinancial.Load() {
 		return r.hold(ctx, mission.ShipID, "financial event invalidated the captured funds; authoritative resynchronization precedes staging")
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
+	}
+	if r.capturedControl != r.publishedControl.Load() {
+		return r.hold(ctx, mission.ShipID, "stream control invalidated the captured state; authoritative resynchronization precedes staging")
 	}
 	if r.capturedFinancial != r.publishedFinancial.Load() {
 		return r.hold(ctx, mission.ShipID, "financial event invalidated the captured funds; authoritative resynchronization precedes staging")
@@ -98,6 +109,7 @@ func (r *Runner) stage(ctx context.Context, mission *store.Mission, data *missio
 		Before:           ship,
 		FinancialSession: r.financialSession,
 		FinancialEpoch:   r.capturedFinancial,
+		ControlEpoch:     r.capturedControl,
 	}
 	return r.saveMission(ctx, mission, data)
 }
@@ -118,6 +130,11 @@ func (r *Runner) stagedFundsValid(action *durableAction) bool {
 	return action.FinancialSession == r.financialSession &&
 		action.FinancialEpoch == r.capturedFinancial &&
 		action.FinancialEpoch == r.publishedFinancial.Load()
+}
+
+func (r *Runner) stagedControlValid(action *durableAction) bool {
+	return action.ControlEpoch == r.capturedControl &&
+		action.ControlEpoch == r.publishedControl.Load()
 }
 
 // Only an intent without a journal entry, or with committed local no-send
@@ -158,7 +175,7 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 	if firstSend && time.Now().Before(data.CooldownUntil) {
 		return false, r.hold(ctx, mission.ShipID, "unresolved staged action waiting for persisted retry cooldown")
 	}
-	if firstSend && !r.stagedFundsValid(action) {
+	if firstSend && (!r.stagedFundsValid(action) || !r.stagedControlValid(action)) {
 		return r.replanUnsentAction(ctx, mission, data)
 	}
 	if firstSend {
@@ -178,13 +195,18 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 	}
 	if persisted.State == store.ActionReconciled {
 		var evidence struct {
-			Kind string `json:"kind"`
+			Kind string    `json:"kind"`
+			Ship ShipState `json:"ship"`
 		}
 		if err := json.Unmarshal(persisted.Response, &evidence); err != nil {
 			return false, fmt.Errorf("invalid reconciliation evidence for %s: %w", persisted.ID, err)
 		}
-		if evidence.Kind == neverSentFinancialEvent || evidence.Kind == neverSentPrecondition {
+		if evidence.Kind == neverSentFinancialEvent || evidence.Kind == neverSentPrecondition || evidence.Kind == neverSentControlEvent {
 			return r.replanUnsentAction(ctx, mission, data)
+		}
+		if action.Stage == "build" && evidence.Kind == "authoritative_named_build" &&
+			evidence.Ship.Ship.ID != "" && evidence.Ship.Ship.Name == data.BuildName && evidence.Ship.Ship.ShipClass == data.BuildClass {
+			data.BuiltShipID = evidence.Ship.Ship.ID
 		}
 		return r.applyReconciliation(ctx, mission, data)
 	}
@@ -213,27 +235,39 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 	// All transport retries must end before the upstream's idempotency window.
 	requestContext, cancel := context.WithDeadline(ctx, deadline.Add(-time.Minute))
 	defer cancel()
-	r.log.Debug("dispatching durable action", zap.String("action_id", action.ID), zap.String("stage", action.Stage), zap.String("ship_id", mission.ShipID))
+	if entry := r.log.Check(zap.DebugLevel, "dispatching durable action"); entry != nil {
+		fields := []zap.Field{zap.String("action_id", action.ID), zap.String("stage", action.Stage)}
+		entry.Write(r.scrubOutcomeFields(ctx, fields, actionOutcomeTexts(mission, data, action))...)
+	}
 	var response json.RawMessage
 	r.lastMutationStatus.Store(0)
 	if firstSend {
 		err = r.api.DoWithPreflight(requestContext, persisted.Method, persisted.Path, persisted.Body, persisted.ID, &response, func() error {
+			if !r.stagedControlValid(action) {
+				return errControlCaptureInvalidated
+			}
 			if !r.stagedFundsValid(action) {
 				return errFinancialCaptureInvalidated
 			}
 			if err := r.newActionPreflight(requestContext, mission, data); err != nil {
 				return fmt.Errorf("%w: %s", errActionPrecondition, err)
 			}
+			if !r.stagedControlValid(action) {
+				return errControlCaptureInvalidated
+			}
 			if !r.stagedFundsValid(action) {
 				return errFinancialCaptureInvalidated
 			}
 			return nil
 		})
-		if errors.Is(err, errFinancialCaptureInvalidated) || errors.Is(err, errActionPrecondition) {
+		if errors.Is(err, errFinancialCaptureInvalidated) || errors.Is(err, errControlCaptureInvalidated) || errors.Is(err, errActionPrecondition) {
 			// The first-attempt preflight runs after the rate-limit wait and
 			// before transport. This newly created row is proven never sent;
 			// old pending rows never take this path, even after a restart.
 			kind := neverSentFinancialEvent
+			if errors.Is(err, errControlCaptureInvalidated) {
+				kind = neverSentControlEvent
+			}
 			if errors.Is(err, errActionPrecondition) {
 				kind = neverSentPrecondition
 				if holdErr := r.hold(ctx, mission.ShipID, err.Error()); holdErr != nil {
@@ -244,6 +278,8 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 				"kind":                      kind,
 				"captured_financial_epoch":  action.FinancialEpoch,
 				"published_financial_epoch": r.publishedFinancial.Load(),
+				"captured_control_epoch":    action.ControlEpoch,
+				"published_control_epoch":   r.publishedControl.Load(),
 			})
 			if err := r.db.ReconcileAction(ctx, persisted.ID, evidence); err != nil {
 				return false, err
@@ -251,7 +287,12 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 			return r.replanUnsentAction(ctx, mission, data)
 		}
 	} else {
-		err = r.api.Do(requestContext, persisted.Method, persisted.Path, persisted.Body, persisted.ID, &response)
+		err = r.api.DoWithPreflight(requestContext, persisted.Method, persisted.Path, persisted.Body, persisted.ID, &response, func() error {
+			if r.capturedControl != r.publishedControl.Load() {
+				return errControlCaptureInvalidated
+			}
+			return nil
+		})
 	}
 	if ctx.Err() != nil {
 		return false, ctx.Err()
@@ -292,23 +333,23 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 		return false, err
 	}
 	changed, err := r.consumeResult(ctx, mission, data, status, response)
+	if status >= 400 && status < 500 {
+		r.logRejectedAction(ctx, mission, data, action, status, response)
+	}
 	if err != nil {
 		return changed, err
 	}
 	// Completed-action replay takes the earlier branch and never emits a new
 	// outcome. Console output is not transactional with either durable write.
 	if status >= 200 && status < 300 {
-		if outcome == actionSuccess && changed && data.Action == nil && data.LastActionID == action.ID {
-			r.logCommittedAction(ctx, mission, data, action, response)
-		} else {
-			r.log.Warn("committed action requires authoritative reconciliation",
-				zap.String("action_id", action.ID),
-				zap.String("stage", action.Stage),
-				zap.String("ship_id", mission.ShipID),
-			)
+		if changed && data.Action == nil && data.LastActionID == action.ID {
+			if outcome == actionSuccess {
+				r.logCommittedAction(ctx, mission, data, action, response)
+			}
+		} else if entry := r.log.Check(zap.WarnLevel, "committed action requires authoritative reconciliation"); entry != nil {
+			fields := []zap.Field{zap.String("action_id", action.ID), zap.String("stage", action.Stage)}
+			entry.Write(r.scrubOutcomeFields(ctx, fields, actionOutcomeTexts(mission, data, action))...)
 		}
-	} else {
-		r.log.Warn("action rejected", zap.String("action_id", action.ID), zap.String("stage", action.Stage), zap.String("ship_id", mission.ShipID), zap.Int("status", status))
 	}
 	return changed, nil
 }
@@ -319,17 +360,82 @@ type outcomeText struct {
 	value string
 }
 
-// Only the fresh dispatch path calls this after response validation and the
-// resulting mission transition have both completed durably. Numeric outcomes
-// are always retained; every string derived from upstream data is scrubbed
-// against the account's current credentials and fails closed to the
-// redaction marker when those credentials cannot be read.
-func (r *Runner) logCommittedAction(ctx context.Context, mission *store.Mission, data *missionData, action *durableAction, response json.RawMessage) {
-	level := zap.InfoLevel
-	if action.Stage == "dock" || action.Stage == "offshore" {
-		level = zap.DebugLevel
+func actionOutcomeTexts(mission *store.Mission, data *missionData, action *durableAction) []outcomeText {
+	if action.Stage == "underwrite" && data != nil && data.Underwriting != nil {
+		policy := data.Underwriting.Policy
+		return []outcomeText{
+			{field: "policy_id", value: policy.ID},
+			{field: "insured_ship_id", value: policy.ShipID},
+			{field: "origin_port_id", value: policy.OriginPortID},
+			{field: "destination_port_id", value: policy.DestPortID},
+		}
 	}
-	entry := r.log.Check(level, "action committed")
+	shipID := action.Before.Ship.ID
+	if shipID == "" {
+		shipID = mission.ShipID
+	}
+	shipName := action.Before.Ship.Name
+	portID := action.Before.Ship.CurrentPortID
+	if action.Stage == "build" {
+		if data == nil {
+			var request struct {
+				Name   string `json:"name"`
+				PortID string `json:"port_id"`
+			}
+			_ = json.Unmarshal(action.Body, &request)
+			shipName, portID = request.Name, request.PortID
+		} else {
+			if data.BuiltShipID != "" {
+				shipID = data.BuiltShipID
+			}
+			shipName = data.BuildName
+			portID = data.BuildPort
+		}
+	}
+	texts := []outcomeText{{field: "ship_id", value: shipID}}
+	if shipName != "" {
+		texts = append(texts, outcomeText{field: "ship", value: shipName})
+	}
+	if portID != "" {
+		texts = append(texts, outcomeText{field: "port_id", value: portID})
+	}
+	return texts
+}
+
+// Scrub complete values before applying a Unicode-safe console bound. Cutting
+// a credential first would prevent the exact-secret and token patterns matching.
+func (r *Runner) scrubOutcomeFields(ctx context.Context, fields []zap.Field, texts []outcomeText) []zap.Field {
+	values := make([]string, len(texts))
+	for i, text := range texts {
+		values[i] = text.value
+	}
+	cleaned := r.db.ScrubOutcomeTexts(ctx, r.account.ID, values)
+	for i, text := range texts {
+		value := cleaned[i]
+		characters := 0
+		for offset := range value {
+			if characters == 512 {
+				value = value[:offset] + "..."
+				break
+			}
+			characters++
+		}
+		fields = append(fields, zap.String(text.field, value))
+	}
+	return fields
+}
+
+// Only fresh dispatch calls this after validating the receipt and durably
+// consuming its mission transition. Replays do not announce another commit.
+func (r *Runner) logCommittedAction(ctx context.Context, mission *store.Mission, data *missionData, action *durableAction, response json.RawMessage) {
+	var envelope struct {
+		Uninterpreted bool `json:"committed_uninterpreted"`
+	}
+	_ = json.Unmarshal(response, &envelope)
+	if envelope.Uninterpreted {
+		return
+	}
+	entry := r.log.Check(zap.InfoLevel, "action committed")
 	if entry == nil {
 		return
 	}
@@ -337,14 +443,44 @@ func (r *Runner) logCommittedAction(ctx context.Context, mission *store.Mission,
 		zap.String("action_id", action.ID),
 		zap.String("stage", action.Stage),
 	}
-	// action_id and stage are generated internally; everything below is
-	// upstream-derived and redacted in one batch before it reaches the console.
-	upstream := []outcomeText{{field: "ship_id", value: mission.ShipID}}
+	upstream := actionOutcomeTexts(mission, data, action)
 	switch action.Stage {
+	case "underwrite":
+		var result struct {
+			Underwritings []struct {
+				ID         string `json:"id"`
+				CompanyID  string `json:"underwriter_company_id"`
+				SliceBPS   int64  `json:"slice_bps"`
+				Collateral int64  `json:"collateral_locked_pence"`
+				Premium    int64  `json:"premium_share_pence"`
+			} `json:"underwritings"`
+		}
+		_ = json.Unmarshal(response, &result)
+		for _, receipt := range result.Underwritings {
+			if receipt.CompanyID == r.account.CompanyID {
+				upstream = append(upstream, outcomeText{field: "underwriting_id", value: receipt.ID})
+				fields = append(fields, zap.Int64("slice_bps", receipt.SliceBPS),
+					zap.Int64("collateral_locked_pence", receipt.Collateral), zap.Int64("premium_entitlement_pence", receipt.Premium))
+				break
+			}
+		}
 	case "buy", "sell", "provision":
 		var result tradeResult
 		_ = json.Unmarshal(response, &result)
-		upstream = append(upstream, outcomeText{field: "commodity", value: result.CommodityID})
+		var request struct {
+			Side     string `json:"side"`
+			Quantity int64  `json:"quantity"`
+			Price    int64  `json:"price_pence"`
+		}
+		_ = json.Unmarshal(action.Body, &request)
+		upstream = append(upstream,
+			outcomeText{field: "commodity", value: result.CommodityID},
+			outcomeText{field: "side", value: request.Side},
+		)
+		fields = append(fields,
+			zap.Int64("requested_quantity_tons", request.Quantity),
+			zap.Int64("limit_price_pence", request.Price),
+		)
 		fields = append(fields,
 			zap.Int64("quantity_tons", *result.FilledQuantity),
 			zap.Int64("gross_pence", *result.TotalGrossPence),
@@ -360,16 +496,29 @@ func (r *Runner) logCommittedAction(ctx context.Context, mission *store.Mission,
 		upstream = append(upstream, outcomeText{field: "contract_id", value: result.ContractID})
 		fields = append(fields, zap.Int64("quantity_tons", result.Quantity), zap.Int64("reward_pence", result.Reward))
 	case "accept-freight":
-		obligation := data.Freight[len(data.Freight)-1]
-		upstream = append(upstream,
-			outcomeText{field: "contract_id", value: obligation.ContractID},
-			outcomeText{field: "destination", value: obligation.Destination},
-		)
-		fields = append(fields,
-			zap.Int64("quantity_tons", obligation.Quantity),
-			zap.Int64("reward_pence", obligation.RewardPence),
-			zap.Int64("collateral_pence", obligation.CollateralPence),
-		)
+		var result struct {
+			ContractID string `json:"contract_id"`
+		}
+		_ = json.Unmarshal(response, &result)
+		for _, obligation := range data.Freight {
+			if obligation.ContractID != result.ContractID {
+				continue
+			}
+			upstream = append(upstream,
+				outcomeText{field: "contract_id", value: obligation.ContractID},
+				outcomeText{field: "commodity", value: obligation.Commodity},
+				outcomeText{field: "destination", value: obligation.Destination},
+			)
+			fields = append(fields,
+				zap.Int64("quantity_tons", obligation.Quantity),
+				zap.Int64("reward_pence", obligation.RewardPence),
+				zap.Int64("collateral_pence", obligation.CollateralPence),
+			)
+			if obligation.Deadline != nil {
+				fields = append(fields, zap.Time("delivery_deadline", *obligation.Deadline))
+			}
+			break
+		}
 	case "build":
 		upstream = append(upstream,
 			outcomeText{field: "built_ship_id", value: data.BuiltShipID},
@@ -391,28 +540,176 @@ func (r *Runner) logCommittedAction(ctx context.Context, mission *store.Mission,
 			Net   int64 `json:"net_credited_pence"`
 		}
 		_ = json.Unmarshal(response, &result)
+		var request struct {
+			FromRegion string `json:"from_region"`
+			ToRegion   string `json:"to_region"`
+		}
+		_ = json.Unmarshal(action.Body, &request)
+		upstream = append(upstream,
+			outcomeText{field: "from_region", value: request.FromRegion},
+			outcomeText{field: "to_region", value: request.ToRegion},
+		)
 		fields = append(fields, zap.Int64("gross_pence", result.Gross), zap.Int64("fee_pence", result.Fee), zap.Int64("net_credited_pence", result.Net))
 	case "depart":
 		var result struct {
-			BerthDues int64 `json:"berth_dues_pence"`
-			Debt      int64 `json:"berth_dues_debt_pence"`
+			Destination string `json:"dest_port_id"`
+			BerthDues   int64  `json:"berth_dues_pence"`
+			Debt        int64  `json:"berth_dues_debt_pence"`
 		}
 		_ = json.Unmarshal(response, &result)
-		upstream = append(upstream, outcomeText{field: "destination", value: mission.Destination})
+		upstream = append(upstream,
+			outcomeText{field: "origin_port_id", value: action.Before.Ship.CurrentPortID},
+			outcomeText{field: "destination", value: result.Destination},
+		)
+		var cargoTons int64
+		for _, quantity := range action.Before.CargoManifest {
+			cargoTons += quantity
+		}
+		fields = append(fields, zap.Int64("cargo_tons", cargoTons))
 		fields = append(fields, zap.Int64("berth_dues_pence", result.BerthDues), zap.Int64("berth_dues_debt_pence", result.Debt))
+	case "offshore":
+		var result struct {
+			BerthDues *int64 `json:"berth_dues_pence"`
+			Debt      *int64 `json:"berth_dues_debt_pence"`
+		}
+		_ = json.Unmarshal(response, &result)
+		if result.BerthDues != nil && *result.BerthDues >= 0 {
+			fields = append(fields, zap.Int64("berth_dues_pence", *result.BerthDues))
+		}
+		if result.Debt != nil && *result.Debt >= 0 {
+			fields = append(fields, zap.Int64("berth_dues_debt_pence", *result.Debt))
+		}
 	case "refit":
+		var request struct {
+			Cannons int64 `json:"target_cannons_count"`
+		}
+		_ = json.Unmarshal(action.Body, &request)
 		upstream = append(upstream, outcomeText{field: "built_ship_id", value: data.BuiltShipID})
-		fields = append(fields, zap.Bool("cost_known", false))
+		fields = append(fields, zap.Int64("target_cannons_count", request.Cannons), zap.Bool("cost_known", false))
 	}
-	values := make([]string, len(upstream))
-	for i, text := range upstream {
-		values[i] = text.value
+	entry.Write(r.scrubOutcomeFields(ctx, fields, upstream)...)
+}
+
+// Reconciliation proves the observed state, not the missing receipt's cash
+// movements. No monetary outcome is inferred from a successful recovery.
+func (r *Runner) logRecoveredAction(ctx context.Context, mission *store.Mission, data *missionData, action *durableAction) {
+	entry := r.log.Check(zap.InfoLevel, "action recovered")
+	if entry == nil {
+		return
 	}
-	cleaned := r.db.ScrubOutcomeTexts(ctx, r.account.ID, values)
-	for i, text := range upstream {
-		fields = append(fields, zap.String(text.field, cleaned[i]))
+	fields := []zap.Field{
+		zap.String("action_id", action.ID),
+		zap.String("stage", action.Stage),
+		zap.String("outcome_source", "authoritative_reconciliation"),
 	}
-	entry.Write(fields...)
+	upstream := actionOutcomeTexts(mission, data, action)
+	switch action.Stage {
+	case "depart":
+		fields = append(fields, zap.String("observed_outcome", "departure observed"))
+		var request struct {
+			Destination string `json:"dest_port_id"`
+		}
+		_ = json.Unmarshal(action.Body, &request)
+		upstream = append(upstream,
+			outcomeText{field: "origin_port_id", value: action.Before.Ship.CurrentPortID},
+			outcomeText{field: "destination", value: request.Destination},
+		)
+	case "build":
+		fields = append(fields, zap.String("observed_outcome", "matching named ship observed"))
+		upstream = append(upstream,
+			outcomeText{field: "built_ship_id", value: data.BuiltShipID},
+			outcomeText{field: "ship_name", value: data.BuildName},
+			outcomeText{field: "ship_class", value: data.BuildClass},
+		)
+	case "offshore":
+		fields = append(fields, zap.String("observed_outcome", "offshore move observed"))
+	case "dock":
+		fields = append(fields, zap.String("observed_outcome", "berthing or queue entry observed"))
+	case "refit":
+		fields = append(fields, zap.String("observed_outcome", "target cannon count observed"))
+		var request struct {
+			Cannons int64 `json:"target_cannons_count"`
+		}
+		_ = json.Unmarshal(action.Body, &request)
+		fields = append(fields, zap.Int64("target_cannons_count", request.Cannons))
+	case "accept-freight", "deliver-freight":
+		observed := "active freight obligation observed"
+		if action.Stage == "deliver-freight" {
+			observed = "terminal freight contract observed"
+		}
+		fields = append(fields, zap.String("observed_outcome", observed))
+		var request struct {
+			ContractID string `json:"contract_id"`
+		}
+		_ = json.Unmarshal(action.Body, &request)
+		upstream = append(upstream, outcomeText{field: "contract_id", value: request.ContractID})
+		if contract, exists := r.contract(request.ContractID); exists && r.fresh("contracts") && !contract.Stale {
+			upstream = append(upstream,
+				outcomeText{field: "contract_status", value: contract.Status},
+				outcomeText{field: "origin_port_id", value: contract.OriginPortID},
+				outcomeText{field: "destination", value: contract.DestPortID},
+			)
+		}
+	}
+	entry.Write(r.scrubOutcomeFields(ctx, fields, upstream)...)
+}
+
+func (r *Runner) logRejectedAction(ctx context.Context, mission *store.Mission, data *missionData, action *durableAction, status int, response json.RawMessage) {
+	var problem struct {
+		Code   string `json:"code"`
+		Detail string `json:"detail"`
+	}
+	_ = json.Unmarshal(response, &problem)
+	level := zap.WarnLevel
+	if status == http.StatusTooManyRequests {
+		level = zap.DebugLevel
+	} else if status == http.StatusConflict {
+		switch problem.Code {
+		case "insufficient_provisions":
+			if action.Stage == "depart" {
+				level = zap.DebugLevel
+			}
+		case "ship_not_berthed":
+			switch action.Stage {
+			case "buy", "sell", "provision", "accept-freight", "refit":
+				level = zap.DebugLevel
+			}
+		case "conflict":
+			var request struct {
+				ContractID string `json:"contract_id"`
+			}
+			_ = json.Unmarshal(action.Body, &request)
+			if action.Stage == "deliver-freight" {
+				for _, obligation := range data.Freight {
+					if obligation.ContractID == request.ContractID && obligation.TenderRefused {
+						level = zap.DebugLevel
+						break
+					}
+				}
+			} else if action.Stage == "deliver-charter" {
+				if _, known := data.RejectedCharterTerms[request.ContractID]; known && data.RejectedCharterIDs[request.ContractID] {
+					level = zap.DebugLevel
+				}
+			}
+		}
+	}
+	entry := r.log.Check(level, "action rejected")
+	if entry == nil {
+		return
+	}
+	fields := []zap.Field{
+		zap.String("action_id", action.ID),
+		zap.String("stage", action.Stage),
+		zap.Int("status", status),
+	}
+	if !data.CooldownUntil.IsZero() {
+		fields = append(fields, zap.Time("retry_at", data.CooldownUntil))
+	}
+	upstream := append(actionOutcomeTexts(mission, data, action),
+		outcomeText{field: "code", value: problem.Code},
+		outcomeText{field: "reason", value: problem.Detail},
+	)
+	entry.Write(r.scrubOutcomeFields(ctx, fields, upstream)...)
 }
 
 func (r *Runner) holdUnresolvedAction(ctx context.Context, shipID string, action *durableAction, reason string) error {
@@ -427,11 +724,11 @@ func (r *Runner) holdUnresolvedAction(ctx context.Context, shipID string, action
 	now := time.Now()
 	previous := r.decisionHashes[key]
 	if previous.hash != fingerprint || now.Sub(previous.writtenAt) >= 7*24*time.Hour {
-		r.log.Warn("action unresolved; retained immutable request for recovery",
-			zap.String("action_id", action.ID),
-			zap.String("stage", action.Stage),
-			zap.String("ship_id", shipID),
-		)
+		if entry := r.log.Check(zap.WarnLevel, "action unresolved; retained immutable request for recovery"); entry != nil {
+			fields := []zap.Field{zap.String("action_id", action.ID), zap.String("stage", action.Stage)}
+			upstream := append(actionOutcomeTexts(&store.Mission{ShipID: shipID}, nil, action), outcomeText{field: "reason", value: reason})
+			entry.Write(r.scrubOutcomeFields(ctx, fields, upstream)...)
+		}
 		r.rememberDecision(key, fingerprint, now)
 	}
 	return nil
@@ -478,6 +775,7 @@ func departureObserved(before, actual ShipState, destination string) bool {
 }
 
 func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission, data *missionData) (bool, error) {
+	action := data.Action
 	data.CostsKnown = false
 	switch data.Action.Stage {
 	case "depart":
@@ -531,7 +829,11 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 	data.LastActionID = data.Action.ID
 	data.Sequence++
 	data.Action = nil
-	return true, r.saveMission(ctx, mission, data)
+	if err := r.saveMission(ctx, mission, data); err != nil {
+		return true, err
+	}
+	r.logRecoveredAction(ctx, mission, data, action)
+	return true, nil
 }
 
 func (r *Runner) spendingPort(ship ShipState) (Port, error) {
@@ -555,6 +857,13 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		return errors.New("new action requires current successful server clock authority")
 	}
 	action := data.Action
+	if mission.ShipID == "__growth" && (data.GrowthLane == nil ||
+		data.GrowthLane.AdmissionID != mission.Generation || data.GrowthLane.withdrawn()) {
+		return errors.New("new commissioning spend requires its active admitted allocation; withdrawn intents only resolve attempted actions and close")
+	}
+	if action.Stage == "underwrite" {
+		return r.underwritingPreflight(ctx, data, true)
+	}
 	var request struct {
 		ShipID      string `json:"ship_id"`
 		ContractID  string `json:"contract_id"`
@@ -590,19 +899,27 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		if !found {
 			return errors.New("new remittance lacks its observed regional fee")
 		}
-		ship, _ := r.ship(mission.ShipID)
-		input := r.planningInput(ship)
-		required, err := r.treasuryReserves(ctx)
+		shipID := mission.ShipID
+		if shipID == "__growth" {
+			shipID = data.BuiltShipID
+		}
+		ship, _ := r.ship(shipID)
+		if data.GrowthLane != nil && mission.ShipID != "__treasury" {
+			if err := r.growthAllocationReady(ctx, ship, data, action); err != nil {
+				return err
+			}
+		}
+		var input PlanningInput
+		var err error
+		if action.Stage == "sourcing-remit" {
+			input, err = r.sourcingInput(ctx, ship)
+		} else {
+			input, err = r.committedPlanningInput(ctx, ship)
+		}
 		if err != nil {
 			return err
 		}
-		if action.Stage == "sourcing-remit" {
-			input, err = r.sourcingInput(ctx, ship)
-			if err != nil {
-				return err
-			}
-			required = input.ReserveByRegion
-		}
+		required := input.ReserveByRegion
 		if input.Balances[request.FromRegion]-request.Gross < required[request.FromRegion] {
 			return errors.New("new remittance would spend protected donor reserves or incumbent commitments")
 		}
@@ -624,6 +941,11 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 	ship, exists := r.ship(request.ShipID)
 	if !exists || !r.fresh("ships") || request.ShipID != mission.ShipID && mission.ShipID != "__growth" {
 		return errors.New("new action requires the matching fresh ship")
+	}
+	if action.Stage == "buy" || action.Stage == "provision" || action.Stage == "depart" || action.Stage == "dock" {
+		if err := r.growthAllocationReady(ctx, ship, data, action); err != nil {
+			return err
+		}
 	}
 	switch action.Stage {
 	case "depart", "offshore":
@@ -654,11 +976,12 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		if data.Relocation != nil {
 			return r.relocationDepartureReady(ctx, ship, data)
 		}
-		if !data.ReturnJourney && data.Plan.Kind != "recovery" {
-			revenue, reason := acquiredRevenue(r.planningInput(ship), data.Plan, data.BoughtQuantity, data.Freight)
-			if acquiredNet(data, revenue) <= 0 {
-				return fmt.Errorf("new departure lost its current profit case: %s", reason)
-			}
+		proceed, err := r.procurementDepartureDecision(ship, request.Destination, data)
+		if err != nil {
+			return err
+		}
+		if !proceed {
+			return errors.New("fresh executable local liquidation recovers at least as much as continuing")
 		}
 	case "deliver-freight", "deliver-charter", "accept-freight":
 		contract, exists := r.contract(request.ContractID)
@@ -695,7 +1018,10 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 				if err != nil {
 					return err
 				}
-				input := r.planningInput(ship)
+				input, err := r.committedPlanningInput(ctx, ship)
+				if err != nil {
+					return err
+				}
 				if input.Balances[port.BankingRegion]-contract.CollateralPence < input.ReserveByRegion[port.BankingRegion] {
 					return errors.New("new freight acceptance would spend protected regional reserves")
 				}
@@ -715,7 +1041,10 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		if added > math.MaxInt64/15_000 || added > (ship.EffectiveHoldCapacityTons-ship.CargoUsedTons)/2 {
 			return errors.New("new refit exceeds integer-pence bounds or actual cannon displacement")
 		}
-		input := r.planningInput(ship)
+		input, err := r.committedPlanningInput(ctx, ship)
+		if err != nil {
+			return err
+		}
 		if input.Balances[port.BankingRegion]-added*15_000-data.GrowthWorkingCapitalPence < input.ReserveByRegion[port.BankingRegion] {
 			return errors.New("new refit would spend protected regional reserves or commissioning working capital")
 		}
@@ -723,6 +1052,21 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		if ship.Voyage != nil || ship.Ship.Status != "berthed" && ship.Ship.Status != "anchored_roadstead" ||
 			request.PortID != ship.Ship.CurrentPortID || !r.fresh("books/"+request.PortID) || r.stateCache.Markets[request.PortID].Visibility != "quay" {
 			return errors.New("new market action requires matching stationary presence and a fresh executable local quay")
+		}
+		var input PlanningInput
+		var err error
+		if action.Stage == "buy" && data.SourcingHandoff != nil || action.Stage == "provision" && data.Relocation != nil {
+			input, err = r.sourcingInput(ctx, ship)
+		} else if action.Stage != "sell" {
+			input, err = r.committedPlanningInput(ctx, ship)
+		}
+		if err != nil {
+			return err
+		}
+		if action.Stage == "buy" {
+			if _, err := procurementDestinationRevenue(input, data.Plan, request.Quantity); err != nil {
+				return fmt.Errorf("new cargo purchase lost its destination evidence: %w", err)
+			}
 		}
 		if action.Stage != "sell" {
 			port, err := r.spendingPort(ship)
@@ -732,6 +1076,14 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			if request.Quantity <= 0 || request.Price <= 0 || request.Price > math.MaxInt64/request.Quantity {
 				return errors.New("new purchase exceeds integer-pence funding bounds")
 			}
+			entry := bookCommodity(input.Markets[request.PortID], request.Commodity)
+			if entry == nil || entry.Depth == nil {
+				return errors.New("new purchase lacks uncommitted executable source asks")
+			}
+			fill, err := WalkDepth(entry.Depth.Asks, request.Quantity, true)
+			if err != nil || fill.LimitPence > request.Price {
+				return errors.New("new purchase would consume source asks committed to another mission")
+			}
 			if action.Stage != "buy" || data.SourcingHandoff == nil {
 				cost := request.Quantity * request.Price
 				customs := ceilBPS(cost, r.stateCache.Markets[request.PortID].CustomsBPS) + request.Quantity
@@ -739,26 +1091,18 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 				if action.Stage == "buy" {
 					futureBills = data.Plan.Economics.BerthDuesPence + data.Plan.Economics.UpkeepPence + data.Plan.Economics.CollateralPence + data.Plan.Economics.TollPence
 				}
-				input := r.planningInput(ship)
+				if action.Stage == "provision" && data.Relocation != nil {
+					if !r.relocationProvisionBudget(data, ship, input, request.Quantity, request.Price) {
+						return errors.New("new sourcing provisions exceed the immutable exploration expense cap")
+					}
+				}
 				if input.Balances[port.BankingRegion]-cost-customs-futureBills < input.ReserveByRegion[port.BankingRegion] {
 					return errors.New("new purchase would spend protected regional bills reserves")
 				}
 			}
 		}
-		if action.Stage == "provision" && data.Relocation != nil {
-			cost := request.Quantity * request.Price
-			if cost > data.Relocation.ExpenseCapPence || request.Quantity > data.Relocation.ExpenseCapPence ||
-				!r.relocationBudget(data, cost+ceilBPS(cost, r.stateCache.Markets[request.PortID].CustomsBPS)+request.Quantity) {
-				return errors.New("new sourcing provisions exceed the immutable exploration expense cap")
-			}
-		}
 		if action.Stage == "buy" && data.SourcingHandoff != nil {
 			contract, exists := r.contract(data.SourcingHandoff.TargetContractID)
-			input, err := r.sourcingInput(ctx, ship)
-			if err != nil {
-				return err
-			}
-			input.PaidProvisionsPence = data.ProvisionsPence
 			probe := data.Plan
 			probe.Economics.GameDays = data.SourcingGameDays
 			plan := sizeRelocationCargo(input, probe, contract, data.SourcingSpentPence)

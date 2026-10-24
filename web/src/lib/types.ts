@@ -10,6 +10,20 @@ export interface DatasetMeta {
   complete?: boolean;
 }
 
+export interface EngineHold {
+  ship_id: string;
+  reason: string;
+}
+
+export interface EngineState {
+  mode: "observe" | "execute";
+  generation: string;
+  observed_at: string;
+  next_check_at: string;
+  holds: EngineHold[];
+  assessed_ship_ids: string[];
+}
+
 export interface Account {
   id: string;
   label: string;
@@ -26,6 +40,31 @@ export interface Metric {
   name: string;
   value: number;
   recorded_at: string;
+}
+
+// Pence and game days retain the units recorded by the planner. Historical
+// decisions can omit fields, including the destination valuation basis.
+export interface Economics {
+  basis?: "destination";
+  revenue_pence?: number;
+  purchase_pence?: number;
+  customs_pence?: number;
+  provisions_pence?: number;
+  store_cash_pence?: number;
+  berth_dues_pence?: number;
+  upkeep_pence?: number;
+  toll_pence?: number;
+  collateral_pence?: number;
+  expected_net_pence?: number;
+  stress_haircut_bps?: number;
+  stress_haircut_pence?: number;
+  price_uncertainty_stress_pence?: number;
+  stress_net_pence?: number;
+  game_days?: number;
+  net_pence_per_game_day?: number;
+  ballast_repeat_game_days?: number;
+  ballast_repeat_net_pence?: number;
+  probability_estimate?: number | null;
 }
 
 export interface Decision {

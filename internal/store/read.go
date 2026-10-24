@@ -23,6 +23,7 @@ func (s *Store) Dashboard(ctx context.Context) (Dashboard, error) {
 	db, cancel := s.query(ctx)
 	defer cancel()
 	err := db.Transaction(func(tx *gorm.DB) error {
+		scrubber := displayScrubber{store: s, tx: tx}
 		accounts := make([]Account, 0)
 		if err := tx.Order("created_at, id").Limit(maxDashboardAccounts + 1).Find(&accounts).Error; err != nil {
 			return err
@@ -60,11 +61,48 @@ func (s *Store) Dashboard(ctx context.Context) (Dashboard, error) {
 			}
 			for _, snapshot := range snapshots {
 				index := indices[snapshot.AccountID]
+				updatedAt := snapshot.UpdatedAt
+				result.Accounts[index].UpdatedAt = &updatedAt
+				credentials := scrubber.credentials(snapshot.AccountID)
+				if !credentials.available {
+					// Withhold typed datasets rather than replacing their values
+					// with a string or inventing a successful empty observation.
+					// Retained metadata may contain secrets too; publish only
+					// fixed local errors, never its original keys or messages.
+					result.Accounts[index].Snapshot["_meta"] = json.RawMessage(`{
+						"_engine": {
+							"complete": false,
+							"stale": true,
+							"error": "Account credentials unavailable; retained data cannot be safely displayed."
+						},
+						"ships": {
+							"complete": false,
+							"stale": true,
+							"error": "Account credentials unavailable; retained data cannot be safely displayed."
+						},
+						"profile": {
+							"complete": false,
+							"stale": true,
+							"error": "Account credentials unavailable; retained data cannot be safely displayed."
+						},
+						"catalog": {
+							"complete": false,
+							"stale": true,
+							"error": "Account credentials unavailable; retained data cannot be safely displayed."
+						}
+					}`)
+					continue
+				}
 				if err := json.Unmarshal(snapshot.Data, &result.Accounts[index].Snapshot); err != nil {
 					return fmt.Errorf("decode dashboard snapshot: %w", err)
 				}
-				updatedAt := snapshot.UpdatedAt
-				result.Accounts[index].UpdatedAt = &updatedAt
+				for key, raw := range result.Accounts[index].Snapshot {
+					clean, err := displayJSON(raw, credentials)
+					if err != nil {
+						return err
+					}
+					result.Accounts[index].Snapshot[key] = clean
+				}
 			}
 		}
 		if err := tx.Order("recorded_at DESC, id DESC").Limit(500).Find(&result.Metrics).Error; err != nil {
@@ -73,15 +111,39 @@ func (s *Store) Dashboard(ctx context.Context) (Dashboard, error) {
 		if err := tx.Order("created_at DESC, id DESC").Limit(100).Find(&result.Decisions).Error; err != nil {
 			return err
 		}
+		for i := range result.Decisions {
+			if err := scrubber.decision(&result.Decisions[i]); err != nil {
+				return err
+			}
+		}
 		if err := tx.Order("created_at DESC, id DESC").Limit(100).Find(&result.Events).Error; err != nil {
 			return err
+		}
+		for i := range result.Events {
+			if err := scrubber.event(&result.Events[i]); err != nil {
+				return err
+			}
 		}
 		if err := tx.Table("requests").Select("account_id, method, path, status, duration_ms, error, created_at").
 			Order("created_at DESC, id DESC").Limit(100).Find(&result.Requests).Error; err != nil {
 			return err
 		}
-		return tx.Order("completed_at DESC, id").Limit(100).Find(&result.Settlements).Error
+		for i := range result.Requests {
+			scrubber.request(&result.Requests[i])
+		}
+		settlements, err := s.settlementRows(tx.Order("completed_at DESC, id").Limit(100))
+		if err != nil {
+			return err
+		}
+		for i := range settlements {
+			scrubber.settlement(&settlements[i])
+		}
+		result.Settlements = settlements
+		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return Dashboard{}, err
+	}
 	return result, err
 }
 
@@ -97,33 +159,79 @@ func (s *Store) History(ctx context.Context, accountID, kind string, limit int) 
 	}
 	db, cancel := s.query(ctx)
 	defer cancel()
-	if accountID != "" {
-		db = db.Where("account_id = ?", accountID)
+	var result any
+	err := db.Transaction(func(tx *gorm.DB) error {
+		scrubber := displayScrubber{store: s, tx: tx}
+		query := tx
+		if accountID != "" {
+			query = query.Where("account_id = ?", accountID)
+		}
+		switch kind {
+		case "events":
+			rows := make([]Event, 0)
+			if err := query.Order("created_at DESC, id DESC").Limit(limit).Find(&rows).Error; err != nil {
+				return err
+			}
+			for i := range rows {
+				if err := scrubber.event(&rows[i]); err != nil {
+					return err
+				}
+			}
+			result = rows
+		case "requests":
+			rows := make([]Request, 0)
+			if err := query.Order("created_at DESC, id DESC").Limit(limit).Find(&rows).Error; err != nil {
+				return err
+			}
+			for i := range rows {
+				scrubber.request(&rows[i].RequestSummary)
+				credentials := scrubber.credentials(rows[i].AccountID)
+				var err error
+				rows[i].Request, err = displayJSON(rows[i].Request, credentials)
+				if err != nil {
+					return err
+				}
+				rows[i].Response, err = displayJSON(rows[i].Response, credentials)
+				if err != nil {
+					return err
+				}
+			}
+			result = rows
+		case "decisions":
+			rows := make([]Decision, 0)
+			if err := query.Order("created_at DESC, id DESC").Limit(limit).Find(&rows).Error; err != nil {
+				return err
+			}
+			for i := range rows {
+				if err := scrubber.decision(&rows[i]); err != nil {
+					return err
+				}
+			}
+			result = rows
+		case "metrics":
+			rows := make([]Metric, 0)
+			if err := query.Order("recorded_at DESC, id DESC").Limit(limit).Find(&rows).Error; err != nil {
+				return err
+			}
+			result = rows
+		case "settlements":
+			rows, err := s.settlementRows(query.Order("completed_at DESC, id").Limit(limit))
+			if err != nil {
+				return err
+			}
+			for i := range rows {
+				scrubber.settlement(&rows[i])
+			}
+			result = rows
+		default:
+			return fmt.Errorf("unsupported history kind: %w", ErrInvalidInput)
+		}
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, err
 	}
-	switch kind {
-	case "events":
-		rows := make([]Event, 0)
-		err := db.Order("created_at DESC, id DESC").Limit(limit).Find(&rows).Error
-		return rows, err
-	case "requests":
-		rows := make([]Request, 0)
-		err := db.Order("created_at DESC, id DESC").Limit(limit).Find(&rows).Error
-		return rows, err
-	case "decisions":
-		rows := make([]Decision, 0)
-		err := db.Order("created_at DESC, id DESC").Limit(limit).Find(&rows).Error
-		return rows, err
-	case "metrics":
-		rows := make([]Metric, 0)
-		err := db.Order("recorded_at DESC, id DESC").Limit(limit).Find(&rows).Error
-		return rows, err
-	case "settlements":
-		rows := make([]Settlement, 0)
-		err := db.Order("completed_at DESC, id").Limit(limit).Find(&rows).Error
-		return rows, err
-	default:
-		return nil, fmt.Errorf("unsupported history kind: %w", ErrInvalidInput)
-	}
+	return result, nil
 }
 
 func (s *Store) ServiceStats(ctx context.Context) (ServiceStats, error) {

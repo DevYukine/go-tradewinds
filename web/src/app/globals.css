@@ -319,16 +319,7 @@ summary {
 }
 .navigation nav {
   display: grid;
-  gap: 22px;
-}
-.navigation-group {
-  display: grid;
-  gap: 3px;
-}
-.navigation-label {
-  padding: 0 12px 5px;
-  font-size: 12px;
-  color: var(--muted);
+  gap: 4px;
 }
 .nav-item {
   display: flex;
@@ -367,6 +358,29 @@ summary {
 .navigation-toggle,
 .navigation-backdrop {
   display: none;
+}
+.secondary-navigation {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.secondary-navigation button {
+  min-height: 40px;
+  padding: 8px 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.secondary-navigation button:hover,
+.secondary-navigation button[aria-current="page"] {
+  color: var(--route);
+}
+.secondary-navigation button[aria-current="page"] {
+  border-bottom-color: var(--route);
+  font-weight: 600;
 }
 .workspace {
   min-width: 0;
@@ -880,9 +894,6 @@ td small,
   .workspace {
     padding: 22px;
   }
-  .topbar-status span:last-child {
-    display: none;
-  }
   .nav-item {
     padding-inline: 9px;
   }
@@ -911,7 +922,7 @@ td small,
     display: inline-flex;
   }
   .scope-control {
-    flex: 1 1 calc(100% - 98px);
+    flex: 1 1 calc(100% - 210px);
     order: 5;
   }
   .scope-control select {
@@ -943,6 +954,9 @@ td small,
   .nav-item {
     min-height: 44px;
     font-size: 14px;
+  }
+  .secondary-navigation button {
+    min-height: 44px;
   }
   .workspace {
     padding: 20px 14px 32px;

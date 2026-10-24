@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,19 +39,35 @@ func TestRunRefreshesFinancialEventsAfterVaultCaptureBeforeNewSpending(t *testin
 			}
 
 			stream := interceptEventStream(t, h.api, []progressFrame{{id: "connected", eventType: progressOrdinaryEvent}}, 2)
-			stream.frameFor = func(index int32) progressFrame {
-				if index == 1 {
-					return progressFrame{id: progressEventID(index), eventType: progressOrdinaryEvent}
-				}
-				return progressFrame{}
-			}
+			stream.frameFor = func(int32) progressFrame { return progressFrame{} }
 			downstream := h.api.server.Config.Handler
 			var injected atomic.Bool
+			vaultCaptured := make(chan struct{})
+			var vaultCapturedOnce sync.Once
 			h.api.server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-				// Rates follow vaults in the authoritative REST capture. The cash
-				// change therefore commits after the old vault response was read.
+				if request.Method == http.MethodGet && request.URL.Path == "/v1/treasury/vaults" {
+					downstream.ServeHTTP(writer, request)
+					if flusher, ok := writer.(http.Flusher); ok {
+						flusher.Flush()
+					}
+					vaultCapturedOnce.Do(func() { close(vaultCaptured) })
+					return
+				}
+				// Hold this sibling until the old vault response is produced, then
+				// flush the event before releasing the capture. Either GET may
+				// arrive first; no endpoint execution order is assumed.
 				if request.Method == http.MethodGet && request.URL.Path == "/v1/treasury/rates" &&
-					stream.captures.Load() == 1 && injected.CompareAndSwap(false, true) {
+					injected.CompareAndSwap(false, true) {
+					select {
+					case <-vaultCaptured:
+					case <-request.Context().Done():
+						return
+					}
+					select {
+					case <-stream.connected:
+					case <-request.Context().Done():
+						return
+					}
 					payload := map[string]any{"port_id": recoveryHomePort}
 					h.api.mu.Lock()
 					switch eventType {

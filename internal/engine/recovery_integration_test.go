@@ -151,7 +151,10 @@ func newFakeGameAPI(t *testing.T) *fakeGameAPI {
 		minReserve:   200_000,
 		vaultBalance: map[string]int64{"north": 50_000_000, "south": 500_000},
 		factorPorts:  []string{},
-		rates:        []Rate{{FromRegion: "north", ToRegion: "south", FeeBPS: 100}},
+		rates: []Rate{
+			{FromRegion: "north", ToRegion: "south", FeeBPS: 100},
+			{FromRegion: "south", ToRegion: "north", FeeBPS: 100},
+		},
 		fleet: []map[string]any{
 			sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort),
 			sailingShipRow(recoveryShipCharizard, "Charizard", recoveryFarPort, recoveryHomePort),
@@ -1333,8 +1336,17 @@ func TestRecoveryGrowthBuildRejectionReplansThroughFreshPlanning(t *testing.T) {
 	}
 
 	h.expireCooldown("__growth")
-	if _, err := h.tick(runner); err != nil {
-		t.Fatalf("delete rejected build: %v", err)
+	for pass := 0; pass < 8; pass++ {
+		if _, err := h.tick(runner); err != nil {
+			t.Fatalf("settle rejected build after 429: %v", err)
+		}
+		remaining, err := h.db.GetMission(h.ctx, h.account.ID, "__growth")
+		if err != nil {
+			t.Fatalf("read rejected build after 429: %v", err)
+		}
+		if remaining == nil {
+			break
+		}
 	}
 	h.missingMission("__growth")
 	if _, err := h.tick(runner); err != nil {
@@ -1375,8 +1387,17 @@ func TestRecoveryGrowthBuildRejectionReplansThroughFreshPlanning(t *testing.T) {
 	}
 
 	h.expireCooldown("__growth")
-	if _, err := h.tick(runner); err != nil {
-		t.Fatalf("delete 403 build: %v", err)
+	for pass := 0; pass < 8; pass++ {
+		if _, err := h.tick(runner); err != nil {
+			t.Fatalf("settle rejected build after 403: %v", err)
+		}
+		remaining, err := h.db.GetMission(h.ctx, h.account.ID, "__growth")
+		if err != nil {
+			t.Fatalf("read rejected build after 403: %v", err)
+		}
+		if remaining == nil {
+			break
+		}
 	}
 	h.missingMission("__growth")
 	if _, err := h.tick(runner); err != nil {
@@ -1433,11 +1454,15 @@ func TestRecoveryLegacyGrowthIntentRecoversAndKeepsAttachedActions(t *testing.T)
 	}
 
 	legacyData := missionData{
-		Plan:          Plan{Kind: "spot", ShipID: "__growth", Origin: recoveryHomePort, Destination: recoveryFarPort, Commodity: recoveryGrain},
-		BuildName:     "Bulbasaur",
-		BuildClass:    recoveryHull,
-		BuildPort:     recoveryHomePort,
-		CooldownUntil: time.Now().UTC().Add(time.Hour),
+		Plan:             Plan{Kind: "spot", ShipID: "__growth", Origin: recoveryHomePort, Destination: recoveryFarPort, Commodity: recoveryGrain},
+		BuildName:        "Bulbasaur",
+		BuildClass:       recoveryHull,
+		BuildPort:        recoveryHomePort,
+		CooldownUntil:    time.Now().UTC().Add(time.Hour),
+		CostsKnown:       true,
+		InitialLedgerIDs: runner.ledgerIDs(),
+		StartedAt:        time.Now().UTC(),
+		StartedGameHours: runner.stateCache.Clock.Calendar.TotalGameHours,
 	}
 	h.putMission("__growth", "legacy-growth-generation", "growth_build", legacyData)
 
@@ -1454,8 +1479,17 @@ func TestRecoveryLegacyGrowthIntentRecoversAndKeepsAttachedActions(t *testing.T)
 
 	legacyData.CooldownUntil = time.Now().UTC().Add(-time.Second)
 	h.putMission("__growth", "legacy-growth-generation", "growth_build", legacyData)
-	if _, err := h.tick(runner); err != nil {
-		t.Fatalf("legacy recovery tick: %v", err)
+	for pass := 0; pass < 8; pass++ {
+		if _, err := h.tick(runner); err != nil {
+			t.Fatalf("legacy recovery tick: %v", err)
+		}
+		remaining, err := h.db.GetMission(h.ctx, h.account.ID, "__growth")
+		if err != nil {
+			t.Fatalf("read legacy recovery intent: %v", err)
+		}
+		if remaining == nil {
+			break
+		}
 	}
 	h.missingMission("__growth")
 	if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
@@ -1523,7 +1557,7 @@ func TestRecoveryLegacyGrowthIntentRecoversAndKeepsAttachedActions(t *testing.T)
 		t.Fatalf("attached action left journal state behind: %+v", pending)
 	}
 
-	t.Run("completed rejection replans without replay", func(t *testing.T) {
+	t.Run("completed rejection with known accounting replans without replay", func(t *testing.T) {
 		completed := newRecoveryHarness(t)
 		oldGeneration := "legacy-completed-generation"
 		oldID := actionID(completed.account.ID, oldGeneration, "build", 0)
@@ -1535,9 +1569,13 @@ func TestRecoveryLegacyGrowthIntentRecoversAndKeepsAttachedActions(t *testing.T)
 				Destination: recoveryFarPort,
 				Commodity:   recoveryGrain,
 			},
-			BuildName:  "Bulbasaur",
-			BuildClass: recoveryHull,
-			BuildPort:  recoveryHomePort,
+			BuildName:        "Bulbasaur",
+			BuildClass:       recoveryHull,
+			BuildPort:        recoveryHomePort,
+			CostsKnown:       true,
+			InitialLedgerIDs: map[string]bool{},
+			StartedAt:        time.Now().UTC().Add(-time.Minute),
+			StartedGameHours: 2_400,
 			Action: &durableAction{
 				ID:        oldID,
 				Stage:     "build",
@@ -1580,8 +1618,17 @@ func TestRecoveryLegacyGrowthIntentRecoversAndKeepsAttachedActions(t *testing.T)
 		completed.api.replaceValidKeys(repairedTestKey)
 		completed.expireCooldown("__growth")
 		repaired := completed.runner(repairedTestKey)
-		if _, err := completed.tick(repaired); err != nil {
-			t.Fatalf("release completed legacy intent: %v", err)
+		for pass := 0; pass < 8; pass++ {
+			if _, err := completed.tick(repaired); err != nil {
+				t.Fatalf("close completed legacy intent: %v", err)
+			}
+			remaining, err := completed.db.GetMission(completed.ctx, completed.account.ID, "__growth")
+			if err != nil {
+				t.Fatalf("read completed legacy intent: %v", err)
+			}
+			if remaining == nil {
+				break
+			}
 		}
 		completed.missingMission("__growth")
 		if _, err := completed.tick(repaired); err != nil {

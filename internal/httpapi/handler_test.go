@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestReadOnlyRoutesAndTruthfulUnavailableResponses(t *testing.T) {
@@ -64,5 +66,54 @@ func TestForeignHostRejected(t *testing.T) {
 func TestMetricLabelsEscapePrometheusDelimiters(t *testing.T) {
 	if got := metricLabel("account\\one\n\"two"); got != `"account\\one\n\"two"` {
 		t.Fatalf("unsafe metric label: %s", got)
+	}
+}
+
+type disconnectedResponseWriter struct {
+	*httptest.ResponseRecorder
+	err   error
+	calls int
+}
+
+func (w *disconnectedResponseWriter) Write([]byte) (int, error) {
+	w.calls++
+	return 0, w.err
+}
+
+func TestRepeatedResponseWriteFailuresAreBounded(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "disconnect", err: errors.New("client disconnected")},
+		{name: "short write"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			core, logs := observer.New(zap.DebugLevel)
+			handler := NewHandler(nil, zap.New(core), "127.0.0.1:8585")
+			response := &disconnectedResponseWriter{
+				ResponseRecorder: httptest.NewRecorder(),
+				err:              test.err,
+			}
+			for range 50 {
+				request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+				request.Host = "127.0.0.1:8585"
+				handler.ServeHTTP(response, request)
+			}
+			if response.calls != 50 {
+				t.Fatalf("sampling prevented response writes: %d", response.calls)
+			}
+			entries := logs.All()
+			if len(entries) != 1 || entries[0].Level != zap.WarnLevel {
+				t.Fatalf("repeated failed writes were not bounded to one warning: %+v", entries)
+			}
+			fields := entries[0].ContextMap()
+			if fields["written_bytes"] != int64(0) || fields["expected_bytes"] == int64(0) {
+				t.Fatalf("write warning lacks byte-count context: %+v", fields)
+			}
+			if test.err != nil && fields["error"] != test.err.Error() {
+				t.Fatalf("write warning discarded its cause: %+v", fields)
+			}
+		})
 	}
 }

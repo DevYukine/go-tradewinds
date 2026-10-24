@@ -420,6 +420,8 @@ func TestRunQueuedGapAndClosureRequireAuthoritativeResyncBeforeDispatch(t *testi
 	}
 	stagedID := staged.Action.ID
 	first, second, third := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	postCommit, postCommitReady := make(chan struct{}), make(chan struct{})
+	var postCommitOnce sync.Once
 	stream := interceptEventStream(t, h.api, nil, 0)
 	stream.frameFor = func(index int32) progressFrame {
 		if index == 1 {
@@ -434,6 +436,10 @@ func TestRunQueuedGapAndClosureRequireAuthoritativeResyncBeforeDispatch(t *testi
 		case 2:
 			return second
 		default:
+			if h.api.mutationCount("/v1/company/settings") > 0 {
+				postCommitOnce.Do(func() { close(postCommitReady) })
+				return postCommit
+			}
 			return third
 		}
 	}
@@ -480,9 +486,23 @@ func TestRunQueuedGapAndClosureRequireAuthoritativeResyncBeforeDispatch(t *testi
 
 	close(second)
 	stream.waitReady(t, 3)
+	// The stale intent has never reached the journal. A fresh capture may
+	// replan it with a new key; an attempted request must instead retain its
+	// original identity, as the ambiguous-replay regression covers.
+	close(third)
+	// The next capture after dispatch proves its bookkeeping completed;
+	// cancellation then interrupts REST rather than a random SQL call.
+	select {
+	case <-postCommitReady:
+	case <-time.After(15 * time.Second):
+		t.Fatal("resynchronized runner did not reach a post-commit capture")
+	}
 	calls := h.api.mutationsFor("/v1/company/settings")
-	if len(calls) != 1 || calls[0].Status != http.StatusOK || calls[0].IdempotencyKey != stagedID {
-		t.Fatalf("authoritative resync did not release exactly the retained settings request: %+v", calls)
+	if len(calls) != 1 || calls[0].Status != http.StatusOK || calls[0].IdempotencyKey == stagedID || len(h.pending()) != 0 {
+		t.Fatalf("authoritative resync did not complete exactly one freshly replanned settings request: %+v", calls)
+	}
+	if journaled, err := h.db.HasAction(h.ctx, h.account.ID, stagedID); err != nil || journaled {
+		t.Fatalf("stale never-sent intent unexpectedly reached the journal: %t error %v", journaled, err)
 	}
 	h.api.mu.Lock()
 	enabled, reserve := h.api.autoRemit, h.api.minReserve

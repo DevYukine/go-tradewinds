@@ -189,6 +189,93 @@
   line-height: 1.5;
 }
 
+.journalActivity {
+  display: grid;
+  gap: 0.25rem;
+  max-width: 58ch;
+  overflow-wrap: anywhere;
+}
+
+.journalActivity > strong {
+  font-weight: 500;
+}
+
+.journalContext {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1rem;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.journalCash {
+  display: grid;
+  gap: 0.2rem;
+  max-width: 28ch;
+  font-variant-numeric: tabular-nums;
+}
+
+.journalCashLabel,
+.journalCash small,
+.journalMissing {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+@media (max-width: 800px) {
+  .journal :global(.data-table .table-scroll > table) {
+    width: 100%;
+    table-layout: fixed;
+  }
+
+  .journal :global(.data-table) :is(th, td) {
+    min-width: 0;
+    max-width: none;
+    padding-inline: 0.5rem;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .journal .journalTimeColumn {
+    width: 17%;
+  }
+
+  .journal .journalVesselColumn {
+    width: 18%;
+  }
+
+  .journal .journalActivityColumn {
+    width: 38%;
+  }
+
+  .journal .journalCashColumn {
+    width: 27%;
+  }
+
+  .journal :global(.table-sort) {
+    align-items: flex-start;
+  }
+
+  .journal :global(.table-sort) > :is(svg, span) {
+    flex-shrink: 0;
+  }
+
+  .journal :global(.vessel-identity) {
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+
+  .journalActivity,
+  .journalCash,
+  .journalContext > span {
+    min-width: 0;
+  }
+
+  .journalCash {
+    overflow-wrap: anywhere;
+  }
+}
+
 .numeric {
   text-align: right;
   white-space: nowrap;

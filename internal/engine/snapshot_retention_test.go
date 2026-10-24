@@ -95,7 +95,11 @@ func TestFailedCurrentCaptureKeepsLastGoodDataAndVisibleFailure(t *testing.T) {
 	}
 
 	values := decode[map[string]json.RawMessage](runner.snapshot, "books")
-	runner.captureChild(context.Background(), "books", "le_havre", "/v1/market/book?port_id=le_havre", values)
+	if err := runner.captureWave(context.Background(), []fetchTask{{
+		key: "books/le_havre", path: "/v1/market/book?port_id=le_havre",
+	}}, map[string]map[string]json.RawMessage{"books": values}); err != nil {
+		t.Fatalf("capture failed book: %v", err)
+	}
 	runner.finishGroup("books", values, []string{"le_havre"})
 
 	retained := decode[map[string]json.RawMessage](runner.snapshot, "books")
@@ -133,13 +137,21 @@ func TestTravelCyclesReplaceBooksInsteadOfAccumulatingHistory(t *testing.T) {
 
 	// Cycle A: the fleet occupies le_havre and captures its book.
 	values := make(map[string]json.RawMessage)
-	runner.captureChild(context.Background(), "books", "le_havre", "/v1/market/book?port_id=le_havre", values)
+	if err := runner.captureWave(context.Background(), []fetchTask{{
+		key: "books/le_havre", path: "/v1/market/book?port_id=le_havre",
+	}}, map[string]map[string]json.RawMessage{"books": values}); err != nil {
+		t.Fatalf("capture origin book: %v", err)
+	}
 	runner.finishGroup("books", values, []string{"le_havre"})
 
 	// Cycle B: the fleet sailed on to portsmouth; le_havre must disappear
 	// from both the persisted values and the per-port metadata.
 	values = decode[map[string]json.RawMessage](runner.snapshot, "books")
-	runner.captureChild(context.Background(), "books", "portsmouth", "/v1/market/book?port_id=portsmouth", values)
+	if err := runner.captureWave(context.Background(), []fetchTask{{
+		key: "books/portsmouth", path: "/v1/market/book?port_id=portsmouth",
+	}}, map[string]map[string]json.RawMessage{"books": values}); err != nil {
+		t.Fatalf("capture destination book: %v", err)
+	}
 	runner.finishGroup("books", values, []string{"portsmouth"})
 
 	retained := decode[map[string]json.RawMessage](runner.snapshot, "books")
@@ -186,5 +198,46 @@ func TestHistoricalBloatPrunesBelowStoreSnapshotBudget(t *testing.T) {
 	kept := len(encode(runner.snapshot))
 	if kept >= storeSnapshotBudgetBytes {
 		t.Fatalf("pruned snapshot is %d bytes, want below the store's %d byte budget", kept, storeSnapshotBudgetBytes)
+	}
+}
+
+func TestFinishGroupRequiresCompleteCurrentGenerationChildren(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		generation string
+		complete   bool
+		keepValue  bool
+	}{
+		{name: "previous generation", generation: "gen-before", complete: true, keepValue: true},
+		{name: "incomplete current child", generation: "gen-current", keepValue: true},
+		{name: "missing current value", generation: "gen-current", complete: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := New(nil, nil, store.Account{ID: "acc-retention"}, zap.NewNop(), Options{})
+			runner.generation = "gen-current"
+			now := time.Now().UTC()
+			child := DatasetMeta{
+				UpdatedAt: now, AttemptedAt: now,
+				Generation: test.generation, Complete: test.complete,
+			}
+			runner.meta["routes/source|target|coaster"] = child
+			values := make(map[string]json.RawMessage)
+			if test.keepValue {
+				values["source|target|coaster"] = json.RawMessage(`{"total_distance_nm":12}`)
+			}
+			runner.finishGroup("routes", values, []string{"source|target|coaster"})
+
+			group := runner.meta["routes"]
+			if group.Complete || !group.Stale || group.Error == "" || runner.fresh("routes") {
+				t.Fatalf("group advertised an unusable child as complete: %+v", group)
+			}
+			if retained := runner.meta["routes/source|target|coaster"]; retained != child {
+				t.Fatalf("group reduction changed retained child metadata: got %+v want %+v", retained, child)
+			}
+			retained := decode[map[string]json.RawMessage](runner.snapshot, "routes")
+			if test.keepValue && string(retained["source|target|coaster"]) != `{"total_distance_nm":12}` {
+				t.Fatalf("incomplete group discarded last-good requested route: %s", runner.snapshot["routes"])
+			}
+		})
 	}
 }

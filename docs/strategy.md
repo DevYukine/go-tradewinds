@@ -25,13 +25,13 @@ Public expansion charters are especially useful early because their payout is ob
 
 ## Comparing opportunities
 
-For each feasible quantity, compare a complete operating cycle, not just a one-way gross spread:
+Rank new shipments by destination-ending contribution and time to delivery, not an imaginary compulsory empty return:
 
-`expected cash net pence = realizable sale/reward - acquisition - buyer customs - provisions - berth dues - remittance fees - incremental upkeep`
+`destination net pence = realizable sale/reward - acquisition - buyer customs - consumed-store replacement - attributable harbour bills and upkeep`
 
-`expected net pence per game day = expected cash net pence / complete cycle duration`
+`net pence per game day = destination net pence / delivery duration`
 
-A cycle includes loading and unloading, mandatory berth turnaround, expected waiting, sailing at loaded speed, and repositioning when the next profitable load is elsewhere. Reinvestment uses realized settlements, not mark-to-market estimates or a temporary vault balance increase.
+Full safe-store inventory and collateral still have to fit the hold and funded cash budget. Their principal is not all consumed expense. Loading, unloading, berth locks, waiting and loaded sailing speed remain part of delivery duration. A separate repeat forecast prices a legal ballast return, its stores, dues, upkeep and observed regional remittance fees; only that repeatable forecast supports fleet expansion. Reinvestment uses settled evidence, not mark-to-market estimates or temporary vault increases.
 
 Evaluate quantities at actual order-book depth boundaries, available cash, hold capacity, contract demand, and deadline constraints. Buying the full hold can cross into an unprofitable ask level. Selling at the best bid is valid only for the quantity actually supported at that bid. Never treat NPC stock as buy-side demand. Exclude identifiable own-player orders.
 
@@ -56,6 +56,8 @@ Public charters are first-come demand. Check their remaining quantity and expiry
 Freight cargo is sealed and its collateral is tied-up capital, not an expense unless lost. Preserve each accepted obligation, including returned delivery deadline, carrier, destination, quantity, reward, and collateral. Do not count a collateral refund as income. Do not sell, consume, unload, or charter-deliver sealed cargo.
 
 The acceptance deadline is authoritative; listing expiry is not the delivery deadline. Check active and terminal contracts explicitly because listing defaults may show only open offers. A refused delivery can still record a tender. Preserve that obligation and its waiting state instead of treating every 409 as a harmless no-op. Include waiting provisions in the budget.
+
+Compare cargo and compatible freight together before rejecting either component: shared sailing and harbour costs can make the combination profitable even when one alone cannot carry the trip. Recheck remaining quantities and seal occupancy; never allocate the same capacity or cash twice. After a purchase has filled, compare future departure cash with actual executable local recovery. Paid acquisition is sunk for that choice but remains in the final realized profit/loss record.
 
 ## Sailing and idle costs
 
@@ -108,17 +110,19 @@ New economic voyages settle at their delivery destination once cargo is empty, a
 
 When no ordinary executable opportunity exists, an empty, stationary ship may inspect another source for an open charter. Compare at most three source/charter pairs using catalog production or fresh public ask gossip, legal routes and conservative deadline slack. Catalog production is evidence worth investigating, not an executable inventory promise; an unstocked local manufacturer does not veto a better evidenced remote source. Public evidence never grants private market access or creates forecast sale revenue.
 
-Only one sourcing probe may be active per account. Its modeled expense allowance is `min(20,000 pence, floor(uncommitted cash / 50))`: at most 200 Crowns or 2% of cash after protected funds. Include stores, customs, berth/upkeep exposure, measured funding fees and safe-return contingency; retain safe provisions for the intended laden leg. This allowance limits modeled exposure, not an unpublished hazard loss. The empty probe has zero revenue and quantity.
+Only one sourcing probe may be active per account. Each modeled expense allowance is capped at 20,000 pence and 2% of current cash after protected funds. The permanent lifetime allowance is the unspent 20,000-pence seed plus 2% of positive, loss-inclusive known commercial net, minus every prior probe's expense. Unknown commercial returns cannot replenish the seed, but do not erase its unspent balance; unknown prior probe spending blocks further exploration. Restarting or changing only observation timestamps cannot renew an attempted evidence opportunity.
 
-On arrival, inspect fresh local executable depth for at most six observed game hours. Compare every feasible whole-ton quantity, including all probe and trading costs, and recheck funds and charter terms before purchase. Closed demand or an unprofitable fresh book ends the probe without speculative cargo or an automatic return. There is no 800-Crown hard floor: choose positive net per game day rather than rejecting useful smaller shipments.
+Include consumed stores, customs, berth/upkeep exposure, measured funding fees and safe-return contingency in probe expense. Separately fund the complete safe-store inventory needed for relocation, retreat and the actual source-to-charter continuation. The empty probe has zero revenue and quantity; public production and gossip are leads, not executable stock. Inspect at most three valid source/charter pairs per pass, with at most six route requests, progressing past illegal pairs instead of letting them exhaust the shortlist.
 
-Record the probe's actual expenses separately, once, without counting treasury principal as cost or the later cargo shipment as duplicate revenue. Another probe requires a subsequent positive delivered shipment and sufficient loss-inclusive, known-cost net earnings since the last probe to fund its next exposure. This history is not truncated to the dashboard's recent-row limit. Zero-ton probes do not establish profitable throughput for ship purchases, and active sourcing commitments remain protected from fleet expansion.
+On arrival, inspect fresh local executable depth for at most six observed game hours. Compare feasible whole-ton quantities including probe and trading costs; recheck cash, safe stores and charter terms before purchase. Closed demand or an unprofitable book ends the probe without speculative cargo or an automatic return. Record its actual expense once, without treating treasury principal or the later shipment as duplicate revenue. Zero-ton probes do not establish profitable throughput for ship purchases. There is no 800-Crown hard floor: profitable turnover and capital efficiency matter more than an arbitrary shipment target.
 
 Sourcing diagnostics retain one candidate-count summary and at most three ranked candidate details per pass. Equivalent decisions are deduplicated without treating a rolling ETA as a changed economic assessment; materially changed retained offers remain visible.
 
 ## Treasury and reinvestment
 
 Cash is regional. Escrow is not spendable. Reserve enforcement includes outstanding obligations, collateral, near-term bills, and working capital in the billing region. Any negative vault, or any underfunded active/obligated region, blocks discretionary construction while safe income voyages continue. Empty unused regions need no artificial reserve. A remittance pays an observed fee and must preserve its source's protected funds. Several donors can fund a shortfall through sequential partial transfers; each durable transfer is followed by fresh balances before selecting the next donor.
+
+Stationary harbour obligations follow actual presence; sailing obligations follow the final authoritative route leg, not the departed origin retained in a ship record. A prospective destination still needs its configured reserve floor and the new arrival bill even when no current hull obligates that region. These are liquidity protections, not additional voyage expenses.
 
 The guide's daily fleet upkeep includes a nonlinear coastal/regional component:
 
@@ -133,20 +137,68 @@ A new hull needs all of:
 3. For finite charters, remaining quantity of at least `outstanding undelivered lots + max(2, ceil(payback / cycle) + 1) × (new lot + competing contract repeat throughput per cycle)`, with expiry no earlier than payback plus one complete cycle. Future reposts and market requotes do not guarantee replacement demand.
 4. A legal route for the hull and seasonal conditions.
 5. A fresh available shipyard quote with a 10% price-slippage buffer.
-6. Incumbent working capital, two new trading cycles, full initial safe-store inventory, guns and regional reserves funded separately. Price a new hull's entire required provisions lot against executable local asks, including buyer customs and per-ton integer-rounding allowance; consumption replacement value is not its commissioning budget. Three days of marginal fleet upkeep belong in the home billing region, including any required remittance fees.
-7. A payback within the configured game-day horizon. There is no ship-count cap: recalculate the marginal economics and funded reserves for each additional hull.
+6. Incumbent working capital, a reusable new trading float, full initial safe-store inventory, guns and regional reserves funded separately. Price initial provisions against executable asks including buyer customs and integer rounding; consumption replacement value is not the commissioning budget. Protect destination arrival bills and three days of marginal upkeep in their actual billing regions.
+7. A payback within the configured game-day horizon. Compare feasible quantities across supported hulls and accessible yards, rather than selecting the first passing package. Rank incremental net per day against all newly committed regional cash plus funding fees, including new reserve floors—not just the hull price. Existing reserves are not charged again. There is no ship-count cap; recalculate depth, marginal upkeep and cash after every purchase.
 
 Shipyard quotes are exact observations, not binding price locks: the build endpoint has no quote token or maximum-price precondition. Before its first send, construction must still have current shipyard access, an available quote, sufficient executable demand and the full commissioning and incumbent funding protections above. Purchases, provisions, refits and collateral likewise require current financial authority and funded reserves. Already attempted requests retain their immutable replay identity instead of being repriced as new spending. Settle the actual build result and treat build, refit, and provision as separate durable actions.
 
 Allocate source, destination and contract reservations only to actual competing lanes, including committed sailing returns; unrelated hulls do not consume every lane's liquidity. Repeat throughput uses each committed lot and full cycle duration. Whole outstanding lots are reserved once, not once per future cycle; already delivered ordinary cargo on a returning ship consumes no remaining contract or bid capacity. Delivering sealed freight does not release ordinary trade reservations on a mixed voyage. Run actionable maintenance before sizing an idle hull's economic plan because guns reduce its hold; a hull without a local yard or funds for a refit must not veto otherwise viable construction. Assign compatible idle or newly commissioned capacity before buying another hull. One durable `__growth` mission controls construction, refit and provisioning across restarts.
 
+Commissioning stores and funding fees remain operating costs through handoff, abort or hull loss; they cannot disappear when the growth control is deleted. Preserve unknown cost state rather than manufacturing profit. Routine planning and first-send procurement use the same residual quantities as growth, so an ordinary ship cannot spend a returning ship's reserved next lot. Re-price changing dues without waiting for the quote to stop changing.
+
 The current published API exposes construction and refit but no voluntary ship sale, scrap or transfer operation. Do not invent a disposal route, count hypothetical resale proceeds or deliberately trigger bailiff seizure to finance expansion.
 
-## Why not every financial instrument
+## Underwriting and other income
 
-Futures, insurance underwriting, marques, and speculative market-making are not automatically profitable. Research found no basis for treating absent counterparties as executable liquidity. Underwriting creates liabilities; a policy premium is not risk-free revenue. Privateering has traffic, ammunition, hull, legal, and recovery costs. Convoys also have a naming policy awaiting the owner. Keep these surfaces visible, but do not commit capital merely because an endpoint exists.
+Underwriting is an executable strategy, not a display-only market. It runs after shipping, existing obligations and viable fleet investment have protected their capital. Admission currently uses a minimum 500-basis-point slice of an unchanged **hull-only** policy, excludes every company owned by the player, and requires fresh policy, ownership, cash, catalog, rate and authoritative clock observations. Missing coverage is not zero coverage. Cargo-inclusive policies remain unpriced because a hull sinking outcome does not establish their cargo-loss economics.
 
-Revisit these choices when recorded market activity supports a measurable edge. Better information can change the ranking. The optimizer should expose its rejection reasons so an idle fleet is explainable rather than silently stuck.
+At least five valid closed hull-only policies on the same directed lane are required. Duplicate IDs do not increase the sample; changed terms, contradictory terminal outcomes and later nonterminal observations are censored, not counted as safe returns. A Beta(1,1) estimate uses `(losses + 1) / (closed policies + 2)`. Premium must exceed modeled claims and the opportunity cost of currently observed shipping. A fixed-look nominal 95% Wilson upper sensitivity is disclosed separately: neither estimator is a calibrated promise about hull, season, correlation or future traffic. Creation-to-last-update duration is a lock-time proxy, not a settlement deadline.
+
+Reserve the full possible collateral loss. The permanent pilot starts at 10% of uncommitted cash; active collateral and realized losses consume it, and only 10% of positive settled underwriting net replenishes it. It does not reset on restart. Before the debit region is known, the slice must fit protected cash in the home region, policy-origin region and every other capable vault. After the first accepted slice, further underwriting waits for a unique, identity-linked collateral debit to an owned vault. An equal-sized unrelated transfer is not proof. Actual vault cash already excludes escrow; do not deduct accepted collateral from that cash a second time.
+
+The immutable 200 response must identify one exact owned slice with present, bounded collateral and premium amounts. Membership or aggregate coverage cannot reconstruct a lost receipt. Preserve ambiguous requests under their original key while unrelated safe fleet work continues. Premium remains an entitlement until an unchanged terminal hull-policy observation establishes earned premium and claims. Safe closure returns principal; loss closure consumes collateral. Net is earned premium minus claims and fees, never collateral returned plus premium. No undocumented insurance fee or voluntary release endpoint is assumed.
+
+| Mechanic | Current economic treatment |
+| --- | --- |
+| Spot, charters and freight | Executable depth and deadlines; compare compatible loads and destination contribution |
+| Source inspection | Explicitly bounded information cost, followed by fresh local pricing |
+| Shipbuilding and refit | Supported marginal throughput, complete commissioning cash and observed payback |
+| Underwriting | Minimum evidence-positive hull-only pilot with full-loss and shared-capital limits |
+| Regional remittance | Observed fee and reserve-preserving funding, not income |
+| Warehouses and factors | Access and storage have recurring/capital costs; ownership is not proof of a profitable trade |
+| Futures and market-making | No demonstrated executable edge justifies speculative exposure |
+| Marques, patrols and privateering | Unpublished encounter odds and recovery/ammunition costs prevent a measured positive-net claim |
+| Convoys | Require economic justification and an owner-provided naming theme before creation |
+| Ship disposal | No published voluntary sale, scrap or transfer operation |
+
+### Recorded comparison and bounded simulation (2026-10-24)
+
+The leaderboard refreshed at `2026-10-24T00:28:22.970382Z` recorded The Kraken Cartel at 161,497,433 pence net worth, TopStats Logistics at 11,034,033, and The Pokemon Pirates at 3,011,037. These are asset-inclusive net-worth observations, not shipment profit or an income-source breakdown. The owner's report that the leader profits from underwriting motivates evaluating that instrument; the public ranking alone does not prove the attribution.
+
+A 12-game-day, 48-slot offline allocation run completed in 8.962 real seconds, using production voyage and underwriting evaluators, one shared regional cash pool, fixed observed depth, finite charters and no invented future policy supply. Three recorded captures had no admissible current cargo trade or available hull-only underwriting slice. Their no-trade result is not a prediction of zero future opportunity. At the latest capture (`2026-10-24T01:25:46.7867782Z`), 161 cargo alternatives and 48 policy rows produced no accepted immediate income opportunity.
+
+A separate recorded-state discovery replay retained the two historical unknown-cost freight records and all captured known gains and losses. The corrected gate preserved only the unused 20,000-pence seed, protected 103,000 pence in the active region and found three legal source inspections among 282 pairs. Their modeled expenses were 3,364 pence to Calais, 3,364 to Dover and 1,687 to Le Havre; no source revenue was assumed. Missing private books must still be inspected on arrival. This replay omits unrecorded mission journals and is not live execution authorization.
+
+Synthetic controls established that positive underwriting and shipping can coexist without spending the same cash twice, while a tight pool prioritizes shipping and rejects the additional policy. A separate stress run loses every admitted policy's full collateral with no premium credit. Stationary prices, proxy lock durations, absent future stock, unpriced shipping hazards and incomplete idle provisions limit these models; their results are not promised company profit. A real CLI against a local synthetic game fixture additionally executed one 50,000-pence collateral slice, recorded a 15,000-pence premium-only safe-settlement net and restarted without another mutation. That proves the execution path, not real-market profitability.
+
+The CLI also exercised a full 50,000-pence collateral claim with 15,000 pence of earned premium: realized net was −35,000 pence, no principal was returned, and the remaining pilot allowance stayed at 55,000 pence after restart. Both settlement fixtures submitted exactly one underwriting request. These are synthetic contract-execution controls, not observed live underwriting returns.
+
+### Fleet-compounding controls
+
+A separate 12-game-day comparison ran in under three real seconds through the production sizing, growth-admission, capital-ranking and reserve calculations. Each expansion run and its no-expansion control used one shared cash pool and finite source/buyer depth. All incumbent shipping was funded first; successive builds stopped when no funded marginal package remained.
+
+| Synthetic scenario | Initial cash, pence | Final cash without expansion, pence | Final cash with expansion, pence | Added hulls |
+| --- | ---: | ---: | ---: | ---: |
+| 384 tons replenished daily | 350,000 | 572,492 | 689,927 | 2 |
+| 384 tons total, no replenishment | 350,000 | 496,180 | 340,932 | 1 |
+| Shallow 104 tons replenished daily | 350,000 | 572,492 | 572,492 | 0 |
+| Cash-constrained, 384 tons replenished daily | 112,000 | 334,492 | 278,916 | 1, on day 8 |
+
+Final cash includes hull/gun purchases, withheld initial stores, fleet upkeep and idle dues; it is neither asset-inclusive net worth nor profit. Daily replenishment, stationary prices and the loss-inclusive historical seed were synthetic. Commissioning was instantaneous, repeat durations were rounded upward, provisions were finite, and hazards were not calibrated. The no-replenishment case spent each of its 384 source and buyer tons once: extra hulls accelerated the same finite trade but did not repay their capital. The late cash-constrained purchase likewise had not repaid by the horizon. These counterexamples make the dependence on continued profitable demand explicit; two observed spot cycles are a bounded admission signal, not guaranteed payback.
+
+A separate real-CLI fixture built one hull, bought initial stores and four cannons, and executed two actual 48-ton deliveries with one controller-selected empty return. Three process runs retained the admitted allocation and issued no duplicate mutations. Its finite 104-ton source and buyer books were consumed by the two shipments plus an explicit external source order; no return plan or mission was injected by the harness.
+
+The corrected permanent history, actual receipts and regional vault changes independently reconcile to **37,929 pence of operating net**, including 204 pence of commissioning stores/customs and all 75 pence of navigation charges exactly once. The 120,000-pence hull/gun investment is separate, not silently excluded from the vault reconciliation. This synthetic execution took 11.22 seconds, with accelerated authoritative arrivals and no calibrated hazards or fleet-upkeep schedule. It proves commissioning, conditional continuation and accounting—not live earnings or future market replenishment.
 
 ## Durable economic record
 

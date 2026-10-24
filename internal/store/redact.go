@@ -18,7 +18,7 @@ const redacted = "[REDACTED]"
 
 var (
 	bearerPattern     = regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`)
-	apiKeyPattern     = regexp.MustCompile(`\btw_(?:live|test)_[A-Za-z0-9_-]+`)
+	apiKeyPattern     = regexp.MustCompile(`tw_(?:live|test|sk)_[A-Za-z0-9_-]+`)
 	assignmentPattern = regexp.MustCompile(`(?i)\b[a-z0-9_-]*(?:api[_-]?key|pass(?:word|phrase)|authorization|secret|credential|token|cookie)[a-z0-9_-]*["']?\s*[:=]\s*(?:"(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$)|[^\s&,;]+)`)
 )
 

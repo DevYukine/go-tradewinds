@@ -18,11 +18,11 @@ No giant greeting, editorial hero, decorative statistic-card grid, uppercase eye
 
 | Token | Light | Dark | Role |
 | --- | --- | --- | --- |
-| Canvas | `#F4F7F5` | `#0E1B24` | Main application surface |
-| Water | `#DCE9EC` | `#12242F` | Working chart background |
-| Land | `#C9D6CB` | `#2E4640` | Coastline and land polygons |
-| Ink | `#1C2B33` | `#E7EFF3` | Primary text and symbols |
-| Route | `#1F6E7A` | `#6FC0CE` | Selection, focus and active route |
+| Canvas | `#F5F6F3` | `#151514` | Main application surface |
+| Water | `#E1E7E4` | `#191D1C` | Working chart background |
+| Land | `#CBD3C8` | `#2A2F2B` | Coastline and land polygons |
+| Ink | `#202421` | `#E9E8E4` | Primary text and symbols |
+| Route | `#1F6E7A` | `#74B8C2` | Selection, focus and active route |
 | Attention | `#B0492F` | `#F09C83` | Actionable warning or loss |
 
 Derive secondary surfaces and separators from these roles. Status colour must also have a word or symbol. Validate actual text contrast in both themes; never apply muted opacity to an entire container. Tailwind theme variables and CSS custom properties are the single token source.
@@ -31,36 +31,23 @@ Use locally hosted IBM Plex Serif for display headings (`h1` and `h2`) and IBM P
 
 ### Layout
 
-The desktop layout is a chart-led workspace with compact navigation, a persistent account/company scope and a shared fleet selection. A ship inspector opens beside the working content when space permits and as an accessible sheet on narrow screens.
+Overview puts company state, observed ship activity, current holds, next-check targets and clearly separated money facts before the working chart. These facts require no ship selection or diagnostic drill-down. Account/company scope and fleet selection persist across views. A ship inspector opens beside the working content when space permits and as an accessible sheet on narrow screens.
 
-The thirteen icon-led views are grouped by task:
+Seven icon-led primary destinations expose fourteen views through adjacent contextual tabs:
 
-- Operations: Fleet chart, Voyages, Vessels.
-- Money: Performance, Treasury, Warehouses.
-- Trade: Contracts, Exchange, Shipyards.
-- World: World, Standings.
-- System: Decisions, Diagnostics.
+- Overview: company operations and working chart.
+- Fleet: Vessels and Voyages.
+- Journal: chronological company activity.
+- Money: Performance, Treasury and Warehouses.
+- Trade: Contracts, Exchange and Shipyards.
+- World: World and Standings.
+- System: Decisions and Diagnostics.
 
-Navigation groups are quiet labels, not additional destinations. Each view uses a few purposeful sections from the shared Section kit rather than repeating every statistic in cards. Voyages has two primary blocks: the focused active voyage, then expected arrivals and recent realized settlements. Decisions begins with recorded automation mode and holding reasons, explicitly distinguished from live process or stream connectivity.
-
-```text
-+---------------------------------------------------------------------+
-| Tradewinds    Account / company scope       Game time     Freshness   |
-+------------+--------------------------------------------------------+
-| Navigation | Fleet                         Search / filters          |
-|            | Cash / settled net / active ships: compact factual line|
-|            +------------------------------------+-------------------+
-|            |                                    | Selected ship     |
-|            |             Working chart          | Voyage and cargo  |
-|            |                                    | Recorded decision |
-|            +------------------------------------+-------------------+
-|            | Fleet table: sortable columns, filters, clear selection |
-+------------+--------------------------------------------------------+
-```
+Keep the primary navigation short without hiding routine status behind more clicks. Each view uses a few purposeful sections rather than repeated statistic cards. Money shows owned underwriting collateral, unsettled premium, settled net and risk allowance directly above financial history; public policy listings stay in Exchange. Decisions retains technical planning evidence, not the only explanation of why a ship is waiting.
 
 A card-grid alternative was rejected: it fragments the fleet and prioritizes decoration over the operator's task. A full-screen map with every control floating on top was also rejected: it hides financial context and becomes crowded on touch screens. The chosen chart-plus-ledger layout keeps spatial and financial information adjacent without duplicating every statistic in a card.
 
-At narrow widths, navigation collapses, the chart retains its controls, the inspector becomes a sheet, and tables scroll inside labelled regions. The page itself must not scroll sideways. Controls need visible focus and sufficient touch targets. Reduced motion disables decorative and map-flight animation; data remains current.
+At narrow widths, navigation collapses, the chart retains its controls, and the inspector becomes a sheet. Journal keeps time, vessel, activity and cash visible together with wrapped text; wider analytical tables may scroll inside labelled regions. The page itself must not scroll sideways. Controls need visible focus and sufficient touch targets. Reduced motion disables decorative and map-flight animation; data remains current.
 
 Keep native scrollbars available and thin, with a theme-aware border-colour thumb and transparent track. Never hide scrollbars to disguise overflow. Wide tables own horizontal scrolling with a stable scrollbar gutter; navigation and inspectors own their vertical overflow. Controls wrap within their containers instead of widening the page.
 
@@ -76,6 +63,7 @@ Keep native scrollbars available and thin, with a theme-aware border-colour thum
 - One shared dashboard query polls every five seconds while visible, refreshes on reconnect/focus and cancels obsolete requests. Scoped history polls every thirty seconds only when needed. The existing snapshot includes static and dynamic data together; memoize static map layers, rather than inventing a second fetch loop. The browser never causes direct game API calls.
 - Observation timestamps come from persisted dataset metadata, not HTTP response time. Use child metadata for ship details. Expose last successful observation, last attempted error and upstream source age separately. Dynamic fleet observations are delayed after thirty seconds and stale after two minutes; incomplete or failed observations are immediately marked. Missing metadata means unknown freshness. Hourly leaderboard observations use their own cadence.
 - API reachability, observation freshness and upstream runner connectivity are different facts. A successful browser poll or persisted execution mode does not prove a running bot or connected upstream stream; do not claim either without current evidence.
+- A completed controller assessment needs matching generation and observation metadata. Missing, null or malformed holds are an unavailable assessment, not an observed empty list. Account-wide financial/identity gates remain separate from individual ship holds. Fresh controller metadata cannot upgrade stale ship facts or imply that disabled or paused automation may write.
 
 ## Map
 
@@ -83,7 +71,7 @@ Use Leaflet 1.9 and React Leaflet 5, loaded in a client-only island. The local N
 
 Ship markers use readable ship icons, explicit status and descriptive accessible names. Port selection and ship inspection must also work from non-map controls. Keep normal keyboard, wheel, drag and touch navigation. Fit-to-fleet is an explicit action after initial framing; new observations must not continually move the operator's map.
 
-The chart uses a restrained graticule with coordinate labels, subdued coastlines and typed port symbols: anchors for hubs, tools for shipyards and phase rings for other ports. Labels become permanent at closer zoom or on selection. Sailing vessels have a readable silhouette and heading; berthed, anchored, frozen and unavailable states remain distinct in the legend. A selected route emphasizes the current leg and direction. Its connecting lines are schematic geometry, not an observed track. Fit fleet, Europe, World, zoom and port inspection are explicit controls. Keep attribution and the meaningful status legend visible, with light and dark theme tokens supplying the same hierarchy.
+The chart uses a restrained graticule with coordinate labels, subdued coastlines and typed port symbols: anchors for hubs, tools for shipyards and phase rings for other ports. Permanent labels prioritize selected and occupied ports, then nearby hubs at the initial useful zoom; deterministic collision checks prevent overlapping names. Other names remain available on hover/focus and in the port selector. Sailing vessels have a readable silhouette and heading; berthed, anchored, frozen and unavailable states remain distinct in the legend. A selected route emphasizes the current leg and direction. Its connecting lines are schematic geometry, not an observed track. Fit fleet, zoom and the native port selector are the exposed controls. Keep attribution and the meaningful status legend visible, with light and dark themes supplying the same hierarchy.
 
 Use the shared `SpriteImage` for named vessels in ledgers and inspectors. The full species-name catalog maps to fixed-host Pokemon sprites; display them at a consistent small size, with descriptive alternative text and a ship-icon fallback for unknown names or failed images. Sprites support vessel recognition, not financial or voyage status. The working chart keeps its nautical ship silhouettes rather than substituting sprites for heading markers.
 
@@ -98,6 +86,8 @@ Support all stored account/company records, not only the initial company. Includ
 Group configured accounts and observed companies by stable IDs. A vault's `account_id` is a treasury account, not a bot account. Sibling company identities from a player profile are not independently observed fleet data. Official leaderboard wealth belongs to the player's best company at its hourly refresh; never sum duplicate player ranks as company assets.
 
 History endpoints return bounded samples, not complete period totals. Label sample subtotals and coverage honestly; do not infer complete daily profit, zero activity or total expenses by summing capped metrics. Separate owned contract obligations from public listings. Show convoy, marque and patrol observations, player/key identity without secrets, starving legs, and all four recorded metric series. Show the latest recorded decision with its timestamp, not an invented guaranteed next action.
+
+Journal cash columns sort numerically, with unavailable amounts last in both directions. Transfers, collateral and refunds are cash movements, not earned profit. A settlement with unknown acquisition or operating costs must retain that uncertainty rather than displaying revenue as net.
 
 Expansion details are structured charter and contributor tables, including completed tiers, not raw JSON. Planner route fields come from the serialized Plan and money fields from its nested `economics` object. Keep modeled cash, locked collateral and diagnostics-only stress scenarios visibly separate.
 

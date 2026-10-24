@@ -1,19 +1,12 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
 import { Anchor, Compass, List } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useMemo } from "react";
 import { dataset, fleet } from "@/lib/data";
 import { count, humanize, money, percent } from "@/lib/format";
 import { PORT_COORDINATES } from "@/lib/geography";
-import type {
-  Account,
-  Catalog,
-  Clock,
-  DashboardData,
-  PortDetail,
-} from "@/lib/types";
+import type { Account, Catalog, PortDetail } from "@/lib/types";
 import { useUI } from "@/lib/ui-store";
 import { DatasetStatus } from "./ui";
 import styles from "./fleet.module.css";
@@ -22,8 +15,7 @@ const FleetChart = dynamic(() => import("./map/fleet-chart"), {
   ssr: false,
   loading: () => (
     <div className={styles.loadingChart} role="status">
-      Loading the fleet chart. Use the vessel selector to inspect recorded
-      ships.
+      Loading the fleet chart.
     </div>
   ),
 });
@@ -31,14 +23,12 @@ const FleetChart = dynamic(() => import("./map/fleet-chart"), {
 export function FleetMap({
   accounts,
   catalog,
+  snapshotUTC,
 }: {
   accounts: Account[];
   catalog?: Catalog;
+  snapshotUTC: string;
 }) {
-  const { data } = useQuery<DashboardData>({
-    queryKey: ["dashboard"],
-    enabled: false,
-  });
   const selectedPortID = useUI((state) => state.selectedPortID);
   const setView = useUI((state) => state.setView);
   const selectedCatalog =
@@ -69,8 +59,7 @@ export function FleetMap({
       <header className={styles.sectionHeading}>
         <div>
           <h2>
-            <Compass size={17} strokeWidth={1.7} aria-hidden="true" /> Working
-            chart
+            <Compass size={17} strokeWidth={1.7} aria-hidden="true" /> Fleet map
           </h2>
           <p>
             {count(ships.length)} recorded ships;{" "}
@@ -87,55 +76,29 @@ export function FleetMap({
       <FleetChart
         accounts={accounts}
         catalog={selectedCatalog}
-        snapshotUTC={data?.updated_at}
+        snapshotUTC={snapshotUTC}
       />
       <div className={styles.chartCaption}>
         <p>
-          Sea positions are schedule estimates, not measured locations.
-          Estimates freeze when paused or stale. Scheduled arrival never
-          confirms arrival. Dashed routes connect recorded nodes, not a recorded
-          track.
+          Sea positions are estimates; paused or stale estimates freeze.
+          Scheduled arrival is not confirmation. Dashed lines show the recorded
+          route, not a measured track.
         </p>
         <a
           href="https://www.naturalearthdata.com/about/terms-of-use/"
           target="_blank"
           rel="noreferrer"
         >
-          Natural Earth public-domain land
+          Approximate Natural Earth coastline; not for navigation
         </a>
       </div>
       {unmapped.length > 0 && (
         <p className={styles.note}>
           No chart coordinates for{" "}
-          {unmapped.map((item) => item.name).join(", ")}. Use the port selector
-          and vessel selector instead.
+          {unmapped.map((item) => item.name).join(", ")}. Use port focus or the
+          vessel ledger for their recorded facts.
         </p>
       )}
-      <details className={styles.chartSources}>
-        <summary>Chart sources and recording status</summary>
-        <p className={styles.note}>
-          Local 1:50m coastline, approximate harbour and sea-zone coordinates,
-          no external tiles. Not for navigation.
-        </p>
-        {accounts.map((account) => {
-          const clock = dataset<Clock>(account, "clock");
-          return (
-            <div className={styles.sourceAccount} key={account.id}>
-              <strong>{account.label}</strong>
-              <span>
-                Clock{" "}
-                {clock
-                  ? clock.paused
-                    ? "paused; estimates frozen"
-                    : "recorded; estimates need current recordings"
-                  : "not recorded; voyage position unavailable"}
-              </span>
-              <DatasetStatus account={account} name="clock" />
-              <DatasetStatus account={account} name="catalog" />
-            </div>
-          );
-        })}
-      </details>
       {selectedPortID && (
         <section className={styles.portDetail} aria-label="Selected port">
           <h3>

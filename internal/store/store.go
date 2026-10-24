@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"sync"
 	"time"
@@ -32,11 +33,12 @@ var migrationMu sync.Mutex
 const queryTimeout = 10 * time.Second
 
 type Store struct {
-	db    *gorm.DB
-	sqlDB *sql.DB
-	dsn   string
-	aead  cipher.AEAD
-	log   *zap.Logger
+	db        *gorm.DB
+	sqlDB     *sql.DB
+	dsn       string
+	aead      cipher.AEAD
+	lookupKey []byte
+	log       *zap.Logger
 
 	leaseMu sync.Mutex
 	leases  map[*accountLease]struct{}
@@ -76,7 +78,11 @@ func Open(ctx context.Context, dsn string, masterKey []byte, log *zap.Logger) (*
 
 	migrationCtx, migrationCancel := context.WithTimeout(ctx, time.Minute)
 	defer migrationCancel()
-	if err := migrate(migrationCtx, sqlDB, log); err != nil {
+	privateStore := &Store{
+		sqlDB: sqlDB, dsn: dsn, aead: aead, lookupKey: deriveLookupKey(masterKey),
+		log: log, leases: make(map[*accountLease]struct{}),
+	}
+	if err := migrate(migrationCtx, sqlDB, log, privateStore); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
 	}
@@ -89,17 +95,17 @@ func Open(ctx context.Context, dsn string, masterKey []byte, log *zap.Logger) (*
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("initialize database models: %w", databaseError{cause: err})
 	}
-	return &Store{
-		db:     db,
-		sqlDB:  sqlDB,
-		dsn:    dsn,
-		aead:   aead,
-		log:    log,
-		leases: make(map[*accountLease]struct{}),
-	}, nil
+	authCtx, authCancel := context.WithTimeout(ctx, queryTimeout)
+	defer authCancel()
+	if err := privateStore.verifyKey(db.WithContext(authCtx)); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
+	privateStore.db = db
+	return privateStore, nil
 }
 
-func migrate(ctx context.Context, db *sql.DB, log *zap.Logger) error {
+func migrate(ctx context.Context, db *sql.DB, log *zap.Logger, privateStore *Store) error {
 	migrationMu.Lock()
 	defer migrationMu.Unlock()
 	conn, err := db.Conn(ctx)
@@ -121,12 +127,23 @@ func migrate(ctx context.Context, db *sql.DB, log *zap.Logger) error {
 			})
 		}
 	}()
-	goose.SetLogger(migrationLogger{log: log})
-	goose.SetBaseFS(migrations)
-	if err := goose.SetDialect("postgres"); err != nil {
+	migrationFS, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		return fmt.Errorf("open migrations: %w", err)
+	}
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrationFS,
+		goose.WithLogger(migrationLogger{log: log}),
+		goose.WithDisableGlobalRegistry(true),
+		goose.WithGoMigrations(goose.NewGoMigration(5, &goose.GoFunc{RunTx: privateStore.migratePrivateEvidence}, &goose.GoFunc{
+			RunTx: func(context.Context, *sql.Tx) error {
+				return errors.New("private evidence cutover requires restoring a pre-migration backup")
+			},
+		})),
+	)
+	if err != nil {
 		return fmt.Errorf("configure migrations: %w", err)
 	}
-	if err := goose.UpContext(ctx, db, "migrations"); err != nil {
+	if _, err := provider.Up(ctx); err != nil {
 		return fmt.Errorf("migrate PostgreSQL: %w", databaseError{cause: err})
 	}
 	return nil
@@ -307,7 +324,11 @@ func (s *Store) credentials(db *gorm.DB, id string) (Credentials, error) {
 		}
 		return Credentials{}, err
 	}
-	plaintext, err := s.decrypt(row.Ciphertext, id)
+	return s.decodeCredentials(row)
+}
+
+func (s *Store) decodeCredentials(row accountSecret) (Credentials, error) {
+	plaintext, err := s.decrypt(row.Ciphertext, row.AccountID)
 	if err != nil {
 		return Credentials{}, err
 	}
@@ -316,6 +337,22 @@ func (s *Store) credentials(db *gorm.DB, id string) (Credentials, error) {
 		return Credentials{}, fmt.Errorf("decode stored credentials: %w", err)
 	}
 	return credentials, nil
+}
+
+func (s *Store) authenticatedSecrets(db *gorm.DB) (map[string][]string, error) {
+	var rows []accountSecret
+	if err := db.Find(&rows).Error; err != nil {
+		return nil, databaseError{cause: err}
+	}
+	secrets := make(map[string][]string, len(rows))
+	for _, row := range rows {
+		credentials, err := s.decodeCredentials(row)
+		if err != nil {
+			return nil, err
+		}
+		secrets[row.AccountID] = credentialSecrets(credentials)
+	}
+	return secrets, nil
 }
 
 func (s *Store) SaveSnapshot(ctx context.Context, accountID string, data map[string]json.RawMessage) error {

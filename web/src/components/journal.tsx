@@ -37,6 +37,7 @@ export function Journal({ account }: { account: Account }) {
     return [
       {
         label: "Recording time",
+        className: styles.journalTimeColumn,
         value: (entry) => entry.at,
         render: (entry) => (
           <time dateTime={entry.at}>{dateTime(entry.at)}</time>
@@ -44,6 +45,7 @@ export function Journal({ account }: { account: Account }) {
       },
       {
         label: "Vessel",
+        className: styles.journalVesselColumn,
         value: (entry) => `${vesselName(entry)} ${entry.ship_id ?? ""}`,
         render: (entry) => (
           <div className="vessel-identity">
@@ -54,6 +56,7 @@ export function Journal({ account }: { account: Account }) {
       },
       {
         label: "Activity",
+        className: styles.journalActivityColumn,
         value: (entry) =>
           [
             entry.kind === "settlement"
@@ -69,40 +72,45 @@ export function Journal({ account }: { account: Account }) {
             entry.quantity_tons,
           ].join(" "),
         render: (entry) => (
-          <div className={styles.primary}>
+          <div className={styles.journalActivity}>
             <strong>
-              {entry.kind === "settlement"
-                ? "Voyage settled"
-                : humanize(
-                    entry.kind.replace(/^action:/, "").replaceAll(".", "_"),
-                  )}
+              {entry.summary ||
+                (entry.kind === "settlement"
+                  ? "Voyage settled"
+                  : humanize(
+                      entry.kind.replace(/^action:/, "").replaceAll(".", "_"),
+                    ))}
             </strong>
-            <span>{entry.summary}</span>
-            {(entry.origin || entry.destination) && (
-              <small>
-                From {entry.origin ? portName(entry.origin) : "unknown origin"}{" "}
-                to{" "}
-                {entry.destination
-                  ? portName(entry.destination)
-                  : "unknown destination"}
-              </small>
-            )}
-            {(entry.commodity || entry.quantity_tons !== undefined) && (
-              <small>
-                {entry.quantity_tons !== undefined
-                  ? `${count(entry.quantity_tons)} tons of `
-                  : "Cargo: "}
-                {entry.commodity
-                  ? (commodities.get(entry.commodity) ??
-                    humanize(entry.commodity))
-                  : "unknown commodity"}
-              </small>
+            {(entry.origin ||
+              entry.destination ||
+              entry.commodity ||
+              entry.quantity_tons !== undefined) && (
+              <div className={styles.journalContext}>
+                {(entry.origin || entry.destination) && (
+                  <span>
+                    {entry.origin && entry.destination
+                      ? `${portName(entry.origin)} to ${portName(entry.destination)}`
+                      : portName(entry.origin || entry.destination || "")}
+                  </span>
+                )}
+                {(entry.commodity || entry.quantity_tons !== undefined) && (
+                  <span>
+                    {entry.quantity_tons !== undefined &&
+                      `${count(entry.quantity_tons)} t `}
+                    {entry.commodity
+                      ? (commodities.get(entry.commodity) ??
+                        humanize(entry.commodity))
+                      : "cargo"}
+                  </span>
+                )}
+              </div>
             )}
           </div>
         ),
       },
       {
-        label: "Cash effect",
+        label: "Cash / realized net",
+        className: styles.journalCashColumn,
         value: journalCashAmount,
         render: (entry) => {
           const amount = journalCashAmount(entry);
@@ -118,24 +126,45 @@ export function Journal({ account }: { account: Account }) {
                   amount < 0
                 ? "negative"
                 : "positive";
-          return (
-            <div className={styles.primary}>
-              <span>
-                {entry.kind === "settlement" ||
-                entry.amount_kind === "realized_net"
-                  ? "Realized voyage net"
-                  : entry.amount_kind === "charge"
-                    ? "Charge"
-                    : entry.amount_kind === "cash_in"
-                      ? "Cash in"
-                      : entry.amount_kind === "cash_out"
-                        ? "Cash out"
-                        : "Cash amount"}
+          if (unknownCosts) {
+            return (
+              <div className={styles.journalCash}>
+                <span>Voyage net unknown</span>
+                <small>Costs not fully recorded; not zero.</small>
+              </div>
+            );
+          }
+          const label =
+            entry.kind === "settlement" || entry.amount_kind === "realized_net"
+              ? "Realized voyage net"
+              : entry.amount_kind === "charge"
+                ? "Charge"
+                : entry.amount_kind === "cash_in"
+                  ? "Cash in"
+                  : entry.amount_kind === "cash_out"
+                    ? "Cash out"
+                    : "Recorded amount";
+          if (amount === undefined) {
+            return entry.amount_kind || entry.kind === "settlement" ? (
+              <span className={styles.journalMissing}>
+                {label}: amount not recorded
               </span>
-              <strong className={tone}>
-                {unknownCosts ? "Unknown" : money(amount)}
-              </strong>
-              {unknownCosts && <small>Costs unknown; net is not zero.</small>}
+            ) : (
+              <span
+                className={styles.journalMissing}
+                aria-label="No cash amount recorded; not evidence of zero"
+                title="No cash amount recorded; not evidence of zero"
+              >
+                —
+              </span>
+            );
+          }
+          return (
+            <div className={styles.journalCash}>
+              <span>
+                <strong className={tone}>{money(amount)}</strong>{" "}
+                <span className={styles.journalCashLabel}>{label}</span>
+              </span>
             </div>
           );
         },
@@ -147,14 +176,13 @@ export function Journal({ account }: { account: Account }) {
     <Section
       title={`${company} journal`}
       icon={BookOpen}
-      className={styles.section}
+      className={`${styles.section} ${styles.journal}`}
       actions={<Badge>{count(entries.length)} recorded entries</Badge>}
     >
       <p className={styles.note}>
-        Latest 500 entries, newest first. Times in UTC.
-        <br />
-        Cash movements overlap and are not additive profit. Unknown costs remain
-        unknown.
+        Latest 500 entries, newest first; times in UTC. Cash in, cash out and
+        charges are movements, not profit. Realized voyage net is shown only
+        with recorded costs; rows can overlap and must not be added together.
       </p>
       <div className={styles.coverage} role="status">
         {history.isPending

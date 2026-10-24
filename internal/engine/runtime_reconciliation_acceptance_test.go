@@ -530,7 +530,7 @@ func TestShortSealedFreightHoldsNewTendersAndKeepsMaintenance(t *testing.T) {
 	if h.api.mutationCount("/v1/contract/deliver-freight") != 0 {
 		t.Fatal("aggregate shortfall still produced a tender request")
 	}
-	if holding := strings.Join(runner.holding, "; "); !strings.Contains(holding, "shortfall") {
+	if holding := joinedHoldReasons(runner.holding); !strings.Contains(holding, "shortfall") {
 		t.Fatalf("aggregate shortfall was not held as a shortfall: %q", holding)
 	}
 	decision := findDecision(t, h, recoveryShipBlastoise, "shortfall")
@@ -963,7 +963,7 @@ func TestDeliveryOutcomeAccountingBindsToImmutableRequest(t *testing.T) {
 		if _, err := h.tick(runner); err != nil {
 			t.Fatalf("tick with orphaned request: %v", err)
 		}
-		holding := strings.Join(runner.holding, "; ")
+		holding := joinedHoldReasons(runner.holding)
 		if !strings.Contains(holding, "orphaned unresolved journal request") {
 			t.Fatalf("orphaned request did not block work: %q", holding)
 		}

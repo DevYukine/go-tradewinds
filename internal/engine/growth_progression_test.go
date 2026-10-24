@@ -12,9 +12,9 @@ package engine
 //     finite charter capacity and expiry must still cover payback. Each
 //     overlap pool (other source, other destination, same contract) binds
 //     exactly its own dimension at one-ton boundaries.
-//   - G3: the exact single-region funding boundary (293000p passes,
-//     292999p fails) is preserved, and a negative vault in any region blocks
-//     construction even when the yard region is rich.
+//   - G3: the exact single-region funding boundary (283000p passes,
+//     282999p fails) funds one cargo cycle plus separately purchased stores;
+//     a negative vault still blocks construction even when the yard is rich.
 //   - PROOF: loss-inclusive accounting is unchanged; cumulative net zero
 //     fails the positive-proof gate and +6193p clears only that gate.
 //
@@ -34,7 +34,7 @@ package engine
 //     existing considerGrowth seam directly on coherent refreshed state,
 //     which leaves manageTreasury's beneficial repair enabled elsewhere.
 //   - Remittance-fee funding of incremental upkeep (G3) has no single-region
-//     input; the existing 293000p boundary is pinned instead.
+//     input; the exact single-region funding boundary is pinned instead.
 
 import (
 	"encoding/json"
@@ -186,16 +186,16 @@ func TestGrowthCharterCapacityCoversPaybackAndExpiry(t *testing.T) {
 }
 
 // TestGrowthFundingBoundaryIsExact covers G3: the single-region fixture
-// requires exactly 293000p (175000 capital + 20000 new working capital +
+// requires exactly 283000p (175000 capital + 10000 new working capital +
 // 20000 incumbent working capital + 3000 upkeep horizon + 75000 reserve).
 func TestGrowthFundingBoundaryIsExact(t *testing.T) {
 	funded := fundedGrowthFixture()
-	funded.BalancePence = 293_000
+	funded.BalancePence = 283_000
 	if decision := EvaluateGrowth(funded); !decision.Accepted {
 		t.Fatalf("exactly-funded growth was rejected: %s", decision.Reason)
 	}
 	short := fundedGrowthFixture()
-	short.BalancePence = 292_999
+	short.BalancePence = 282_999
 	if decision := EvaluateGrowth(short); decision.Accepted {
 		t.Fatal("growth was authorized one pence short of protected working capital, upkeep horizon and reserve")
 	}

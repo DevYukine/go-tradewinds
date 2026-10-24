@@ -1,0 +1,256 @@
+.overview {
+  display: grid;
+  gap: 28px;
+  min-width: 0;
+  margin-bottom: 24px;
+}
+
+.company {
+  min-width: 0;
+}
+
+.companyHeading,
+.controllerHeading,
+.shipHeading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+}
+
+.companyHeading {
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+
+.companyHeading h2 {
+  font-family: var(--font-plex), sans-serif;
+  font-size: 16px;
+  max-width: 100%;
+}
+
+.companyHeading > span,
+.shipHeading > span,
+.observation,
+.moneyStrip small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.controller {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.controllerHeading {
+  align-items: center;
+}
+
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 24px;
+  margin: 0;
+}
+
+.checks > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.checks dt,
+.moneyStrip dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.checks dd {
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.companyNotices {
+  border-left: 2px solid var(--warning);
+  padding-left: 10px;
+  max-width: 80ch;
+  overflow-wrap: anywhere;
+}
+
+.companyNotices > strong,
+.hold > strong {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.companyNotices ul,
+.hold ul {
+  list-style: none;
+  margin: 3px 0 0;
+  padding: 0;
+}
+
+.companyNotices li + li,
+.hold li + li {
+  margin-top: 6px;
+}
+
+.moneyStrip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 24px;
+  margin: 14px 0;
+  padding: 12px 0;
+  border-block: 1px solid var(--border);
+}
+
+.moneyStrip > div {
+  min-width: 0;
+}
+
+.moneyStrip dd {
+  margin: 2px 0;
+  font-size: 16px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.moneyStrip small {
+  display: block;
+  max-width: 42ch;
+  overflow-wrap: anywhere;
+}
+
+.shipHeading {
+  margin-bottom: 4px;
+}
+
+.shipHeading h3 {
+  font-size: 14px;
+}
+
+.ships {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.shipRow {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.75fr) minmax(150px, 1fr) minmax(
+      0,
+      1.6fr
+    );
+  gap: 10px 20px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  align-items: start;
+}
+
+.shipIdentity,
+.activity,
+.hold {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.shipButton {
+  display: inline-flex;
+  justify-self: start;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  max-width: 100%;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--ink);
+  text-align: left;
+}
+
+.shipButton strong {
+  font-size: 16px;
+  min-width: 0;
+}
+
+.shipButton:hover strong,
+.shipButton[aria-pressed="true"] strong {
+  color: var(--route);
+}
+
+.activity > :first-child {
+  justify-self: start;
+}
+
+.activity :global(.badge) {
+  white-space: normal;
+  max-width: 100%;
+}
+
+.cargo,
+.hold > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.warning {
+  color: var(--warning);
+  font-size: 12px;
+}
+
+@media (max-width: 1000px) {
+  .shipRow {
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr);
+  }
+
+  .hold {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 600px) {
+  .moneyStrip {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .moneyStrip > div {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0 12px;
+    align-items: baseline;
+  }
+
+  .moneyStrip small {
+    grid-column: 1 / -1;
+    max-width: none;
+  }
+
+  .shipRow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .shipIdentity {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+  }
+
+  .shipButton {
+    min-height: 44px;
+  }
+
+  .checks {
+    display: grid;
+    gap: 6px;
+  }
+}

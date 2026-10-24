@@ -43,7 +43,21 @@ docker compose up -d --wait
 
 Migrations run during Go startup through embedded Goose migrations. A failed migration prevents startup; never bypass it with AutoMigrate or drop the live database to make the process run. The Compose volume persists accounts and trading state when the container stops.
 
-Keep `COMPOSE_PROJECT_NAME` unchanged when moving between worktrees or merging into `master`; it identifies the existing database volume. The verified development environment uses `tradewinds-rebuild` in its ignored `.env`. Preserve that `.env`, its credential key, and the database volume during cutover. Do not replace them with the legacy bot's configuration or register the same handle against an empty database.
+Exploration-expense and underwriting tables are additive, but **Goose version 5 is a non-backward-compatible encryption cutover**. It converts mission recovery data, settlement identities and underwriting evidence atomically, authenticates the existing credentials, verifies account/company executors are stopped, and installs a permanent key verifier. A failure rolls back the conversion and its version entry. Do not run an older executable against version 5.
+
+Before this upgrade, stop the old executor and wait for its ownership locks to release. Take a fresh custom-format PostgreSQL backup of that quiesced state, restrict its ACL to the owner/system, and retain the original credential key separately. Restore the dump to a disposable database and run the new executable there before migrating production. Keep the old binary, dump and matching key together as the rollback set; there is no supported destructive down-migration. If the new executor has already sent actions, reconcile them before considering a restore—restoring an older journal can otherwise repeat a real-world mutation.
+
+A missing key verifier, incorrect key or unreadable recovery ciphertext stops the affected operation; never regenerate the verifier, clear missions, reset an underwriting pilot, or delete unresolved records to bypass it. Verify permanent settlements, policy/position/budget records and unresolved journal identities after restore. The restored-live upgrade check preserved 325 encrypted actions and the account row byte-for-byte, all 35 settlement values and the 148,863 decision rows; that backup had no active missions, so mission conversion was separately covered by PostgreSQL migration regressions.
+
+For a legacy `__growth` intent without an admitted lane, version 5 writes an explicit zero-allocation withdrawal. The runner resolves any already-attempted action with its original identity, retains paid operating costs, and releases the actual hull without starting new discretionary commissioning. It does not invent a profitable allocation or require an unnecessary trip home. A missing or malformed lane outside that migration remains invalid.
+
+A zero recorded commissioning balance does not prove that its historical cost is known. An anchored terminal control retains a zero-ton settlement with its original uncertainty and attributable bills. Missing ledger/time boundaries are persisted once; existing boundaries are preserved. A control with unknown, paid or capital-bearing exposure but no terminal-action anchor remains held for journal/ledger investigation. Do not delete it to free the ship or manufacture a profitable history.
+
+The first commissioning handoff preserves committed hull identity and capital cost, including a withdrawn lane; capital is not an operating expense and does not carry into a fresh post-settlement voyage. Unknown, paid or committed exposure without a terminal-action anchor remains held without claiming bills. A known-zero-effect cancellation with no unresolved action or committed exposure releases its reservations, including a repeat voyage canceled at source roadstead before any new action. Unrelated company upkeep remains in the company ledger, not a fabricated cancellation settlement or a reason to strand that ship.
+
+An unreadable account credential omits that account's retained dashboard datasets and displays a safe account-local error; healthy accounts remain usable. Restore the matching credential/key through the documented recovery path, not by clearing private recordings.
+
+Keep `COMPOSE_PROJECT_NAME` unchanged when moving between worktrees or updating `main`; it identifies the existing database volume. The verified development environment uses `tradewinds-rebuild` in its ignored `.env`. Preserve that `.env`, its credential key, and the database volume during cutover. Do not replace them with the legacy bot's configuration or register the same handle against an empty database.
 
 For a disposable integration database in the local container:
 
@@ -120,26 +134,83 @@ There is no ship-count ceiling. The runner assigns profitable work to compatible
 
 Growth needs loss-inclusive, known-cost realized lane proof, a current available quote, two cycles of spare source depth and, for spot trades, two cycles of executable destination bids. Reserve competing throughput separately for shared source/commodity, destination/commodity and contract, including ships already committed to sailing returns. Finite charters must cover payback plus a cycle and remain open for that full horizon; future reposts are not demand.
 
-Any negative vault or underfunded active/obligated region defers construction, not safe income voyages. Protect incumbent working capital, two new cycles, stores, guns, the quote cushion and three days of incremental upkeep in the home billing region. Treasury transfers must first fund the relevant regions at observed fees. Empty unused regions need no artificial reserve; escrow and hoped-for proceeds are not spendable cash. The published API has no voluntary hull-sale operation, so the runner does not sell ships to fund growth.
+Any negative vault or underfunded active/obligated region defers construction, not safe income voyages. Protect incumbent working capital, the reusable new trading float, full initial stores, guns, the quote cushion, destination arrival bills and three days of incremental upkeep in the home billing region. Treasury transfers must first fund those regions at observed fees. Compare supported hulls and feasible quantities using their complete incremental capital commitment. Empty unused regions need no artificial reserve; escrow and hoped-for proceeds are not spendable cash. The published API has no voluntary hull-sale operation.
+
+### Underwriting
+
+Money shows owned underwriting exposure and settled outcomes above financial history; public policy listings remain in Trade, under Exchange and Insurance. An active premium is an entitlement, not settled earnings; returned collateral is principal. The engine may take a 500-basis-point hull-only slice only when its directional closed-policy model has positive net after modeled claims and shipping opportunity cost, and the full possible loss fits both current protected cash and the permanent pilot allowance. See `docs/strategy.md` for model assumptions and limits.
+
+`underwriting_selected` records the estimate. Confirmed `game action committed` records the exact owned slice, collateral and premium entitlement; `underwriting settled` records earned premium, claims, returned principal and net separately. Missing receipt, changed terms or unexplained ownership remains unresolved. After an accepted slice, further underwriting waits for a unique identity-linked debit to an owned vault. This hold does not disable unrelated safe fleet work. Do not replace an ambiguous idempotency key or infer payment from policy coverage.
 
 ### Console logs
 
 Zap writes `[time] [account] [category] [LEVEL] message` followed by the complete structured context as JSON. Root, store, API, engine and Fx records have named categories; account labels and IDs remain in the JSON even when the label appears in the header. `LOG_LEVEL=info` is the default; invalid values stop startup before opening the database.
 
-- **INFO:** service startup, bounded fleet status, established stream recovery, committed trading/treasury/fleet outcomes and recorded settlements. Amounts are integer pence; unknown costs never appear as measured profit.
-- **WARN:** recoverable connection failures, reconciliation-required actions, rejected operations and retention/read failures. Unchanged unresolved-action warnings are suppressed by the runner's bounded seven-day decision cache; they can recur after eviction or restart. Dashboard read warnings are limited to one per operation per minute.
-- **ERROR:** terminal account-worker, service or lifecycle failures.
-- **DEBUG:** request tracing, routine dispatch, dock/offshore transitions, Fx lifecycle and migration detail. Enable temporarily when investigating a problem.
+- **INFO:** service startup, one initial fleet snapshot, confirmed actions, authoritative arrivals, established stream/dataset recovery and recorded settlements. Amounts are integer pence; unknown costs never appear as measured profit.
+- **WARN:** a new recoverable outage, unexpected rejection, reconciliation required, explicit ship loss, or a storage/diagnostic failure needing attention. An ordinary handled conflict is not automatically a warning. Repeated unresolved-action warnings use the bounded seven-day decision cache and can recur after eviction or restart; dashboard read/write warnings are sampled per operation.
+- **ERROR:** terminal account-worker, ownership, service, lifecycle or response-encoding failure. Expected shutdown cancellation is silent.
+- **DEBUG:** request attempts, routine dispatch, handled conflict/cooldown detail, repeated connection failures, Fx lifecycle and migration detail. Enable temporarily for diagnosis; successful dock/offshore actions remain INFO.
 
 `LOG_COLOR=auto` (also the unset/empty default) enables colors only when stderr is a terminal and `TERM` is not `dumb`. `LOG_COLOR=always` also colors redirected output, useful for a visible PowerShell window that tees logs to a file. `LOG_COLOR=never` disables colors. The presence of `NO_COLOR`, even with an empty value, overrides every color mode. Other `LOG_COLOR` values fail startup. Levels receive distinct colors and structured context is dimmed; stripping the encoder's SGR sequences leaves the same records as plain mode. Control characters in upstream messages, labels, categories and fields are escaped so they cannot inject terminal lines or commands; invalid UTF-8 is normalized when represented as JSON.
 
-The runner emits `fleet status` after its first persisted reconciliation and on the first completed cycle at least one real minute after the previous status. `reconciled_at` is that cycle's completion time; `fleet_observed_at` is the separate time the fleet was fetched. Counts describe that observation, not unconfirmed results of later actions: `in_port` includes berthed ships and ships anchored in the roadstead. Stale or missing fleet data sets `fleet_fresh=false` and omits counts instead of claiming a fresh empty fleet.
+The runner emits `fleet status` once per account after the first coherent, persisted fleet observation. It does not emit a minute heartbeat. Stale or missing initial fleet data does not consume that announcement. `reconciled_at` is the completed cycle time; `fleet_observed_at` is when the fleet was fetched. Counts describe that observation: `in_port` includes berths and roadsteads. The first holding reason is scrubbed before a 512-character cap; the count is reasons, not waiting ships.
 
-`holding_reasons` counts recorded reasons, not waiting ships. The first reason appears as `holding_reason`, scrubbed before a 512-character cap; a capped reason carries `holding_reason_truncated=true`. No recorded reason does not imply a successful or profitable trade. Status lines prove completed reconciliation, not profit or uninterrupted health; delayed or failed cycles can delay them. Other routine polling and repeated no-op planning remain quiet.
+Subsequent fresh REST transitions from sailing to a berth or roadstead emit `ship arrived`; an explicit transition to sunk emits `ship sunk` at WARN. Startup history, a passed ETA, missing rows and stale snapshots never invent those events. Missing rows also do not erase the previous sailing observation. Other healthy polling and unchanged idle planning stay quiet. Silence is not proof of health or profit: use recorded observation times and current company activity in Overview.
 
-Upstream strings in status and committed outcomes use the store's credential and token scrubber; if credentials cannot be read, those strings are redacted while numeric facts remain. Credentials, raw game payloads and database connection strings must not appear at any level. Console records are best-effort operational messages, not an exactly-once financial ledger; use the company Journal and permanent settlements for durable outcomes.
+Upstream strings in status and outcomes use the store's credential and token scrubber; if credentials cannot be read, strings are redacted while numeric facts remain. Credentials, raw game payloads and database connection strings must not appear at any level. Business outcomes are not message-sampled: two ships completing the same action must produce two distinguishable records.
 
-The level mapping follows the [OpenTelemetry severity model](https://opentelemetry.io/docs/specs/otel/logs/data-model/) and [Zap console encoder](https://pkg.go.dev/go.uber.org/zap/zapcore#NewConsoleEncoder). Structured context remains attached to each readable message.
+Console output is best-effort, not an exactly-once financial ledger. Completed-response replay is quiet; authoritative recovery is explicitly labelled and omits unknown amounts. A crash after durable advancement but before stdout may omit a console line. Use the company Journal, action journal and permanent settlements for accounting and recovery.
+
+#### Game-action log audit
+
+Each confirmed mutation needs an INFO outcome, not an INFO request attempt. All outcomes carry the durable action identity and stage plus applicable company, ship and port context. The table records why the log exists and its additional validated fields; no estimated amount is presented as an actual receipt.
+
+| Action | Operator purpose | Additional outcome fields |
+| --- | --- | --- |
+| Buy/sell IOC cargo | Explain inventory and cash changes, including zero/partial fills | Side, commodity, actual tons, gross pence, customs |
+| Buy provisions into stores | Explain departure readiness and cash use | Port, provisions, actual tons and cost |
+| Accept freight | Expose the new sealed obligation | Contract, destination, tons, reward, collateral, deadline |
+| Deliver freight/charter | Show confirmed delivery income | Contract, destination port, delivered tons, validated reward |
+| Depart | Show where the ship is going | Origin, destination, cargo and known berth dues/debt |
+| Dock/offshore | Explain a berth or roadstead transition | Ship, port, action identity; known charges only |
+| Build | Explain capital investment | Yard, new ship identity/name/class, validated cost |
+| Refit | Explain armament and hold changes | Ship, requested cannon count; unknown cost explicitly unknown |
+| Change company settings | Explain altered billing behavior | Auto-remit policy and reserve |
+| Remit treasury cash | Explain regional liquidity movement | Source/destination region, gross, fee and credited pence |
+| Underwrite a policy | Explain accepted capital exposure | Policy, insured ship, origin/destination, exact owned slice ID, slice basis points, collateral and premium entitlement |
+| Settle underwriting | Distinguish earned premium, claims and returned principal | Policy/slice IDs, terminal state, earned premium, claims, principal returned and net |
+| Finish a mission | Distinguish earnings from turnover | Known costs, actual proceeds and loss-inclusive realized net |
+| Recover a committed action | Explain restart/ambiguous-response recovery | Recovery label and authoritative state, never guessed money |
+| Register company/account or create key | Announce a usable account, not each auth attempt | One `account ready` with handle/company; never key or passphrase |
+
+Fresh sends and safe retries are DEBUG. Handled berth conflicts, tender waits and rate-limit cooldowns are DEBUG with the persisted classification/deadline; unexpected rejections remain WARN. HTTP 409 alone never determines severity or proves a harmless failure. Ambiguous requests retain their original identity and require reconciliation. Registration intermediates stay in the redacted request journal; the CLI reports a terminal bootstrap failure.
+
+#### Diagnostic log audit
+
+| Existing path | Decision and context |
+| --- | --- |
+| Account incomplete or missing key | WARN with account identity and `register` recovery instruction |
+| Credential load failure | ERROR with safe cause; other accounts continue |
+| Account worker exit | ERROR with account/company and safe cause; cancellation silent |
+| Dashboard listener/server exit | INFO address/mode at startup; ERROR unexpected stop |
+| Request diagnostic persistence | First outage WARN with method, redacted path, status and safe cause; repeated failures quiet, recovery INFO, shutdown silent |
+| SSE disconnect/gap/recovery | First outage/gap WARN, repeated disconnected attempts DEBUG, persisted recovery INFO; owner loop emits lifecycle messages |
+| Dataset or contract-page fetch/validation | First outage WARN with dataset and safe cause; repeated outage quiet; successful recovery INFO |
+| Account lease loss | ERROR account, ownership state and safe database cause; cancel execution immediately |
+| Lease connection/pool cleanup | WARN with safe cause, not a content-free warning |
+| Migration lock release | WARN safe database cause |
+| Goose migration detail/failure | DEBUG normal detail, ERROR fatal migration; no raw connection strings |
+| GORM SQL logging | Disabled; returned errors are handled at their operational boundary |
+| Dashboard reads/metrics/writes | Sampled WARN operation/cause; expected request cancellation silent |
+| Dashboard response encoding | ERROR: response cannot be represented safely |
+| Game HTTP request trace | DEBUG method, redacted path, status and duration; no body/header dump |
+| Rate limiter/retry transport | No duplicate business log; owning action/dataset reports the classified result |
+| Retention | WARN failed prune and safe cause; no success heartbeat |
+| Fx lifecycle | DEBUG detail; terminal failures ERROR |
+
+The severity policy follows [OpenTelemetry](https://opentelemetry.io/docs/specs/otel/logs/data-model/), [OWASP logging guidance](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html) and [Zap levels](https://github.com/uber-go/zap/blob/master/zapcore/level.go). [OpenKore](https://github.com/openkore/openkore/blob/master/src/Log.pm) separates operational messages and debug domains; [KoLmafia](https://github.com/kolmafia/kolmafia/blob/main/src/main/java/net/sourceforge/kolmafia/RequestLogger.java) separates readable output from session records; [Baritone](https://github.com/cabaletta/baritone/blob/f2679bea294e51e3d2e83bda562451f8f9d2cf5a/src/api/java/baritone/api/utils/Helper.java) distinguishes direct and debug notices. These support separate operator and diagnostic channels, not copying their UI or adding log knobs here.
+
+A disposable PostgreSQL/real-CLI observation ran for 77.9 seconds through six completed cycles: one startup snapshot, one arrival, one explicit loss, colored output, no leaked fixture credential and no game mutations in observe mode. Ctrl+Break exited successfully without an account-failure error. CLI fixtures sharing the same account or company identity must run sequentially even in different schemas: PostgreSQL advisory ownership is database-wide. This establishes the exercised lifecycle behavior, not live profitability.
 
 ## Readiness and diagnostics
 
@@ -183,7 +254,11 @@ Stop mutations immediately. A restarted connection must not silently replace the
 
 ### Fleet idle
 
-Read the explicit rejection reasons. Check stores, safe route rating, current berth locks, fresh local liquidity, regional reserves, contract remaining quantity/deadline, and world pause/freeze state. Do not relax these constraints merely to force activity. Reassess the economic assumptions when observations change.
+Start in Overview: read the company's controller observation time, current hold, next recorded check and each ship's current status/location/cargo. The map's position can be interpolated; the ship's REST state is authoritative. A fresh page response is not proof that the executor advanced.
+
+For economic holds, inspect local depth, safe stores and hull rating, regional funds, berth locks and remaining contract deadlines. When direct trades lose money, the runner can spend its bounded remaining discovery allowance inspecting a different evidenced source. Unknown historic commercial costs prevent profit-based replenishment but do not erase unused seed; unknown prior probe expense still blocks more discovery. Repeated failed opportunities consume permanent allowance. Do not delete that history or relax safe-provision requirements to force a departure.
+
+For action holds, use the company Journal and System diagnostics to identify the immutable action and its actual recovery condition. A definite rejection can replan after its persisted cooldown; an ambiguous result must reconcile first. Silence in INFO logs between meaningful transitions is intentional.
 
 ### Live account backup
 
@@ -218,5 +293,7 @@ The HTTP suite checks exact middleware denials for hostile and genuinely missing
 Production is skipped only when `web/.next/BUILD_ID` is missing, with instructions to build; an existing but unusable build fails. The post-build production command above must run against fresh output so coverage cannot remain skipped or validate a stale build. Production rewrites are build-time artifacts: changing `API_INTERNAL_URL` at `next start` does not retarget them. The HTTP suite never builds Next itself.
 
 Run database integration tests with the disposable URL, then smoke the actual CLI and database API. For concurrency changes, run `go test -race ./...` when a working C compiler is installed. Report an unavailable race toolchain instead of calling that check passed.
+
+Run the fixed-company logging and underwriting CLI fixtures serially with each other and with the entire Go suite. Different disposable schemas do not isolate PostgreSQL company advisory locks. A competing fixture can make `Runner.Run` return `ErrAccountLocked` before its first request; a REST-capture timeout is not proof that the HTTP path stalled.
 
 For dashboard changes, start both real services, exercise account selection, map selection, fleet detail, data views, diagnostics filters, themes, and keyboard navigation. In the automation ledger, expand route economics, confirm collateral and stress disclosures, and sort the cash header in both directions: amounts must sort numerically, with unavailable values last. Inspect screenshots at the viewports in `AGENTS.md`, verify no page overflow, and check browser console output. Production data must never be replaced by demo fixtures to hide an integration problem.

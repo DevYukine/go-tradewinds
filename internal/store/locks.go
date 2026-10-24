@@ -171,7 +171,10 @@ func (lease *accountLease) owns(ctx context.Context) (bool, error) {
 		int64(bits>>32), int64(uint32(bits)),
 		int64(companyBits>>32), int64(uint32(companyBits)),
 	).Scan(&held)
-	return held == expected, err
+	if err != nil {
+		return false, databaseError{cause: err}
+	}
+	return held == expected, nil
 }
 
 func (lease *accountLease) monitor(ctx context.Context) {
@@ -215,15 +218,24 @@ func (lease *accountLease) closeConnection() {
 	defer cancel()
 	_, err := lease.conn.ExecContext(ctx, "SELECT pg_advisory_unlock_all()")
 	if err != nil {
-		lease.store.log.Warn("release account ownership connection", zap.String("account_id", lease.accountID))
+		lease.store.log.Warn("release account ownership connection",
+			zap.String("account_id", lease.accountID),
+			zap.Error(databaseError{cause: err}),
+		)
 	}
 	// With no idle slots and the private pool closed, an uncertain unlock can
 	// never return a still-locked physical connection to an application pool.
 	if err := lease.conn.Close(); err != nil && !errors.Is(err, sql.ErrConnDone) {
-		lease.store.log.Warn("close account ownership connection", zap.String("account_id", lease.accountID))
+		lease.store.log.Warn("close account ownership connection",
+			zap.String("account_id", lease.accountID),
+			zap.Error(databaseError{cause: err}),
+		)
 	}
 	if err := lease.db.Close(); err != nil {
-		lease.store.log.Warn("close account ownership pool", zap.String("account_id", lease.accountID))
+		lease.store.log.Warn("close account ownership pool",
+			zap.String("account_id", lease.accountID),
+			zap.Error(databaseError{cause: err}),
+		)
 	}
 }
 

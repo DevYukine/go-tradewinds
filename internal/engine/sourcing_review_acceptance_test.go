@@ -227,7 +227,7 @@ func sourcingDepartureSeed(t *testing.T) string {
 		"proven_lane":"portb|laport|sawn_planks|charter",
 		"started_at":%q,"started_game_hours":2398,
 		"initial_ledger_ids":{},"eligible":{},"rejected_charter_ids":{},
-		"finish_at_destination":true,
+		"finish_at_destination":true,"costs_known":true,
 		"relocation":{
 			"target_contract_id":"charter-x","target_commodity":"sawn_planks","target_destination":"laport",
 			"expense_cap_pence":20000,"modeled_expense_pence":1500,"funding_required_pence":0

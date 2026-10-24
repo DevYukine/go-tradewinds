@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"gorm.io/gorm"
@@ -15,32 +16,38 @@ import (
 // collateral are not proceeds; unknown acquisition costs must set CostsKnown=false.
 // The journal action is the evidence anchor, not a second source of HTTP outcomes.
 type Settlement struct {
-	ID               string    `json:"id" gorm:"primaryKey"`
-	AccountID        string    `json:"account_id"`
-	ShipID           string    `json:"ship_id"`
-	MissionID        string    `json:"mission_id"`
-	Lane             string    `json:"lane"`
-	ActionID         string    `json:"action_id"`
-	Kind             string    `json:"kind"`
-	Origin           string    `json:"origin"`
-	Destination      string    `json:"destination"`
-	Commodity        string    `json:"commodity"`
-	QuantityTons     int64     `json:"quantity_tons"`
-	GameSeconds      int64     `json:"game_seconds"`
-	CostsKnown       bool      `json:"costs_known"`
-	AcquisitionPence int64     `json:"acquisition_pence"`
-	ProceedsPence    int64     `json:"proceeds_pence"`
-	FeesPence        int64     `json:"fees_pence"`
-	ProvisionsPence  int64     `json:"provisions_pence"`
-	ExpensesPence    int64     `json:"expenses_pence"`
-	StartedAt        time.Time `json:"started_at"`
-	CompletedAt      time.Time `json:"completed_at"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID               string `json:"id" gorm:"primaryKey"`
+	AccountID        string `json:"account_id"`
+	ShipID           string `json:"ship_id"`
+	MissionID        string `json:"mission_id"`
+	Lane             string `json:"lane"`
+	ActionID         string `json:"action_id"`
+	Kind             string `json:"kind"`
+	Origin           string `json:"origin"`
+	Destination      string `json:"destination"`
+	Commodity        string `json:"commodity"`
+	QuantityTons     int64  `json:"quantity_tons"`
+	GameSeconds      int64  `json:"game_seconds"`
+	CostsKnown       bool   `json:"costs_known"`
+	AcquisitionPence int64  `json:"acquisition_pence"`
+	ProceedsPence    int64  `json:"proceeds_pence"`
+	FeesPence        int64  `json:"fees_pence"`
+	ProvisionsPence  int64  `json:"provisions_pence"`
+	ExpensesPence    int64  `json:"expenses_pence"`
+	// Exploration expense prices consumed stores and probe costs separately
+	// from actual cash P&L. Nil legacy rows retain the full-cash upper bound.
+	ExplorationExpensePence *int64    `json:"exploration_expense_pence,omitempty"`
+	StartedAt               time.Time `json:"started_at"`
+	CompletedAt             time.Time `json:"completed_at"`
+	CreatedAt               time.Time `json:"created_at"`
 }
 
 func (Settlement) TableName() string { return "settlements" }
 
 func sameSettlement(a, b Settlement) bool {
+	sameExplorationExpense := a.ExplorationExpensePence == nil && b.ExplorationExpensePence == nil ||
+		a.ExplorationExpensePence != nil && b.ExplorationExpensePence != nil &&
+			*a.ExplorationExpensePence == *b.ExplorationExpensePence
 	return a.ID == b.ID && a.AccountID == b.AccountID && a.ShipID == b.ShipID &&
 		a.MissionID == b.MissionID && a.Lane == b.Lane && a.ActionID == b.ActionID &&
 		a.Kind == b.Kind && a.Origin == b.Origin && a.Destination == b.Destination &&
@@ -48,7 +55,7 @@ func sameSettlement(a, b Settlement) bool {
 		a.GameSeconds == b.GameSeconds && a.CostsKnown == b.CostsKnown &&
 		a.AcquisitionPence == b.AcquisitionPence && a.ProceedsPence == b.ProceedsPence &&
 		a.FeesPence == b.FeesPence && a.ProvisionsPence == b.ProvisionsPence &&
-		a.ExpensesPence == b.ExpensesPence &&
+		a.ExpensesPence == b.ExpensesPence && sameExplorationExpense &&
 		a.StartedAt.Truncate(time.Microsecond).Equal(b.StartedAt.Truncate(time.Microsecond)) &&
 		a.CompletedAt.Truncate(time.Microsecond).Equal(b.CompletedAt.Truncate(time.Microsecond))
 }
@@ -57,6 +64,7 @@ func (s *Store) PutSettlement(ctx context.Context, settlement *Settlement) error
 	if settlement == nil || !validID(settlement.ID) || !validID(settlement.AccountID) || !validID(settlement.ActionID) ||
 		settlement.QuantityTons < 0 || settlement.GameSeconds < 0 || settlement.AcquisitionPence < 0 ||
 		settlement.ProceedsPence < 0 || settlement.FeesPence < 0 || settlement.ProvisionsPence < 0 || settlement.ExpensesPence < 0 ||
+		settlement.ExplorationExpensePence != nil && *settlement.ExplorationExpensePence < 0 ||
 		settlement.CompletedAt.IsZero() {
 		return fmt.Errorf("settlement fields: %w", ErrInvalidInput)
 	}
@@ -82,7 +90,11 @@ func (s *Store) PutSettlement(ctx context.Context, settlement *Settlement) error
 		if row.CreatedAt.IsZero() {
 			row.CreatedAt = time.Now().UTC()
 		}
-		result := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(&row)
+		privateRow, err := s.encodeSettlement(row)
+		if err != nil {
+			return err
+		}
+		result := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(&privateRow)
 		if result.Error != nil {
 			if errors.Is(result.Error, gorm.ErrDuplicatedKey) {
 				return ErrActionConflict
@@ -100,8 +112,12 @@ func (s *Store) PutSettlement(ctx context.Context, settlement *Settlement) error
 				RecordedAt: row.CompletedAt,
 			}).Error
 		}
-		var persisted Settlement
-		if err := tx.First(&persisted, "id = ?", row.ID).Error; err != nil {
+		var stored settlementRow
+		if err := tx.First(&stored, "id = ?", row.ID).Error; err != nil {
+			return err
+		}
+		persisted, err := s.decodeSettlement(stored)
+		if err != nil {
 			return err
 		}
 		if !sameSettlement(persisted, row) {
@@ -126,53 +142,133 @@ func (s *Store) SettlementHistory(ctx context.Context, accountID, lane string, l
 		db = db.Where("account_id = ?", accountID)
 	}
 	if lane != "" {
-		db = db.Where("lane = ?", lane)
+		db = db.Where("lane_lookup = ?", s.privateLookup("settlement-lane", "", lane))
 	}
-	rows := make([]Settlement, 0)
-	err := db.Order("completed_at DESC, id").Limit(limit).Find(&rows).Error
-	return rows, err
+	privateRows := make([]settlementRow, 0)
+	if err := db.Order("completed_at DESC, id").Limit(limit).Find(&privateRows).Error; err != nil {
+		return nil, err
+	}
+	rows := make([]Settlement, 0, len(privateRows))
+	for _, stored := range privateRows {
+		value, err := s.decodeSettlement(stored)
+		if err != nil {
+			return nil, err
+		}
+		if lane != "" && value.Lane != lane {
+			return nil, ErrActionConflict
+		}
+		rows = append(rows, value)
+	}
+	return rows, nil
 }
 
-// RelocationRestart uses permanent settlements rather than the bounded display
-// history. The caller also charges Latest's own loss before allowing a retry.
-type RelocationRestart struct {
-	Latest                *Settlement
-	NetSincePence         int64
-	UnknownCostSince      bool
-	PositiveDeliverySince bool
+// EconomicHistory is permanent execution evidence, not a page of display
+// history. Commercial losses include zero-ton failed procurements. Probes are
+// charged separately so exploration cannot replenish its budget by restarting.
+type EconomicHistory struct {
+	CommercialNetPence   int64
+	NetPence             int64
+	PositiveCycles       int64
+	PositiveQuantityTons int64
+	PositiveNetPence     int64
+	GameSeconds          int64
+	PositiveGameSeconds  int64
+	UnknownCosts         bool
+	UnmeasuredDuration   bool
+	ProbeExpensePence    int64
+	UnknownProbeCosts    bool
+	LastCompletion       *time.Time
+	LastProbeCompletion  *time.Time
 }
 
-func (s *Store) LatestRelocationRestart(ctx context.Context, accountID string) (RelocationRestart, error) {
-	var result RelocationRestart
-	if !validID(accountID) {
-		return result, fmt.Errorf("relocation restart account: %w", ErrInvalidInput)
+func (s *Store) EconomicHistory(ctx context.Context, accountID, lane string) (EconomicHistory, error) {
+	var result EconomicHistory
+	if !validID(accountID) || len(lane) > 1024 {
+		return result, fmt.Errorf("economic history query: %w", ErrInvalidInput)
 	}
 	db, cancel := s.query(ctx)
 	defer cancel()
-	var latest Settlement
-	err := db.Where("account_id = ? AND kind = ?", accountID, "relocation").
-		Order("completed_at DESC, id DESC").Take(&latest).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return result, nil
-	}
-	if err != nil {
-		return result, err
-	}
-	result.Latest = &latest
-	var totals struct {
-		NetSincePence         int64
-		UnknownCostSince      bool
-		PositiveDeliverySince bool
-	}
-	err = db.Raw(`
-		SELECT COALESCE(SUM(proceeds_pence::numeric - acquisition_pence - fees_pence - provisions_pence - expenses_pence), 0) AS net_since_pence,
-			COALESCE(BOOL_OR(NOT costs_known), false) AS unknown_cost_since,
-			COALESCE(BOOL_OR(costs_known AND quantity_tons > 0 AND proceeds_pence::numeric - acquisition_pence - fees_pence - provisions_pence - expenses_pence > 0), false) AS positive_delivery_since
-		FROM settlements
-		WHERE account_id = ? AND (completed_at > ? OR (completed_at = ? AND id > ?))`,
-		accountID, latest.CompletedAt, latest.CompletedAt, latest.ID).Scan(&totals).Error
-	result.NetSincePence = totals.NetSincePence
-	result.UnknownCostSince = totals.UnknownCostSince
-	result.PositiveDeliverySince = totals.PositiveDeliverySince
+	// PostgreSQL numeric keeps both each row's arithmetic and the cumulative
+	// sums exact. Scanning an out-of-range aggregate into int64 returns an
+	// error instead of wrapping a loss into positive underwriting evidence.
+	err := db.Raw(`
+		WITH evidence AS (
+			SELECT *,
+				proceeds_pence::numeric - acquisition_pence - fees_pence - provisions_pence - expenses_pence AS net,
+				kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery', 'aborted', 'unknown') AS commercial,
+				kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery') AS delivery
+			FROM settlements
+			WHERE account_id = ? AND (? = '' OR lane_lookup = ?)
+		)
+		SELECT
+			COALESCE(SUM(net) FILTER (WHERE commercial AND costs_known), 0) AS commercial_net_pence,
+			COALESCE(SUM(net) FILTER (WHERE (commercial OR kind = 'relocation') AND costs_known), 0) AS net_pence,
+			COUNT(*) FILTER (WHERE delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0) AS positive_cycles,
+			COALESCE(SUM(quantity_tons::numeric) FILTER (WHERE delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_quantity_tons,
+			COALESCE(SUM(net) FILTER (WHERE delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_net_pence,
+			COALESCE(SUM(game_seconds::numeric) FILTER (WHERE commercial OR kind = 'relocation'), 0) AS game_seconds,
+			COALESCE(SUM(game_seconds::numeric) FILTER (WHERE delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_game_seconds,
+			COALESCE(BOOL_OR(NOT costs_known OR kind = 'unknown') FILTER (WHERE commercial OR kind = 'relocation'), false) AS unknown_costs,
+			COALESCE(BOOL_OR(game_seconds <= 0) FILTER (WHERE commercial OR kind = 'relocation'), false) AS unmeasured_duration,
+			COALESCE(SUM(COALESCE(exploration_expense_pence::numeric,
+				acquisition_pence::numeric + fees_pence + provisions_pence + expenses_pence))
+				FILTER (WHERE kind = 'relocation' AND costs_known), 0) AS probe_expense_pence,
+			COALESCE(BOOL_OR(NOT costs_known) FILTER (WHERE kind = 'relocation'), false) AS unknown_probe_costs,
+			MAX(completed_at) FILTER (WHERE commercial OR kind = 'relocation') AS last_completion,
+			MAX(completed_at) FILTER (WHERE kind = 'relocation') AS last_probe_completion
+		FROM evidence`, accountID, lane, s.privateLookup("settlement-lane", "", lane)).Scan(&result).Error
 	return result, err
+}
+
+// RelocationProbes looks up only the caller's bounded evidence shortlist.
+func (s *Store) RelocationProbes(ctx context.Context, accountID string, lanes []string) ([]string, error) {
+	if !validID(accountID) || len(lanes) > 1024 {
+		return nil, fmt.Errorf("relocation probe query: %w", ErrInvalidInput)
+	}
+	for _, lane := range lanes {
+		if lane == "" || len(lane) > 1024 {
+			return nil, fmt.Errorf("relocation probe lane: %w", ErrInvalidInput)
+		}
+	}
+	rows := make([]string, 0)
+	if len(lanes) == 0 {
+		return rows, nil
+	}
+	originals := make(map[string]string, len(lanes))
+	lookups := make([]string, 0, len(lanes))
+	for _, lane := range lanes {
+		lookup := s.privateLookup("settlement-lane", "", lane)
+		if original, exists := originals[lookup]; exists {
+			if original != lane {
+				return nil, ErrActionConflict
+			}
+			continue
+		}
+		originals[lookup] = lane
+		lookups = append(lookups, lookup)
+	}
+	db, cancel := s.query(ctx)
+	defer cancel()
+	var stored []settlementRow
+	if err := db.Select("DISTINCT ON (lane_lookup) *").
+		Where("account_id = ? AND kind = ? AND lane_lookup IN ?", accountID, "relocation", lookups).
+		Order("lane_lookup, completed_at DESC, id").Find(&stored).Error; err != nil {
+		return nil, err
+	}
+	found := make(map[string]bool, len(stored))
+	for _, row := range stored {
+		value, err := s.decodeSettlement(row)
+		if err != nil {
+			return nil, err
+		}
+		if value.Lane != originals[row.LaneLookup] {
+			return nil, ErrActionConflict
+		}
+		found[value.Lane] = true
+	}
+	for lane := range found {
+		rows = append(rows, lane)
+	}
+	sort.Strings(rows)
+	return rows, nil
 }

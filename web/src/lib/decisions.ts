@@ -1,4 +1,5 @@
 import { number, record, text } from "./data";
+import type { Economics } from "./types";
 
 type EconomicRow = {
   key: string;
@@ -10,12 +11,19 @@ export type DecisionView = {
   origin: string;
   destination: string;
   commodity: string;
+  basis: "destination" | "legacy";
+  basisLabel: string;
+  netLabel: string;
+  durationLabel: string;
+  economicsNotice: string;
   expectedNetPence: number | undefined;
   cashRows: EconomicRow[];
   stressRows: EconomicRow[];
   gameDays: number | undefined;
   dailyPence: number | undefined;
   dailyLabel: string;
+  ballastRepeatGameDays: number | undefined;
+  ballastRepeatNetPence: number | undefined;
   haircutBps: number | undefined;
   haircutLabel: string;
   stressNotice: string;
@@ -24,19 +32,34 @@ export type DecisionView = {
 export function buildDecisionView(details: unknown): DecisionView {
   const plan = record(details);
   const economics = record(plan.economics);
+  const basis = economics.basis === "destination" ? "destination" : "legacy";
+  const netLabel =
+    basis === "destination"
+      ? "Modeled delivery contribution"
+      : "Modeled expected cash net";
   const expectedNetPence = number(economics.expected_net_pence);
   const cashRows: EconomicRow[] = [];
-  for (const [key, label] of [
+  const cashFields: [keyof Economics, string][] = [
     ["revenue_pence", "Expected revenue"],
     ["purchase_pence", "Purchase cost"],
     ["customs_pence", "Customs"],
-    ["provisions_pence", "Provisions"],
+    [
+      "provisions_pence",
+      basis === "destination" ? "Consumed provisions" : "Provisions",
+    ],
     ["berth_dues_pence", "Berth dues"],
     ["upkeep_pence", "Incremental upkeep"],
     ["toll_pence", "Tolls"],
-    ["expected_net_pence", "Modeled expected cash net"],
+    ["expected_net_pence", netLabel],
     ["collateral_pence", "Collateral locked, not an expense"],
-  ]) {
+  ];
+  if (basis === "destination") {
+    cashFields.push([
+      "store_cash_pence",
+      "Initial stores cash, not consumption",
+    ]);
+  }
+  for (const [key, label] of cashFields) {
     const pence = number(economics[key]);
     if (pence !== undefined) {
       cashRows.push({ key, label, pence });
@@ -54,10 +77,29 @@ export function buildDecisionView(details: unknown): DecisionView {
     }
   }
 
+  const repeatDays = number(economics.ballast_repeat_game_days);
+  const repeatNet = number(economics.ballast_repeat_net_pence);
+  const hasRepeat =
+    basis === "destination" &&
+    repeatDays !== undefined &&
+    repeatDays > 0 &&
+    repeatNet !== undefined;
   return {
     origin: text(plan.origin, ""),
     destination: text(plan.destination, ""),
     commodity: text(plan.commodity, ""),
+    basis,
+    basisLabel:
+      basis === "destination"
+        ? "Destination delivery"
+        : "Legacy recorded model",
+    netLabel,
+    durationLabel:
+      basis === "destination" ? "Delivery duration" : "Modeled voyage duration",
+    economicsNotice:
+      basis === "destination"
+        ? "Ends at delivery. Initial stores and collateral are funded separately; fixed fleet bills remain reserved."
+        : "Recorded before destination-based valuation; original cost and duration semantics are retained.",
     expectedNetPence,
     cashRows,
     stressRows,
@@ -66,7 +108,11 @@ export function buildDecisionView(details: unknown): DecisionView {
     dailyLabel:
       expectedNetPence === undefined
         ? "Recorded daily diagnostic; cash net unrecorded"
-        : "Modeled cash per game day",
+        : basis === "destination"
+          ? "Delivery contribution per game day"
+          : "Modeled cash per game day",
+    ballastRepeatGameDays: hasRepeat ? repeatDays : undefined,
+    ballastRepeatNetPence: hasRepeat ? repeatNet : undefined,
     haircutBps: number(economics.stress_haircut_bps),
     haircutLabel: "Scenario haircut rate, not probability",
     stressNotice:

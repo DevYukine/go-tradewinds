@@ -274,7 +274,7 @@ export function ExchangeView({ account }: { account: Account }) {
         </>
       )}
       {tab === "insurance" && (
-        <Section title="Voyage insurance" icon={Shield}>
+        <Section title="Market policies" icon={Shield}>
           <Dataset account={account} name="insurance">
             <DataTable
               label="Recorded voyage policies"

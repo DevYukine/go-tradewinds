@@ -15,6 +15,7 @@ import (
 
 	"github.com/DevYukine/go-tradewinds/internal/gameapi"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // capturedRequest records what the test server observed for one request.
@@ -445,5 +446,64 @@ func TestObserverReceivesObservationWithoutAuthorizationCredential(t *testing.T)
 		if !strings.Contains(string(call.response), "order-2") {
 			t.Fatalf("observation %d response payload = %s, want response body", i, call.response)
 		}
+	}
+}
+
+func TestRequestDiagnosticsScrubAllTokenPrefixesAndPayloadCredentials(t *testing.T) {
+	tokens := []string{
+		"tw_live_other_account_Ab9-xy",
+		"tw_test_expired_Ab9-xy",
+		"tw_sk_other_account_Ab9-xy",
+		"tw_sk_test_expired_Ab9-xy",
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"passphrase": "response-secret",
+			"detail":     strings.Join(tokens, " "),
+			"count":      7,
+		})
+	}))
+	defer server.Close()
+	for _, attachObserver := range []bool{false, true} {
+		t.Run(fmt.Sprintf("observer=%t", attachObserver), func(t *testing.T) {
+			core, logs := observer.New(zap.DebugLevel)
+			client := gameapi.New(server.URL, "current-api-secret", zap.New(core))
+			var observed []string
+			if attachObserver {
+				client.SetObserver(func(_ string, path string, _ int, _ time.Duration, request, response []byte, errText string) {
+					observed = append(observed, path, string(request), string(response), errText)
+				})
+			}
+			path := "/v1/example?detail=" + strings.Join(tokens, ",") + ",request-secret,response-secret"
+			var out json.RawMessage
+			if err := client.Do(context.Background(), http.MethodPost, path, map[string]string{
+				"passphrase": "request-secret",
+				"detail":     strings.Join(tokens, " "),
+			}, "redaction-regression", &out); err != nil {
+				t.Fatal(err)
+			}
+			if logs.Len() == 0 {
+				t.Fatal("debug request diagnostics were not emitted")
+			}
+			for _, entry := range logs.All() {
+				for _, key := range []string{"path", "error"} {
+					if text, ok := entry.ContextMap()[key].(string); ok {
+						observed = append(observed, text)
+					}
+				}
+			}
+			secrets := append([]string{"current-api-secret", "request-secret", "response-secret"}, tokens...)
+			for _, value := range observed {
+				for _, secret := range secrets {
+					if strings.Contains(value, secret) {
+						t.Fatalf("request diagnostic leaked a credential: %s", value)
+					}
+				}
+			}
+			if attachObserver && (len(observed) < 4 || !strings.Contains(observed[2], `"count":7`)) {
+				t.Fatal("observer lost public response data")
+			}
+		})
 	}
 }

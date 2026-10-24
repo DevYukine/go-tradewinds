@@ -10,11 +10,12 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { useNow } from "@/app/providers";
-import { dataset, record, text } from "@/lib/data";
 import { buildDecisionView, type DecisionView } from "@/lib/decisions";
 import { age, count, dateTime, humanize, money, percent } from "@/lib/format";
+import { controllerStatus, shipOperation } from "@/lib/operations";
 import type { Account, Decision, ShipDetail } from "@/lib/types";
 import { DataTable, Section, SpriteImage, StatusBadge } from "./ui";
+import { ControllerSummary, ShipCurrentHold } from "./operations-overview";
 import styles from "./operations.module.css";
 import viewStyles from "./world-views.module.css";
 
@@ -30,12 +31,7 @@ export function DecisionPanel({
   const [shipID, setShipID] = useState("");
   const [kind, setKind] = useState("");
   const now = useNow();
-  const engine = record(dataset(account, "_engine"));
-  const holdingReasons = Array.isArray(engine.holding_reasons)
-    ? engine.holding_reasons.filter(
-        (reason): reason is string => typeof reason === "string",
-      )
-    : undefined;
+  const controller = controllerStatus(account, now);
   const sorted = decisions
     .map((decision) => ({
       ...decision,
@@ -63,38 +59,38 @@ export function DecisionPanel({
 
   return (
     <div className={styles.workspace}>
-      <div role="note" aria-label="Recorded automation status">
-        <dl className={styles.facts}>
-          <div>
-            <dt>Recorded automation mode</dt>
-            <dd>{humanize(text(engine.mode))}</dd>
-          </div>
-          <div>
-            <dt>Holding reasons</dt>
+      <ControllerSummary account={account} />
+      <dl className={styles.facts} aria-label="Ship-scoped automation holds">
+        {ships.map((detail) => (
+          <div key={detail.ship.id}>
+            <dt>{detail.ship.name}</dt>
             <dd>
-              {holdingReasons === undefined ? (
-                "Not recorded"
-              ) : holdingReasons.length === 0 ? (
-                "None recorded"
-              ) : (
-                <ul>
-                  {holdingReasons.map((reason, index) => (
-                    <li key={`${index}:${reason}`}>{reason}</li>
-                  ))}
-                </ul>
-              )}
+              <ShipCurrentHold
+                operation={shipOperation(account, detail, now)}
+              />
             </dd>
           </div>
-        </dl>
-        <p className={styles.note}>
-          Saved runner state, not proof of a running process or a connected
-          stream.
-        </p>
-      </div>
+        ))}
+        {controller.holds
+          .filter(
+            (hold) =>
+              hold.ship_id &&
+              !ships.some((detail) => detail.ship.id === hold.ship_id),
+          )
+          .map((hold, index) => (
+            <div key={`${hold.ship_id}:${index}`}>
+              <dt>{shipName(hold.ship_id)}</dt>
+              <dd>
+                Last recorded ship hold; ship observation unavailable:{" "}
+                {hold.reason}
+              </dd>
+            </div>
+          ))}
+      </dl>
       <Section title="Automation ledger" icon={Bot} className={styles.section}>
         <p className={styles.note}>
-          Recorded evaluations are not guaranteed actions. Modeled cash and
-          stress scenarios are not realized profit.
+          Recorded evaluations are not realized profit. Destination models end
+          at delivery; legacy models retain their original basis.
         </p>
         <div className={styles.toolbar}>
           <label>
@@ -216,9 +212,16 @@ export function DecisionPanel({
               render: (decision) => humanize(decision.view.origin),
             },
             {
-              label: "Modeled expected cash net",
+              label: "Modeled net",
               value: (decision) => decision.view.expectedNetPence,
-              render: (decision) => money(decision.view.expectedNetPence),
+              render: (decision) => (
+                <span className={styles.primary}>
+                  {money(decision.view.expectedNetPence)}
+                  <small>
+                    {decision.view.netLabel} ({decision.view.basisLabel})
+                  </small>
+                </span>
+              ),
               className: styles.numeric,
             },
             {
@@ -252,15 +255,29 @@ export function DecisionPanel({
 }
 
 function Economics({ view }: { view: DecisionView }) {
+  const separateFunding = view.basis === "destination";
+  const fundingRows = separateFunding
+    ? view.cashRows.filter(
+        (row) =>
+          row.key === "store_cash_pence" || row.key === "collateral_pence",
+      )
+    : [];
+  const operatingRows = separateFunding
+    ? view.cashRows.filter(
+        (row) =>
+          row.key !== "store_cash_pence" && row.key !== "collateral_pence",
+      )
+    : view.cashRows;
   return (
     <div className={styles.model}>
-      <section aria-label="Modeled cash economics">
-        <h4>Modeled expected cash</h4>
+      <section aria-label={`${view.basisLabel} economics`}>
+        <h4>{view.basisLabel}</h4>
+        <p className={styles.note}>{view.economicsNotice}</p>
         {view.cashRows.length === 0 && (
           <p className={styles.note}>Not recorded</p>
         )}
         <dl className={styles.details}>
-          {view.cashRows.map(({ key, label, pence }) => (
+          {operatingRows.map(({ key, label, pence }) => (
             <div key={key}>
               <dt>{label}</dt>
               <dd>{money(pence)}</dd>
@@ -268,7 +285,7 @@ function Economics({ view }: { view: DecisionView }) {
           ))}
           {view.gameDays !== undefined && (
             <div>
-              <dt>Modeled voyage duration</dt>
+              <dt>{view.durationLabel}</dt>
               <dd>{count(view.gameDays)} game days</dd>
             </div>
           )}
@@ -279,6 +296,19 @@ function Economics({ view }: { view: DecisionView }) {
             </div>
           )}
         </dl>
+        {fundingRows.length > 0 && (
+          <>
+            <h4>Separate cash funding</h4>
+            <dl className={styles.details}>
+              {fundingRows.map(({ key, label, pence }) => (
+                <div key={key}>
+                  <dt>{label}</dt>
+                  <dd>{money(pence)}</dd>
+                </div>
+              ))}
+            </dl>
+          </>
+        )}
       </section>
       <section aria-label="Diagnostics-only stress scenarios">
         <h4>Stress diagnostics</h4>
@@ -302,6 +332,25 @@ function Economics({ view }: { view: DecisionView }) {
           </dl>
         )}
       </section>
+      {view.ballastRepeatGameDays !== undefined &&
+        view.ballastRepeatNetPence !== undefined && (
+          <section aria-label="Ballast repeat forecast">
+            <h4>Ballast repeat forecast</h4>
+            <p className={styles.note}>
+              Includes the empty return and turnaround, not realized earnings.
+            </p>
+            <dl className={styles.details}>
+              <div>
+                <dt>Repeat duration</dt>
+                <dd>{count(view.ballastRepeatGameDays)} game days</dd>
+              </div>
+              <div>
+                <dt>Repeat contribution</dt>
+                <dd>{money(view.ballastRepeatNetPence)}</dd>
+              </div>
+            </dl>
+          </section>
+        )}
     </div>
   );
 }
