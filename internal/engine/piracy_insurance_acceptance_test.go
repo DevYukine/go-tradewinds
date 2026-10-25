@@ -170,7 +170,10 @@ func piracyInsuranceLoadingFixture(t *testing.T, stage string) (*recoveryHarness
 	if stage == "accept-freight" {
 		phase = "freight"
 		data.Plan.Kind = "freight"
-		data.Plan.Quantity = 0
+		data.Plan.Quantity = 24
+		data.Plan.ContractID = "insurance-freight"
+		data.Plan.BuyLimitPence = 0
+		data.Plan.Economics.CollateralPence = 5_000
 		data.Plan.FreightIDs = []string{"insurance-freight"}
 	}
 	h.putMission(recoveryShipBlastoise, "piracy-insurance-loading", phase, data)

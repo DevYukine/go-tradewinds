@@ -132,9 +132,19 @@ Confirm the replacement's executable path, readiness, and advancing account deci
 
 There is no ship-count ceiling. The runner assigns profitable work to compatible idle hulls before ordering more capacity and retains one durable `__growth` intent through construction, armament and provisioning. A restart or pending build is not permission to order a second hull.
 
-Growth needs loss-inclusive, known-cost realized lane proof, a current available quote, two cycles of spare source depth and, for spot trades, two cycles of executable destination bids. Reserve competing throughput separately for shared source/commodity, destination/commodity and contract, including ships already committed to sailing returns. Finite charters must cover payback plus a cycle and remain open for that full horizon; future reposts are not demand.
+Growth needs loss-inclusive, known-cost account and lane proof from the last 12 recorded host-UTC hours, including at least two positive delivered cycles. A current-window loss, unknown cost, missing duration or future completion can block it. Older terminal uncertainty remains visible in permanent history without automatically vetoing a new, fully funded opportunity; unresolved requests, active missions and liabilities do not age out. The runner captures one evaluation time and recomputes the window before the first build send. An already purchased hull continues commissioning without requiring fresh build proof.
+
+Growth also needs a current available quote, two cycles of spare source depth and, for spot trades, two cycles of executable destination bids. Reserve competing throughput separately for shared source/commodity, destination/commodity and contract, including ships already committed to sailing returns. Finite charters must cover payback plus a cycle and remain open for that full horizon; future reposts are not demand.
 
 Any negative vault or underfunded active/obligated region defers construction, not safe income voyages. Protect incumbent working capital, the reusable new trading float, full initial stores, guns, the quote cushion, destination arrival bills and three days of incremental upkeep in the home billing region. Treasury transfers must first fund those regions at observed fees. Compare supported hulls and feasible quantities using their complete incremental capital commitment. Empty unused regions need no artificial reserve; escrow and hoped-for proceeds are not spendable cash. The published API has no voluntary hull-sale operation.
+
+### Idle work and regional funding
+
+There is no minimum shipment-profit target: the runner already considers smaller positive-contribution loads. Ordinary voyages may fund their full cash requirement from reserve-safe regional donors, after observed transfer fees. In System → Decisions → Route and economics, “Regional funding fees” is a modeled expense already included in the displayed contribution; transferred principal and collateral are not profit or expense. Older records without the field remain unchanged.
+
+When no ordinary income is executable, six observed idle game hours permit a limited source reinspection. Maintenance does not erase the idle clock; actual sailing, cargo, active freight or changing ports resets it. Stale or paused observations and long restart gaps earn no hours. The current hold identifies whether the ship is waiting for idle eligibility, reinspection cooldown, risk allowance, safe funding or usable market evidence. This is not a promise that a profitable order exists at the next port.
+
+The idle allowance is the larger of the normal sourcing allowance and `max(0, 20,000 + floor(uncommitted cash / 20) - all permanent probe expenses)`, not their sum. Per-probe exposure remains at most 20,000 pence and 2% of uncommitted cash. Repeating the same evidence needs 24 real minutes since its latest completed probe. Unknown probe costs, active/ambiguous probes and unsafe or stale evidence remain blockers. Never reset settlements, idle records, idempotency keys or reserves to force another attempt.
 
 ### Underwriting
 

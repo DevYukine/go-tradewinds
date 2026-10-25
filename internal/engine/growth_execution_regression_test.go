@@ -832,7 +832,7 @@ func TestGrowthResidualOperatingQuoteReservesOtherUnboughtAndOutstandingLotsOnce
 	}
 	base := runner.planningInput(ship)
 	incumbentCash := growthCashTotal(growthCargoCash(other, w.customs), other.Economics.BerthDuesPence,
-		other.Economics.CollateralPence, other.Economics.TollPence)
+		other.Economics.CollateralPence, other.Economics.TollPence, voyageFleetBills(base, other))
 	if input.ReserveByRegion["north"]-base.ReserveByRegion["north"] != incumbentCash {
 		t.Fatal("paid outstanding cargo was reserved as another purchase, or the unbought lot was not protected once")
 	}
@@ -848,6 +848,9 @@ func TestGrowthInitialIOCExactFundingBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Growth's separately funded commissioning quote protects incumbent
+	// upkeep in its existing reserves, not a second ordinary fleet bill.
+	input.FleetDailyUpkeepPence = 0
 	required := cargoFundingRequired(input, data.Plan)
 	w.h.api.setRates()
 	w.h.api.setVaultBalance("north", required["north"])

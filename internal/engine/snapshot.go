@@ -179,6 +179,11 @@ func (r *Runner) finishGroup(group string, values map[string]json.RawMessage, ke
 }
 
 func (r *Runner) refresh(ctx context.Context) error {
+	previousIdle := PlanningInput{
+		Clock:    decode[Clock](r.snapshot, "clock"),
+		Metadata: decode[map[string]DatasetMeta](r.snapshot, "_meta"),
+	}
+	previousIdle.Generation = previousIdle.Metadata["clock"].Generation
 	if err := r.captureWave(ctx, []fetchTask{
 		{"whoami", "/v1/auth/whoami", fetchJSON},
 		{"player", "/v1/player/profile", fetchJSON},
@@ -352,10 +357,8 @@ func (r *Runner) refresh(ctx context.Context) error {
 	state.Ports = decode[map[string]PortDetail](map[string]json.RawMessage{"ports": encode(ports)}, "ports")
 	state.Routes = decode[map[string]Route](map[string]json.RawMessage{"routes": encode(routes)}, "routes")
 	state.Markets = withoutOwnOrders(decode[map[string]Market](map[string]json.RawMessage{"books": encode(markets)}, "books"), r.ownedOrders())
-	sourcingInput := r.planningInputFrom(ShipState{}, state)
-	if err := r.loadSourcingHistory(ctx, &sourcingInput); err != nil {
-		return err
-	}
+	r.stateCache = state
+	r.recordShipIdle(state, previousIdle)
 	captureSourcePair := func(pair [2]string, class string) error {
 		var tasks []fetchTask
 		for _, endpoints := range [][2]string{pair, {pair[1], pair[0]}} {
@@ -378,7 +381,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 			key := strings.TrimPrefix(task.key, "routes/")
 			var route Route
 			if json.Unmarshal(routes[key], &route) == nil {
-				sourcingInput.Routes[key] = route
+				state.Routes[key] = route
 			}
 		}
 		return nil
@@ -399,7 +402,13 @@ func (r *Runner) refresh(ctx context.Context) error {
 			}
 		} else if mission == nil && shortlisted < sourcingPairLimit && current.fresh("ships") && emptyCargo(ship) && ship.Voyage == nil &&
 			(ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") && ship.Ship.ConvoyID == "" {
-			sourcingInput.Ship = ship
+			sourcingInput, err := r.sourcingInput(ctx, ship)
+			if err != nil {
+				return err
+			}
+			if sourcingAdmissionRejection(sourcingInput) != "" {
+				continue
+			}
 			hull, exists := findHull(state.Catalog, ship.Ship.ShipClass)
 			if !exists {
 				continue

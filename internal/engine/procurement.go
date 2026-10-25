@@ -297,6 +297,19 @@ func (r *Runner) unwindProcurement(ctx context.Context, ship ShipState, mission 
 	if err := r.decision(ctx, ship.Ship.ID, "procurement_unwind", "release the completed procurement plan for executable local recovery without repeating its purchase: "+reason, data.Plan); err != nil {
 		return false, err
 	}
+	if data.BoughtQuantity == 0 && data.AcquisitionPence == 0 && len(data.Freight) == 0 && emptyCargo(ship) {
+		// Release only hypothetical inventory/demand. Actual paid fees remain
+		// attached to this mission and close through its normal settlement.
+		data.Plan.Quantity = 0
+		data.Plan.BuyLimitPence = 0
+		data.Plan.StoresToBuy = 0
+		data.Plan.TargetStoresTons = 0
+		data.Plan.ContractID = ""
+		data.Plan.FreightIDs = nil
+		mission.Quantity = 0
+		mission.ContractID = ""
+		mission.PricePence = 0
+	}
 	data.Plan.Kind = "aborted"
 	data.Plan.Reason = reason
 	data.Plan.Origin = ""

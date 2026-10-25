@@ -11,9 +11,9 @@ package engine
 //     it still pays back inside the cap; the arbitrary 80%-of-proven-lot floor
 //     is replaced by the payback and marginal-upkeep arithmetic, not removed
 //     without a substitute.
-//   - Execution evidence is permanent: the oldest loss beyond the bounded
-//     500-row settlement display window still fails the loss-inclusive lane
-//     net, so no bounded history read may forget it.
+//   - Every loss in the recent completed-settlement cohort counts: the oldest
+//     loss beyond the bounded 500-row display still fails loss-inclusive net.
+//     Older losses remain in permanent reporting, outside admission's cohort.
 //
 // Every fixture supplies generous depth, contract capacity and reserves so
 // the only possible failure is the targeted behavior.
@@ -106,16 +106,16 @@ func persistGrowthOverhaulSettlement(t *testing.T, h *recoveryHarness, id string
 // growthOverhaulHistory persists the 500 newest known-cost profitable lane
 // settlements (20t, +20000p each) and, optionally, one strictly older
 // settlement whose -10000000p loss makes the loss-inclusive lane net exactly
-// zero. The bounded 500-row display window shows only the profits.
+// zero. All 501 rows fit inside 12 real hours; display shows only the profits.
 func growthOverhaulHistory(t *testing.T, h *recoveryHarness, withOldestLoss bool) {
 	t.Helper()
-	base := time.Now().UTC().Add(-720 * time.Hour)
+	base := time.Now().UTC().Add(-10 * time.Hour)
 	for i := range 500 {
 		persistGrowthOverhaulSettlement(t, h, fmt.Sprintf("growth-history-profit-%03d", i),
-			base.Add(time.Duration(i+2)*time.Hour), 20, 10_000, 30_000)
+			base.Add(time.Duration(i+2)*time.Minute), 20, 10_000, 30_000)
 	}
 	if withOldestLoss {
-		persistGrowthOverhaulSettlement(t, h, "growth-history-oldest-loss", base.Add(time.Hour), 0, 10_010_000, 10_000)
+		persistGrowthOverhaulSettlement(t, h, "growth-history-oldest-loss", base.Add(time.Minute), 0, 10_010_000, 10_000)
 	}
 }
 
@@ -150,5 +150,30 @@ func TestGrowthRemembersOldestLossBeyondBoundedHistory(t *testing.T) {
 	remembered.missingMission("__growth")
 	if remembered.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		remembered.t.Fatal("a build request was sent although the loss-inclusive lane net is not positive")
+	}
+}
+
+func TestGrowthOldLossRemainsInPermanentHistory(t *testing.T) {
+	h := newRecoveryHarness(t)
+	asOf := time.Now().UTC().Truncate(time.Microsecond)
+	persistGrowthOverhaulSettlement(t, h, "growth-permanent-loss", asOf.Add(-13*time.Hour), 0, 10_010_000, 10_000)
+	for i := range 2 {
+		persistGrowthOverhaulSettlement(t, h, fmt.Sprintf("growth-recent-profit-%d", i),
+			asOf.Add(-time.Duration(i+1)*time.Hour), 20, 10_000, 30_000)
+	}
+	lane := laneKey(Plan{Kind: "spot", Origin: recoveryHomePort, Destination: recoveryFarPort, Commodity: recoveryGrain})
+	for _, scope := range []string{"", lane} {
+		recent, err := h.db.GrowthHistory(h.ctx, h.account.ID, scope, asOf)
+		if err != nil || recent.PositiveCycles != 2 || recent.NetPence != 40_000 || recent.FutureCompletion {
+			t.Fatalf("recent cohort included an old loss for %q: %+v, %v", scope, recent, err)
+		}
+		permanent, err := h.db.EconomicHistory(h.ctx, h.account.ID, scope)
+		if err != nil || permanent.PositiveCycles != 2 || permanent.NetPence != -9_960_000 {
+			t.Fatalf("permanent reporting forgot an old loss for %q: %+v, %v", scope, permanent, err)
+		}
+	}
+	rows, err := h.db.SettlementHistory(h.ctx, h.account.ID, lane, 3)
+	if err != nil || len(rows) != 3 || rows[2].ID != "growth-permanent-loss" {
+		t.Fatalf("growth cohort changed retained settlement evidence: %+v, %v", rows, err)
 	}
 }

@@ -418,6 +418,9 @@ func TestFinancialReplanningRechecksUnsentBuyAndFreightCollateral(t *testing.T) 
 			}
 			oldID := data.Action.ID
 			h.api.setVaultBalance("north", 75_000)
+			// Ordinary income can now replace lost local cash with donor
+			// surplus. This control must be unaffordable account-wide.
+			h.api.setVaultBalance("south", 75_000)
 			runner.publishedFinancial.Add(1)
 			runner.capturedFinancial = 1
 			runner.generation = uuid.NewString()

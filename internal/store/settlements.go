@@ -182,12 +182,25 @@ type EconomicHistory struct {
 }
 
 func (s *Store) EconomicHistory(ctx context.Context, accountID, lane string) (EconomicHistory, error) {
-	var result EconomicHistory
+	result, err := s.economicHistory(ctx, accountID, lane, time.Time{})
+	return result.EconomicHistory, err
+}
+
+func (s *Store) economicHistory(ctx context.Context, accountID, lane string, asOf time.Time) (GrowthHistory, error) {
+	var result GrowthHistory
 	if !validID(accountID) || len(lane) > 1024 {
 		return result, fmt.Errorf("economic history query: %w", ErrInvalidInput)
 	}
 	db, cancel := s.query(ctx)
 	defer cancel()
+	scope := db.Model(&settlementRow{}).Select("*, true AS in_window").Where("account_id = ?", accountID)
+	if lane != "" {
+		scope = scope.Where("lane_lookup = ?", s.privateLookup("settlement-lane", "", lane))
+	}
+	if !asOf.IsZero() {
+		scope = scope.Select("*, completed_at <= ? AS in_window", asOf).
+			Where("completed_at >= ?", asOf.Add(-12*time.Hour))
+	}
 	// PostgreSQL numeric keeps both each row's arithmetic and the cumulative
 	// sums exact. Scanning an out-of-range aggregate into int64 returns an
 	// error instead of wrapping a loss into positive underwriting evidence.
@@ -197,31 +210,46 @@ func (s *Store) EconomicHistory(ctx context.Context, accountID, lane string) (Ec
 				proceeds_pence::numeric - acquisition_pence - fees_pence - provisions_pence - expenses_pence AS net,
 				kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery', 'aborted', 'unknown') AS commercial,
 				kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery') AS delivery
-			FROM settlements
-			WHERE account_id = ? AND (? = '' OR lane_lookup = ?)
+			FROM (?) AS scoped
 		)
 		SELECT
-			COALESCE(SUM(net) FILTER (WHERE commercial AND costs_known), 0) AS commercial_net_pence,
-			COALESCE(SUM(net) FILTER (WHERE (commercial OR kind = 'relocation') AND costs_known), 0) AS net_pence,
-			COUNT(*) FILTER (WHERE delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0) AS positive_cycles,
-			COALESCE(SUM(quantity_tons::numeric) FILTER (WHERE delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_quantity_tons,
-			COALESCE(SUM(net) FILTER (WHERE delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_net_pence,
-			COALESCE(SUM(game_seconds::numeric) FILTER (WHERE commercial OR kind = 'relocation'), 0) AS game_seconds,
-			COALESCE(SUM(game_seconds::numeric) FILTER (WHERE delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_game_seconds,
-			COALESCE(BOOL_OR(NOT costs_known OR kind = 'unknown') FILTER (WHERE commercial OR kind = 'relocation'), false) AS unknown_costs,
-			COALESCE(BOOL_OR(game_seconds <= 0) FILTER (WHERE commercial OR kind = 'relocation'), false) AS unmeasured_duration,
+			COALESCE(SUM(net) FILTER (WHERE in_window AND commercial AND costs_known), 0) AS commercial_net_pence,
+			COALESCE(SUM(net) FILTER (WHERE in_window AND (commercial OR kind = 'relocation') AND costs_known), 0) AS net_pence,
+			COUNT(*) FILTER (WHERE in_window AND delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0) AS positive_cycles,
+			COALESCE(SUM(quantity_tons::numeric) FILTER (WHERE in_window AND delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_quantity_tons,
+			COALESCE(SUM(net) FILTER (WHERE in_window AND delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_net_pence,
+			COALESCE(SUM(game_seconds::numeric) FILTER (WHERE in_window AND (commercial OR kind = 'relocation')), 0) AS game_seconds,
+			COALESCE(SUM(game_seconds::numeric) FILTER (WHERE in_window AND delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_game_seconds,
+			COALESCE(BOOL_OR(NOT costs_known OR kind = 'unknown') FILTER (WHERE in_window AND (commercial OR kind = 'relocation')), false) AS unknown_costs,
+			COALESCE(BOOL_OR(game_seconds <= 0) FILTER (WHERE in_window AND (commercial OR kind = 'relocation')), false) AS unmeasured_duration,
 			COALESCE(SUM(COALESCE(exploration_expense_pence::numeric,
 				acquisition_pence::numeric + fees_pence + provisions_pence + expenses_pence))
-				FILTER (WHERE kind = 'relocation' AND costs_known), 0) AS probe_expense_pence,
-			COALESCE(BOOL_OR(NOT costs_known) FILTER (WHERE kind = 'relocation'), false) AS unknown_probe_costs,
-			MAX(completed_at) FILTER (WHERE commercial OR kind = 'relocation') AS last_completion,
-			MAX(completed_at) FILTER (WHERE kind = 'relocation') AS last_probe_completion
-		FROM evidence`, accountID, lane, s.privateLookup("settlement-lane", "", lane)).Scan(&result).Error
+				FILTER (WHERE in_window AND kind = 'relocation' AND costs_known), 0) AS probe_expense_pence,
+			COALESCE(BOOL_OR(NOT costs_known) FILTER (WHERE in_window AND kind = 'relocation'), false) AS unknown_probe_costs,
+			MAX(completed_at) FILTER (WHERE in_window AND (commercial OR kind = 'relocation')) AS last_completion,
+			MAX(completed_at) FILTER (WHERE in_window AND kind = 'relocation') AS last_probe_completion,
+			COALESCE(BOOL_OR(NOT in_window) FILTER (WHERE commercial OR kind = 'relocation'), false) AS future_completion
+		FROM evidence`, scope).Scan(&result).Error
 	return result, err
 }
 
 // RelocationProbes looks up only the caller's bounded evidence shortlist.
 func (s *Store) RelocationProbes(ctx context.Context, accountID string, lanes []string) ([]string, error) {
+	completions, err := s.RelocationProbeCompletions(ctx, accountID, lanes)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]string, 0, len(completions))
+	for lane := range completions {
+		rows = append(rows, lane)
+	}
+	sort.Strings(rows)
+	return rows, nil
+}
+
+// RelocationProbeCompletions returns the latest recorded host UTC completion
+// for each requested lane after verifying its encrypted identity.
+func (s *Store) RelocationProbeCompletions(ctx context.Context, accountID string, lanes []string) (map[string]time.Time, error) {
 	if !validID(accountID) || len(lanes) > 1024 {
 		return nil, fmt.Errorf("relocation probe query: %w", ErrInvalidInput)
 	}
@@ -230,7 +258,7 @@ func (s *Store) RelocationProbes(ctx context.Context, accountID string, lanes []
 			return nil, fmt.Errorf("relocation probe lane: %w", ErrInvalidInput)
 		}
 	}
-	rows := make([]string, 0)
+	rows := make(map[string]time.Time)
 	if len(lanes) == 0 {
 		return rows, nil
 	}
@@ -255,7 +283,6 @@ func (s *Store) RelocationProbes(ctx context.Context, accountID string, lanes []
 		Order("lane_lookup, completed_at DESC, id").Find(&stored).Error; err != nil {
 		return nil, err
 	}
-	found := make(map[string]bool, len(stored))
 	for _, row := range stored {
 		value, err := s.decodeSettlement(row)
 		if err != nil {
@@ -264,11 +291,7 @@ func (s *Store) RelocationProbes(ctx context.Context, accountID string, lanes []
 		if value.Lane != originals[row.LaneLookup] {
 			return nil, ErrActionConflict
 		}
-		found[value.Lane] = true
+		rows[value.Lane] = value.CompletedAt.UTC()
 	}
-	for lane := range found {
-		rows = append(rows, lane)
-	}
-	sort.Strings(rows)
 	return rows, nil
 }

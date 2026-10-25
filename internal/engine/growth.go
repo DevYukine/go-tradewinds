@@ -123,11 +123,12 @@ type growthProof struct {
 	net             int64
 	positiveNet     int64
 	unknown         bool
+	future          bool
 	newLane         bool
 }
 
-// EvaluateGrowth keeps the pure proof-slice seam; production feeds the same
-// calculation with exact permanent SQL aggregates instead of display history.
+// EvaluateGrowth keeps the pure proof-slice seam; production supplies exact
+// SQL aggregates from the recorded 12-real-hour completed-settlement cohort.
 func EvaluateGrowth(in GrowthInput) GrowthDecision {
 	var proof growthProof
 	for _, row := range in.Proofs {
@@ -164,16 +165,20 @@ func evaluateGrowth(in GrowthInput, proof growthProof) GrowthDecision {
 		*in.Quote.TotalCostPence > maximumPence || len(in.Plan.FreightIDs) > 0 {
 		return decision
 	}
+	if proof.future {
+		decision.Reason = "growth proof contains a completion after the recorded host UTC evaluation time"
+		return decision
+	}
 	if proof.unknown {
-		decision.Reason = "permanent execution history contains unresolved costs or unmeasured duration"
+		decision.Reason = "the recorded 12-real-hour completed-settlement cohort has unknown costs or unmeasured duration"
 		return decision
 	}
 	if proof.positiveCycles < 2 || proof.quantity <= 0 || proof.seconds <= 0 || proof.positiveSeconds <= 0 {
-		decision.Reason = "growth needs two durable positive delivered cycles with known integer cost basis"
+		decision.Reason = "growth needs two positive delivered cycles in the recorded 12-real-hour cohort with known integer cost basis"
 		return decision
 	}
 	if proof.net <= 0 {
-		decision.Reason = "permanent realized net including failed procurement, probes and loss-making voyages is not positive"
+		decision.Reason = "recorded 12-real-hour realized net including failed procurement, probes and loss-making voyages is not positive"
 		return decision
 	}
 	sourceCycle := growthCashTotal(in.ExistingCycleTons, in.OtherSourceCycleTons, in.Plan.Quantity)
@@ -200,13 +205,13 @@ func evaluateGrowth(in GrowthInput, proof growthProof) GrowthDecision {
 	// candidate is no longer capped at the incumbent's absolute earning rate.
 	utilization := float64(proof.positiveSeconds) / float64(proof.seconds)
 	scaledRate := float64(proof.net) / float64(proof.quantity) * float64(in.Plan.Quantity) / cycleDays * utilization
-	basis := "loss-inclusive measured lane margin capped by live candidate ballast-repeat forecast"
+	basis := "recorded 12-real-hour loss-inclusive lane margin capped by live candidate ballast-repeat forecast"
 	if proof.newLane {
 		// General execution is not a price or rate for an untraveled lane.
 		// Its own measured depth and terms provide the forecast; historical
 		// loss retention can only reduce, never enhance, that forecast.
 		scaledRate = forecastRate * min(1, float64(proof.net)/float64(proof.positiveNet)) * utilization
-		basis = "new-lane live candidate forecast discounted by loss-inclusive execution evidence"
+		basis = "new-lane live candidate forecast discounted by recorded 12-real-hour loss-inclusive execution evidence"
 	}
 	netRate := min(scaledRate, forecastRate) - float64(in.IncrementalDailyUpkeepPence)
 	if netRate <= 0 {
@@ -296,7 +301,7 @@ func evaluateGrowth(in GrowthInput, proof growthProof) GrowthDecision {
 		return decision
 	}
 	decision.Accepted = true
-	decision.Reason = "two positive delivered cycles and all historical losses, live spare demand, funded repeat stores, marginal upkeep and capital payback pass; 10% quote slippage remains reserved"
+	decision.Reason = "two positive delivered cycles and loss-inclusive net in the recorded 12-real-hour cohort, live spare demand, funded repeat stores, marginal upkeep and capital payback pass; 10% quote slippage remains reserved"
 	return decision
 }
 
@@ -311,8 +316,9 @@ type growthEvidence struct {
 	workingByRegion map[string]int64
 	required        map[string]int64
 	balances        map[string]int64
-	history         store.EconomicHistory
-	lanes           map[string]store.EconomicHistory
+	asOf            time.Time
+	history         store.GrowthHistory
+	lanes           map[string]store.GrowthHistory
 	markets         map[string]Market
 	home            Port
 	available       int64
@@ -401,21 +407,25 @@ func (r *Runner) growthFunding(ctx context.Context, evidence *growthEvidence) (s
 	if !exists {
 		return "growth requires the authoritative home billing region", nil
 	}
-	history, err := r.db.EconomicHistory(ctx, r.account.ID, "")
+	evidence.asOf = time.Now().UTC()
+	history, err := r.db.GrowthHistory(ctx, r.account.ID, "", evidence.asOf)
 	if err != nil {
 		return "", err
 	}
+	if history.FutureCompletion {
+		return "growth proof contains a completion after the recorded host UTC evaluation time", nil
+	}
 	if history.PositiveCycles < 2 {
-		return "no two permanent positive delivered cycles yet; chart balances are not proof of profit", nil
+		return "no two positive delivered cycles in the recorded 12-real-hour cohort yet; chart balances are not proof of profit", nil
 	}
 	if history.UnknownCosts || history.UnmeasuredDuration || history.NetPence <= 0 {
-		return "growth requires positive permanent realized net after every loss and probe, with no unknown costs or cycle duration", nil
+		return "growth requires positive recorded 12-real-hour realized net after every in-cohort loss and probe, with no unknown costs or cycle duration", nil
 	}
 	evidence.required = required
 	evidence.balances = balances
 	evidence.home = home
 	evidence.history = history
-	evidence.lanes = make(map[string]store.EconomicHistory)
+	evidence.lanes = make(map[string]store.GrowthHistory)
 	evidence.markets = withoutOwnOrders(r.stateCache.Markets, r.ownedOrders())
 	for region, balance := range balances {
 		evidence.available += max(0, balance-required[region])
@@ -467,7 +477,7 @@ func (r *Runner) evaluateGrowthCandidate(ctx context.Context, port Port, hull Hu
 	history, exists := evidence.lanes[lane]
 	if !exists {
 		var err error
-		history, err = r.db.EconomicHistory(ctx, r.account.ID, lane)
+		history, err = r.db.GrowthHistory(ctx, r.account.ID, lane, evidence.asOf)
 		if err != nil {
 			return GrowthDecision{}, nil, err
 		}
@@ -475,6 +485,7 @@ func (r *Runner) evaluateGrowthCandidate(ctx context.Context, port Port, hull Hu
 	}
 	newLane := history.PositiveCycles < 2
 	unknownLane := history.UnknownCosts || history.UnmeasuredDuration
+	futureLane := history.FutureCompletion
 	if newLane {
 		history = evidence.history
 	}
@@ -486,6 +497,7 @@ func (r *Runner) evaluateGrowthCandidate(ctx context.Context, port Port, hull Hu
 		net:             history.NetPence,
 		positiveNet:     history.PositiveNetPence,
 		unknown:         history.UnknownCosts || history.UnmeasuredDuration || unknownLane,
+		future:          history.FutureCompletion || futureLane,
 		newLane:         newLane,
 	}
 	book := evidence.markets[port.ID]
@@ -554,7 +566,7 @@ func (r *Runner) evaluateGrowthCandidate(ctx context.Context, port Port, hull Hu
 	}
 	destinationBook := reserveGrowthBook(evidence.markets[plan.Destination], plan.Commodity, 0, reservedDestination, 0)
 	quoted.Markets = map[string]Market{port.ID: originBook, plan.Destination: destinationBook}
-	*plan = evaluatePlan(quoted, hull, port, *plan, plan.Economics.RevenuePence, 0)
+	*plan = pricePlan(quoted, hull, port, *plan, plan.Economics.RevenuePence, 0)
 	if !plan.Accepted {
 		return GrowthDecision{Reason: "marginal repeat lot: " + plan.Reason}, nil, nil
 	}
@@ -738,7 +750,7 @@ func (r *Runner) growthAtYard(ctx context.Context, port Port, hull Hull, quote Y
 				continue
 			}
 			plan.TargetStoresTons = stores
-			plan = evaluatePlan(quoted, hull, port, plan, quantity*rewardPerTon, 0)
+			plan = pricePlan(quoted, hull, port, plan, quantity*rewardPerTon, 0)
 			if !plan.Accepted || plan.Economics.BallastRepeatGameDays <= 0 || plan.Economics.BallastRepeatNetPence <= 0 {
 				continue
 			}
@@ -859,7 +871,7 @@ func (r *Runner) growthBuildReady(ctx context.Context, data *missionData) error 
 		return err
 	}
 	if !found {
-		return errors.New("new build no longer has its exact quantity's funded positive repeat and permanent execution evidence")
+		return errors.New("new build no longer has its exact quantity's funded positive repeat and recorded 12-real-hour execution evidence")
 	}
 	if data.GrowthLane == nil || data.GrowthLane.QuantityLimit != data.Plan.Quantity ||
 		pack.plan.Quantity > data.GrowthLane.QuantityLimit ||

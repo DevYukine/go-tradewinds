@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/store"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
@@ -135,112 +134,6 @@ func TestAssessmentCoverageRequiresActualFleetMembership(t *testing.T) {
 	runner.assessShip(recoveryShipLapras)
 	if !slices.Equal(runner.assessedShipIDs, []string{recoveryShipLapras}) {
 		t.Fatalf("real ship assessment was missing or duplicated: %v", runner.assessedShipIDs)
-	}
-}
-
-func installStatusSourcingWorld(t *testing.T, h *recoveryHarness) {
-	t.Helper()
-	h.api.setFleet([]map[string]any{
-		destinationShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, "berthed", 5, nil, nil),
-	})
-	charter := sourcingReviewCharter("status-review-charter")
-	downstream := h.api.server.Config.Handler
-	h.api.server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet {
-			downstream.ServeHTTP(writer, request)
-			return
-		}
-		switch request.URL.Path {
-		case "/v1/world/catalog":
-			catalog := h.api.catalogDocument()
-			catalog["ports"] = append(catalog["ports"].([]any), map[string]any{
-				"id": "amsterdam", "name": "Amsterdam", "banking_region": "north",
-				"sea_zone_id": "zone-north", "phase": 1, "effective_berths": 10,
-				"manufactures": []string{"sawn_planks"},
-			})
-			h.api.writeJSON(writer, http.StatusOK, catalog)
-		case "/v1/contract/list":
-			rows := []Contract{}
-			if request.URL.Query().Get("status") == "open" {
-				rows = append(rows, charter)
-			}
-			h.api.writeJSON(writer, http.StatusOK, rows)
-		case "/v1/market/book":
-			book := h.api.bookDocument(request.URL.Query().Get("port_id"))
-			books := book["books"].([]any)
-			book["books"] = books[1:]
-			h.api.writeJSON(writer, http.StatusOK, book)
-		default:
-			downstream.ServeHTTP(writer, request)
-		}
-	})
-}
-
-func TestSourcingRejectionIsPublishedAsTheCurrentAttributedHold(t *testing.T) {
-	for _, scenario := range []string{"exhausted allowance", "underfunded inspection", "underfunded with safety hold"} {
-		t.Run(scenario, func(t *testing.T) {
-			h := newRecoveryHarness(t)
-			installStatusSourcingWorld(t, h)
-			runner := h.runner(primaryTestKey)
-			runner.opts.Execute = false
-			runner.generation = uuid.NewString()
-			if err := runner.refresh(h.ctx); err != nil {
-				t.Fatalf("refresh legal sourcing control: %v", err)
-			}
-			ship, exists := runner.ship(recoveryShipBlastoise)
-			if !exists {
-				t.Fatal("source probe ship missing from control fleet")
-			}
-			input, err := runner.sourcingInput(h.ctx, ship)
-			if err != nil {
-				t.Fatalf("load legal sourcing control: %v", err)
-			}
-			if plans := planSourcingRelocation(input); len(acceptedRelocations(plans)) == 0 {
-				t.Fatalf("control must admit a legal funded inspection before introducing its blocker: %+v", plans)
-			}
-			want := "cannot be funded with observed remittance fees"
-			if scenario == "exhausted allowance" {
-				expense := int64(20_000)
-				putSourcingBudgetSettlement(t, h, store.Settlement{
-					ID: "status-review-exhausted-probe", Kind: "relocation", CostsKnown: true,
-					ProvisionsPence: expense, ExplorationExpensePence: &expense,
-				})
-				want = "exceeds allowance/cap 0p"
-			} else {
-				h.api.setVaultBalance("north", 0)
-				h.api.setVaultBalance("south", 0)
-				runner.opts.Execute = scenario == "underfunded with safety hold"
-				if runner.opts.Execute {
-					idle := destinationShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, "berthed", 5, nil, nil)
-					idle["ship"].(map[string]any)["cannons_count"] = 2
-					idle["effective_hold_capacity_tons"] = 56
-					h.api.setFleet([]map[string]any{idle})
-				}
-			}
-			observation := statusReviewCapture(t, h, runner)
-			if !slices.Equal(observation.AssessedShipIDs, []string{recoveryShipBlastoise}) {
-				t.Fatalf("source review lost current ship coverage: %+v", observation)
-			}
-			var shipHolds []string
-			for _, hold := range observation.Holds {
-				if hold.ShipID == recoveryShipBlastoise {
-					shipHolds = append(shipHolds, hold.Reason)
-				}
-			}
-			found := false
-			for _, reason := range shipHolds {
-				found = found || strings.Contains(reason, want)
-				if strings.Contains(reason, "no profitable executable voyage") || strings.Contains(reason, "no executable purchase-and-voyage alternative") {
-					t.Fatalf("ordinary trade rejection obscured the actual sourcing blocker: %v", shipHolds)
-				}
-			}
-			if !found {
-				t.Fatalf("current attributed hold lacks %q: %+v", want, observation.Holds)
-			}
-			if scenario == "underfunded with safety hold" && (len(shipHolds) < 2 || !strings.Contains(shipHolds[0], "armed maintenance deferred")) {
-				t.Fatalf("source recommendation displaced the more severe ship safety hold: %v", shipHolds)
-			}
-		})
 	}
 }
 

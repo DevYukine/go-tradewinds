@@ -142,6 +142,7 @@ type Economics struct {
 	BerthDuesPence              int64    `json:"berth_dues_pence"`
 	UpkeepPence                 int64    `json:"upkeep_pence"`
 	TollPence                   int64    `json:"toll_pence"`
+	FundingFeesPence            int64    `json:"funding_fees_pence,omitempty"`
 	CollateralPence             int64    `json:"collateral_pence"`
 	ExpectedNetPence            int64    `json:"expected_net_pence"`
 	StressHaircutBPS            int64    `json:"stress_haircut_bps"`
@@ -178,27 +179,31 @@ type Plan struct {
 }
 
 type PlanningInput struct {
-	Now                    time.Time
-	CompanyID              string
-	Ship                   ShipState
-	Catalog                Catalog
-	Clock                  Clock
-	Zones                  []ZoneObservation
-	Markets                map[string]Market
-	Ports                  map[string]PortDetail
-	Routes                 map[string]Route
-	Contracts              []Contract
-	Balances               map[string]int64
-	ReserveByRegion        map[string]int64
-	ReservePence           int64
-	SourcingAllowancePence *int64
-	SourcingProbeLanes     map[string]bool
-	SourcingLoadingBlocked bool
-	Metadata               map[string]DatasetMeta
-	Generation             string
-	OwnedOrderIDs          map[string]bool
-	FleetDailyUpkeepPence  int64
-	Rates                  []Rate
+	Now                       time.Time
+	CompanyID                 string
+	Ship                      ShipState
+	Catalog                   Catalog
+	Clock                     Clock
+	Zones                     []ZoneObservation
+	Markets                   map[string]Market
+	Ports                     map[string]PortDetail
+	Routes                    map[string]Route
+	Contracts                 []Contract
+	Balances                  map[string]int64
+	ReserveByRegion           map[string]int64
+	ReservePence              int64
+	SourcingAllowancePence    *int64
+	SourcingProbeLanes        map[string]bool
+	SourcingLoadingBlocked    bool
+	SourcingIdleEligible      bool
+	SourcingProbeExpensePence int64
+	SourcingProbeCompletions  map[string]time.Time
+	SourcingProbeCostsUnknown bool
+	Metadata                  map[string]DatasetMeta
+	Generation                string
+	OwnedOrderIDs             map[string]bool
+	FleetDailyUpkeepPence     int64
+	Rates                     []Rate
 }
 
 func (in PlanningInput) fresh(dataset string) bool {
@@ -217,6 +222,11 @@ func (in PlanningInput) fresh(dataset string) bool {
 		return ok && !meta.UpstreamAsOf.After(upper.Add(time.Second)) && upper.Sub(*meta.UpstreamAsOf) <= 2*time.Minute
 	}
 	return true
+}
+
+func (in PlanningInput) deadlineOpen(deadline *time.Time) bool {
+	_, upper, ok := in.serverBounds()
+	return ok && (deadline == nil || upper.Before(*deadline))
 }
 
 func reject(plan Plan, reason string) Plan {
@@ -300,8 +310,9 @@ func PlanVoyages(in PlanningInput) []Plan {
 		}
 		if contract.ContractType == "freight" && contract.OriginPortID == origin.ID {
 			plan := Plan{Kind: "freight", ShipID: ship.Ship.ID, Origin: origin.ID, Destination: contract.DestPortID, Commodity: contract.CommodityID, ContractID: contract.ID, FreightIDs: []string{contract.ID}}
-			if contract.Status != "open" || contract.Stale || contract.IssuerCompanyID == in.CompanyID || contract.QuantityRequired <= 0 {
-				plans = append(plans, reject(plan, "freight is unavailable, gossiped or self-issued"))
+			if contract.Status != "open" || contract.Stale || contract.IssuerCompanyID == in.CompanyID ||
+				contract.QuantityRequired <= 0 || !in.deadlineOpen(contract.ExpiresAt) {
+				plans = append(plans, reject(plan, "freight is unavailable, expired, gossiped or self-issued"))
 				continue
 			}
 			plan.Quantity = contract.QuantityRequired
@@ -353,6 +364,7 @@ func PlanVoyages(in PlanningInput) []Plan {
 			if freight.ContractType != "freight" ||
 				freight.Status != "open" ||
 				freight.Stale ||
+				!in.deadlineOpen(freight.ExpiresAt) ||
 				freight.OriginPortID != origin.ID ||
 				freight.DestPortID != plan.Destination ||
 				freight.IssuerCompanyID == in.CompanyID ||
@@ -422,7 +434,7 @@ func sizePlan(in PlanningInput, hull Hull, origin Port, plan Plan, maximum, rewa
 	return best
 }
 
-func evaluatePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, extraTons int64) Plan {
+func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, extraTons int64) Plan {
 	outward, err := observedPlanningRoute(in, origin.ID, plan.Destination, hull)
 	if err != nil {
 		return reject(plan, err.Error())
@@ -466,7 +478,6 @@ func evaluatePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, 
 	if plan.Quantity+extraTons+storeIncrease > in.Ship.EffectiveHoldCapacityTons-in.Ship.CargoUsedTons {
 		return reject(plan, "cargo, sealed freight and safe stores exceed effective hold")
 	}
-	var storeCost int64
 	if plan.StoresToBuy > 0 {
 		provisions := bookCommodity(originBook, "provisions")
 		if provisions == nil || provisions.Depth == nil {
@@ -477,9 +488,6 @@ func evaluatePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, 
 			return reject(plan, "safe stores: "+err.Error())
 		}
 		plan.StoresLimitPence = fill.LimitPence
-		storeCost = fill.GrossPence + ceilBPS(fill.GrossPence, originBook.CustomsBPS)
-		// Per-fill integer customs can round more than once.
-		storeCost += plan.StoresToBuy
 	}
 	var purchase, customs int64
 	priceStress := plan.Economics.PriceUncertaintyStressPence
@@ -530,9 +538,6 @@ func evaluatePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, 
 	}
 	berthCost := int64(math.Ceil(float64(in.Ports[origin.ID].BerthDuesPerDayPence)*originBerthDays)) +
 		int64(math.Ceil(float64(destinationDetail.BerthDuesPerDayPence)*max(0.25, portDays/2)))
-	// Existing fleet upkeep is a protected cash liability, not an incremental
-	// cost caused by choosing this voyage over waiting in port.
-	fleetBills := int64(math.Ceil(float64(in.FleetDailyUpkeepPence) * gameDays))
 	stressBPS := diagnosticStressBPS(in, outward, hull)
 	if in.Clock.Calendar.Month >= 3 && in.Clock.Calendar.Month <= 10 {
 		daysUntilWinter := float64((10-in.Clock.Calendar.Month)*30 + 31 - in.Clock.Calendar.Day)
@@ -560,39 +565,11 @@ func evaluatePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, 
 		NetPencePerGameDay:          float64(expectedNet) / gameDays,
 	}
 	plan.Economics.BallastRepeatGameDays, plan.Economics.BallastRepeatNetPence = ballastRepeatEconomics(in, hull, origin, plan, outward, portDays)
-	worstPurchase := purchase
-	if plan.Quantity > 0 && plan.BuyLimitPence > 0 {
-		if plan.BuyLimitPence > math.MaxInt64/plan.Quantity {
-			return reject(plan, "IOC limit-price funding bound exceeds integer pence")
-		}
-		worstPurchase = max(purchase, plan.Quantity*plan.BuyLimitPence)
-	}
-	worstCustoms := customs
-	if worstPurchase > purchase {
-		worstCustoms = ceilBPS(worstPurchase, in.Markets[origin.ID].CustomsBPS) + plan.Quantity
-	}
-	storeFunding := storeCost
-	if plan.StoresToBuy > 0 {
-		if plan.StoresLimitPence > math.MaxInt64/plan.StoresToBuy {
-			return reject(plan, "safe-store IOC limit-price funding bound exceeds integer pence")
-		}
-		worstStores := plan.StoresToBuy * plan.StoresLimitPence
-		storeFunding = max(storeFunding, worstStores+ceilBPS(worstStores, originBook.CustomsBPS)+plan.StoresToBuy)
-	}
-	// Reserve the whole immutable IOC-limit purchase, not just the present
-	// cheaper ladder subtotal. This cash remains separate from consumption.
-	plan.Economics.StoreCashPence = storeFunding
-	cashRequired := worstPurchase + worstCustoms + storeFunding + berthCost + fleetBills + collateral
-	if in.Balances[origin.BankingRegion]-cashRequired < in.ReserveByRegion[origin.BankingRegion] {
-		return reject(plan, "local vault cannot fund trade, safe stores, delivery bills and protected reserve")
-	}
-	destination, exists := findPort(in.Catalog, plan.Destination)
-	if !exists {
-		return reject(plan, "destination is absent from catalog")
-	}
-	destinationReserve := max(in.ReservePence, in.ReserveByRegion[destination.BankingRegion])
-	if destination.BankingRegion != origin.BankingRegion && in.Balances[destination.BankingRegion]-destinationDetail.BerthDuesPerDayPence < destinationReserve {
-		return reject(plan, "destination region lacks its protected reserve and harbour bill")
+	plan.Economics.StoreCashPence = growthCargoCash(Plan{
+		Quantity: plan.StoresToBuy, BuyLimitPence: plan.StoresLimitPence,
+	}, originBook.CustomsBPS)
+	if plan.StoresToBuy == 0 {
+		plan.Economics.StoreCashPence = 0
 	}
 	if expectedNet <= 0 {
 		return reject(plan, "non-positive destination contribution after measured depth, buyer customs, consumed provisions and harbour bills")

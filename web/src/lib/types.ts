@@ -54,6 +54,7 @@ export interface Economics {
   berth_dues_pence?: number;
   upkeep_pence?: number;
   toll_pence?: number;
+  funding_fees_pence?: number;
   collateral_pence?: number;
   expected_net_pence?: number;
   stress_haircut_bps?: number;

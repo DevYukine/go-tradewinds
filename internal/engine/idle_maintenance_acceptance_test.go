@@ -450,7 +450,8 @@ func TestIdleMaintenanceFundingPreservesOtherMissionDonorCommitments(t *testing.
 	h.api.mu.Unlock()
 	h.putMission(recoveryShipCharizard, "other-reserved-procurement", "buy", missionData{
 		Plan: Plan{Kind: "spot", ShipID: recoveryShipCharizard, Origin: recoveryFarPort, Destination: recoveryHomePort,
-			Commodity: recoveryGrain, Quantity: 10, BuyLimitPence: 500, TargetStoresTons: 4},
+			Commodity: recoveryGrain, Quantity: 10, BuyLimitPence: 500, TargetStoresTons: 4,
+			Economics: Economics{GameDays: 1}},
 		CostsKnown: true,
 	})
 	actionLogRefresh(t, h, runner)

@@ -29,6 +29,7 @@ type durableAction struct {
 	FinancialSession string    `json:"financial_session"`
 	FinancialEpoch   uint64    `json:"financial_epoch"`
 	ControlEpoch     uint64    `json:"control_epoch"`
+	MaintenanceDock  bool      `json:"maintenance_dock,omitempty"`
 }
 
 var errFinancialCaptureInvalidated = errors.New("financial event invalidated the captured funds")
@@ -76,6 +77,10 @@ func actionID(accountID, generation, stage string, sequence int64) string {
 }
 
 func (r *Runner) stage(ctx context.Context, mission *store.Mission, data *missionData, ship ShipState, stage, path string, body any) error {
+	return r.stageAction(ctx, mission, data, ship, stage, path, body, false)
+}
+
+func (r *Runner) stageAction(ctx context.Context, mission *store.Mission, data *missionData, ship ShipState, stage, path string, body any, maintenanceDock bool) error {
 	if data.Action != nil {
 		return errors.New("cannot replace an unresolved persisted action")
 	}
@@ -110,6 +115,13 @@ func (r *Runner) stage(ctx context.Context, mission *store.Mission, data *missio
 		FinancialSession: r.financialSession,
 		FinancialEpoch:   r.capturedFinancial,
 		ControlEpoch:     r.capturedControl,
+		MaintenanceDock:  maintenanceDock,
+	}
+	if stage == "provision" || stage == "dock" {
+		if err := r.incomeActionReady(ctx, ship, data, data.Action); err != nil {
+			data.Action = nil
+			return r.hold(ctx, mission.ShipID, err.Error())
+		}
 	}
 	return r.saveMission(ctx, mission, data)
 }
@@ -904,6 +916,14 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			shipID = data.BuiltShipID
 		}
 		ship, _ := r.ship(shipID)
+		if ordinaryIncomePending(data) {
+			if ship.Ship.ID == "" || mission.ShipID != ship.Ship.ID {
+				return errors.New("new income remittance requires its matching ship-owned mission")
+			}
+			if err := r.incomeActionReady(ctx, ship, data, action); err != nil {
+				return err
+			}
+		}
 		if data.GrowthLane != nil && mission.ShipID != "__treasury" {
 			if err := r.growthAllocationReady(ctx, ship, data, action); err != nil {
 				return err
@@ -948,6 +968,11 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			return errors.New("new remittance would spend protected donor reserves or incumbent commitments")
 		}
 		fee := request.Gross/10_000*rate.FeeBPS + request.Gross%10_000*rate.FeeBPS/10_000
+		if action.Stage == "sourcing-remit" {
+			if err := r.relocationSpendingReady(ctx, ship, data, fee); err != nil {
+				return err
+			}
+		}
 		if action.Stage == "sourcing-remit" && (data.Relocation == nil || !r.relocationBudget(data, fee)) {
 			return errors.New("new sourcing remittance exceeds the immutable exploration expense cap")
 		}
@@ -971,6 +996,14 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 	}
 	if action.Stage == "buy" || action.Stage == "provision" || action.Stage == "depart" || action.Stage == "dock" {
 		if err := r.growthAllocationReady(ctx, ship, data, action); err != nil {
+			return err
+		}
+	}
+	if err := r.incomeActionReady(ctx, ship, data, action); err != nil {
+		return err
+	}
+	if data.Relocation != nil && action.Stage == "dock" && data.Relocation.IdlePilot && ship.Ship.CurrentPortID == data.Plan.Origin {
+		if err := r.relocationSpendingReady(ctx, ship, data, 0); err != nil {
 			return err
 		}
 	}
@@ -1126,6 +1159,9 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 					futureBills = data.Plan.Economics.BerthDuesPence + data.Plan.Economics.UpkeepPence + data.Plan.Economics.CollateralPence + data.Plan.Economics.TollPence
 				}
 				if action.Stage == "provision" && data.Relocation != nil {
+					if err := r.relocationProvisionReady(ctx, ship, data, request.Quantity, request.Price); err != nil {
+						return err
+					}
 					if !r.relocationProvisionBudget(data, ship, input, request.Quantity, request.Price) {
 						return errors.New("new sourcing provisions exceed the immutable exploration expense cap")
 					}

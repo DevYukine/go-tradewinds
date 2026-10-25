@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"sort"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 func (r *Runner) startMaintenance(ctx context.Context, ship ShipState, stage, path string, body any) (bool, error) {
 	mission := &store.Mission{AccountID: r.account.ID, ShipID: ship.Ship.ID, Phase: "maintenance", Generation: uuid.NewString()}
 	data := missionData{Plan: Plan{Kind: "maintenance", ShipID: ship.Ship.ID}, CostsKnown: true}
-	return true, r.stage(ctx, mission, &data, ship, stage, path, body)
+	return true, r.stageAction(ctx, mission, &data, ship, stage, path, body, stage == "dock")
 }
 
 // maintain runs even when there is no profitable voyage. Idle crews still eat;
@@ -32,6 +33,9 @@ func (r *Runner) maintain(ctx context.Context, ship ShipState, mission *store.Mi
 			mission = &store.Mission{AccountID: r.account.ID, ShipID: ship.Ship.ID, Phase: "maintenance", Generation: uuid.NewString()}
 			data = &missionData{Plan: Plan{Kind: "maintenance", ShipID: ship.Ship.ID}, CostsKnown: true}
 			return true, r.saveMission(ctx, mission, data)
+		}
+		if ship.Ship.Status != "berthed" {
+			return r.dockForMission(ctx, ship, mission, data, true)
 		}
 		return r.provisionMission(ctx, ship, mission, data, targetStores)
 	}
@@ -57,7 +61,7 @@ func (r *Runner) maintain(ctx context.Context, ship ShipState, mission *store.Mi
 	}
 	if ship.Ship.Status != "berthed" {
 		if mission != nil {
-			return r.dockForMission(ctx, ship, mission, data)
+			return r.dockForMission(ctx, ship, mission, data, true)
 		}
 		if ship.Ship.DockQueuedAt == nil {
 			return r.startMaintenance(ctx, ship, "dock", "/v1/fleet/dock", map[string]any{"ship_id": ship.Ship.ID})
@@ -141,7 +145,9 @@ func (r *Runner) treasuryReserves(ctx context.Context) (map[string]int64, error)
 		if err != nil {
 			return nil, err
 		}
-		if mission != nil && !r.loadingReservationSuspended(mission, &data, ship) {
+		conditionalIncome := ordinaryIncomePending(&data) &&
+			(mission != nil && (mission.Phase == "provision" || mission.Phase == "buy" || mission.Phase == "freight"))
+		if mission != nil && !conditionalIncome && !r.loadingReservationSuspended(mission, &data, ship) {
 			if destination, exists := findPort(state.Catalog, mission.Destination); exists {
 				required[destination.BankingRegion] = max(required[destination.BankingRegion],
 					r.opts.ReservePence+3*state.Ports[destination.ID].BerthDuesPerDayPence)
@@ -258,6 +264,9 @@ func bestRemittance(balances, required map[string]int64, rates []Rate, destinati
 		if err != nil {
 			continue
 		}
+		if required[rate.FromRegion] < 0 || balances[rate.FromRegion] <= required[rate.FromRegion] {
+			continue
+		}
 		surplus := balances[rate.FromRegion] - required[rate.FromRegion]
 		amount := min(needed, surplus)
 		if amount <= 0 || amount > maximumPence {
@@ -286,6 +295,9 @@ func measuredFunding(balances, required map[string]int64, rates []Rate) (map[str
 	projected := clonePence(balances)
 	regions := make([]string, 0, len(required))
 	for region := range required {
+		if required[region] < 0 || required[region] == math.MaxInt64 {
+			return projected, 0, nil, false
+		}
 		regions = append(regions, region)
 	}
 	sort.Strings(regions)
@@ -298,6 +310,9 @@ func measuredFunding(balances, required map[string]int64, rates []Rate) (map[str
 				return projected, fees, transfers, false
 			}
 			projected[rate.FromRegion] -= gross
+			if projected[destination] > math.MaxInt64-net || fees > math.MaxInt64-(gross-net) {
+				return projected, fees, transfers, false
+			}
 			projected[destination] += net
 			fees += gross - net
 			transfers = append(transfers, observedRemittance{Rate: rate, Gross: gross, Net: net})

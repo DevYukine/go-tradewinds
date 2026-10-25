@@ -32,11 +32,7 @@ func growthHandoffGeneration(generation, shipID string) string {
 }
 
 func growthCargoCash(plan Plan, customsBPS int64) int64 {
-	if plan.Quantity <= 0 || plan.BuyLimitPence <= 0 || plan.BuyLimitPence > math.MaxInt64/plan.Quantity || customsBPS < 0 {
-		return math.MaxInt64
-	}
-	purchase := plan.Quantity * plan.BuyLimitPence
-	return growthCashTotal(purchase, ceilBPS(purchase, customsBPS), plan.Quantity)
+	return iocCash(plan.Quantity, plan.BuyLimitPence, customsBPS)
 }
 
 // reserveGrowthBook is shared by capital forecasts and owned-hull quotes. All
@@ -143,6 +139,15 @@ func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mi
 		cash = growthCashTotal(cash, collateral)
 		if unbought {
 			cash = growthCashTotal(cash, plan.Economics.BerthDuesPence, plan.Economics.TollPence)
+			if ordinaryIncomePending(data) {
+				input := PlanningInput{FleetDailyUpkeepPence: DailyUpkeep(r.stateCache.Ships, r.stateCache.Catalog, len(r.stateCache.Factors))}
+				cash = growthCashTotal(cash, voyageFleetBills(input, plan))
+				destination, known := findPort(r.stateCache.Catalog, plan.Destination)
+				if known && destination.BankingRegion != origin.BankingRegion {
+					required[destination.BankingRegion] = growthCashTotal(required[destination.BankingRegion],
+						r.stateCache.Ports[destination.ID].BerthDuesPerDayPence)
+				}
+			}
 		}
 		required[origin.BankingRegion] = growthCashTotal(required[origin.BankingRegion], cash)
 	}
@@ -336,13 +341,7 @@ func quoteGrowthDelivery(input PlanningInput, base Plan, lane *growthLaneIntent,
 		best.plan.Reason = "growth spot delivery requires fresh executable destination demand"
 		return best
 	}
-	// Obtain costs without treating a provisional balance as money. The same
-	// candidate is admitted only after real measuredFunding below.
-	priced := quoted
-	priced.Balances = make(map[string]int64, len(input.Catalog.Ports))
-	for _, port := range input.Catalog.Ports {
-		priced.Balances[port.BankingRegion] = math.MaxInt64
-	}
+	// Price once; the complete funded itinerary below owns its transfer fees.
 	for quantity := int64(1); quantity <= maximum; quantity++ {
 		if reward > 0 && quantity > math.MaxInt64/reward {
 			continue
@@ -352,7 +351,7 @@ func quoteGrowthDelivery(input PlanningInput, base Plan, lane *growthLaneIntent,
 		if initial {
 			plan.TargetStoresTons = base.TargetStoresTons
 		}
-		plan = evaluatePlan(priced, hull, origin, plan, quantity*reward, 0)
+		plan = pricePlan(quoted, hull, origin, plan, quantity*reward, 0)
 		if !plan.Accepted || initial && growthCargoCash(plan, input.Markets[origin.ID].CustomsBPS) > lane.InitialProcurementLimitPence {
 			continue
 		}
@@ -363,20 +362,15 @@ func quoteGrowthDelivery(input PlanningInput, base Plan, lane *growthLaneIntent,
 		if back != nil {
 			required[returnRegion] = growthCashTotal(required[returnRegion], returnCash)
 		}
-		balances, fees, transfers, funded := measuredFunding(input.Balances, required, input.Rates)
+		_, fees, transfers, funded := measuredFunding(input.Balances, required, input.Rates)
 		if !funded {
 			continue
 		}
-		fundedInput := quoted
-		fundedInput.Balances = balances
-		if back != nil {
-			fundedInput.Balances[returnRegion] -= returnCash
-		}
-		plan = evaluatePlan(fundedInput, hull, origin, plan, quantity*reward, 0)
+		plan = addFundingFees(plan, fees)
 		if !plan.Accepted {
 			continue
 		}
-		net := plan.Economics.ExpectedNetPence - fees
+		net := plan.Economics.ExpectedNetPence
 		days := plan.Economics.GameDays
 		if back != nil {
 			net -= back.expense
@@ -446,7 +440,7 @@ func (r *Runner) refreshGrowthProcurement(ctx context.Context, ship ShipState, m
 		if err := growthSourceInspectionReady(input, data.Plan); err != nil {
 			return false, false, r.hold(ctx, ship.Ship.ID, err.Error())
 		}
-		changed, err := r.dockForMission(ctx, ship, mission, data)
+		changed, err := r.dockForMission(ctx, ship, mission, data, false)
 		return false, changed, err
 	}
 	if err := growthOperatingAuthority(input, data.Plan); err != nil {

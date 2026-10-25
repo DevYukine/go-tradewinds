@@ -1,0 +1,24 @@
+package store
+
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+// GrowthHistory is a recorded-host-time admission cohort, not lifetime profit.
+// FutureCompletion vetoes proof even though future rows do not enter its totals.
+type GrowthHistory struct {
+	EconomicHistory
+	FutureCompletion bool
+}
+
+// GrowthHistory includes whole settlements completed in [asOf-12h, asOf].
+// StartedAt and accelerated game time do not determine cohort membership.
+// Relevant future completions remain visible as clock-incoherent evidence.
+func (s *Store) GrowthHistory(ctx context.Context, accountID, lane string, asOf time.Time) (GrowthHistory, error) {
+	if asOf.IsZero() {
+		return GrowthHistory{}, fmt.Errorf("growth history as-of time: %w", ErrInvalidInput)
+	}
+	return s.economicHistory(ctx, accountID, lane, asOf.UTC())
+}

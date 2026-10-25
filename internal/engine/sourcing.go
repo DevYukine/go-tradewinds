@@ -27,19 +27,58 @@ type relocationStoreBasis struct {
 	PurchaseUnitCeilingPence int64   `json:"purchase_unit_ceiling_pence"`
 }
 
-func sourcingAllowance(in PlanningInput) int64 {
-	var cash int64
+func sourcingFreeCash(in PlanningInput) int64 {
+	var cash, reserves int64
 	for _, balance := range in.Balances {
+		if balance < 0 || balance > math.MaxInt64-cash {
+			return 0
+		}
 		cash += balance
 	}
 	for _, reserve := range in.ReserveByRegion {
-		cash -= reserve
+		if reserve < 0 || reserve > math.MaxInt64-reserves {
+			return 0
+		}
+		reserves += reserve
 	}
-	allowance := min(int64(20_000), max(0, cash)/50)
+	return max(0, cash-reserves)
+}
+
+func sourcingNormalAllowance(in PlanningInput) int64 {
+	allowance := min(int64(20_000), sourcingFreeCash(in)/50)
 	if in.SourcingAllowancePence != nil {
 		allowance = min(allowance, max(0, *in.SourcingAllowancePence))
 	}
 	return allowance
+}
+
+func sourcingAllowance(in PlanningInput) int64 {
+	normal := sourcingNormalAllowance(in)
+	if !in.SourcingIdleEligible || in.SourcingProbeCostsUnknown || in.SourcingProbeExpensePence < 0 {
+		return normal
+	}
+	free := sourcingFreeCash(in)
+	remaining := max(0, 20_000+free/20-in.SourcingProbeExpensePence)
+	pilot := min(int64(20_000), free/50, remaining)
+	// The liquidity-backed pilot is risk capital, not measured profit and not
+	// a second seed to add to the ordinary permanent allowance.
+	return max(normal, pilot)
+}
+
+func sourcingBudgetReason(in PlanningInput, exposure, allowance int64) string {
+	if in.SourcingProbeCostsUnknown {
+		return "unpriced permanent probe expense blocks new exploration risk capital"
+	}
+	if allowance == 0 {
+		if sourcingFreeCash(in) == 0 {
+			return "protected current cash leaves no exploration risk capital"
+		}
+		if !in.SourcingIdleEligible && in.SourcingAllowancePence != nil && *in.SourcingAllowancePence == 0 {
+			return "ordinary exploration risk capital exhausted; waiting for six observed idle game hours on this ship before a cash-backed inspection"
+		}
+		return "idle exploration risk capital exhausted after all permanent probe expenses and current protected cash"
+	}
+	return fmt.Sprintf("sourcing modeled exposure %dp exceeds current exploration risk capital cap %dp; no measured profit is assumed", exposure, allowance)
 }
 
 func sourcingLifetimeAllowance(history store.EconomicHistory) int64 {
@@ -124,18 +163,19 @@ func sourcingCandidates(in PlanningInput) []Plan {
 			plan.PriceSource = reason
 			plan.Accepted = ok
 			plan.Reason = reason
-			legacyLane := source.ID + "|" + contract.OriginPortID + "|" + contract.CommodityID + "|charter"
-			if plan.Accepted && (in.SourcingProbeLanes[sourcingEvidenceKey(source.ID, contract, ask)] || in.SourcingProbeLanes[legacyLane]) {
-				plan = reject(plan, "this source and unchanged public price/demand evidence have already been inspected")
-			}
 			if plan.Accepted {
 				plan = relocationExposure(in, plan)
+				if plan.Accepted {
+					if reason := sourcingProbeRejection(in, source.ID, contract, ask); reason != "" {
+						plan = reject(plan, reason)
+					}
+				}
 				if plan.Accepted {
 					boundedInput := in
 					boundedInput.ReserveByRegion = sourcingReserves(in, source)
 					allowance := sourcingAllowance(boundedInput)
 					if -plan.Economics.ExpectedNetPence > allowance {
-						plan = reject(plan, fmt.Sprintf("sourcing modeled exposure %dp exceeds allowance/cap %dp", -plan.Economics.ExpectedNetPence, allowance))
+						plan = reject(plan, sourcingBudgetReason(boundedInput, -plan.Economics.ExpectedNetPence, allowance))
 					}
 				}
 			}
@@ -159,11 +199,69 @@ func sourcingEvidenceKey(source string, charter Contract, ask int64) string {
 	return fmt.Sprintf("%s|%s|%s|probe:%d:%d", source, charter.OriginPortID, charter.CommodityID, ask, reward)
 }
 
+func sourcingProbeRejection(in PlanningInput, source string, charter Contract, ask int64) string {
+	var latest time.Time
+	inspected := false
+	for _, lane := range []string{
+		sourcingEvidenceKey(source, charter, ask),
+		source + "|" + charter.OriginPortID + "|" + charter.CommodityID + "|charter",
+	} {
+		completed, exists := in.SourcingProbeCompletions[lane]
+		if !in.SourcingProbeLanes[lane] && !exists {
+			continue
+		}
+		inspected = true
+		if !exists || completed.IsZero() {
+			return "unchanged source evidence was already inspected; its recorded completion is unavailable"
+		}
+		if completed.After(in.Now) {
+			return "unchanged source evidence has a future recorded completion; idle reinspection is blocked"
+		}
+		if completed.After(latest) {
+			latest = completed
+		}
+	}
+	if !inspected {
+		return ""
+	}
+	if !in.SourcingIdleEligible {
+		return "unchanged source evidence was already inspected; reinspection waits for six observed idle game hours on this ship"
+	}
+	if in.Now.Before(latest.Add(sourcingReinspectionCooldown)) {
+		return "unchanged source evidence is cooling down for 24 real minutes after its latest matching recorded inspection"
+	}
+	return ""
+}
+
+func sourcingUsesPilot(in PlanningInput, source string, charter Contract, ask int64) bool {
+	if !in.SourcingIdleEligible {
+		return false
+	}
+	if sourcingAllowance(in) > sourcingNormalAllowance(in) {
+		return true
+	}
+	for _, lane := range []string{
+		sourcingEvidenceKey(source, charter, ask),
+		source + "|" + charter.OriginPortID + "|" + charter.CommodityID + "|charter",
+	} {
+		if in.SourcingProbeLanes[lane] {
+			return true
+		}
+		if _, exists := in.SourcingProbeCompletions[lane]; exists {
+			return true
+		}
+	}
+	return false
+}
+
 func sortSourcingPlans(plans []Plan) {
 	sort.SliceStable(plans, func(i, j int) bool {
 		a, b := plans[i], plans[j]
 		if a.Accepted != b.Accepted {
 			return a.Accepted
+		}
+		if !a.Accepted && (a.Economics.GameDays > 0) != (b.Economics.GameDays > 0) {
+			return a.Economics.GameDays > 0
 		}
 		aGossip := a.PriceSource == sourcingAskEvidence
 		bGossip := b.PriceSource == sourcingAskEvidence
@@ -204,36 +302,42 @@ func sourcingPairs(in PlanningInput) []Plan {
 	return pairs
 }
 
-func planSourcingRelocation(in PlanningInput) []Plan {
-	base := Plan{Kind: "relocation", ShipID: in.Ship.Ship.ID}
+func sourcingAdmissionRejection(in PlanningInput) string {
 	ship := in.Ship
 	if ship.Ship.ConvoyID != "" {
-		return []Plan{reject(base, "sourcing cannot divert a convoy-bound ship")}
+		return "sourcing cannot divert a convoy-bound ship"
 	}
 	if ship.Voyage != nil || ship.Ship.CurrentPortID == "" || ship.Ship.Status != "berthed" && ship.Ship.Status != "anchored_roadstead" {
-		return []Plan{reject(base, "sourcing requires a stationary independently navigable ship in port")}
+		return "sourcing requires a stationary independently navigable ship in port"
 	}
 	if !emptyCargo(ship) {
-		return []Plan{reject(base, "sourcing requires an empty cargo hold")}
+		return "sourcing requires an empty cargo hold"
 	}
 	for _, contract := range in.Contracts {
 		if contract.ContractType == "freight" && contract.Status == "active" && contract.CarrierShipID == ship.Ship.ID {
-			return []Plan{reject(base, "active sealed freight obligations prohibit sourcing relocation")}
+			return "active sealed freight obligations prohibit sourcing relocation"
 		}
 	}
 	for _, dataset := range []string{"ships", "catalog", "clock", "zones", "contracts", "vaults"} {
 		if !in.fresh(dataset) {
-			return []Plan{reject(base, "sourcing requires fresh "+dataset)}
+			return "sourcing requires fresh " + dataset
 		}
 	}
 	if in.Clock.Paused || in.Clock.Calendar.TimeScale <= 0 {
-		return []Plan{reject(base, "sourcing requires an unpaused authoritative game clock")}
+		return "sourcing requires an unpaused authoritative game clock"
 	}
 	if !in.SourcingLoadingBlocked {
 		ordinary := PlanVoyages(in)
 		if len(ordinary) > 0 && ordinary[0].Accepted {
-			return []Plan{reject(base, "an ordinary measured opportunity takes priority over sourcing")}
+			return "an ordinary measured opportunity takes priority over sourcing"
 		}
+	}
+	return ""
+}
+
+func planSourcingRelocation(in PlanningInput) []Plan {
+	if reason := sourcingAdmissionRejection(in); reason != "" {
+		return []Plan{reject(Plan{Kind: "relocation", ShipID: in.Ship.Ship.ID}, reason)}
 	}
 	return sourcingPairs(in)
 }
@@ -354,9 +458,20 @@ func relocationExposure(in PlanningInput, plan Plan) Plan {
 	if exposure <= 0 {
 		return reject(plan, "sourcing relocation lacks a positive measured cost exposure")
 	}
-	plan.Economics = Economics{Basis: "destination", ProvisionsPence: storeExpense, StoreCashPence: purchaseCost, BerthDuesPence: berth, UpkeepPence: upkeep, ExpectedNetPence: -exposure, StressNetPence: -exposure, GameDays: gameDays, NetPencePerGameDay: -float64(exposure) / gameDays}
+	plan.Economics = Economics{
+		Basis:              "destination",
+		ProvisionsPence:    storeExpense,
+		StoreCashPence:     purchaseCost,
+		FundingFeesPence:   fees,
+		BerthDuesPence:     berth,
+		UpkeepPence:        upkeep,
+		ExpectedNetPence:   -exposure,
+		StressNetPence:     -exposure,
+		GameDays:           gameDays,
+		NetPencePerGameDay: -float64(exposure) / gameDays,
+	}
 	plan.Accepted = true
-	plan.Reason = "bounded cost-only relocation; public supply evidence is not executable stock, price or revenue"
+	plan.Reason = "bounded cost-only relocation uses exploration risk capital; public supply is not executable stock, price, revenue or measured profit"
 	return plan
 }
 
@@ -401,7 +516,7 @@ func validateRelocationTarget(in PlanningInput, plan Plan) Plan {
 		boundedInput.ReserveByRegion = sourcingReserves(in, source)
 		allowance := sourcingAllowance(boundedInput)
 		if -plan.Economics.ExpectedNetPence > allowance {
-			return reject(plan, fmt.Sprintf("sourcing modeled exposure %dp exceeds allowance/cap %dp", -plan.Economics.ExpectedNetPence, allowance))
+			return reject(plan, sourcingBudgetReason(boundedInput, -plan.Economics.ExpectedNetPence, allowance))
 		}
 	}
 	arrivalDays := float64(outward.TotalDistanceNM+laden.TotalDistanceNM)/speed/24 + inspectionDays + float64(in.Ship.EffectiveHoldCapacityTons*4)/1_440 + 1
@@ -459,35 +574,17 @@ func sizeRelocationCargo(in PlanningInput, probe Plan, charter Contract, spentCo
 		candidate := base
 		candidate.Quantity = quantity
 		candidate = evaluatePlan(in, hull, origin, candidate, quantity**charter.RewardPerTonPence, 0)
-		if !candidate.Accepted && (candidate.Economics.GameDays <= 0 ||
-			candidate.Reason != "local vault cannot fund trade, safe stores, delivery bills and protected reserve" &&
-				candidate.Reason != "destination region lacks its protected reserve and harbour bill") {
+		if !candidate.Accepted {
 			if !best.Accepted && quantity == 1 {
 				best.Reason = candidate.Reason
 			}
 			continue
 		}
-		required := cargoFundingRequired(in, candidate)
-		balances, fundingFee, transfers, funded := measuredFunding(in.Balances, required, in.Rates)
-		if !funded || len(transfers) > 0 && !in.fresh("rates") {
-			if !best.Accepted {
-				best.Reason = "targeted cargo deficit cannot be funded with observed fees and protected regional reserves"
-			}
-			continue
+		candidate.Economics.ExpectedNetPence -= spentCostPence
+		candidate.Economics.StressNetPence -= spentCostPence
+		if candidate.Economics.BallastRepeatGameDays > 0 {
+			candidate.Economics.BallastRepeatNetPence -= spentCostPence
 		}
-		if !candidate.Accepted {
-			fundedInput := in
-			fundedInput.Balances = balances
-			candidate = evaluatePlan(fundedInput, hull, origin, candidate, quantity**charter.RewardPerTonPence, 0)
-			if !candidate.Accepted {
-				if !best.Accepted {
-					best.Reason = candidate.Reason
-				}
-				continue
-			}
-		}
-		candidate.Economics.ExpectedNetPence -= spentCostPence + fundingFee
-		candidate.Economics.StressNetPence -= spentCostPence + fundingFee
 		candidate.Economics.GameDays += max(0, probe.Economics.GameDays)
 		candidate.Economics.NetPencePerGameDay = float64(candidate.Economics.ExpectedNetPence) / candidate.Economics.GameDays
 		if candidate.Economics.ExpectedNetPence <= 0 {
@@ -501,22 +598,6 @@ func sizeRelocationCargo(in PlanningInput, probe Plan, charter Contract, spentCo
 		}
 	}
 	return best
-}
-
-func cargoFundingRequired(in PlanningInput, plan Plan) map[string]int64 {
-	required := clonePence(in.ReserveByRegion)
-	origin, _ := findPort(in.Catalog, plan.Origin)
-	destination, _ := findPort(in.Catalog, plan.Destination)
-	purchase := plan.Quantity * plan.BuyLimitPence
-	cost := purchase + ceilBPS(purchase, in.Markets[plan.Origin].CustomsBPS) + plan.Quantity
-	stores := plan.StoresToBuy * plan.StoresLimitPence
-	cost += stores + ceilBPS(stores, in.Markets[plan.Origin].CustomsBPS) + plan.StoresToBuy
-	cost += plan.Economics.BerthDuesPence + plan.Economics.UpkeepPence + plan.Economics.CollateralPence + plan.Economics.TollPence
-	required[origin.BankingRegion] += cost
-	if destination.BankingRegion != origin.BankingRegion {
-		required[destination.BankingRegion] = max(required[destination.BankingRegion], in.ReservePence+3*in.Ports[plan.Destination].BerthDuesPerDayPence)
-	}
-	return required
 }
 
 func (r *Runner) sourcingInput(ctx context.Context, ship ShipState) (PlanningInput, error) {
@@ -545,6 +626,7 @@ func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipStat
 		required[region] = max(required[region], reserve)
 	}
 	reservations := growthEvidence{}
+	reservedFreight := make(map[string]bool)
 	ids := make([]string, 0, len(r.stateCache.Ships)+1)
 	for _, incumbent := range r.stateCache.Ships {
 		ids = append(ids, incumbent.Ship.ID)
@@ -575,6 +657,19 @@ func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipStat
 		owner, _ := r.ship(id)
 		if id == "__growth" {
 			owner, _ = r.ship(data.BuiltShipID)
+		}
+		if data.Settlement == nil {
+			for _, contractID := range data.Plan.FreightIDs {
+				reservedFreight[contractID] = true
+			}
+		}
+		if ordinaryIncomePending(&data) && (mission.Phase == "provision" || mission.Phase == "buy" || mission.Phase == "freight") &&
+			!r.loadingReservationSuspended(mission, &data, owner) {
+			origin, originExists := findPort(input.Catalog, data.Plan.Origin)
+			destination, destinationExists := findPort(input.Catalog, data.Plan.Destination)
+			if originExists && destinationExists && origin.BankingRegion != destination.BankingRegion {
+				required[destination.BankingRegion] = max(required[destination.BankingRegion], input.ReservePence)
+			}
 		}
 		r.reserveMissionCash(required, mission, &data, owner)
 		// Unsubmitted idle quotes must not mutually block scarce stores.
@@ -615,6 +710,15 @@ func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipStat
 			}
 		}
 	}
+	if len(reservedFreight) > 0 {
+		contracts := make([]Contract, 0, len(input.Contracts))
+		for _, contract := range input.Contracts {
+			if !reservedFreight[contract.ID] {
+				contracts = append(contracts, contract)
+			}
+		}
+		input.Contracts = contracts
+	}
 	return input, nil
 }
 
@@ -625,8 +729,12 @@ func (r *Runner) loadSourcingHistory(ctx context.Context, input *PlanningInput) 
 	}
 	allowance := sourcingLifetimeAllowance(history)
 	input.SourcingAllowancePence = &allowance
+	input.SourcingIdleEligible = r.shipIdleEligible(*input)
+	input.SourcingProbeExpensePence = history.ProbeExpensePence
+	input.SourcingProbeCostsUnknown = history.UnknownProbeCosts
 	input.SourcingProbeLanes = make(map[string]bool)
-	if allowance == 0 {
+	input.SourcingProbeCompletions = make(map[string]time.Time)
+	if sourcingAllowance(*input) == 0 {
 		return nil
 	}
 	lanes := make([]string, 0)
@@ -657,12 +765,13 @@ func (r *Runner) loadSourcingHistory(ctx context.Context, input *PlanningInput) 
 	}
 	for len(lanes) > 0 {
 		size := min(len(lanes), 1024)
-		attempted, err := r.db.RelocationProbes(ctx, r.account.ID, lanes[:size])
+		completions, err := r.db.RelocationProbeCompletions(ctx, r.account.ID, lanes[:size])
 		if err != nil {
 			return err
 		}
-		for _, lane := range attempted {
+		for lane, completed := range completions {
 			input.SourcingProbeLanes[lane] = true
+			input.SourcingProbeCompletions[lane] = completed
 		}
 		lanes = lanes[size:]
 	}
@@ -752,18 +861,19 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, er
 	}
 	mission, data := r.newVoyage(ship, plan)
 	mission.Phase = "sourcing_fund"
+	_, _, ask := publicSourceEvidence(input, source, contract)
 	data.Relocation = &relocationIntent{
 		TargetContractID:    contract.ID,
 		TargetCommodity:     contract.CommodityID,
 		TargetDestination:   contract.OriginPortID,
 		ExpenseCapPence:     sourcingAllowance(input),
 		ModeledExpensePence: -plan.Economics.ExpectedNetPence,
+		IdlePilot:           sourcingUsesPilot(input, source.ID, contract, ask),
 		StoreBasis: &relocationStoreBasis{
 			InitialTons:            ship.Stores.ProvisionsTons,
 			ReplacementPencePerTon: fill.LimitPence + ceilBPS(fill.LimitPence, input.Markets[plan.Origin].CustomsBPS),
 		},
 	}
-	_, _, ask := publicSourceEvidence(input, source, contract)
 	data.ProvenLane = sourcingEvidenceKey(source.ID, contract, ask)
 	return true, r.saveMission(ctx, mission, &data)
 }
@@ -863,6 +973,95 @@ func (r *Runner) relocationBudget(data *missionData, extra int64) bool {
 	return known && expense >= 0 && bills >= 0 && expense <= cap && bills <= cap-expense && extra <= cap-expense-bills
 }
 
+// The durable cap is an immutable upper bound, not continuing permission to use
+// cash that another mission or a newly recorded loss has since committed.
+func (r *Runner) relocationSpendingReady(ctx context.Context, ship ShipState, data *missionData, extra int64) error {
+	return r.relocationSpendingReadyAtPrice(ctx, ship, data, extra, 0)
+}
+
+func (r *Runner) relocationProvisionReady(ctx context.Context, ship ShipState, data *missionData, quantity, limit int64) error {
+	if data.Relocation == nil || !data.Relocation.IdlePilot {
+		return nil
+	}
+	if quantity <= 0 || limit <= 0 || limit > math.MaxInt64/quantity {
+		return errors.New("idle exploration provision order exceeds integer-pence funding bounds")
+	}
+	return r.relocationSpendingReadyAtPrice(ctx, ship, data, 0, limit)
+}
+
+func (r *Runner) relocationSpendingReadyAtPrice(ctx context.Context, ship ShipState, data *missionData, extra, storeLimit int64) error {
+	if data.Relocation == nil || !data.Relocation.IdlePilot {
+		return nil
+	}
+	input, err := r.committedPlanningInput(ctx, ship)
+	if err != nil {
+		return err
+	}
+	for _, key := range []string{"ships", "contracts", "clock", "vaults", "ledger"} {
+		if !input.fresh(key) {
+			return fmt.Errorf("idle exploration risk capital requires fresh %s", key)
+		}
+	}
+	if input.Clock.Paused || input.Clock.Calendar.TimeScale <= 0 || input.Clock.Calendar.TotalGameHours < data.StartedGameHours {
+		return errors.New("idle exploration risk capital requires an unpaused nonregressed game clock")
+	}
+	atOrigin := ship.Ship.CurrentPortID == data.Plan.Origin && ship.Voyage == nil
+	if atOrigin {
+		if !r.shipIdleEligible(input) {
+			return errors.New("unstarted idle inspection waits for a coherent six-observed-game-hour idle baseline")
+		}
+		input.SourcingLoadingBlocked = r.insuranceActionReady(ship, "buy", "") != nil
+		if reason := sourcingAdmissionRejection(input); reason != "" {
+			return fmt.Errorf("unstarted idle inspection is no longer admissible: %s", reason)
+		}
+	}
+	history, err := r.db.EconomicHistory(ctx, r.account.ID, "")
+	if err != nil {
+		return err
+	}
+	if history.UnknownProbeCosts {
+		return errors.New("unpriced permanent probe expense blocks further idle exploration spending")
+	}
+	source, exists := findPort(input.Catalog, data.Plan.Destination)
+	if !exists {
+		return errors.New("idle exploration source is absent from the current catalog")
+	}
+	input.ReserveByRegion = sourcingReserves(input, source)
+	normal := sourcingLifetimeAllowance(history)
+	input.SourcingAllowancePence = &normal
+	input.SourcingProbeExpensePence = history.ProbeExpensePence
+	// Committed source continuation does not re-earn idle after the physical
+	// voyage reset. Origin sends above still require current idle eligibility.
+	// Neither path acquires a fresh seed or a larger durable cap.
+	input.SourcingIdleEligible = true
+	bounded := *data
+	intent := *data.Relocation
+	intent.ExpenseCapPence = min(intent.ExpenseCapPence, sourcingAllowance(input))
+	bounded.Relocation = &intent
+	if !r.relocationBudget(&bounded, extra) {
+		return errors.New("current idle exploration risk capital cannot cover active expense, unclaimed bills and new spending within the immutable cap")
+	}
+	if atOrigin {
+		plan := costRelocation(input, data.Plan)
+		if !plan.Accepted {
+			return fmt.Errorf("fresh idle inspection is no longer admissible: %s", plan.Reason)
+		}
+		var storeUnitCeiling int64
+		if storeLimit > 0 {
+			// Reuse the immutable IOC buyer-cost ceiling, including customs
+			// rounding slack, in the very same reduced-cap calculation.
+			storeUnitCeiling = iocCash(1, storeLimit, input.Markets[ship.Ship.CurrentPortID].CustomsBPS)
+			if storeUnitCeiling == math.MaxInt64 {
+				return errors.New("idle exploration provision unit ceiling exceeds integer-pence funding bounds")
+			}
+		}
+		if !r.relocationProjectedBudget(&bounded, ship, input, plan, storeUnitCeiling) {
+			return errors.New("fresh projected inspection exposure exceeds current idle exploration risk capital or its immutable cap")
+		}
+	}
+	return nil
+}
+
 func (r *Runner) relocationProjectedBudget(data *missionData, ship ShipState, in PlanningInput, plan Plan, storeUnitCeiling int64) bool {
 	if data.Relocation == nil || !plan.Accepted || !r.relocationBudget(data, 0) {
 		return false
@@ -918,6 +1117,9 @@ func (r *Runner) stageSourcingFunding(ctx context.Context, ship ShipState, missi
 	if !r.relocationBudget(data, fees) {
 		return false, r.hold(ctx, ship.Ship.ID, "sourcing remittance fees would exceed the durable exploration expense cap")
 	}
+	if err := r.relocationSpendingReady(ctx, ship, data, fees); err != nil {
+		return false, r.hold(ctx, ship.Ship.ID, err.Error())
+	}
 	if len(transfers) == 0 {
 		return false, nil
 	}
@@ -939,6 +1141,9 @@ func (r *Runner) relocationDepartureReady(ctx context.Context, ship ShipState, d
 	}
 	if !r.relocationBudget(data, 0) {
 		return errors.New("relocation expense cap has been consumed; no further discretionary departure")
+	}
+	if err := r.relocationSpendingReady(ctx, ship, data, 0); err != nil {
+		return err
 	}
 	input, err := r.sourcingInput(ctx, ship)
 	if err != nil {

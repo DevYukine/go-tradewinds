@@ -36,6 +36,7 @@ type relocationIntent struct {
 	FundingRequiredPence int64                 `json:"funding_required_pence"`
 	InspectUntilGameHour int64                 `json:"inspect_until_game_hour"`
 	StoreBasis           *relocationStoreBasis `json:"store_basis,omitempty"`
+	IdlePilot            bool                  `json:"idle_pilot,omitempty"`
 }
 
 type missionData struct {
@@ -572,6 +573,12 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 		mission.Phase = "arrival"
 		return true, r.saveMission(ctx, mission, data)
 	}
+	if ordinaryIncomePending(data) && (mission.Phase == "provision" || mission.Phase == "buy" || mission.Phase == "freight") {
+		ready, changed, err := r.refreshIncomeProcurement(ctx, ship, mission, data)
+		if !ready || err != nil {
+			return changed, err
+		}
+	}
 	if data.GrowthLane != nil && !data.BuyDone && (mission.Phase == "provision" || mission.Phase == "buy") {
 		ready, changed, err := r.refreshGrowthProcurement(ctx, ship, mission, data)
 		if !ready || err != nil {
@@ -640,7 +647,7 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 	}
 	if mission.Phase == "provision" {
 		if ship.Ship.Status != "berthed" {
-			return r.dockForMission(ctx, ship, mission, data)
+			return r.dockForMission(ctx, ship, mission, data, false)
 		}
 		if ship.Stores.ProvisionsTons+1e-9 < data.Plan.TargetStoresTons {
 			return r.provisionMission(ctx, ship, mission, data, data.Plan.TargetStoresTons)
@@ -657,7 +664,7 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 			return false, r.hold(ctx, ship.Ship.ID, err.Error())
 		}
 		if ship.Ship.Status != "berthed" {
-			return r.dockForMission(ctx, ship, mission, data)
+			return r.dockForMission(ctx, ship, mission, data, false)
 		}
 		port := ship.Ship.CurrentPortID
 		if !r.fresh("books/" + port) {
@@ -736,7 +743,7 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 				return false, r.hold(ctx, ship.Ship.ID, err.Error())
 			}
 			if ship.Ship.Status != "berthed" {
-				return r.dockForMission(ctx, ship, mission, data)
+				return r.dockForMission(ctx, ship, mission, data, false)
 			}
 			return true, r.stage(ctx, mission, data, ship, "accept-freight", "/v1/contract/accept-freight", map[string]any{"contract_id": id, "ship_id": ship.Ship.ID})
 		}
@@ -766,11 +773,16 @@ func (r *Runner) contract(id string) (Contract, bool) {
 	return Contract{}, false
 }
 
-func (r *Runner) dockForMission(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData) (bool, error) {
+func (r *Runner) dockForMission(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData, maintenanceDock bool) (bool, error) {
 	if ship.Ship.Status != "anchored_roadstead" || ship.Ship.DockQueuedAt != nil {
 		return false, r.hold(ctx, ship.Ship.ID, "berth-only operation waits for authoritative docking; already queued or unavailable")
 	}
-	return true, r.stage(ctx, mission, data, ship, "dock", "/v1/fleet/dock", map[string]any{"ship_id": ship.Ship.ID})
+	if data.Relocation != nil && data.Relocation.IdlePilot && ship.Ship.CurrentPortID == data.Plan.Origin {
+		if err := r.relocationSpendingReady(ctx, ship, data, 0); err != nil {
+			return r.abortRelocation(ctx, ship, mission, data, err.Error())
+		}
+	}
+	return true, r.stageAction(ctx, mission, data, ship, "dock", "/v1/fleet/dock", map[string]any{"ship_id": ship.Ship.ID}, maintenanceDock)
 }
 
 type provisionOrderQuote struct {
@@ -838,7 +850,7 @@ func provisionFunding(input PlanningInput, quote provisionOrderQuote) (observedR
 
 func (r *Runner) provisionMission(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData, target float64) (bool, error) {
 	if ship.Ship.Status != "berthed" {
-		return r.dockForMission(ctx, ship, mission, data)
+		return r.dockForMission(ctx, ship, mission, data, false)
 	}
 	port := ship.Ship.CurrentPortID
 	var input PlanningInput
@@ -857,6 +869,11 @@ func (r *Runner) provisionMission(ctx context.Context, ship ShipState, mission *
 	}
 	if quote.quantity == 0 {
 		return false, nil
+	}
+	if data.Relocation != nil {
+		if err := r.relocationProvisionReady(ctx, ship, data, quote.quantity, quote.limit); err != nil {
+			return r.abortRelocation(ctx, ship, mission, data, err.Error())
+		}
 	}
 	if data.Relocation != nil && !r.relocationProvisionBudget(data, ship, input, quote.quantity, quote.limit) {
 		return r.abortRelocation(ctx, ship, mission, data, "additional sourcing provisions would exceed the durable exploration expense cap")
@@ -1137,7 +1154,7 @@ func (r *Runner) deliverAtArrival(ctx context.Context, ship ShipState, mission *
 			}
 		}
 		if ship.Ship.Status != "berthed" {
-			return r.dockForMission(ctx, ship, mission, data)
+			return r.dockForMission(ctx, ship, mission, data, false)
 		}
 		if bid.Quantity == 0 || bid.LimitPence <= 0 {
 			return false, r.hold(ctx, ship.Ship.ID, "unsealed cargo cannot be sold without measured executable local bid depth")

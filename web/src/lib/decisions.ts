@@ -50,6 +50,7 @@ export function buildDecisionView(details: unknown): DecisionView {
     ["berth_dues_pence", "Berth dues"],
     ["upkeep_pence", "Incremental upkeep"],
     ["toll_pence", "Tolls"],
+    ["funding_fees_pence", "Regional funding fees"],
     ["expected_net_pence", netLabel],
     ["collateral_pence", "Collateral locked, not an expense"],
   ];

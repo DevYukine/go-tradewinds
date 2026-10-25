@@ -118,7 +118,13 @@ New economic voyages settle at their delivery destination once cargo is empty, a
 
 When no ordinary executable opportunity exists, an empty, stationary ship may inspect another source for an open charter. Compare at most three source/charter pairs using catalog production or fresh public ask gossip, legal routes and conservative deadline slack. Catalog production is evidence worth investigating, not an executable inventory promise; an unstocked local manufacturer does not veto a better evidenced remote source. Public evidence never grants private market access or creates forecast sale revenue.
 
-Only one sourcing probe may be active per account. Each modeled expense allowance is capped at 20,000 pence and 2% of current cash after protected funds. The permanent lifetime allowance is the unspent 20,000-pence seed plus 2% of positive, loss-inclusive known commercial net, minus every prior probe's expense. Unknown commercial returns cannot replenish the seed, but do not erase its unspent balance; unknown prior probe spending blocks further exploration. Restarting or changing only observation timestamps cannot renew an attempted evidence opportunity.
+Only one sourcing probe may be active per account, including ambiguous requests. Normal probes retain a permanent allowance: the unspent 20,000-pence seed plus 2% of positive, loss-inclusive known commercial net, minus every prior probe's expense. Unknown commercial returns cannot replenish the seed, but do not erase its unspent balance; unknown prior probe spending blocks exploration. Normal probes do not repeat an unchanged evidence fingerprint.
+
+After six observed idle game hours, an empty stationary hull can use a separate, bounded reinspection policy. Its remaining allowance is `max(0, 20,000 + floor(uncommitted cash / 20) - all permanent probe expenses)`. Use the larger applicable normal or idle allowance, never their sum; each probe is still capped by `min(20,000, floor(uncommitted cash / 50), remaining allowance)`. Uncommitted cash excludes operating reserves and all current commitments. This is discretionary risk capital, not measured profit or permission to buy speculative cargo.
+
+The idle policy may revisit unchanged evidence only after the latest matching canonical or legacy probe completion is at least 24 real minutes old. A future completion timestamp blocks it. Maintenance, docking, selection and remittance do not reset physical idle time. Sailing, carried cargo, active freight or a port change do; sunk ships retire their record. Stale, failed, paused or regressed clocks and stale previous observations rebase without crediting the gap. A short restart preserves already earned hours; downtime is not automatically earned idle time.
+
+Persist the chosen idle-policy marker and its expense ceiling before spending. Staging and first-send checks recompute current eligibility, available allowance and paid/projected exposure, including unclaimed bills; they cannot enlarge that ceiling. These discretionary-spend checks do not cancel already acquired cargo, sealed obligations or necessary safety recovery.
 
 Include consumed stores, customs, berth/upkeep exposure, measured funding fees and safe-return contingency in probe expense. Separately fund the complete safe-store inventory needed for relocation, retreat and the actual source-to-charter continuation. The empty probe has zero revenue and quantity; public production and gossip are leads, not executable stock. Inspect at most three valid source/charter pairs per pass, with at most six route requests, progressing past illegal pairs instead of letting them exhaust the shortlist.
 
@@ -126,9 +132,25 @@ On arrival, inspect fresh local executable depth for at most six observed game h
 
 Sourcing diagnostics retain one candidate-count summary and at most three ranked candidate details per pass. Equivalent decisions are deduplicated without treating a rolling ETA as a changed economic assessment; materially changed retained offers remain visible.
 
+### Bounded idle and funding checks (2026-10-24)
+
+A 12-case synthetic run of the production planner varied a 1,000-pence source ask, 24-ton capacity, charter reward and remittance fee. These are sensitivity checks, not live prices or earnings. Every admitted case selected 24 tons; “reject” means no positive funded quantity was admitted.
+
+| Reward per ton | Net at 0% fee | Net at 1% fee | Net at 10% fee | Net at 50% fee |
+| --- | --- | --- | --- | --- |
+| 11 Cr | 12.72 Cr | 10.13 Cr | Reject | Reject |
+| 15 Cr | 108.72 Cr | 106.13 Cr | 80.23 Cr | Reject |
+| 30 Cr | 468.72 Cr | 466.13 Cr | 440.23 Cr | 212.30 Cr |
+
+The actual executable also completed three stateful, disposable-PostgreSQL scenarios: donor-funded 56-ton purchase and departure; no idle probe before six observed hours, then a zero-cargo inspection without speculative buying; and one funded hull commissioned with four guns, four tons of stores and 13 tons of cargo after a process restart. These synthetic outcomes prove the execution paths, not live profitability.
+
+An offline replay of the unchanged recorded snapshot at `2026-10-24T21:17:20.9312261Z`, without a mission overlay or refreshed prices, still admitted no ordinary voyage. Regional funding cannot turn an unprofitable local spread into profit. That snapshot held 1,520,673 pence across the company against the cheapest observed Amsterdam hull quote of 2,378,926 pence, before guns, stores, trading float and reserves. An immediate purchase was not affordable.
+
 ## Treasury and reinvestment
 
 Cash is regional. Escrow is not spendable. Reserve enforcement includes outstanding obligations, collateral, near-term bills, and working capital in the billing region. Any negative vault, or any underfunded active/obligated region, blocks discretionary construction while safe income voyages continue. Empty unused regions need no artificial reserve. A remittance pays an observed fee and must preserve its source's protected funds. Several donors can fund a shortfall through sequential partial transfers; each durable transfer is followed by fresh balances before selecting the next donor.
+
+Ordinary positive-contribution voyages can draw on reserve-safe donor cash instead of being limited to their origin vault. Quote the full immutable cargo-order bound, customs, safe-store cash, collateral, fleet bills and destination funding together; pure freight does not invent an ordinary-cargo purchase. Include observed remittance fees once in destination net, stress and repeat forecasts. The ship mission owns each sequential transfer, so company treasury work cannot pre-fund a merely conditional destination. Revalidate the pinned opportunity before funding or procurement and again at first send after rate-limit waits. If it disappears before cargo is acquired, settle paid fees as an aborted voyage rather than deleting them.
 
 Stationary harbour obligations follow actual presence; sailing obligations follow the final authoritative route leg, not the departed origin retained in a ship record. A prospective destination still needs its configured reserve floor and the new arrival bill even when no current hull obligates that region. These are liquidity protections, not additional voyage expenses.
 
@@ -140,7 +162,7 @@ It also includes `120 Cr × factors^1.3` and `1 Cr × oceanic ton`. Evaluate the
 
 A new hull needs all of:
 
-1. A repeatable lane with at least two positive known-cost realized settlements and positive net across all retained lane evidence, including procurement failures and losses. Unknown costs disqualify that proof.
+1. At least two positive known-cost delivered cycles and positive loss-inclusive account and lane net in the last 12 recorded host-UTC hours. Include complete qualifying cycles, in-window failures, losses and probes; unknown costs or unmeasured duration disqualify the proof. The interval is inclusive and a relevant future completion vetoes evaluation. This is a host-recorded recency policy, not a guarantee about server elapsed time. Older losses and uncertainty remain in permanent history; current unresolved actions, missions and liabilities remain protected regardless of age.
 2. Two cycles of observed source asks after competing source/commodity repeat throughput, plus each incumbent's not-yet-purchased lot once. Spot trades likewise need two cycles of executable destination bids plus undelivered competing lots once.
 3. For finite charters, remaining quantity of at least `outstanding undelivered lots + max(2, ceil(payback / cycle) + 1) × (new lot + competing contract repeat throughput per cycle)`, with expiry no earlier than payback plus one complete cycle. Future reposts and market requotes do not guarantee replacement demand.
 4. A legal route for the hull and seasonal conditions.
