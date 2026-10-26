@@ -883,7 +883,8 @@ func diagnosticStressBPS(in PlanningInput, route Route, hull Hull) int64 {
 }
 
 // DailyUpkeep uses the guide's published billing formula, rounded upward to
-// whole pence. Oceanic tons do not enter the coastal/regional sprawl term.
+// whole pence. Half the oceanic tonnage, rounded down, enters the sprawl term
+// on top of the flat 1 Cr per oceanic ton.
 func DailyUpkeep(fleet []ShipState, catalog Catalog, factors int) int64 {
 	var sprawlTons, oceanicTons int64
 	for _, ship := range fleet {
@@ -900,7 +901,7 @@ func DailyUpkeep(fleet []ShipState, catalog Catalog, factors int) int64 {
 			sprawlTons += hull.HoldCapacityTons
 		}
 	}
-	sprawl := 4_500 * math.Pow(float64(max(0, sprawlTons-40))/100, 1.45)
+	sprawl := 4_500 * math.Pow(float64(max(0, sprawlTons+oceanicTons/2-40))/100, 1.45)
 	factorCost := 12_000 * math.Pow(float64(max(0, factors)), 1.3)
 	return int64(math.Ceil(sprawl+factorCost)) + oceanicTons*100
 }

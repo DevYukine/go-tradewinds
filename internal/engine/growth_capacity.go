@@ -18,9 +18,14 @@ import (
 
 const capacityHistoryWindow = 24 * time.Hour
 
+// capacityFleetFillShare bounds one cash-funded build to 1/N of surplus so idle
+// cash scales the fleet gradually instead of draining into hulls at once.
+const capacityFleetFillShare = 3
+
 var (
 	capacityEvidenceBasis  = fmt.Sprintf("recorded %.0f-real-hour fleet net per active ship game day", capacityHistoryWindow.Hours())
 	capacityShipLossReason = fmt.Sprintf("capacity growth waits %.0f real hours after a ship loss", capacityHistoryWindow.Hours())
+	capacityFleetFillBasis = "owner policy: below SMALL_FLEET_TARGET, idle cash funds the cheapest capable hull with a profitable first voyage, at most a third of surplus"
 )
 
 type CapacityGrowthInput struct {
@@ -43,6 +48,12 @@ type CapacityGrowthInput struct {
 	NewestShipProven            bool
 }
 
+// Below SmallFleetTarget the owner wants idle cash turned into hulls that have
+// work: a build needs a profitable first voyage (gossip of other companies'
+// prices counts) but no earnings record, its capital may use at most a third
+// of the surplus, and reserves plus every ship's working cash stay untouched.
+// From the target onward, recorded earnings must repay the capital within
+// MaxPaybackDays.
 func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 	decision := GrowthDecision{}
 	guns := min(int64(4), in.Hull.MaxCannons)
@@ -50,23 +61,7 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 		decision.Reason = "capacity growth requires a priced trading hull with room for cannons and cargo"
 		return decision
 	}
-	if !in.HasSpareWork {
-		decision.Reason = "capacity growth needs an executable profitable voyage after incumbent commitments"
-		return decision
-	}
-	if reason := capacityFleetBlockReason(in); reason != "" {
-		decision.Reason = reason
-		return decision
-	}
-	rate := float64(in.WindowNetPence) / in.ActiveShipGameDays
-	if in.FleetSize >= in.SmallFleetTarget && in.FleetFillRatio >= 0.8 && in.FleetAverageHoldTons > 0 {
-		rate *= min(2, max(0.5, float64(in.Hull.HoldCapacityTons)/in.FleetAverageHoldTons))
-	}
-	net := rate - float64(in.IncrementalDailyUpkeepPence)
-	if net <= 0 || math.IsNaN(net) || math.IsInf(net, 0) {
-		decision.Reason = "capacity growth marginal fleet upkeep consumes the observed per-ship earning rate"
-		return decision
-	}
+	fill := in.FleetSize < in.SmallFleetTarget
 	slippage := ceilBPS(in.HullPricePence, 1_000)
 	cannons := guns * 15_000
 	capital := growthCashTotal(in.HullPricePence, slippage, cannons, in.InitialStoresPence)
@@ -74,20 +69,39 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 		decision.Reason = "capacity growth capital exceeds integer-pence bounds"
 		return decision
 	}
-	payback := float64(capital) / net
 	decision = GrowthDecision{
-		QuotedHullPence:               in.HullPricePence,
-		SlippageReservePence:          slippage,
-		CannonsPence:                  cannons,
-		InitialStoresPence:            in.InitialStoresPence,
-		IncrementalUpkeepPence:        in.IncrementalDailyUpkeepPence,
-		IncrementalNetPencePerGameDay: net,
-		PaybackGameDays:               payback,
-		EvidenceBasis:                 capacityEvidenceBasis,
+		QuotedHullPence:        in.HullPricePence,
+		SlippageReservePence:   slippage,
+		CannonsPence:           cannons,
+		InitialStoresPence:     in.InitialStoresPence,
+		IncrementalUpkeepPence: in.IncrementalDailyUpkeepPence,
+		EvidenceBasis:          capacityFleetFillBasis,
 	}
-	if in.MaxPaybackDays <= 0 || math.IsNaN(in.MaxPaybackDays) || math.IsInf(in.MaxPaybackDays, 0) || payback > in.MaxPaybackDays {
-		decision.Reason = "capacity growth hull, slippage, cannon and store capital exceeds maximum game-day payback"
+	if !in.HasSpareWork {
+		decision.Reason = "capacity growth needs an executable profitable voyage after incumbent commitments"
 		return decision
+	}
+	if !fill {
+		if reason := capacityFleetBlockReason(in); reason != "" {
+			decision.Reason = reason
+			return decision
+		}
+		rate := float64(in.WindowNetPence) / in.ActiveShipGameDays
+		if in.FleetFillRatio >= 0.8 && in.FleetAverageHoldTons > 0 {
+			rate *= min(2, max(0.5, float64(in.Hull.HoldCapacityTons)/in.FleetAverageHoldTons))
+		}
+		net := rate - float64(in.IncrementalDailyUpkeepPence)
+		if net <= 0 || math.IsNaN(net) || math.IsInf(net, 0) {
+			decision.Reason = "capacity growth marginal fleet upkeep consumes the observed per-ship earning rate"
+			return decision
+		}
+		decision.IncrementalNetPencePerGameDay = net
+		decision.PaybackGameDays = float64(capital) / net
+		decision.EvidenceBasis = capacityEvidenceBasis
+		if in.MaxPaybackDays <= 0 || math.IsNaN(in.MaxPaybackDays) || math.IsInf(in.MaxPaybackDays, 0) || decision.PaybackGameDays > in.MaxPaybackDays {
+			decision.Reason = "capacity growth hull, slippage, cannon and store capital exceeds maximum game-day payback"
+			return decision
+		}
 	}
 	if in.FleetSize < 0 || in.LotCashPence < 0 ||
 		in.LotCashPence > 0 && int64(in.FleetSize) >= math.MaxInt64/in.LotCashPence {
@@ -101,8 +115,15 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 		decision.Reason = "capacity growth must preserve quote reserves and a cash lot for every ship after the build"
 		return decision
 	}
+	if fill && capital > in.SurplusPence/capacityFleetFillShare {
+		decision.Reason = "capacity growth below the fleet target spends at most a third of surplus cash per hull"
+		return decision
+	}
 	decision.Accepted = true
 	decision.Reason = "recorded fleet earnings cover capacity payback, marginal upkeep and every ship's working cash"
+	if fill {
+		decision.Reason = "fleet below SMALL_FLEET_TARGET: the hull costs at most a third of surplus and keeps every ship's working cash"
+	}
 	return decision
 }
 
@@ -220,6 +241,19 @@ func (r *Runner) capacityLosses(ctx context.Context, asOf time.Time) (string, er
 		return capacityShipLossReason, nil
 	}
 	return "", nil
+}
+
+// fleetBelowTarget reports whether owner fleet-fill policy applies: a relocating
+// ship then no longer pauses growth, because every ship's working cash is
+// still reserved before a build.
+func (r *Runner) fleetBelowTarget() bool {
+	active := 0
+	for _, ship := range r.stateCache.Ships {
+		if ship.Ship.Status != "sunk" {
+			active++
+		}
+	}
+	return active < r.opts.SmallFleetTarget
 }
 
 func (r *Runner) capacityFleetInput(ctx context.Context, evidence *growthEvidence) (CapacityGrowthInput, string, error) {
@@ -364,6 +398,9 @@ func (r *Runner) capacityFleetInput(ctx context.Context, evidence *growthEvidenc
 			input.LotCashPence = lots[middle-1] + (lots[middle]-lots[middle-1])/2 + (lots[middle]-lots[middle-1])%2
 		}
 	}
+	if input.FleetSize < input.SmallFleetTarget {
+		return input, "", nil
+	}
 	return input, capacityFleetBlockReason(input), nil
 }
 
@@ -378,8 +415,12 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 	plans := PlanVoyages(planning)
 	input.Hull = hull
 	input.HullPricePence = *quote.TotalCostPence
+	fill := input.FleetSize < input.SmallFleetTarget
 	for _, plan := range plans {
-		if plan.Accepted && (plan.Economics.RevenueBasis == "depth" || plan.Economics.RevenueBasis == "contract") {
+		basis := plan.Economics.RevenueBasis
+		// Below the fleet target, recent gossip of other companies' bids is
+		// enough evidence that the new hull has a profitable first trade.
+		if plan.Accepted && (basis == "depth" || basis == "contract" || fill && basis == "gossip") {
 			input.HasSpareWork = true
 			input.InitialStoresPence = max(plan.Economics.StoreCashPence, plan.Economics.ProvisionsPence)
 			break

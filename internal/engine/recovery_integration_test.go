@@ -96,10 +96,13 @@ func recoveryIntegrationStore(t *testing.T) (*store.Store, string, string) {
 	if err == nil && (parsed.Scheme == "postgres" || parsed.Scheme == "postgresql") {
 		query := parsed.Query()
 		query.Set("search_path", schema)
+		// Throwaway schemas need no commit durability; skipping the WAL flush
+		// per commit removes most of the integration suite's wall time.
+		query.Set("synchronous_commit", "off")
 		parsed.RawQuery = query.Encode()
 		dsn = parsed.String()
 	} else {
-		dsn += " search_path=" + schema
+		dsn += " search_path=" + schema + " synchronous_commit=off"
 	}
 	key := bytes.Repeat([]byte{0x5A}, 32)
 	db, err = store.Open(ctx, dsn, key, zap.NewNop())
@@ -794,6 +797,10 @@ type recoveryHarness struct {
 	schema  string
 	// marques enables MARQUES_ENABLED for runners built by this harness.
 	marques bool
+	// fleetTarget is SMALL_FLEET_TARGET for runners built by this harness. It
+	// defaults to 1 so growth tests exercise the earnings rules; cash-funded
+	// fleet fill tests raise it.
+	fleetTarget int
 }
 
 func newRecoveryHarness(t *testing.T) *recoveryHarness {
@@ -815,13 +822,13 @@ func newRecoveryHarness(t *testing.T) *recoveryHarness {
 	if err := db.SaveAccount(ctx, account, credentials); err != nil {
 		t.Fatalf("save test account: %v", err)
 	}
-	return &recoveryHarness{t: t, ctx: ctx, db: db, account: account, api: newFakeGameAPI(t), dsn: dsn, schema: schema}
+	return &recoveryHarness{t: t, ctx: ctx, db: db, account: account, api: newFakeGameAPI(t), dsn: dsn, schema: schema, fleetTarget: 1}
 }
 
 func (h *recoveryHarness) runner(apiKey string) *Runner {
 	h.t.Helper()
 	client := gameapi.New(h.api.server.URL, apiKey, zap.NewNop())
-	instance := New(client, h.db, h.account, zap.NewNop(), Options{Execute: true, MarquesEnabled: h.marques})
+	instance := New(client, h.db, h.account, zap.NewNop(), Options{Execute: true, MarquesEnabled: h.marques, SmallFleetTarget: h.fleetTarget})
 	snapshot, err := h.db.Snapshot(h.ctx, h.account.ID)
 	if err != nil {
 		h.t.Fatalf("load persisted snapshot: %v", err)
@@ -1031,6 +1038,7 @@ func (h *recoveryHarness) hasRecordedRequest(method, path string, status int) bo
 // a freshly planned action instead of freezing account work. Covers both the
 // settings and the remittance stage.
 func TestRecoveryTreasuryThrottlePersistsCooldownThenReplans(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setSettingsMode("throttle")
 	h.api.setAutoRemit(false, 0)
@@ -1222,12 +1230,14 @@ func TestRecoveryTreasuryThrottlePersistsCooldownThenReplans(t *testing.T) {
 	if rejections < 2 {
 		t.Fatalf("expected recorded rejections for both definite 429s, got %d", rejections)
 	}
+
 }
 
 // A legacy actionless treasury intent restored from an older build must wait
 // out its persisted cooldown, then be discarded so fresh planning takes over;
 // the replanned remittance then follows the ordinary definite-rejection path.
 func TestRecoveryLegacyActionlessTreasuryIntentRecovers(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	for i := range 2 {
@@ -1285,11 +1295,13 @@ func TestRecoveryLegacyActionlessTreasuryIntentRecovers(t *testing.T) {
 	if mission.Phase != "done" {
 		t.Fatalf("replanned intent phase after 429: %s", mission.Phase)
 	}
+
 }
 
 // Authorization and throttling retain their outcome and cooldown, then release
 // the control intent for fresh planning with a new action identity.
 func TestRecoveryGrowthBuildRejectionReplansThroughFreshPlanning(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	for i := range 2 {
@@ -1439,6 +1451,7 @@ func TestRecoveryGrowthBuildRejectionReplansThroughFreshPlanning(t *testing.T) {
 	if mission.Phase != "growth_refit" || data.BuiltShipID != recoveryBuiltShipID {
 		t.Fatalf("successful build did not advance the mission: phase %s built %s", mission.Phase, data.BuiltShipID)
 	}
+
 }
 
 // A restored legacy growth_build intent without an action and without a built
@@ -1447,6 +1460,7 @@ func TestRecoveryGrowthBuildRejectionReplansThroughFreshPlanning(t *testing.T) {
 // contrast, is never discarded: it is replayed with its exact persisted
 // identity and payload.
 func TestRecoveryLegacyGrowthIntentRecoversAndKeepsAttachedActions(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	for i := range 2 {
@@ -1653,6 +1667,7 @@ func TestRecoveryLegacyGrowthIntentRecoversAndKeepsAttachedActions(t *testing.T)
 			t.Fatalf("original completed journal outcome changed: %+v, %v", original, err)
 		}
 	})
+
 }
 
 // An ambiguous (transport-lost) request must be replayed across a restart with
@@ -1660,6 +1675,7 @@ func TestRecoveryLegacyGrowthIntentRecoversAndKeepsAttachedActions(t *testing.T)
 // execution, retains journal and mission, and yields a fresh action identity
 // once the credential is repaired.
 func TestRecoveryRestartReplaysImmutableRequestThenFreshAfterAuthStop(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	for i := range 2 {
@@ -1789,6 +1805,7 @@ func TestRecoveryRestartReplaysImmutableRequestThenFreshAfterAuthStop(t *testing
 	if repairedCall.Authorization != "Bearer "+repairedTestKey {
 		t.Fatalf("repaired dispatch did not use the repaired credential: %s", repairedCall.Authorization)
 	}
+
 }
 
 // refresh() records every fleet name, including sunk hulls, in the persisted
@@ -1796,6 +1813,7 @@ func TestRecoveryRestartReplaysImmutableRequestThenFreshAfterAuthStop(t *testing
 // disappears from the later API fleet, and startGrowth's names.Next never
 // hands that name to a new build.
 func TestRecoverySunkShipNameSurvivesRestartAndIsNeverReused(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setFleet([]map[string]any{
 		sunkShipRow(recoveryShipLapras, "Lapras"),
@@ -1871,4 +1889,5 @@ func TestRecoverySunkShipNameSurvivesRestartAndIsNeverReused(t *testing.T) {
 	if mission.Phase != "growth_refit" {
 		t.Fatalf("build outcome phase: %s", mission.Phase)
 	}
+
 }

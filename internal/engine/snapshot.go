@@ -581,6 +581,14 @@ func (r *Runner) refresh(ctx context.Context) error {
 	}
 	r.stateCache = r.state()
 	r.stateCache.Markets = withoutOwnOrders(r.stateCache.Markets, r.ownedOrders())
+	if scale := r.stateCache.Clock.Calendar.TimeScale; scale > 0 {
+		window := time.Duration(charterTaperWindowGameDays*24*int64(time.Hour)) / time.Duration(scale)
+		proceeds, err := r.db.CharterProceedsSince(ctx, r.account.ID, time.Now().Add(-window))
+		if err != nil {
+			return err
+		}
+		r.charterProceedsPence = proceeds
+	}
 	return r.recordBalances(ctx)
 }
 

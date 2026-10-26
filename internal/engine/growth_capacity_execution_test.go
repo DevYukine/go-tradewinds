@@ -111,6 +111,7 @@ func capacityExecutionFixture(t *testing.T, refuseBuild bool) (*recoveryHarness,
 }
 
 func TestCapacityGrowthProductionBuildArmsAndReleasesHull(t *testing.T) {
+	t.Parallel()
 	h, runner := capacityExecutionFixture(t, false)
 	if changed, err := runner.considerGrowth(h.ctx); err != nil || !changed {
 		t.Fatalf("capacity fallback admission: changed %t error %v holds %v", changed, err, runner.holding)
@@ -160,9 +161,11 @@ func TestCapacityGrowthProductionBuildArmsAndReleasesHull(t *testing.T) {
 	if err != nil || len(settlements) != 3 || settlements[0].ShipID != recoveryBuiltShipID || settlements[0].QuantityTons != 0 {
 		t.Fatalf("capacity control closeout settlement missing: %+v, %v", settlements, err)
 	}
+
 }
 
 func TestCapacityGrowthFreshPreflightRechecksQuoteAndEarnings(t *testing.T) {
+	t.Parallel()
 	for _, changedState := range []string{"quote", "profit", "future completion", "creation cooldown", "negative vault", "idle ship"} {
 		t.Run(changedState, func(t *testing.T) {
 			h, runner := capacityExecutionFixture(t, false)
@@ -204,9 +207,11 @@ func TestCapacityGrowthFreshPreflightRechecksQuoteAndEarnings(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestCapacityGrowthBuildRefusalBackoffSurvivesIntentDeletion(t *testing.T) {
+	t.Parallel()
 	h, runner := capacityExecutionFixture(t, true)
 	if changed, err := runner.considerGrowth(h.ctx); err != nil || !changed {
 		t.Fatalf("admit refused capacity build: changed %t error %v", changed, err)
@@ -240,9 +245,11 @@ func TestCapacityGrowthBuildRefusalBackoffSurvivesIntentDeletion(t *testing.T) {
 	if h.api.mutationCount("/v1/shipyard/build-ship") != 1 {
 		t.Fatal("definitively refused capacity hull was rebuilt during backoff")
 	}
+
 }
 
 func TestCapacityGrowthInputsUseWholeWindowAndNewestDelivery(t *testing.T) {
+	t.Parallel()
 	h, runner := capacityExecutionFixture(t, false)
 	evidence := growthEvidence{workingByRegion: make(map[string]int64)}
 	if reason, err := runner.growthCashFunding(h.ctx, &evidence); err != nil || reason != "" {
@@ -282,9 +289,11 @@ func TestCapacityGrowthInputsUseWholeWindowAndNewestDelivery(t *testing.T) {
 	if err != nil || reason != "" || !input.NewestShipProven || math.Abs(input.ActiveShipGameDays-2) > 1e-9 {
 		t.Fatalf("the actual newest ship's positive delivery was not recognized: %+v, %s, %v", input, reason, err)
 	}
+
 }
 
 func TestCapacityGrowthPreservesSourceGatesAndMaintenanceCash(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"relocation", "sourcing", "maintenance", "maintenance_done"} {
 		t.Run(kind, func(t *testing.T) {
 			h, runner := capacityExecutionFixture(t, false)
@@ -348,9 +357,11 @@ func TestCapacityGrowthPreservesSourceGatesAndMaintenanceCash(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestCapacityGrowthCannotSpendRelocationCash(t *testing.T) {
+	t.Parallel()
 	h, runner := capacityExecutionFixture(t, false)
 	h.putMission(recoveryShipBlastoise, "capacity-protected-relocation", "sourcing", missionData{
 		Plan: Plan{
@@ -366,9 +377,11 @@ func TestCapacityGrowthCannotSpendRelocationCash(t *testing.T) {
 	if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		t.Fatal("capacity admission sent a build with underfunded incumbent working capital")
 	}
+
 }
 
 func TestCapacityGrowthCannotProveNewestShipWithPreCreationDelivery(t *testing.T) {
+	t.Parallel()
 	h, runner := capacityExecutionFixture(t, false)
 	evidence := growthEvidence{workingByRegion: make(map[string]int64)}
 	if reason, err := runner.growthCashFunding(h.ctx, &evidence); err != nil || reason != "" {
@@ -385,9 +398,11 @@ func TestCapacityGrowthCannotProveNewestShipWithPreCreationDelivery(t *testing.T
 	if err != nil || reason == "" || input.NewestShipProven {
 		t.Fatalf("delivery predating the newest hull proved that hull: %+v, %s, %v", input, reason, err)
 	}
+
 }
 
 func TestCapacityGrowthKeepsFleetCashBufferGlobal(t *testing.T) {
+	t.Parallel()
 	h, runner := capacityExecutionFixture(t, false)
 	evidence := growthEvidence{workingByRegion: make(map[string]int64)}
 	if reason, err := runner.growthCashFunding(h.ctx, &evidence); err != nil || reason != "" {
@@ -414,9 +429,11 @@ func TestCapacityGrowthKeepsFleetCashBufferGlobal(t *testing.T) {
 	if err != nil || !decision.Accepted || decision.FundingFeesPence != 0 {
 		t.Fatalf("yard remitted an already-funded global buffer: %+v, %v", decision, err)
 	}
+
 }
 
-func TestCapacityGrowthDoesNotCountGossipAsSpareWork(t *testing.T) {
+func TestCapacityGrowthCountsGossipOnlyWhenFillingFleet(t *testing.T) {
+	t.Parallel()
 	for _, playerBid := range []bool{false, true} {
 		t.Run(fmt.Sprint("player_bid_", playerBid), func(t *testing.T) {
 			h, runner := capacityExecutionFixture(t, false)
@@ -466,11 +483,43 @@ func TestCapacityGrowthDoesNotCountGossipAsSpareWork(t *testing.T) {
 			if err != nil || decision.Accepted || decision.Reason != "capacity growth needs an executable profitable voyage after incumbent commitments" {
 				t.Fatalf("gossip plan justified a capacity purchase: %+v, %v", decision, err)
 			}
+			input.SmallFleetTarget = input.FleetSize + 1
+			decision, _, err = runner.capacityAtYard(h.ctx, port, hull, quote, input, &evidence)
+			if err != nil || !decision.Accepted {
+				t.Fatalf("fleet fill ignored a profitable gossip-priced first voyage: %+v, %v", decision, err)
+			}
 		})
 	}
+
+}
+
+func TestCapacityGrowthFillsSmallFleetFromIdleCash(t *testing.T) {
+	t.Parallel()
+	h, _ := capacityExecutionFixture(t, false)
+	// A losing recent voyage leaves no earnings record to justify a hull.
+	persistGrowthWindowSettlement(t, h, store.Settlement{
+		ID: "capacity-fill-loss", Kind: "spot", CostsKnown: true,
+		QuantityTons: 48, GameSeconds: 43_200, AcquisitionPence: 5_000_000, ProceedsPence: 1_000,
+		CompletedAt: time.Now().UTC().Add(-30 * time.Minute),
+	})
+	runner := growthWindowRunner(t, h)
+	if changed, err := runner.considerGrowth(h.ctx); err != nil || changed {
+		t.Fatalf("established fleet bought a hull without earnings: changed %t error %v", changed, err)
+	}
+	h.fleetTarget = 5
+	runner = growthWindowRunner(t, h)
+	if changed, err := runner.considerGrowth(h.ctx); err != nil || !changed {
+		t.Fatalf("small fleet left idle cash unspent: changed %t error %v holds %v", changed, err, runner.holding)
+	}
+	_, data := h.mission("__growth")
+	if data.Capacity == nil || data.Action == nil || data.Action.Stage != "build" {
+		t.Fatalf("fleet fill did not stage a capacity build: %+v", data)
+	}
+
 }
 
 func TestCapacityGrowthReleasesHullAfterRefitRefusalOrThreeAttempts(t *testing.T) {
+	t.Parallel()
 	for _, refusal := range []bool{true, false} {
 		t.Run(fmt.Sprint("domain_refusal_", refusal), func(t *testing.T) {
 			h, runner := capacityExecutionFixture(t, false)
@@ -534,9 +583,11 @@ func TestCapacityGrowthReleasesHullAfterRefitRefusalOrThreeAttempts(t *testing.T
 			}
 		})
 	}
+
 }
 
 func TestCapacityGrowthKeepsBuiltHullUntilArmed(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"evicted", "unfunded"} {
 		t.Run(state, func(t *testing.T) {
 			h, runner := capacityExecutionFixture(t, false)
@@ -591,9 +642,11 @@ func TestCapacityGrowthKeepsBuiltHullUntilArmed(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestCapacityGrowthChargesUnknownNonControlCostsWithoutPausing(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		path        string
@@ -631,9 +684,11 @@ func TestCapacityGrowthChargesUnknownNonControlCostsWithoutPausing(t *testing.T)
 			}
 		})
 	}
+
 }
 
 func TestCapacityGrowthChecksExemptCloseoutHullAndRecordedCosts(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{"alive", "missing", "sunk", "old sunk"} {
 		t.Run(status, func(t *testing.T) {
 			h, runner := capacityExecutionFixture(t, false)
@@ -683,9 +738,11 @@ func TestCapacityGrowthChecksExemptCloseoutHullAndRecordedCosts(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestCapacityGrowthShipLossWindowAndFirstObservationSurviveRestart(t *testing.T) {
+	t.Parallel()
 	for _, timing := range []string{"undated", "future", "recent", "old"} {
 		t.Run(timing, func(t *testing.T) {
 			h, runner := capacityExecutionFixture(t, false)
@@ -728,9 +785,11 @@ func TestCapacityGrowthShipLossWindowAndFirstObservationSurviveRestart(t *testin
 			}
 		})
 	}
+
 }
 
 func TestCapacityGrowthTreatsMissingMissionHullsAsLosses(t *testing.T) {
+	t.Parallel()
 	h, runner := capacityExecutionFixture(t, false)
 	h.putMission(recoveryShipCharizard, "capacity-missing-hull", "sailing", missionData{
 		Plan: Plan{ShipID: recoveryShipCharizard},
@@ -745,9 +804,11 @@ func TestCapacityGrowthTreatsMissingMissionHullsAsLosses(t *testing.T) {
 	if loss := decode[map[string]time.Time](runner.snapshot, "_ship_losses")[recoveryShipCharizard]; !loss.Equal(runner.meta["ships"].UpdatedAt) {
 		t.Fatalf("missing hull was not timed by the authoritative fleet observation: %s", loss)
 	}
+
 }
 
 func TestCapacityGrowthPreflightUsesLiveQuoteAndPlayerMaterialHeadroom(t *testing.T) {
+	t.Parallel()
 	for _, changedState := range []string{"higher allowed quote", "over ceiling", "mismatched yard", "player share", "regional funds within cushion", "regional funds above cushion"} {
 		t.Run(changedState, func(t *testing.T) {
 			h, runner := capacityExecutionFixture(t, false)
@@ -840,9 +901,11 @@ func TestCapacityGrowthPreflightUsesLiveQuoteAndPlayerMaterialHeadroom(t *testin
 			h.missingMission("__growth")
 		})
 	}
+
 }
 
 func TestCapacityGrowthPriceOverrunPersistsPauseAndYardBackoff(t *testing.T) {
+	t.Parallel()
 	h, runner := capacityExecutionFixture(t, false)
 	core, logs := observer.New(zap.WarnLevel)
 	runner.log = zap.New(core)
@@ -927,9 +990,11 @@ func TestCapacityGrowthPriceOverrunPersistsPauseAndYardBackoff(t *testing.T) {
 	if _, reason, err := restarted.capacityFleetInput(h.ctx, &evidence); err != nil || !strings.Contains(reason, "price overrun") {
 		t.Fatalf("restart ignored the capacity-wide price-overrun pause: %s, %v", reason, err)
 	}
+
 }
 
 func TestCapacityAuthorityDecode(t *testing.T) {
+	t.Parallel()
 	var ship ShipState
 	if err := json.Unmarshal([]byte(`{"ship":{"id":"lost-hull","status":"sunk","updated_at":"2026-10-24T12:00:00Z"}}`), &ship); err != nil {
 		t.Fatal(err)
@@ -945,4 +1010,5 @@ func TestCapacityAuthorityDecode(t *testing.T) {
 	if quote.MaterialsPence != 1_234 || quote.NPCMaterialsPence != 1_000 {
 		t.Fatalf("turnkey material provenance did not decode: %+v", quote)
 	}
+
 }

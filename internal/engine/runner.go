@@ -62,6 +62,9 @@ type Runner struct {
 	requestJournalMu       sync.Mutex
 	requestJournalCauses   map[[sha256.Size]byte]struct{}
 	requestJournalFailures int
+	// charterProceedsPence is recorded charter proceeds over the Crown
+	// premium taper window, loaded at each refresh.
+	charterProceedsPence int64
 }
 
 func New(api *gameapi.Client, db *store.Store, account store.Account, log *zap.Logger, opts Options) *Runner {
@@ -590,7 +593,7 @@ func (r *Runner) planningInputFrom(ship ShipState, state accountState) PlanningI
 		Markets:               state.Markets,
 		Ports:                 state.Ports,
 		Routes:                state.Routes,
-		Contracts:             state.Contracts,
+		Contracts:             taperedContracts(state.Contracts, state.Catalog, r.charterProceedsPence, ship.EffectiveHoldCapacityTons),
 		Balances:              balances,
 		ReserveByRegion:       reserves,
 		ReservePence:          r.opts.ReservePence,

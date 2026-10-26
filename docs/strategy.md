@@ -254,6 +254,8 @@ Checked against the [published guide](https://tradewinds.kibb.io/skill.md) and [
 
 At that time the bot held one hoy and about 113,945 Crowns idle. Growth had last built on 2026-10-22: the lane-proof path needs two positive delivered cycles inside 12 real hours plus repeat destination depth, which one ship rarely observes. The owner asked for a small fleet of cheap hulls first and for idle cash to be invested. Capacity growth (see `docs/runbook.md`) prices new hulls from recent recorded fleet earnings instead. An observe-only run of an earlier development build, on an earlier copy of the live database and with a 12 real hour earnings window, admitted a hoy at Amsterdam (turnkey 24,003 Crowns, about 302 Crowns per game day of recorded net per ship over that 12 hour window after 11.92 Crowns of extra upkeep, payback about 91 game days). A later build with the 24 hour window held growth at 2026-10-26 00:15 UTC because a freight settlement with unknown costs completed inside the window. Such settlements recur from routine freight handling: the live database held four, all zero-ton freight, completed between 2026-10-23 03:47 and 2026-10-25 23:18 UTC. The owner asked that they no longer pause growth, so their recorded losses now reduce window net and their recorded gains are ignored. On a fresh copy at 2026-10-26 09:43 UTC the relaxed build held instead because no candidate hull had an executable profitable voyage; the existing hoy at Portsmouth found no destination with observed depth either. These are recorded rates, not forecasts: a new hull that finds no work lowers the per-ship rate and pauses further buying, and a ship loss in the window pauses it too.
 
+The earnings rules still held growth on 2026-10-27: with one hoy earning about 37.6 Crowns per game day, even a hoy failed the payback test and the bot kept over 110,000 Crowns idle. The owner chose to scale with cash instead. Below `SMALL_FLEET_TARGET` (5 ships) idle cash now funds the cheapest capable hull, capped at a third of surplus per build, with reserves and every ship's cargo cash kept untouched. At about 114,000 Crowns that admits hoys (about 28,000 Crowns with cushion and guns) and stops after a few builds as cash falls. More hulls also see more markets, which is where other companies find their trades. The risk is idle hulls: a hoy that finds no work costs about 12 Crowns per game day in upkeep. This is an owner policy, not a measured return.
+
 | Update item | Treatment |
 | --- | --- |
 | Player orders in gossip | Where we have no live book, a fresh gossiped player bid's tons, minus our resting bids, our sales there since the observation and other missions' undelivered tons, can price a whole spot lot. Gossip's best bid covers the whole book, so the lot is admitted only when that best bid is above the player bid (a known non-player floor) and the lot stays positive with every ton valued at it less 25%, because the player order may be gone on arrival. Otherwise gossip still prices one ton. Gossip-priced lots never justify buying a hull. |
@@ -263,6 +265,21 @@ At that time the bot held one hoy and about 113,945 Crowns idle. Growth had last
 | Turnkey builds from player asks | Already reflected in yard quotes; no change. |
 | Player charters | Already planned exactly like Crown charters. |
 | Not adopted yet | Ship purchases (naming), commissions, envelopes and packets (no measured buyer demand), loans, the credit board, banks, ventures and ship shares (counterparty and default risk without credit history), convoy announcements. Idle cash goes to ships first. |
+
+### Game update 2 audit (2026-10-26)
+
+Source: the current guide (`/skill.md`) and OpenAPI schema compared with the copies from the previous audit.
+
+| Update item | Treatment |
+| --- | --- |
+| American colonies (Phase 2, region `america`, Boston shipyard) and the north-about passage | No code change: ports, regions and routes come from the catalog and route API. They become reachable when the world unlocks Phase 2 and are only planned for hulls rated for every leg. |
+| Hull rating counts the crossing | Already enforced: every leg must be rated for both its `edge_class` and the zone it reaches. |
+| Oceanic hulls count half toward sprawl upkeep | `DailyUpkeep` now adds half the oceanic tonnage, rounded down, to the sprawl tons, on top of the flat 1 Crown per oceanic ton. |
+| Crown charter premium taper | Planning prices every Crown or Admiralty charter at the goods' catalog value plus the premium times `sqrt(50,000 Cr / earnings)` once recorded charter proceeds over the last 10 game days (4 real hours at the default time scale), plus the ship's largest possible delivery, pass 50,000 Crowns. Proceeds include any market sales recorded with the charter, so this errs low. One hoy already reached 37,915 Crowns in one 4-hour window, so a larger fleet will hit the taper. Player charters are not tapered. |
+| Wealth levy on net worth above 1,000,000 Cr | Not modelled. It charges 0.1% of the excess per game day, and the company's net worth is far below the threshold. |
+| Loans by quote (Goldsmiths 45% a year at 30 days, sliding to 30% at 360) | Not used. A 30-day Goldsmiths loan costs about 3.7% of principal and is capped at 7,500 Crowns; the fleet is held back by finding work, not by cash. |
+| Patrol quotes and prize money | Not used. Patrols are priced from smuggling traffic, which we cannot observe, and pay only when smugglers are caught. |
+| Contraband, coves and the `underworld` scope | Not used. Our key has no `underworld` scope, a seizure forfeits the ship and everything aboard, and the search odds are unpublished. Contraband never appears in market books, gossip or contracts, so planning needs no exclusion. The bot hires no factors, so the cove factor ban does not apply. |
 
 ## Durable economic record
 

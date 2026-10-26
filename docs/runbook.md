@@ -15,7 +15,7 @@ Run commands from the project directory so `.env` is found. Existing environment
 | `RESERVE_PENCE` | Operating cash reserve, default 100,000 pence |
 | `MAX_PAYBACK_GAME_DAYS` | Maximum lane-forecast ship-investment payback horizon, default 30 game days |
 | `CAPACITY_PAYBACK_GAME_DAYS` | Maximum payback for capacity growth priced from recorded fleet earnings, default 180 game days |
-| `SMALL_FLEET_TARGET` | Fleet size below which capacity growth buys the cheapest capable hull, default 5 ships |
+| `SMALL_FLEET_TARGET` | Fleet size below which idle cash funds the cheapest capable hull without an earnings record, default 5 ships |
 | `MARQUES_ENABLED` | Issue letters of marque automatically; default `false` because the game charges the live price with no price cap |
 | `COMPOSE_PROJECT_NAME` | Stable local Compose project and volume identity; default `tradewinds` |
 | `POSTGRES_PASSWORD` | Local Compose PostgreSQL password |
@@ -143,7 +143,15 @@ Any negative vault or underfunded active/obligated region defers construction, n
 
 #### Capacity growth
 
-When the lane-proof path above refuses or finds no package, capacity growth decides from recorded fleet earnings instead of a frozen first lane. Idle cash is meant to become ships, not sit in the vault. A hull is bought only when all of these hold:
+When the lane-proof path above refuses or finds no package, capacity growth decides instead. Idle cash is meant to become ships, not sit in the vault.
+
+Below `SMALL_FLEET_TARGET` ships, idle cash funds the cheapest capable hull that has an accepted first voyage at its yard after incumbent commitments. Recent coffee-house gossip of other companies' prices counts as that evidence here, alongside observed depth and live contracts. No earnings record or payback is required, but every build must still:
+
+- leave the buffer below (protected reserves plus one cargo-cash lot for every ship including the new one), so trading is never starved;
+- cost at most a third of surplus cash including the 10% quote cushion, guns and stores, so the fleet grows step by step and stops when cash runs down;
+- wait 90 real minutes after the newest ship joined, 24 real hours after a ship loss or build price overrun, and for any build already in progress.
+
+In this mode a sourcing relocation does not pause growth. From the target onward, a hull is bought only when all of these hold:
 
 - the candidate hull has an accepted voyage at the yard after incumbent ships' commitments are removed, priced from observed destination depth or live contract terms (gossip-priced lots do not count);
 - the newest hull has completed a positive delivery (one ship counts as proven), and no ship joined the fleet in the last 90 real minutes;
@@ -153,7 +161,7 @@ When the lane-proof path above refuses or finds no package, capacity growth deci
 - that window net per active ship game day, minus the hull's incremental daily upkeep, repays hull price, a 10% quote cushion, guns to `min(4, max_cannons)` and initial stores within `CAPACITY_PAYBACK_GAME_DAYS`;
 - surplus cash above protected reserves covers that capital plus a buffer of `max(RESERVE_PENCE, 15% of hull price)` and one median recent known-cost lot of cargo cash per ship including the new one. Only the capital and the yard region's own reserve must be in the yard's region; the buffer is checked fleet-wide and is not remitted.
 
-Candidates are ranked by net earnings per game day over capital. Below `SMALL_FLEET_TARGET` the earnings rate is not scaled by hold size, so equal rates make the cheaper hull rank first. From the target onward, a larger hold scales the rate (by hold over fleet average hold, clamped to 0.5x to 2x) only when recorded deliveries fill at least 80% of effective hold. Packets are never bought for cargo. Growth does not run while a sourcing handoff is active.
+Established-fleet candidates are ranked by net earnings per game day over capital; fleet-fill candidates by lowest capital. A larger hold scales the established-fleet rate (by hold over fleet average hold, clamped to 0.5x to 2x) only when recorded deliveries fill at least 80% of effective hold. Packets are never bought for cargo. From the fleet target onward, growth does not run while a sourcing handoff is active.
 
 The durable `__growth` intent builds the hull turnkey, arms it at the yard, records the commissioning settlement and deletes itself. The hull then joins normal planning; idle maintenance buys its stores. If the yard evicts the hull to the roadstead before it is armed, the intent docks it again. If the yard region can no longer pay for the guns, the hull holds unarmed in port instead of trading. A definitive refit refusal or three refit attempts releases the hull to normal operations, where maintenance arms it later. Growth decisions record the chosen candidate's capital, buffer, rate and payback, or the blocking reason.
 
@@ -370,6 +378,8 @@ Production is skipped only when `web/.next/BUILD_ID` is missing, with instructio
 Run database integration tests with the disposable URL, then smoke the actual CLI and database API. For concurrency changes, run `go test -race -p 1 -timeout 30m ./...` when a working C compiler is installed. Report an unavailable race toolchain instead of calling that check passed.
 
 Run the fixed-company logging and underwriting CLI fixtures serially with each other and with the entire Go suite. Different disposable schemas do not isolate PostgreSQL company advisory locks. A competing fixture can make `Runner.Run` return `ErrAccountLocked` before its first request; a REST-capture timeout is not proof that the HTTP path stalled.
+
+Engine tests run in parallel, six at a time by default (pass `-parallel` to change it). Each uses its own schema and fake game server, and test connections turn off `synchronous_commit` because the schemas are thrown away. A test that calls `Runner.Run` takes the company advisory lock and waits on real-time gates, so it must not call `t.Parallel()`: Go runs such serial tests before the parallel ones.
 
 Go's timeout covers an entire package, not each test. The serialized PostgreSQL scenarios can exceed shorter package-wide limits even while individual cases continue passing. Keep their bounded waits and assertions intact, and preserve per-test output when diagnosing a suite timeout.
 

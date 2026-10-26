@@ -190,13 +190,10 @@ func sourcingCandidates(in PlanningInput) []Plan {
 }
 
 func sourcingEvidenceKey(source string, charter Contract, ask int64) string {
-	var reward int64
-	if charter.RewardPerTonPence != nil {
-		reward = *charter.RewardPerTonPence
-	}
-	// Contract IDs, refresh times and gossip timestamps do not make unchanged
-	// supply and reward terms new evidence or grant another trip to the source.
-	return fmt.Sprintf("%s|%s|%s|probe:%d:%d", source, charter.OriginPortID, charter.CommodityID, ask, reward)
+	// Contract IDs, refresh times, gossip timestamps and the earnings-driven
+	// charter taper do not make unchanged supply and reward terms new evidence
+	// or grant another trip to the source.
+	return fmt.Sprintf("%s|%s|%s|probe:%d:%d", source, charter.OriginPortID, charter.CommodityID, ask, nominalCharterReward(charter))
 }
 
 func sourcingProbeRejection(in PlanningInput, source string, charter Contract, ask int64) string {

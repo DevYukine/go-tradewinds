@@ -235,7 +235,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return changed, err
 		}
 	}
-	if missions["__growth"] == nil && missions["__treasury"] == nil && !sourcingActive {
+	if missions["__growth"] == nil && missions["__treasury"] == nil && (!sourcingActive || r.fleetBelowTarget()) {
 		changed, err := r.considerGrowth(ctx)
 		if changed || err != nil {
 			return changed, err
@@ -1155,7 +1155,7 @@ func (r *Runner) deliverAtArrival(ctx context.Context, ship ShipState, mission *
 		}
 		if charter != nil {
 			amount := min(eligible, charter.RemainingQuantity)
-			charterPay := amount * *charter.RewardPerTonPence
+			charterPay := checkedPenceProduct(amount, taperedCharterReward(*charter, r.stateCache.Catalog, r.charterProceedsPence, amount))
 			var marketPay int64
 			if entry != nil && entry.Depth != nil {
 				if fill, err := WalkDepth(entry.Depth.Bids, amount, false); err == nil {

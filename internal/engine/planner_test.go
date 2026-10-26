@@ -79,6 +79,7 @@ func inputFixture(t *testing.T) engine.PlanningInput {
 }
 
 func TestDepthWalkUsesEveryFillAndPreservesInput(t *testing.T) {
+	t.Parallel()
 	levels := []engine.Level{{PricePence: 200, RemainingQuantity: 3}, {PricePence: 100, RemainingQuantity: 2}}
 	fill, err := engine.WalkDepth(levels, 4, true)
 	if err != nil || fill.GrossPence != 600 || fill.LimitPence != 200 || fill.Quantity != 4 {
@@ -97,9 +98,11 @@ func TestDepthWalkUsesEveryFillAndPreservesInput(t *testing.T) {
 	if _, err := engine.WalkDepth([]engine.Level{{PricePence: 1_000_000_000_000, RemainingQuantity: math.MaxInt64}}, math.MaxInt64, true); err == nil {
 		t.Fatal("overflowing monetary value was accepted")
 	}
+
 }
 
 func TestPublicCharterUsesMeasuredLocalDepthWithoutRemoteBook(t *testing.T) {
+	t.Parallel()
 	in := inputFixture(t)
 	plans := engine.PlanVoyages(in)
 	if len(plans) == 0 || !plans[0].Accepted || plans[0].Kind != "charter" {
@@ -115,6 +118,7 @@ func TestPublicCharterUsesMeasuredLocalDepthWithoutRemoteBook(t *testing.T) {
 	if plan.Economics.ProbabilityEstimate != nil || plan.Economics.StressHaircutPence <= 0 {
 		t.Fatal("diagnostic stress was missing or presented as measured hazard probability")
 	}
+
 }
 
 func narrowMarginFixture(t *testing.T) engine.PlanningInput {
@@ -145,6 +149,7 @@ func narrowMarginFixture(t *testing.T) engine.PlanningInput {
 }
 
 func TestMeasuredPositiveCashMarginIsNotRejectedByNegativeStress(t *testing.T) {
+	t.Parallel()
 	in := narrowMarginFixture(t)
 	plan := engine.PlanVoyages(in)[0]
 	if !plan.Accepted || plan.Kind != "charter" || plan.Quantity != 24 {
@@ -165,9 +170,11 @@ func TestMeasuredPositiveCashMarginIsNotRejectedByNegativeStress(t *testing.T) {
 	if plan.StoresToBuy != 0 || plan.TargetStoresTons > in.Ship.Stores.ProvisionsTons {
 		t.Fatalf("existing safe stores were ignored: %+v", plan)
 	}
+
 }
 
 func TestPlannerCashNetIdentityDoesNotChargeStressOrRefundableCollateral(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"charter", "spot", "freight"} {
 		t.Run(kind, func(t *testing.T) {
 			in := inputFixture(t)
@@ -221,9 +228,11 @@ func TestPlannerCashNetIdentityDoesNotChargeStressOrRefundableCollateral(t *test
 			}
 		})
 	}
+
 }
 
 func TestDeliveryTurnaroundMatchesBerthLocks(t *testing.T) {
+	t.Parallel()
 	in := narrowMarginFixture(t)
 	plan := engine.PlanVoyages(in)[0]
 	if !plan.Accepted {
@@ -240,9 +249,11 @@ func TestDeliveryTurnaroundMatchesBerthLocks(t *testing.T) {
 	if math.Abs(plan.Economics.GameDays-want) > 1e-9 {
 		t.Fatalf("delivery duration %.9f days, want %.9f (sailing %.9f + two 30min berth locks %.9f + handling %.9f + queue %.9f)", plan.Economics.GameDays, want, sailingDays, berthLockDays, handlingDays, queueDays)
 	}
+
 }
 
 func TestCandidateDestinationPreservesReserveWithoutRecordedObligation(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		reserve  int64
@@ -269,9 +280,11 @@ func TestCandidateDestinationPreservesReserveWithoutRecordedObligation(t *testin
 			}
 		})
 	}
+
 }
 
 func TestDestinationContributionProtectsFleetBillsWithoutChargingThem(t *testing.T) {
+	t.Parallel()
 	in := inputFixture(t)
 	baseline := engine.PlanVoyages(in)[0]
 	in.FleetDailyUpkeepPence = 100_000
@@ -289,9 +302,11 @@ func TestDestinationContributionProtectsFleetBillsWithoutChargingThem(t *testing
 			t.Fatalf("fixed fleet bills were omitted from protected cash: %+v", plan)
 		}
 	}
+
 }
 
 func TestBallastRepeatIsSeparateAndRequiresFreshSafeReturn(t *testing.T) {
+	t.Parallel()
 	in := inputFixture(t)
 	control := engine.PlanVoyages(in)[0]
 	if !control.Accepted || control.Economics.BallastRepeatGameDays <= control.Economics.GameDays ||
@@ -336,9 +351,11 @@ func TestBallastRepeatIsSeparateAndRequiresFreshSafeReturn(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestBallastRepeatCrossRegionRestoresRecurringOriginCash(t *testing.T) {
+	t.Parallel()
 	freshInput := func() engine.PlanningInput {
 		in := inputFixture(t)
 		in.Ship.Stores.ProvisionsTons = 0
@@ -402,9 +419,11 @@ func TestBallastRepeatCrossRegionRestoresRecurringOriginCash(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestDestinationStoreCashDoesNotExpenseUnconsumedInventory(t *testing.T) {
+	t.Parallel()
 	in := inputFixture(t)
 	in.Ship.Stores.ProvisionsTons = 0
 	market := in.Markets["le_havre"]
@@ -423,9 +442,11 @@ func TestDestinationStoreCashDoesNotExpenseUnconsumedInventory(t *testing.T) {
 		plan.Economics.ProvisionsPence <= 0 || plan.Economics.ProvisionsPence >= wantCash {
 		t.Fatalf("cash for whole tons was confused with consumed provisions: %+v", plan)
 	}
+
 }
 
 func TestCashLossPrecedesUnpricedPurchasesInEmptyHoldExplanation(t *testing.T) {
+	t.Parallel()
 	in := narrowMarginFixture(t)
 	lossReward := int64(20_000)
 	in.Contracts[0].RewardPerTonPence = &lossReward
@@ -452,9 +473,11 @@ func TestCashLossPrecedesUnpricedPurchasesInEmptyHoldExplanation(t *testing.T) {
 	if !foundUnpriced {
 		t.Fatal("unpriced public charter was omitted from the hold explanation")
 	}
+
 }
 
 func TestPlannerEqualContributionTiesAreDeterministic(t *testing.T) {
+	t.Parallel()
 	in := inputFixture(t)
 	second := in.Contracts[0]
 	second.ID = "charter-b"
@@ -468,9 +491,11 @@ func TestPlannerEqualContributionTiesAreDeterministic(t *testing.T) {
 		ordered.Quantity != reversed.Quantity {
 		t.Fatalf("equal delivery contributions depend on listing order: reversed %+v ordered %+v", reversed, ordered)
 	}
+
 }
 
 func TestPlannerChoosesProfitableDepthBoundaryNotFullHold(t *testing.T) {
+	t.Parallel()
 	in := inputFixture(t)
 	market := in.Markets["le_havre"]
 	market.Books[0].Depth.Asks = []engine.Level{{PricePence: 1000, RemainingQuantity: 10}, {PricePence: 5000, RemainingQuantity: 100}}
@@ -479,9 +504,11 @@ func TestPlannerChoosesProfitableDepthBoundaryNotFullHold(t *testing.T) {
 	if !plans[0].Accepted || plans[0].Quantity != 10 || plans[0].BuyLimitPence != 1000 {
 		t.Fatalf("profitable ladder boundary missed: %+v", plans[0])
 	}
+
 }
 
 func TestPlannerRejectsUnsafeOrUnfundedVoyages(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		change func(*engine.PlanningInput)
@@ -541,9 +568,11 @@ func TestPlannerRejectsUnsafeOrUnfundedVoyages(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestFreightCompetesAndCompatibleMixedHoldKeepsSealSeparate(t *testing.T) {
+	t.Parallel()
 	in := inputFixture(t)
 	in.Contracts[0].RemainingQuantity = 10
 	freight := fixture[engine.Contract](t, `{"id":"freight-a","contract_type":"freight","origin_port_id":"le_havre","dest_port_id":"portsmouth","commodity_id":"sawn_planks","quantity_required":4,"remaining_quantity":4,"reward_pence":20000,"collateral_pence":5000,"status":"open","stale":false,"issuer_company_id":"other-company"}`)
@@ -555,9 +584,11 @@ func TestFreightCompetesAndCompatibleMixedHoldKeepsSealSeparate(t *testing.T) {
 	if plans[0].Economics.RevenuePence != 50_000 {
 		t.Fatal("collateral principal was counted as income")
 	}
+
 }
 
 func TestMixedManifestSizesDemandHoldDepthAndCashIndependently(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		demand    int64
@@ -612,9 +643,11 @@ func TestMixedManifestSizesDemandHoldDepthAndCashIndependently(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestOwnRestingOrdersCannotCreateProfit(t *testing.T) {
+	t.Parallel()
 	in := inputFixture(t)
 	in.OwnedOrderIDs = map[string]bool{"npc-1": true}
 	for _, plan := range engine.PlanVoyages(in) {
@@ -622,9 +655,11 @@ func TestOwnRestingOrdersCannotCreateProfit(t *testing.T) {
 			t.Fatalf("own-player liquidity was counted as executable: %+v", plan)
 		}
 	}
+
 }
 
 func TestRemittanceGrossCoversActualFeeAndRejectsInvalidRates(t *testing.T) {
+	t.Parallel()
 	for _, fee := range []int64{0, 50, 150, 600, 9999} {
 		gross, err := engine.GrossRemittance(12_345, fee)
 		if err != nil {
@@ -638,9 +673,11 @@ func TestRemittanceGrossCoversActualFeeAndRejectsInvalidRates(t *testing.T) {
 	if _, err := engine.GrossRemittance(100, 10_000); err == nil {
 		t.Fatal("non-remittable fee accepted")
 	}
+
 }
 
-func TestUpkeepChargesOnlyMarginalFleetAndSeparateOceanicTons(t *testing.T) {
+func TestUpkeepChargesMarginalFleetAndHalfOceanicTons(t *testing.T) {
+	t.Parallel()
 	in := inputFixture(t)
 	if got := engine.DailyUpkeep([]engine.ShipState{in.Ship}, in.Catalog, 0); got != 0 {
 		t.Fatalf("first 40 coastal tons should be free: %d", got)
@@ -652,12 +689,15 @@ func TestUpkeepChargesOnlyMarginalFleetAndSeparateOceanicTons(t *testing.T) {
 	in.Catalog.ShipClasses = append(in.Catalog.ShipClasses, ocean)
 	ship := in.Ship
 	ship.Ship.ShipClass = "barque"
-	if got := engine.DailyUpkeep([]engine.ShipState{in.Ship, ship}, in.Catalog, 0); got != 22_000 {
-		t.Fatalf("oceanic tons incorrectly entered sprawl: %d", got)
+	// 40 coastal tons plus half of 220 oceanic tons leave 110 sprawl tons.
+	if got := engine.DailyUpkeep([]engine.ShipState{in.Ship, ship}, in.Catalog, 0); got != 22_000+5_167 {
+		t.Fatalf("half the oceanic tonnage did not enter sprawl: %d", got)
 	}
+
 }
 
 func TestGrowthRequiresActualSettlementsSpareDepthAndFundedPayback(t *testing.T) {
+	t.Parallel()
 	price := int64(100_000)
 	base := engine.GrowthInput{
 		Plan:         engine.Plan{Accepted: true, Quantity: 20, Economics: engine.Economics{PurchasePence: 10_000, GameDays: 1, NetPencePerGameDay: 100_000}},
@@ -725,4 +765,5 @@ func TestGrowthRequiresActualSettlementsSpareDepthAndFundedPayback(t *testing.T)
 	if engine.EvaluateGrowth(unknownLoss).Accepted {
 		t.Fatal("growth treated an unresolved capital loss as zero cost")
 	}
+
 }

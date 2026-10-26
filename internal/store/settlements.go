@@ -194,6 +194,23 @@ func (s *Store) SettlementsByID(ctx context.Context, accountID string, ids []str
 	return rows, nil
 }
 
+// CharterProceedsSince sums recorded charter settlement proceeds completed at
+// or after since. Proceeds can include market sales beside the charter pay,
+// so the sum is an upper bound on charter earnings.
+func (s *Store) CharterProceedsSince(ctx context.Context, accountID string, since time.Time) (int64, error) {
+	if !validID(accountID) {
+		return 0, fmt.Errorf("charter proceeds query: %w", ErrInvalidInput)
+	}
+	db, cancel := s.query(ctx)
+	defer cancel()
+	var total int64
+	err := db.Model(&settlementRow{}).
+		Where("account_id = ? AND kind = ? AND completed_at >= ?", accountID, "charter", since).
+		Select("COALESCE(SUM(proceeds_pence), 0)").
+		Scan(&total).Error
+	return total, err
+}
+
 // EconomicHistory is permanent execution evidence, not a page of display
 // history. Commercial losses include zero-ton failed procurements. Probes are
 // charged separately so exploration cannot replenish its budget by restarting.

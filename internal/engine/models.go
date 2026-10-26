@@ -9,9 +9,16 @@ import (
 // The planner projects only documented economic fields. Snapshots retain the full
 // upstream response, including fields not needed by the planner.
 type Catalog struct {
-	Ports       []Port `json:"ports"`
-	ShipClasses []Hull `json:"ship_classes"`
-	SeaZones    []Zone `json:"sea_zones"`
+	Ports       []Port      `json:"ports"`
+	ShipClasses []Hull      `json:"ship_classes"`
+	SeaZones    []Zone      `json:"sea_zones"`
+	Commodities []Commodity `json:"commodities"`
+}
+
+type Commodity struct {
+	ID             string `json:"id"`
+	Category       string `json:"category"`
+	BasePricePence int64  `json:"base_price_pence"`
 }
 
 type Port struct {
@@ -24,6 +31,7 @@ type Port struct {
 	Produces      []string `json:"produces"`
 	Manufactures  []string `json:"manufactures"`
 	Imports       []string `json:"imports"`
+	IsCove        bool     `json:"is_cove"`
 }
 
 type Hull struct {
@@ -159,25 +167,29 @@ type PortDetail struct {
 }
 
 type Contract struct {
-	ID                string          `json:"id"`
-	ContractType      string          `json:"contract_type"`
-	OriginPortID      string          `json:"origin_port_id"`
-	DestPortID        string          `json:"dest_port_id"`
-	CommodityID       string          `json:"commodity_id"`
-	QuantityRequired  int64           `json:"quantity_required"`
-	QuantityDelivered int64           `json:"quantity_delivered"`
-	RemainingQuantity int64           `json:"remaining_quantity"`
-	RewardPence       int64           `json:"reward_pence"`
-	RewardPerTonPence *int64          `json:"reward_per_ton_pence"`
-	CollateralPence   int64           `json:"collateral_pence"`
-	Status            string          `json:"status"`
-	IsPublic          bool            `json:"is_public"`
-	Stale             bool            `json:"stale"`
-	IssuerCompanyID   string          `json:"issuer_company_id"`
-	CarrierCompanyID  string          `json:"carrier_company_id"`
-	CarrierShipID     string          `json:"carrier_ship_id"`
-	ExpiresAt         *time.Time      `json:"expires_at"`
-	Metadata          json.RawMessage `json:"metadata"`
+	ID                string `json:"id"`
+	ContractType      string `json:"contract_type"`
+	OriginPortID      string `json:"origin_port_id"`
+	DestPortID        string `json:"dest_port_id"`
+	CommodityID       string `json:"commodity_id"`
+	QuantityRequired  int64  `json:"quantity_required"`
+	QuantityDelivered int64  `json:"quantity_delivered"`
+	RemainingQuantity int64  `json:"remaining_quantity"`
+	RewardPence       int64  `json:"reward_pence"`
+	RewardPerTonPence *int64 `json:"reward_per_ton_pence"`
+	// NominalRewardPerTonPence keeps the posted reward when planning replaces
+	// RewardPerTonPence with the Crown premium taper, so evidence keys and
+	// refusal terms do not change as charter earnings move.
+	NominalRewardPerTonPence *int64          `json:"-"`
+	CollateralPence          int64           `json:"collateral_pence"`
+	Status                   string          `json:"status"`
+	IsPublic                 bool            `json:"is_public"`
+	Stale                    bool            `json:"stale"`
+	IssuerCompanyID          string          `json:"issuer_company_id"`
+	CarrierCompanyID         string          `json:"carrier_company_id"`
+	CarrierShipID            string          `json:"carrier_ship_id"`
+	ExpiresAt                *time.Time      `json:"expires_at"`
+	Metadata                 json.RawMessage `json:"metadata"`
 }
 
 type Vault struct {

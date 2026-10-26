@@ -34,10 +34,7 @@ func observedCharterTerms(contract Contract) charterTerms {
 		Origin: contract.OriginPortID, Destination: contract.DestPortID,
 		Commodity: contract.CommodityID, Status: contract.Status,
 		Required: contract.QuantityRequired, Delivered: contract.QuantityDelivered,
-		Remaining: contract.RemainingQuantity,
-	}
-	if contract.RewardPerTonPence != nil {
-		terms.Reward = *contract.RewardPerTonPence
+		Remaining: contract.RemainingQuantity, Reward: nominalCharterReward(contract),
 	}
 	if contract.ExpiresAt != nil {
 		terms.Expiry = contract.ExpiresAt.UTC()
