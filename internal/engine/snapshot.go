@@ -425,6 +425,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 	state.Markets = r.monopolyMarketView(state.Markets, state.Catalog, state.Clock)
 	r.stateCache = state
 	r.recordShipIdle(state, previousIdle)
+	r.refreshSourcingHistory(ctx, r.planningInput(ShipState{}))
 	captureSourcePair := func(pair [2]string, class string) error {
 		var tasks []fetchTask
 		for _, endpoints := range [][2]string{pair, {pair[1], pair[0]}} {
@@ -456,10 +457,18 @@ func (r *Runner) refresh(ctx context.Context) error {
 	}
 	shortlisted := 0
 	inspections := 0
+	sourcingBudgetLoaded := false
 	for _, ship := range state.Ships {
 		mission, data, err := r.loadMission(ctx, ship.Ship.ID)
 		if err != nil {
 			return err
+		}
+		sourcingEligible := mission == nil && current.fresh("ships") && emptyCargo(ship) && ship.Voyage == nil &&
+			(ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") && ship.Ship.ConvoyID == "" &&
+			!idleFreight(ship.Ship.ID, state.Contracts)
+		if !sourcingBudgetLoaded && (sourcingEligible || data.Relocation != nil || data.SourcingHandoff != nil) {
+			r.refreshSourcingBudget(ctx, r.planningInput(ship))
+			sourcingBudgetLoaded = true
 		}
 		if mission != nil && data.Relocation != nil {
 			if err := captureSourcePair([2]string{data.Plan.Origin, data.Plan.Destination}, ship.Ship.ShipClass); err != nil {
@@ -468,8 +477,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 			if err := captureSourcePair([2]string{data.Plan.Destination, data.Relocation.TargetDestination}, ship.Ship.ShipClass); err != nil {
 				return err
 			}
-		} else if mission == nil && shortlisted < sourcingPairLimit && current.fresh("ships") && emptyCargo(ship) && ship.Voyage == nil &&
-			(ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") && ship.Ship.ConvoyID == "" {
+		} else if sourcingEligible && shortlisted < sourcingPairLimit {
 			sourcingInput, err := r.sourcingInput(ctx, ship)
 			if err != nil {
 				return err

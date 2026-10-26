@@ -142,12 +142,13 @@ type settlementRow struct {
 func (settlementRow) TableName() string { return "settlements" }
 
 type settlementContext struct {
-	ShipID      string
-	Lane        string
-	Kind        string
-	Origin      string
-	Destination string
-	Commodity   string
+	ShipID       string
+	Lane         string
+	Kind         string
+	Origin       string
+	Destination  string
+	Commodity    string
+	ProbeOutcome string
 }
 
 func settlementClassification(kind string) string {
@@ -171,7 +172,7 @@ func (s *Store) encodeSettlement(value Settlement) (settlementRow, error) {
 	}
 	context := settlementContext{
 		ShipID: value.ShipID, Lane: value.Lane, Kind: value.Kind, Origin: value.Origin,
-		Destination: value.Destination, Commodity: value.Commodity,
+		Destination: value.Destination, Commodity: value.Commodity, ProbeOutcome: value.ProbeOutcome,
 	}
 	var err error
 	row.ContextCipher, err = s.encryptPrivate(context, "settlements", "context", row.AccountID, row.ID)
@@ -189,7 +190,7 @@ func (s *Store) decodeSettlement(row settlementRow) (Settlement, error) {
 	return Settlement{
 		ID: row.ID, AccountID: row.AccountID, ShipID: context.ShipID, MissionID: row.MissionID,
 		Lane: context.Lane, ActionID: row.ActionID, Kind: context.Kind, Origin: context.Origin,
-		Destination: context.Destination, Commodity: context.Commodity,
+		Destination: context.Destination, Commodity: context.Commodity, ProbeOutcome: context.ProbeOutcome,
 		QuantityTons: row.QuantityTons, GameSeconds: row.GameSeconds, CostsKnown: row.CostsKnown,
 		AcquisitionPence: row.AcquisitionPence, ProceedsPence: row.ProceedsPence,
 		FeesPence: row.FeesPence, ProvisionsPence: row.ProvisionsPence, ExpensesPence: row.ExpensesPence,

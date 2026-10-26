@@ -56,6 +56,8 @@ func idleExecutionReviewRecordClock(t *testing.T, w *idleFallbackWorld, runner *
 	runner.stateCache = state
 	runner.snapshot["clock"] = encode(state.Clock)
 	runner.recordShipIdle(state, previous)
+	runner.refreshSourcingHistory(w.h.ctx, runner.planningInput(ShipState{}))
+	runner.refreshSourcingBudget(w.h.ctx, runner.planningInput(ShipState{}))
 }
 
 func TestIdleExecutionReviewCachedClockAfterGapCannotCreditDowntime(t *testing.T) {

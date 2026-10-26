@@ -15,6 +15,8 @@ import (
 const sourcingAskEvidence = "recent public ask gossip; executable quantity and revenue remain unknown"
 
 const sourcingPairLimit = 3
+const failedCatalogueProbeReason = "failed catalogue-only source/commodity probe is cooling down for 24 real hours; new contract IDs and timestamps are not new supply evidence"
+const failedProbeStreakReason = "two consecutive probes did not convert to a laden departure; catalogue-only probing waits for a laden departure or six coherent idle game hours"
 
 // This basis values physically consumed stores for the exploration risk cap.
 // It is a replacement-cost estimate, never realized cash profit; purchase cash
@@ -198,7 +200,7 @@ func sourcingCandidates(in PlanningInput) []Plan {
 	if len(pairs) == 0 {
 		return []Plan{reject(Plan{Kind: "relocation", ShipID: in.Ship.Ship.ID}, "no live charter/source opportunity for a bounded relocation")}
 	}
-	sortSourcingPlans(pairs)
+	sortSourcingPlans(in, pairs)
 	return pairs
 }
 
@@ -210,6 +212,16 @@ func sourcingEvidenceKey(source string, charter Contract, ask int64) string {
 }
 
 func sourcingProbeRejection(in PlanningInput, source string, charter Contract, ask int64) string {
+	if ask == 0 {
+		observed := in.SourcingProbeHistory.Sources[probeSourceKey(source, charter.CommodityID)]
+		if !recentSourceConversion(observed, in.Now) && !observed.CatalogueFailedAt.IsZero() &&
+			in.Now.Before(observed.CatalogueFailedAt.Add(failedCatalogueProbeCooldown)) {
+			return failedCatalogueProbeReason
+		}
+		if in.SourcingProbeHistory.Ships[in.Ship.Ship.ID].Failures >= 2 {
+			return failedProbeStreakReason
+		}
+	}
 	var latest time.Time
 	inspected := false
 	for _, lane := range []string{
@@ -264,7 +276,7 @@ func sourcingUsesPilot(in PlanningInput, source string, charter Contract, ask in
 	return false
 }
 
-func sortSourcingPlans(plans []Plan) {
+func sortSourcingPlans(in PlanningInput, plans []Plan) {
 	sort.SliceStable(plans, func(i, j int) bool {
 		a, b := plans[i], plans[j]
 		if a.Accepted != b.Accepted {
@@ -273,10 +285,10 @@ func sortSourcingPlans(plans []Plan) {
 		if !a.Accepted && (a.Economics.GameDays > 0) != (b.Economics.GameDays > 0) {
 			return a.Economics.GameDays > 0
 		}
-		aGossip := a.PriceSource == sourcingAskEvidence
-		bGossip := b.PriceSource == sourcingAskEvidence
-		if aGossip != bGossip {
-			return aGossip
+		aRank := in.SourcingProbeHistory.sourceRank(in.Now, a.Destination, a.Commodity, a.PriceSource == sourcingAskEvidence)
+		bRank := in.SourcingProbeHistory.sourceRank(in.Now, b.Destination, b.Commodity, b.PriceSource == sourcingAskEvidence)
+		if aRank != bRank {
+			return aRank < bRank
 		}
 		if a.Economics.ExpectedNetPence != b.Economics.ExpectedNetPence {
 			return a.Economics.ExpectedNetPence > b.Economics.ExpectedNetPence
@@ -298,7 +310,7 @@ func sourcingPairs(in PlanningInput) []Plan {
 			pairs[i] = validateRelocationTarget(in, pairs[i])
 		}
 	}
-	sortSourcingPlans(pairs)
+	sortSourcingPlans(in, pairs)
 	count := 0
 	for i := range pairs {
 		if !pairs[i].Accepted {
@@ -341,6 +353,9 @@ func sourcingAdmissionRejection(in PlanningInput) string {
 		if len(ordinary) > 0 && ordinary[0].Accepted {
 			return "an ordinary measured opportunity takes priority over sourcing"
 		}
+	}
+	if in.SourcingHistoryError != "" {
+		return in.SourcingHistoryError
 	}
 	return ""
 }
@@ -627,9 +642,7 @@ func (r *Runner) sourcingInput(ctx context.Context, ship ShipState) (PlanningInp
 		return input, err
 	}
 	input.SourcingLoadingBlocked = r.insuranceActionReady(ship, "buy", "") != nil
-	if err := r.loadSourcingHistory(ctx, &input); err != nil {
-		return input, err
-	}
+	r.applySourcingHistory(&input)
 	return input, nil
 }
 
@@ -877,6 +890,22 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, er
 	for _, plan := range plans[:shown] {
 		if err := r.decision(ctx, ship.Ship.ID, "sourcing:"+plan.Destination+":"+plan.ContractID, plan.Reason, plan); err != nil {
 			return false, err
+		}
+	}
+	// A policy suppression must remain visible even when accepted candidates
+	// occupy all three diagnostic slots. Record one example per policy.
+	for _, policy := range []struct{ kind, reason string }{
+		{"sourcing:failed-catalogue", failedCatalogueProbeReason},
+		{"sourcing:failed-probe-streak", failedProbeStreakReason},
+	} {
+		for _, candidate := range plans {
+			if candidate.Reason != policy.reason {
+				continue
+			}
+			if err := r.decision(ctx, ship.Ship.ID, policy.kind, policy.reason, candidate); err != nil {
+				return false, err
+			}
+			break
 		}
 	}
 	if len(plans) == 0 {
@@ -1311,6 +1340,10 @@ func (r *Runner) driveRelocation(ctx context.Context, ship ShipState, mission *s
 		bills, _ := r.unclaimedBillsSince(data)
 		spent := relocationCashCost(data) + bills
 		plan := sizeRelocationCargo(input, data.Plan, contract, spent)
+		if input.fresh("contracts") && input.fresh("books/"+ship.Ship.CurrentPortID) && input.Markets[ship.Ship.CurrentPortID].Visibility == "quay" &&
+			input.fresh("routes/"+routeKey(ship.Ship.CurrentPortID, contract.OriginPortID, ship.Ship.ShipClass)) {
+			data.Relocation.SourceInspected = true
+		}
 		if plan.Accepted {
 			if err := r.insuranceActionReady(ship, "buy", plan.Destination); err != nil {
 				return false, r.hold(ctx, ship.Ship.ID, err.Error())

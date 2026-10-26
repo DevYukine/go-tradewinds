@@ -68,6 +68,7 @@ type Runner struct {
 	// charterProceedsPence is recorded charter proceeds over the Crown
 	// premium taper window, loaded at each refresh.
 	charterProceedsPence int64
+	sourcingHistory      sourcingHistoryCache
 }
 
 func New(api *gameapi.Client, db *store.Store, account store.Account, log *zap.Logger, opts Options) *Runner {

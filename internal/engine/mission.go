@@ -37,6 +37,7 @@ type relocationIntent struct {
 	InspectUntilGameHour int64                 `json:"inspect_until_game_hour"`
 	StoreBasis           *relocationStoreBasis `json:"store_basis,omitempty"`
 	IdlePilot            bool                  `json:"idle_pilot,omitempty"`
+	SourceInspected      bool                  `json:"source_inspected,omitempty"`
 }
 
 type missionData struct {
@@ -1273,6 +1274,13 @@ func (r *Runner) finishMission(ctx context.Context, ship ShipState, mission *sto
 		// Hour snapshots bound elapsed time; adding an hour avoids overstating
 		// realized throughput by rounding a partial game hour downward.
 		gameSeconds := max(3_600, (r.stateCache.Clock.Calendar.TotalGameHours-data.StartedGameHours+1)*3_600)
+		probeOutcome := ""
+		if data.Relocation != nil && data.Relocation.SourceInspected {
+			probeOutcome = store.ProbeOutcomeFailed
+			if data.SourcingHandoff != nil {
+				probeOutcome = store.ProbeOutcomeContinuation
+			}
+		}
 		data.Settlement = &store.Settlement{
 			ID:                      mission.Generation,
 			AccountID:               r.account.ID,
@@ -1292,6 +1300,7 @@ func (r *Runner) finishMission(ctx context.Context, ship ShipState, mission *sto
 			Origin:                  data.Plan.Origin,
 			Destination:             data.Plan.Destination,
 			Commodity:               data.Plan.Commodity,
+			ProbeOutcome:            probeOutcome,
 			CostsKnown:              data.CostsKnown,
 			StartedAt:               data.StartedAt,
 			CompletedAt:             time.Now().UTC(),

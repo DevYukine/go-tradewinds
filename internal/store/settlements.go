@@ -12,6 +12,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+const ProbeOutcomeFailed = "inspected_without_continuation"
+const ProbeOutcomeContinuation = "continuation_ready"
+
 // Settlement is realized mission accounting. Principal transfers and returned
 // collateral are not proceeds; unknown acquisition costs must set CostsKnown=false.
 // The journal action is the evidence anchor, not a second source of HTTP outcomes.
@@ -27,6 +30,7 @@ type Settlement struct {
 	Destination      string `json:"destination"`
 	Commodity        string `json:"commodity"`
 	QuantityTons     int64  `json:"quantity_tons"`
+	ProbeOutcome     string `json:"probe_outcome,omitempty" gorm:"-"`
 	GameSeconds      int64  `json:"game_seconds"`
 	CostsKnown       bool   `json:"costs_known"`
 	AcquisitionPence int64  `json:"acquisition_pence"`
@@ -51,7 +55,7 @@ func sameSettlement(a, b Settlement) bool {
 	return a.ID == b.ID && a.AccountID == b.AccountID && a.ShipID == b.ShipID &&
 		a.MissionID == b.MissionID && a.Lane == b.Lane && a.ActionID == b.ActionID &&
 		a.Kind == b.Kind && a.Origin == b.Origin && a.Destination == b.Destination &&
-		a.Commodity == b.Commodity && a.QuantityTons == b.QuantityTons &&
+		a.Commodity == b.Commodity && a.QuantityTons == b.QuantityTons && a.ProbeOutcome == b.ProbeOutcome &&
 		a.GameSeconds == b.GameSeconds && a.CostsKnown == b.CostsKnown &&
 		a.AcquisitionPence == b.AcquisitionPence && a.ProceedsPence == b.ProceedsPence &&
 		a.FeesPence == b.FeesPence && a.ProvisionsPence == b.ProvisionsPence &&
@@ -65,6 +69,7 @@ func (s *Store) PutSettlement(ctx context.Context, settlement *Settlement) error
 		settlement.QuantityTons < 0 || settlement.GameSeconds < 0 || settlement.AcquisitionPence < 0 ||
 		settlement.ProceedsPence < 0 || settlement.FeesPence < 0 || settlement.ProvisionsPence < 0 || settlement.ExpensesPence < 0 ||
 		settlement.ExplorationExpensePence != nil && *settlement.ExplorationExpensePence < 0 ||
+		settlement.ProbeOutcome != "" && settlement.ProbeOutcome != ProbeOutcomeFailed && settlement.ProbeOutcome != ProbeOutcomeContinuation ||
 		settlement.CompletedAt.IsZero() {
 		return fmt.Errorf("settlement fields: %w", ErrInvalidInput)
 	}
