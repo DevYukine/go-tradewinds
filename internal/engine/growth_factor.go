@@ -41,7 +41,8 @@ func expansionAgentYard(state accountState, agents []expansionAgent) (Port, int6
 	var best Port
 	var bestScore int64
 	for _, yard := range state.Catalog.Ports {
-		if !yard.HasShipyard || yard.IsCove || yard.Phase > state.Clock.UnlockedPhase || yard.BankingRegion == "" || present[yard.BankingRegion] {
+		if !yard.HasShipyard || yard.IsCove || yard.Phase > state.Clock.UnlockedPhase || yard.BankingRegion == "" || present[yard.BankingRegion] ||
+			!regionalWater(state.Catalog, yard) {
 			continue
 		}
 		var score int64
@@ -49,8 +50,12 @@ func expansionAgentYard(state accountState, agents []expansionAgent) (Port, int6
 			if contract.ContractType != "charter" || contract.Status != "open" || contract.Stale || contract.IssuerCompanyID != "" || contract.RemainingQuantity <= 0 || contract.OriginPortID == yard.ID {
 				continue
 			}
+			// A hull built in the region can carry any good in, so every open
+			// Crown premium there counts, not only goods the yard port makes.
 			origin, exists := findPort(state.Catalog, contract.OriginPortID)
-			if !exists || origin.BankingRegion != yard.BankingRegion || !slices.Contains(yard.Produces, contract.CommodityID) && !slices.Contains(yard.Manufactures, contract.CommodityID) {
+			// The overseas build is a regional hull, so a port in oceanic water
+			// (Iberia's coast, for example) cannot be served from the yard.
+			if !exists || origin.BankingRegion != yard.BankingRegion || !regionalWater(state.Catalog, origin) {
 				continue
 			}
 			for _, commodity := range state.Catalog.Commodities {
@@ -66,11 +71,27 @@ func expansionAgentYard(state accountState, agents []expansionAgent) (Port, int6
 				break
 			}
 		}
-		if score > bestScore || score > 0 && score == bestScore && yard.ID < best.ID {
+		if score <= 0 {
+			continue
+		}
+		// Newer phases hold fewer established traders, so the most recently
+		// unlocked region is explored before an older one.
+		newerPhase := best.ID == "" || yard.Phase > best.Phase
+		samePhase := yard.Phase == best.Phase
+		if newerPhase || samePhase && (score > bestScore || score == bestScore && yard.ID < best.ID) {
 			best, bestScore = yard, score
 		}
 	}
 	return best, bestScore
+}
+
+func regionalWater(catalog Catalog, port Port) bool {
+	for _, zone := range catalog.SeaZones {
+		if zone.ID == port.SeaZoneID {
+			return classRank(zone.ZoneClass) > 0 && classRank(zone.ZoneClass) <= classRank("regional")
+		}
+	}
+	return false
 }
 
 func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
@@ -179,9 +200,8 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 	}
 	required[yard.BankingRegion] = growthCashTotal(max(required[yard.BankingRegion], r.opts.ReservePence), expansionAgentHireFeePence)
 	_, fees, _, funded := measuredFunding(input.Balances, required, input.Rates)
-	if !funded || evidence.available < growthCashTotal(cheapest, fees) ||
-		estimatedCapital > (evidence.available-growthCashTotal(expansionAgentHireFeePence, fees))/capacityFleetFillShare {
-		return false, r.hold(ctx, "", "expansion agent must preserve the hull's half-surplus capital limit, capacity working cash and funding fees")
+	if !funded || evidence.available < growthCashTotal(cheapest, fees) {
+		return false, r.hold(ctx, "", "expansion agent must preserve the hull capital, capacity working cash and funding fees")
 	}
 	if changed, err := r.fundTreasury(ctx, input.Balances, required); changed || err != nil {
 		return changed, err

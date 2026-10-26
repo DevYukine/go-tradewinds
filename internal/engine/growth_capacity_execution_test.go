@@ -419,11 +419,11 @@ func TestCapacityGrowthPlanRateAndLotCashFloor(t *testing.T) {
 	var stores, lot int64
 	for _, plan := range PlanVoyages(planning) {
 		basis := plan.Economics.RevenueBasis
-		if !plan.Accepted || basis != "depth" && basis != "contract" && basis != "gossip" {
+		if !plan.Accepted || len(plan.FreightIDs) > 0 || basis != "depth" && basis != "contract" && basis != "gossip" {
 			continue
 		}
 		lot = max(lot, plan.Economics.PurchasePence+plan.Economics.CustomsPence+plan.Economics.StoreCashPence)
-		candidateRate := float64(plan.Economics.StressNetPence) / (2 * plan.Economics.GameDays)
+		candidateRate := float64(plan.Economics.ExpectedNetPence) / (2 * plan.Economics.GameDays)
 		if plan.Economics.BallastRepeatGameDays > 0 {
 			candidateRate = float64(plan.Economics.BallastRepeatNetPence) / plan.Economics.BallastRepeatGameDays
 		}
@@ -1027,7 +1027,7 @@ func TestCapacityGrowthComputedLosingRepeatDoesNotUseOutboundProfit(t *testing.T
 	t.Parallel()
 	for _, repeatNet := range []int64{-100, 0} {
 		economics := Economics{
-			StressNetPence: 100_000, GameDays: 1,
+			ExpectedNetPence: 100_000, StressNetPence: -500_000, GameDays: 1,
 			BallastRepeatNetPence: repeatNet, BallastRepeatGameDays: 2,
 		}
 		input := CapacityGrowthInput{
@@ -1042,7 +1042,7 @@ func TestCapacityGrowthComputedLosingRepeatDoesNotUseOutboundProfit(t *testing.T
 		economics.BallastRepeatGameDays = 0
 		input.CandidateRatePencePerGameDay = capacityVoyageRate(economics)
 		if decision := EvaluateCapacityGrowth(input); !decision.Accepted {
-			t.Fatalf("no-repeat outbound fallback control rejected: %+v", decision)
+			t.Fatalf("no-repeat expected outbound fallback rejected despite an illustrative stress loss: %+v", decision)
 		}
 	}
 }

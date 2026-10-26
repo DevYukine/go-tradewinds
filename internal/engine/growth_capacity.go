@@ -19,10 +19,6 @@ import (
 
 const capacityHistoryWindow = 24 * time.Hour
 
-// capacityFleetFillShare bounds one cash-funded build to 1/N of surplus so idle
-// cash scales the fleet gradually instead of draining into hulls at once.
-const capacityFleetFillShare = 2
-
 const capacityNoSpareWorkReason = "capacity growth needs an executable profitable voyage after incumbent commitments"
 
 var capacityShipLossReason = fmt.Sprintf("capacity growth waits %.0f real hours after a ship loss", capacityHistoryWindow.Hours())
@@ -42,7 +38,7 @@ type CapacityGrowthInput struct {
 }
 
 // Every hull must repay its capital from an accepted plan while preserving
-// operating cash and leaving at least half the surplus uncommitted.
+// quote reserves and a cash lot for every ship.
 func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 	decision := GrowthDecision{}
 	guns := min(int64(4), in.Hull.MaxCannons)
@@ -63,7 +59,7 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 		CannonsPence:           cannons,
 		InitialStoresPence:     in.InitialStoresPence,
 		IncrementalUpkeepPence: in.IncrementalDailyUpkeepPence,
-		EvidenceBasis:          "best accepted voyage repeat net per game day, or half its stressed outbound rate",
+		EvidenceBasis:          "best accepted voyage repeat net per game day, or half its expected outbound rate",
 	}
 	if !in.HasSpareWork {
 		decision.Reason = capacityNoSpareWorkReason
@@ -92,12 +88,8 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 		decision.Reason = "capacity growth must preserve quote reserves and a cash lot for every ship after the build"
 		return decision
 	}
-	if capital > in.SurplusPence/capacityFleetFillShare {
-		decision.Reason = "capacity growth spends at most half of surplus cash per hull"
-		return decision
-	}
 	decision.Accepted = true
-	decision.Reason = "candidate voyage earnings cover payback and marginal upkeep; capital uses at most half the surplus and preserves every ship's working cash"
+	decision.Reason = "candidate voyage earnings cover payback and marginal upkeep while preserving every ship's working cash"
 	return decision
 }
 
@@ -283,12 +275,16 @@ func (r *Runner) capacityFleetInput(ctx context.Context, evidence *growthEvidenc
 	return input, "", nil
 }
 
+// capacityVoyageRate prices a hull from the planner's expected net. The stress
+// net is an illustrative capital-loss scenario, not an expected cost, so it
+// must not decide whether a hull earns its keep.
 func capacityVoyageRate(economics Economics) float64 {
 	if economics.BallastRepeatGameDays > 0 {
 		return float64(economics.BallastRepeatNetPence) / economics.BallastRepeatGameDays
 	}
 	if economics.GameDays > 0 {
-		return float64(economics.StressNetPence) / (2 * economics.GameDays)
+		// Without a computed repeat, assume an empty return of equal length.
+		return float64(economics.ExpectedNetPence) / (2 * economics.GameDays)
 	}
 	return 0
 }
@@ -306,7 +302,9 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 	input.HullPricePence = *quote.TotalCostPence
 	for _, plan := range plans {
 		basis := plan.Economics.RevenueBasis
-		if !plan.Accepted || basis != "depth" && basis != "contract" && basis != "gossip" {
+		// Fixed freight is a one-off fee, not repeatable income that can pay
+		// back a hull (see ballastRepeatEconomics).
+		if !plan.Accepted || len(plan.FreightIDs) > 0 || basis != "depth" && basis != "contract" && basis != "gossip" {
 			continue
 		}
 		input.HasSpareWork = true
@@ -318,6 +316,27 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		}
 	}
 	decision := EvaluateCapacityGrowth(input)
+	// Only the best candidate is recorded by the caller; record every yard and
+	// hull too so an operator can see why a present yard does not build.
+	rejections := make(map[string]int)
+	var accepted []map[string]any
+	for _, plan := range plans {
+		if !plan.Accepted && len(rejections) < 6 {
+			rejections[plan.Kind+" "+plan.Origin+">"+plan.Destination+": "+plan.Reason]++
+		}
+		if plan.Accepted && len(accepted) < 3 {
+			accepted = append(accepted, map[string]any{
+				"route": plan.Kind + " " + plan.Origin + ">" + plan.Destination + " " + plan.Commodity, "quantity": plan.Quantity,
+				"economics": plan.Economics, "rate_pence_per_game_day": capacityVoyageRate(plan.Economics),
+			})
+		}
+	}
+	if err := r.decision(ctx, "", "capacity_candidate:"+port.ID+"|"+hull.ID, decision.Reason, map[string]any{
+		"decision": decision, "plans": len(plans), "plan_rejections": rejections, "accepted_plans": accepted,
+		"rate_pence_per_game_day": input.CandidateRatePencePerGameDay,
+	}); err != nil {
+		return GrowthDecision{}, nil, err
+	}
 	if !decision.Accepted {
 		return decision, nil, nil
 	}

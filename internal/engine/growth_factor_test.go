@@ -18,12 +18,13 @@ func expansionFactorFixture() accountState {
 		Clock: Clock{UnlockedPhase: 1},
 		Catalog: Catalog{
 			Ports: []Port{
-				{ID: "yard-b", BankingRegion: "caribbean", HasShipyard: true, Phase: 1, Produces: []string{"x"}},
-				{ID: "yard-a", BankingRegion: "caribbean", HasShipyard: true, Phase: 1, Produces: []string{"x"}, Manufactures: []string{"y"}},
-				{ID: "demand", BankingRegion: "caribbean", Phase: 1},
-				{ID: "cove", BankingRegion: "caribbean", HasShipyard: true, IsCove: true, Phase: 1, Produces: []string{"x", "y"}},
-				{ID: "locked", BankingRegion: "caribbean", HasShipyard: true, Phase: 3, Produces: []string{"x", "y"}},
+				{ID: "yard-b", BankingRegion: "caribbean", SeaZoneID: "fixture_sea", HasShipyard: true, Phase: 1, Produces: []string{"x"}},
+				{ID: "yard-a", BankingRegion: "caribbean", SeaZoneID: "fixture_sea", HasShipyard: true, Phase: 1, Produces: []string{"x"}, Manufactures: []string{"y"}},
+				{ID: "demand", BankingRegion: "caribbean", SeaZoneID: "fixture_sea", Phase: 1},
+				{ID: "cove", BankingRegion: "caribbean", SeaZoneID: "fixture_sea", HasShipyard: true, IsCove: true, Phase: 1, Produces: []string{"x", "y"}},
+				{ID: "locked", BankingRegion: "caribbean", SeaZoneID: "fixture_sea", HasShipyard: true, Phase: 3, Produces: []string{"x", "y"}},
 			},
+			SeaZones:    []Zone{{ID: "fixture_sea", ZoneClass: "regional"}},
 			Commodities: []Commodity{{ID: "x", BasePricePence: 100}, {ID: "y", BasePricePence: 100}},
 		},
 		Contracts: []Contract{
@@ -41,14 +42,31 @@ func TestExpansionFactorScoring(t *testing.T) {
 		port   string
 		score  int64
 	}{
-		{name: "regional produced and manufactured goods", port: "yard-a", score: 1_500},
+		{name: "every regional Crown charter premium", port: "yard-a", score: 1_500},
+		{name: "goods the yard does not make still count", change: func(state *accountState) {
+			for i := range state.Catalog.Ports {
+				state.Catalog.Ports[i].Produces, state.Catalog.Ports[i].Manufactures = nil, nil
+			}
+		}, port: "yard-a", score: 1_500},
+		{name: "newer phase beats a richer older region", change: func(state *accountState) {
+			newReward := int64(110)
+			state.Clock.UnlockedPhase = 2
+			state.Catalog.Ports = append(state.Catalog.Ports,
+				Port{ID: "new-yard", BankingRegion: "america", SeaZoneID: "fixture_sea", HasShipyard: true, Phase: 2},
+				Port{ID: "new-demand", BankingRegion: "america", SeaZoneID: "fixture_sea", Phase: 2},
+			)
+			state.Contracts = append(state.Contracts, Contract{ID: "charter-new", ContractType: "charter", Status: "open", OriginPortID: "new-demand", CommodityID: "x", RemainingQuantity: 10, RewardPerTonPence: &newReward})
+		}, port: "new-yard", score: 100},
+		{name: "oceanic water cannot host a regional build", change: func(state *accountState) {
+			state.Catalog.SeaZones[0].ZoneClass = "oceanic"
+		}},
 		{name: "charter at yard itself", change: func(state *accountState) {
 			state.Catalog.Ports = state.Catalog.Ports[1:2]
 			for i := range state.Contracts {
 				state.Contracts[i].OriginPortID = "yard-a"
 			}
 		}},
-		{name: "goods not made at yard", change: func(state *accountState) {
+		{name: "commodity missing from catalog", change: func(state *accountState) {
 			for i := range state.Contracts {
 				state.Contracts[i].CommodityID = "z"
 			}
@@ -140,6 +158,9 @@ func (p *expansionFactorAPI) ServeHTTP(writer http.ResponseWriter, request *http
 			catalog["ports"] = append(catalog["ports"].([]any), port)
 		}
 		catalog["commodities"] = fixture.Catalog.Commodities
+		for _, zone := range fixture.Catalog.SeaZones {
+			catalog["sea_zones"] = append(catalog["sea_zones"].([]any), zone)
+		}
 		p.h.api.writeJSON(writer, http.StatusOK, catalog)
 		return
 	}
@@ -526,38 +547,6 @@ func TestExpansionFactorCanEstimateFromStaleRegionalQuote(t *testing.T) {
 	if data.Action == nil || data.Action.Stage != "hire-factor" {
 		t.Fatalf("stale estimate did not stage a hire: %+v", data.Action)
 	}
-}
-
-func TestExpansionFactorPreservesHullHalfSurplusLimit(t *testing.T) {
-	t.Parallel()
-	h := newRecoveryHarness(t)
-	newExpansionFactorAPI(h)
-	runner := h.runner(primaryTestKey)
-	refreshExpansionFactor(t, h, runner)
-	planning, err := runner.committedPlanningInput(h.ctx, ShipState{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range runner.stateCache.Vaults {
-		vault := &runner.stateCache.Vaults[i]
-		vault.BalancePence = planning.ReserveByRegion[vault.BankingRegion]
-		if vault.BankingRegion == "caribbean" {
-			// Covers 126,000 capital + 75,000 buffer + 75,000 fee, but
-			// leaves only 225,000 after the fee: less than twice capital.
-			vault.BalancePence += 300_000
-		}
-	}
-	if changed, err := runner.considerExpansionAgent(h.ctx); err != nil || changed {
-		t.Fatalf("hire ignored the eventual build's half-surplus limit: changed=%t err=%v holds=%v", changed, err, runner.holding)
-	}
-	found := false
-	for _, hold := range runner.holding {
-		found = found || strings.Contains(hold.Reason, "half-surplus")
-	}
-	if !found {
-		t.Fatalf("fixture failed before the half-surplus money guard: %v", runner.holding)
-	}
-	h.missingMission("__treasury")
 }
 
 func TestExpansionFactorIgnoresTerminalAndSelfPresentMissions(t *testing.T) {

@@ -100,14 +100,6 @@ func TestEvaluateCapacityGrowthOneShipWithoutHistory(t *testing.T) {
 		t.Fatalf("payback beyond 420 game days admitted: %+v", slow)
 	}
 	in.CandidateRatePencePerGameDay = 10_000
-	in.SurplusPence = 2*capital - 1
-	if over := EvaluateCapacityGrowth(in); over.Accepted || !strings.Contains(over.Reason, "half") {
-		t.Fatalf("capital exceeding half the surplus admitted: %+v", over)
-	}
-	in.SurplusPence = 2 * capital
-	if half := EvaluateCapacityGrowth(in); !half.Accepted {
-		t.Fatalf("capital exactly half the surplus rejected: %+v", half)
-	}
 	in.LotCashPence = 3_000_000
 	buffer := max(in.ReservePence, ceilBPS(in.HullPricePence, 1_500)) + int64(in.FleetSize+1)*in.LotCashPence
 	in.SurplusPence = capital + buffer - 1
