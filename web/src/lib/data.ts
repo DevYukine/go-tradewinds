@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import type {
   Account,
+  CompetitionSummary,
   DashboardData,
   DatasetMeta,
   JsonRecord,
   MoneyHistory,
   ShipDetail,
+  StandingsHistory,
 } from "./types";
 import { customMoneyRange, type MoneyPreferences } from "./money-history";
 
@@ -83,6 +85,49 @@ export function useMoneyHistory(
       Boolean(accountID) && (preferences.range !== "custom" || Boolean(custom)),
     refetchInterval: () =>
       custom && Date.parse(custom.to) < Date.now() ? false : 30_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    staleTime: 20_000,
+    retry: 1,
+  });
+}
+
+export function useStandingsHistory(
+  accountID: string,
+  range: Exclude<MoneyPreferences["range"], "custom">,
+  top: number,
+) {
+  return useQuery({
+    queryKey: ["standings-history", accountID, range, top],
+    queryFn: ({ signal }) => {
+      const query = new URLSearchParams({
+        account_id: accountID,
+        range,
+        top: String(top),
+      });
+      return fetchJSON<StandingsHistory>(
+        `/api/standings-history?${query}`,
+        signal,
+      );
+    },
+    enabled: Boolean(accountID),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    staleTime: 20_000,
+    retry: 1,
+  });
+}
+
+export function useCompetition(accountID: string) {
+  return useQuery({
+    queryKey: ["competition", accountID],
+    queryFn: ({ signal }) => {
+      const query = new URLSearchParams({ account_id: accountID });
+      return fetchJSON<CompetitionSummary>(`/api/competition?${query}`, signal);
+    },
+    enabled: Boolean(accountID),
+    refetchInterval: 30_000,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
     staleTime: 20_000,

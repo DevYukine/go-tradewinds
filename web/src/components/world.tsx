@@ -17,6 +17,7 @@ import { useState } from "react";
 import { dataset, fleet, number, record, rows, text } from "@/lib/data";
 import { count, dateTime, humanize, money, percent } from "@/lib/format";
 import type { Account, Catalog, Clock, JsonRecord } from "@/lib/types";
+import { CompetitionView } from "./competition";
 import {
   Badge,
   Section,
@@ -80,6 +81,7 @@ export function WorldView({ account }: { account: Account }) {
 
   return (
     <div className={styles.workspace}>
+      <CompetitionView accountID={account.id} />
       <div className={styles.split}>
         <Section
           title="Season and simulation"

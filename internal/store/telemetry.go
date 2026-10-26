@@ -56,6 +56,11 @@ func (s *Store) RecordRequest(ctx context.Context, accountID, method, path strin
 		if err := tx.Create(&row).Error; err != nil {
 			return err
 		}
+		if row.Method == "GET" && row.Path == "/v1/world/leaderboard" && status == 200 && errText == "" {
+			if err := recordStandings(tx, accountID, row.Response, now); err != nil {
+				return err
+			}
+		}
 		return tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "account_id"}, {Name: "name"}},
 			DoUpdates: clause.Assignments(map[string]any{
@@ -177,7 +182,7 @@ func (s *Store) Prune(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 	// Only diagnostic tables are eligible. Action journals, mission state,
-	// snapshots, cursors, settlements and metric history are operational data.
+	// snapshots, cursors, settlements, standings and metric history are operational data.
 	for _, table := range []string{"requests", "events", "decisions"} {
 		query := "DELETE FROM " + table + " WHERE id IN (SELECT id FROM " + table +
 			" WHERE created_at < CURRENT_TIMESTAMP - INTERVAL '7 days' ORDER BY created_at LIMIT 10000)"

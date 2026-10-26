@@ -11,10 +11,10 @@ import {
   moneyPoints,
   settlementTotals,
   type MoneyPreferences,
-  type MoneyRange,
   type MoneySeries,
 } from "@/lib/money-history";
 import { useUI } from "@/lib/ui-store";
+import { HistoryRange } from "./history-range";
 import { DataTable, EmptyState, Section } from "./ui";
 import styles from "./performance.module.css";
 import viewStyles from "./world-views.module.css";
@@ -61,13 +61,6 @@ const SERIES: Record<MoneySeries, { label: string; description: string }> = {
       "Fees and bills in each recorded ledger snapshot. Snapshots overlap; these are not new charges at every observation.",
   },
 };
-const RANGES: { value: MoneyRange; label: string }[] = [
-  { value: "24h", label: "24h" },
-  { value: "7d", label: "7d" },
-  { value: "30d", label: "30d" },
-  { value: "all", label: "All" },
-  { value: "custom", label: "Custom" },
-];
 const signedMoney = (value: number | undefined) =>
   value !== undefined && value > 0 ? `+${money(value)}` : money(value);
 const tone = (value: number | undefined) =>
@@ -241,37 +234,25 @@ export function Performance({ accountID }: { accountID: string }) {
             </optgroup>
           </select>
         </label>
-        <div
-          className={styles.presets}
-          role="group"
-          aria-label="Money history date range"
-        >
-          {RANGES.map((item) => (
-            <button
-              key={item.value}
-              type="button"
-              aria-pressed={range === item.value}
-              onClick={() => {
-                setPreferences({
-                  range: item.value,
-                  ...(item.value === "custom" &&
-                  !customMoneyRange(preferences.from, preferences.to)
-                    ? {
-                        from: new Date(now - 86_400_000)
-                          .toISOString()
-                          .slice(0, 16),
-                        to: new Date(now).toISOString().slice(0, 16),
-                      }
-                    : {}),
-                });
-                setSelectedID(null);
-                setCustomDraft(null);
-              }}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
+        <HistoryRange
+          value={range}
+          label="Money history date range"
+          allowCustom
+          onChange={(range) => {
+            setPreferences({
+              range,
+              ...(range === "custom" &&
+              !customMoneyRange(preferences.from, preferences.to)
+                ? {
+                    from: new Date(now - 86_400_000).toISOString().slice(0, 16),
+                    to: new Date(now).toISOString().slice(0, 16),
+                  }
+                : {}),
+            });
+            setSelectedID(null);
+            setCustomDraft(null);
+          }}
+        />
       </div>
       {range === "custom" && (
         <form

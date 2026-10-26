@@ -138,6 +138,10 @@ func migrate(ctx context.Context, db *sql.DB, log *zap.Logger, privateStore *Sto
 			RunTx: func(context.Context, *sql.Tx) error {
 				return errors.New("private evidence cutover requires restoring a pre-migration backup")
 			},
+		}), goose.NewGoMigration(8, &goose.GoFunc{RunTx: privateStore.migrateStandingsHistory}, &goose.GoFunc{
+			RunTx: func(context.Context, *sql.Tx) error {
+				return errors.New("standings history is permanent; restore a pre-migration backup to roll back")
+			},
 		})),
 	)
 	if err != nil {

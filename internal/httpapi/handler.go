@@ -86,6 +86,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.history(ctx, w, r)
 	case "/api/money-history":
 		h.moneyHistory(ctx, w, r)
+	case "/api/standings-history":
+		h.standingsHistory(ctx, w, r)
+	case "/api/competition":
+		h.competition(ctx, w, r)
 	case "/metrics":
 		h.metrics(ctx, w)
 	default:
@@ -185,6 +189,24 @@ func (h *handler) moneyHistory(ctx context.Context, w http.ResponseWriter, r *ht
 	data, err := h.store.MoneyHistory(ctx, accountID, from, to)
 	if err != nil {
 		h.readError(w, "money history", err)
+		return
+	}
+	h.json(w, http.StatusOK, data)
+}
+
+func (h *handler) competition(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	accountID := r.URL.Query().Get("account_id")
+	if len(accountID) > 255 || strings.TrimSpace(accountID) == "" {
+		h.failure(w, http.StatusBadRequest, "invalid_account", "Competition requires an account_id.")
+		return
+	}
+	if h.store == nil {
+		h.failure(w, http.StatusServiceUnavailable, "database_unavailable", "PostgreSQL is not ready.")
+		return
+	}
+	data, err := h.store.Competition(ctx, accountID, time.Now().UTC())
+	if err != nil {
+		h.readError(w, "competition", err)
 		return
 	}
 	h.json(w, http.StatusOK, data)

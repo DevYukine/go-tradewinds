@@ -101,8 +101,8 @@ func TestPrivateGrowthMigrationExplicitlyClosesLegacyAllocationWithoutChangingRe
 				}
 				defer database.Close()
 				var version int64
-				if err := database.db.Raw("SELECT MAX(version_id) FROM goose_db_version WHERE is_applied").Scan(&version).Error; err != nil || version != 6 {
-					t.Fatalf("growth upgrade did not complete private cutover and probe index migration: %d, %v", version, err)
+				if err := database.db.Raw("SELECT MAX(version_id) FROM goose_db_version WHERE is_applied").Scan(&version).Error; err != nil || version != 8 {
+					t.Fatalf("growth upgrade did not complete all current migrations: %d, %v", version, err)
 				}
 				loaded, err := database.GetMission(ctx, accountID, original.ShipID)
 				if err != nil || loaded == nil {

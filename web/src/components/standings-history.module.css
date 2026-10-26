@@ -1,0 +1,119 @@
+.history {
+  --standing-1: #596681;
+  --standing-2: #85652d;
+  --standing-3: #78629b;
+  --standing-4: #4b7a71;
+  --standing-5: #886a74;
+  min-width: 0;
+  padding-block: 18px;
+  margin-block: 16px;
+  border-block: 1px solid var(--border);
+}
+
+:global([data-theme="dark"]) .history {
+  --standing-1: #a8b6d0;
+  --standing-2: #d5bd86;
+  --standing-3: #c4a5df;
+  --standing-4: #8bb8ae;
+  --standing-5: #c1a4ad;
+}
+
+.history h3 {
+  margin-bottom: 12px;
+}
+
+.top {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.top select {
+  max-width: 100%;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 18px;
+  padding: 0;
+  margin: 12px 0 6px;
+  list-style: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.legend button {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  min-height: 32px;
+  padding: 3px 5px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.legend button:hover {
+  border-color: var(--border);
+}
+
+.legend button[aria-pressed="false"] {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.ours {
+  color: var(--route);
+}
+
+.series0 {
+  color: var(--standing-1);
+}
+.series1 {
+  color: var(--standing-2);
+}
+.series2 {
+  color: var(--standing-3);
+}
+.series3 {
+  color: var(--standing-4);
+}
+.series4 {
+  color: var(--standing-5);
+}
+
+.line,
+.ownLine {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+}
+
+.ownLine {
+  stroke-width: 3;
+}
+
+.dot {
+  fill: currentColor;
+}
+
+.ownLabel {
+  color: var(--route);
+  font-weight: 600;
+}
+
+.season {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}

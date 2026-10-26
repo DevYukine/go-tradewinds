@@ -5,6 +5,7 @@ import { useNow } from "@/app/providers";
 import { dataset } from "@/lib/data";
 import { count, dateTime, humanize, money } from "@/lib/format";
 import type { Account, Leaderboard } from "@/lib/types";
+import { StandingsHistoryView } from "./standings-history";
 import { Badge, DataTable, Dataset, Section } from "./ui";
 import styles from "./world-views.module.css";
 
@@ -22,6 +23,7 @@ export function StandingsView({ account }: { account: Account }) {
         ) : undefined
       }
     >
+      <StandingsHistoryView accountID={account.id} />
       <Dataset
         account={account}
         name="leaderboard"
@@ -64,52 +66,55 @@ export function StandingsView({ account }: { account: Account }) {
             </div>
           </div>
         )}
-        <DataTable
-          label="Official hourly player standings"
-          data={leaderboard?.entries ?? []}
-          rowKey={(entry) => String(entry.rank)}
-          empty="No ranked entries recorded"
-          columns={[
-            {
-              label: "Rank",
-              value: (entry) => entry.rank,
-              render: (entry) => (
-                <span
-                  className={`${styles.rank} ${entry.rank <= 3 ? styles.podium : ""}`}
-                >
-                  {entry.rank === 1 ? (
-                    <Trophy size={13} strokeWidth={1.7} aria-hidden="true" />
-                  ) : entry.rank <= 3 ? (
-                    <Medal size={13} strokeWidth={1.7} aria-hidden="true" />
-                  ) : null}
-                  {count(entry.rank)}
-                </span>
-              ),
-            },
-            {
-              label: "Best company",
-              value: (entry) => entry.company_name,
-              render: (entry) => entry.company_name,
-            },
-            {
-              label: "Home port",
-              value: (entry) => entry.home_port_id,
-              render: (entry) => humanize(entry.home_port_id),
-            },
-            {
-              label: "Official net worth",
-              value: (entry) => entry.net_worth_pence,
-              render: (entry) => money(entry.net_worth_pence),
-              className: "numeric",
-            },
-            {
-              label: "Titles",
-              value: (entry) =>
-                entry.titles.length ? entry.titles.join(", ") : undefined,
-              render: (entry) => entry.titles.join(", ") || "None recorded",
-            },
-          ]}
-        />
+        <details className={styles.disclosure}>
+          <summary>Latest full standings</summary>
+          <DataTable
+            label="Official hourly player standings"
+            data={leaderboard?.entries ?? []}
+            rowKey={(entry) => String(entry.rank)}
+            empty="No ranked entries recorded"
+            columns={[
+              {
+                label: "Rank",
+                value: (entry) => entry.rank,
+                render: (entry) => (
+                  <span
+                    className={`${styles.rank} ${entry.rank <= 3 ? styles.podium : ""}`}
+                  >
+                    {entry.rank === 1 ? (
+                      <Trophy size={13} strokeWidth={1.7} aria-hidden="true" />
+                    ) : entry.rank <= 3 ? (
+                      <Medal size={13} strokeWidth={1.7} aria-hidden="true" />
+                    ) : null}
+                    {count(entry.rank)}
+                  </span>
+                ),
+              },
+              {
+                label: "Best company",
+                value: (entry) => entry.company_name,
+                render: (entry) => entry.company_name,
+              },
+              {
+                label: "Home port",
+                value: (entry) => entry.home_port_id,
+                render: (entry) => humanize(entry.home_port_id),
+              },
+              {
+                label: "Official net worth",
+                value: (entry) => entry.net_worth_pence,
+                render: (entry) => money(entry.net_worth_pence),
+                className: "numeric",
+              },
+              {
+                label: "Titles",
+                value: (entry) =>
+                  entry.titles.length ? entry.titles.join(", ") : undefined,
+                render: (entry) => entry.titles.join(", ") || "None recorded",
+              },
+            ]}
+          />
+        </details>
         <details className={styles.disclosure}>
           <summary>What net worth includes</summary>
           <p className={styles.caption}>

@@ -1,0 +1,202 @@
+.caption {
+  max-width: 80ch;
+  margin-block: 0.7rem;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.warning {
+  margin-block: 0.8rem;
+  color: var(--warning);
+}
+
+.window {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.4rem 1rem;
+  margin-block: 1rem;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.regions {
+  min-width: 0;
+}
+
+.headings,
+.row {
+  display: grid;
+  grid-template-columns:
+    minmax(7rem, 1fr) minmax(11rem, 1.1fr) minmax(8rem, 1.5fr)
+    minmax(10rem, 1.2fr) 0.5rem;
+  align-items: center;
+  gap: 0.8rem;
+  min-width: 0;
+}
+
+.headings {
+  padding: 0.5rem 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.region,
+.port {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+}
+
+.row {
+  min-height: 58px;
+  padding-block: 0.75rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.row > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.row > strong {
+  font-weight: 500;
+}
+
+.row::-webkit-details-marker {
+  display: none;
+}
+
+.row::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid var(--muted);
+  border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg);
+}
+
+.region[open] > .row::after,
+.port[open] > .row::after {
+  transform: rotate(225deg);
+}
+
+.coverage,
+.unknown {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.leading {
+  font-size: 12px;
+}
+
+.ports {
+  margin: 0 0 1rem 0.8rem;
+  padding-left: 1rem;
+  border-left: 2px solid var(--water);
+}
+
+.portDetail {
+  padding-bottom: 1rem;
+}
+
+.publicActivity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.2rem;
+  margin-block: 0.7rem;
+  font-size: 12px;
+}
+
+.publicActivity > div {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.publicActivity dt {
+  color: var(--muted);
+}
+
+.publicActivity dd {
+  margin: 0;
+}
+
+.companies {
+  table-layout: fixed;
+  margin-top: 0.7rem;
+}
+
+.companies th,
+.companies td {
+  padding: 0.65rem 0.5rem;
+  background: transparent;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.companies th:first-child,
+.companies td:first-child {
+  width: 54%;
+  padding-left: 0;
+}
+
+.companies th:nth-child(2),
+.companies td:nth-child(2) {
+  width: 20%;
+  text-align: right;
+}
+
+.companies th:last-child,
+.companies td:last-child {
+  width: 26%;
+  padding-right: 0;
+  text-align: right;
+}
+
+.companies tbody th {
+  border-top: 1px solid var(--border);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+@media (max-width: 75rem) {
+  .headings,
+  .row {
+    grid-template-columns:
+      minmax(7rem, 1fr) minmax(10rem, 1.2fr) minmax(9rem, 1.2fr)
+      0.5rem;
+  }
+
+  .headings > :nth-child(3),
+  .row > .leading {
+    display: none;
+  }
+}
+
+@media (max-width: 48rem) {
+  .headings {
+    display: none;
+  }
+
+  .row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) 0.5rem;
+    gap: 0.3rem 0.8rem;
+  }
+
+  .row > .coverage {
+    grid-column: 1 / 3;
+    grid-row: 2;
+  }
+
+  .row::after {
+    grid-column: 3;
+    grid-row: 1 / 3;
+  }
+
+  .ports {
+    margin-left: 0.2rem;
+    padding-left: 0.8rem;
+  }
+}

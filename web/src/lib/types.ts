@@ -62,6 +62,94 @@ export interface MoneyHistory {
   settlements: MoneyPeriod[];
 }
 
+export interface StandingPoint {
+  at: string;
+  net_worth_pence: number;
+}
+
+export interface StandingSeries {
+  season_number: number;
+  company_name: string;
+  rank: number;
+  is_us: boolean;
+  charted: boolean;
+  first_at: string;
+  last_at: string;
+  first_net_worth_pence: number;
+  last_net_worth_pence: number;
+  change_pence: number | null;
+  observations: number;
+  points: StandingPoint[];
+}
+
+export interface StandingsHistory {
+  account_id: string;
+  generated_at: string;
+  from: string;
+  to: string;
+  latest_at: string | null;
+  next_refresh_at: string | null;
+  bucket_seconds: number;
+  top: number;
+  players: StandingSeries[];
+}
+
+export interface CompetitionCompany {
+  name: string;
+  ships: number;
+  sightings: number;
+  last_seen: string;
+}
+
+export interface CompetitionShip {
+  company_name: string;
+  ship_name: string;
+  ship_class: string;
+  last_seen: string;
+  direction: string;
+  reported_other_port_id: string | null;
+}
+
+export interface CompetitionActivity {
+  foreign_companies: number | null;
+  foreign_ships: number | null;
+  sightings: number;
+  last_seen: string | null;
+  coverage: "partial" | "not_observed";
+  top_competitors: CompetitionCompany[];
+}
+
+export interface CompetitionPort extends CompetitionActivity {
+  id: string;
+  name: string;
+  observed_at: string | null;
+  quay_observed_at: string | null;
+  source_stale: boolean;
+  player_volume_tons: number | null;
+  player_turnover_pence: number | null;
+  occupied_berths: number | null;
+  effective_berths: number | null;
+  queued_ships: number | null;
+  ships: CompetitionShip[];
+}
+
+export interface CompetitionRegion extends CompetitionActivity {
+  id: string;
+  observed_ports: number;
+  ports: CompetitionPort[];
+}
+
+export interface CompetitionSummary {
+  account_id: string;
+  generated_at: string;
+  from: string;
+  to: string;
+  identity_basis: "company_and_ship_name";
+  own_companies_complete: boolean;
+  events_truncated: boolean;
+  regions: CompetitionRegion[];
+}
+
 // Pence and game days retain the units recorded by the planner. Historical
 // decisions can omit fields, including the destination valuation basis.
 export interface Economics {
