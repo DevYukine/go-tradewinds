@@ -317,23 +317,27 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 	}
 	decision := EvaluateCapacityGrowth(input)
 	// Only the best candidate is recorded by the caller; record every yard and
-	// hull too so an operator can see why a present yard does not build.
+	// hull too so an operator can see why a present yard does not build. The
+	// details are coarse on purpose: decisions deduplicate on their details,
+	// and raw economics move with every book capture.
 	rejections := make(map[string]int)
-	var accepted []map[string]any
+	var acceptedRoutes []string
 	for _, plan := range plans {
+		route := plan.Kind + " " + plan.Origin + ">" + plan.Destination + " " + plan.Commodity
 		if !plan.Accepted && len(rejections) < 6 {
-			rejections[plan.Kind+" "+plan.Origin+">"+plan.Destination+": "+plan.Reason]++
+			rejections[route+": "+plan.Reason]++
 		}
-		if plan.Accepted && len(accepted) < 3 {
-			accepted = append(accepted, map[string]any{
-				"route": plan.Kind + " " + plan.Origin + ">" + plan.Destination + " " + plan.Commodity, "quantity": plan.Quantity,
-				"economics": plan.Economics, "rate_pence_per_game_day": capacityVoyageRate(plan.Economics),
-			})
+		if plan.Accepted && len(acceptedRoutes) < 3 {
+			acceptedRoutes = append(acceptedRoutes, route)
 		}
 	}
 	if err := r.decision(ctx, "", "capacity_candidate:"+port.ID+"|"+hull.ID, decision.Reason, map[string]any{
-		"decision": decision, "plans": len(plans), "plan_rejections": rejections, "accepted_plans": accepted,
-		"rate_pence_per_game_day": input.CandidateRatePencePerGameDay,
+		"accepted":            decision.Accepted,
+		"rate_crowns_per_day": math.Round(input.CandidateRatePencePerGameDay/1_000) * 10,
+		"payback_game_days":   math.Round(decision.PaybackGameDays),
+		"capital_crowns":      growthCashTotal(decision.QuotedHullPence, decision.SlippageReservePence, decision.CannonsPence, decision.InitialStoresPence) / 1_000 * 10,
+		"accepted_voyages":    acceptedRoutes,
+		"plan_rejections":     rejections,
 	}); err != nil {
 		return GrowthDecision{}, nil, err
 	}

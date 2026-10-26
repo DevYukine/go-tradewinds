@@ -115,14 +115,20 @@ func TestExpansionFactorScoring(t *testing.T) {
 			if test.change != nil {
 				test.change(&state)
 			}
-			port, score := expansionAgentYard(state, nil)
+			port, score := expansionAgentYard(state, nil, time.Now())
 			if port.ID != test.port || score != test.score {
 				t.Fatalf("got %s score %d, want %s score %d", port.ID, score, test.port, test.score)
 			}
 		})
 	}
-	if port, score := expansionAgentYard(expansionFactorFixture(), []expansionAgent{{Region: "caribbean"}}); port.ID != "" || score != 0 {
-		t.Fatalf("persisted region latch was ignored: %s score %d", port.ID, score)
+	now := time.Now()
+	recent := []expansionAgent{{Region: "caribbean", HiredAt: now.Add(-time.Hour)}}
+	if port, score := expansionAgentYard(expansionFactorFixture(), recent, now); port.ID != "" || score != 0 {
+		t.Fatalf("recent region latch was ignored: %s score %d", port.ID, score)
+	}
+	expired := []expansionAgent{{Region: "caribbean", HiredAt: now.Add(-expansionRegionRetry - time.Minute)}}
+	if port, _ := expansionAgentYard(expansionFactorFixture(), expired, now); port.ID != "yard-a" {
+		t.Fatalf("expired region latch still blocked exploration: %q", port.ID)
 	}
 }
 
@@ -489,7 +495,7 @@ func TestExpansionFactorDoesNotCascadeWhileAgentPresent(t *testing.T) {
 	refreshExpansionFactor(t, h, runner)
 	runner.snapshot["_expansion_agents"] = encode([]expansionAgent{{PortID: recoveryHomePort, Region: "north", HiredAt: time.Now().UTC()}})
 	runner.stateCache.Factors = append(runner.stateCache.Factors, recoveryHomePort)
-	yard, score := expansionAgentYard(runner.stateCache, decode[[]expansionAgent](runner.snapshot, "_expansion_agents"))
+	yard, score := expansionAgentYard(runner.stateCache, decode[[]expansionAgent](runner.snapshot, "_expansion_agents"), time.Now())
 	if yard.ID == "" || score <= 0 {
 		t.Fatal("fixture has no second region worth exploring")
 	}

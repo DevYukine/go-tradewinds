@@ -21,7 +21,11 @@ type expansionAgent struct {
 	HiredAt time.Time `json:"hired_at"`
 }
 
-func expansionAgentYard(state accountState, agents []expansionAgent) (Port, int64) {
+// expansionRegionRetry bounds how often one region can cost a hire fee, while
+// still letting a region be explored again once a build there is affordable.
+const expansionRegionRetry = 24 * time.Hour
+
+func expansionAgentYard(state accountState, agents []expansionAgent, now time.Time) (Port, int64) {
 	present := make(map[string]bool)
 	for _, ship := range state.Ships {
 		if ship.Ship.Status != "sunk" {
@@ -36,7 +40,9 @@ func expansionAgentYard(state accountState, agents []expansionAgent) (Port, int6
 		}
 	}
 	for _, agent := range agents {
-		present[agent.Region] = true
+		if now.Before(agent.HiredAt.Add(expansionRegionRetry)) {
+			present[agent.Region] = true
+		}
 	}
 	var best Port
 	var bestScore int64
@@ -120,7 +126,7 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 		r.wakeBy(until)
 		return false, nil
 	}
-	yard, score := expansionAgentYard(r.stateCache, agents)
+	yard, score := expansionAgentYard(r.stateCache, agents, time.Now())
 	if score <= 0 {
 		return false, nil
 	}
@@ -183,7 +189,7 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 	}
 	if err := r.decision(ctx, "", "expansion_agent", "estimate overseas capital from observed quotes before exploring the largest unoccupied Crown charter premium pool", map[string]any{
 		"port_id": yard.ID, "region": yard.BankingRegion, "score_pence": score, "estimated_hull_capital_pence": estimatedCapital,
-		"estimated_hull_capital_stale": !bestFresh, "estimated_hull_quote_observed_at": observedAt,
+		"estimated_hull_capital_stale": !bestFresh,
 	}); err != nil {
 		return false, err
 	}
