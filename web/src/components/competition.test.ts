@@ -86,8 +86,8 @@ describe("competition disclosure", () => {
   it("distinguishes observed zero from unobserved traffic with native drill-in", () => {
     const html = render();
     expect(html).toContain("0 companies, 0");
-    expect(html).toContain("Not observed");
-    expect(html).toContain("No quay coverage");
+    expect(html).toContain("Not observed: Baltic.");
+    expect(html).not.toContain("No quay coverage");
     expect(html).toContain("24 real hours");
     expect(html).toContain("not live ship");
     expect(html).toContain("<details");
@@ -96,6 +96,23 @@ describe("competition disclosure", () => {
     expect(html).toContain("Not recorded");
     expect(html).toContain("window unspecified");
     expect(html.match(/name-based/g)).toHaveLength(1);
+  });
+
+  it("lists observed regions by ships before the collapsed unobserved line", () => {
+    const quiet = state.data!.regions[0];
+    state.data!.regions.push({
+      ...quiet,
+      id: "channel",
+      foreign_companies: 6,
+      foreign_ships: 48,
+    });
+    const html = render();
+    const channel = html.indexOf(">Channel<");
+    const northSea = html.indexOf(">North sea<");
+    const unobserved = html.indexOf("Not observed: Baltic.");
+    expect(channel).toBeGreaterThan(-1);
+    expect(channel).toBeLessThan(northSea);
+    expect(northSea).toBeLessThan(unobserved);
   });
 
   it("shows at most five companies ranked by ships with their latest sighting", () => {

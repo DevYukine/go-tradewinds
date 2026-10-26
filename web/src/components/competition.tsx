@@ -13,6 +13,22 @@ export function CompetitionView({ accountID }: { accountID: string }) {
   const query = useCompetition(accountID);
   const now = useNow();
   const summary = query.data;
+  // Busiest observed regions first; unobserved ones carry no data, so they
+  // collapse into one line instead of pushing real traffic below the fold.
+  const [observed, unobserved] = useMemo(() => {
+    const regions = summary?.regions ?? [];
+    const seen = regions
+      .filter((region) => region.coverage !== "not_observed")
+      .sort(
+        (a, b) =>
+          (b.foreign_ships ?? -1) - (a.foreign_ships ?? -1) ||
+          a.id.localeCompare(b.id),
+      );
+    const unseen = regions.filter(
+      (region) => region.coverage === "not_observed",
+    );
+    return [seen, unseen];
+  }, [summary]);
 
   return (
     <Section title="Competition" icon={Users} id="competition">
@@ -70,7 +86,7 @@ export function CompetitionView({ accountID }: { accountID: string }) {
                 <span>Leading company</span>
                 <span>Coverage</span>
               </div>
-              {summary.regions.map((region) => (
+              {observed.map((region) => (
                 <details
                   key={`${accountID}:${region.id}`}
                   className={styles.region}
@@ -82,11 +98,7 @@ export function CompetitionView({ accountID }: { accountID: string }) {
                       {region.top_competitors[0]?.name ?? "—"}
                     </span>
                     <span className={styles.coverage}>
-                      {region.coverage === "not_observed"
-                        ? summary.own_companies_complete
-                          ? "No quay coverage"
-                          : "Owner names unknown"
-                        : `${region.observed_ports} of ${region.ports.length} ports; partial`}
+                      {`${region.observed_ports} of ${region.ports.length} ports; partial`}
                     </span>
                   </summary>
                   <div className={styles.ports}>
@@ -103,6 +115,12 @@ export function CompetitionView({ accountID }: { accountID: string }) {
                   </div>
                 </details>
               ))}
+              {unobserved.length > 0 && (
+                <p className={styles.caption}>
+                  Not observed:{" "}
+                  {unobserved.map((region) => humanize(region.id)).join(", ")}.
+                </p>
+              )}
             </div>
           )}
         </>
