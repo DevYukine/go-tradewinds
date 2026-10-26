@@ -80,6 +80,16 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 	}
 	stage := data.Action.Stage
 	switch stage {
+	case "loan-accept", "loan-repay":
+		if status != http.StatusOK || !r.acceptLoanResult(data, response) {
+			return r.reconcileCommitted(ctx, mission, data)
+		}
+		if data.Capacity != nil && data.Capacity.Financing != nil && data.Capacity.Financing.Cancel {
+			if err := r.recordGrowthBuildRefusal(ctx, data); err != nil {
+				return false, err
+			}
+		}
+		loanResultPhase(mission, data)
 	case "marque":
 		var marque letterOfMarque
 		if status != http.StatusCreated || json.Unmarshal(response, &marque) != nil || !validMarque(marque) ||
@@ -292,7 +302,7 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 			return false, r.hold(ctx, mission.ShipID, errUninterpretableResult.Error())
 		}
 		data.FeesPence += *result.Fee
-		if stage == "remit" && mission.ShipID == "__treasury" {
+		if stage == "remit" && (mission.ShipID == "__treasury" || mission.ShipID == "__loans") {
 			mission.Phase = "done"
 		}
 	case "build":
@@ -358,7 +368,7 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 			return false, err
 		}
 	}
-	if stage == "build" && domainRefusal {
+	if (stage == "build" || stage == "loan-accept" && data.Capacity != nil) && domainRefusal {
 		if err := r.recordGrowthBuildRefusal(ctx, data); err != nil {
 			return false, err
 		}
@@ -417,12 +427,21 @@ func applyRejectedResult(mission *store.Mission, data *missionData, status int, 
 	data.LastActionID = action.ID
 	data.Sequence++
 	data.Action = nil
+	if (status == 401 || status == 403 || status == 429) &&
+		(stage == "loan-accept" || stage == "loan-repay" || stage == "build" && data.Capacity != nil && data.Capacity.Financing != nil) {
+		return
+	}
 	// Operational intents must release their control row after a definite
 	// refusal so fresh state can replan them once the cooldown has elapsed.
 	// This is not evidence that cargo, a charter or a quote is unavailable.
 	if stage == "build" {
 		mission.Phase = "growth_rejected"
-	} else if stage == "marque" || stage == "settings" || stage == "hire-factor" || stage == "dismiss-factor" || stage == "remit" && mission.ShipID == "__treasury" {
+		if data.Capacity != nil && data.Capacity.Financing != nil {
+			mission.Phase = "growth_finance_repay"
+		}
+	} else if stage == "loan-accept" || stage == "loan-repay" && mission.ShipID == "__growth" {
+		mission.Phase = "growth_finance_repay"
+	} else if stage == "loan-repay" || stage == "marque" || stage == "settings" || stage == "hire-factor" || stage == "dismiss-factor" || stage == "remit" && (mission.ShipID == "__treasury" || mission.ShipID == "__loans") {
 		mission.Phase = "done"
 	} else if data.Plan.Kind == "maintenance" {
 		mission.Phase = "maintenance"

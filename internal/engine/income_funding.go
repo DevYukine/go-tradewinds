@@ -317,8 +317,8 @@ func (r *Runner) incomeActionReady(ctx context.Context, ship ShipState, data *mi
 	if err := json.Unmarshal(action.Body, &request); err != nil {
 		return errors.New("new income action has an invalid immutable request")
 	}
-	if action.Stage == "dock" && action.MaintenanceDock {
-		// Only the maintenance controller can persist this independent purpose.
+	if action.Stage == "dock" && (action.MaintenanceDock || !r.loanAuthority()) {
+		// Debt reads cannot disable a safety berth or collection of owned cargo.
 		return nil
 	}
 	if action.Stage == "provision" || action.Stage == "dock" {

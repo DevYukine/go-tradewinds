@@ -54,6 +54,8 @@ type GrowthInput struct {
 
 type GrowthDecision struct {
 	Accepted                      bool    `json:"accepted"`
+	EconomicallyViable            bool    `json:"economically_viable"`
+	CashShortfallPence            int64   `json:"cash_shortfall_pence"`
 	Reason                        string  `json:"reason"`
 	QuotedHullPence               int64   `json:"quoted_hull_pence"`
 	SlippageReservePence          int64   `json:"slippage_reserve_pence"`
@@ -64,6 +66,7 @@ type GrowthDecision struct {
 	IncrementalUpkeepPence        int64   `json:"incremental_upkeep_pence"`
 	UpkeepReservePence            int64   `json:"upkeep_reserve_pence"`
 	IncrementalNetPencePerGameDay float64 `json:"incremental_net_pence_per_game_day"`
+	DepthNetPencePerGameDay       float64 `json:"depth_net_pence_per_game_day"`
 	PaybackGameDays               float64 `json:"payback_game_days"`
 	EvidenceBasis                 string  `json:"evidence_basis"`
 }
@@ -1072,6 +1075,9 @@ func (r *Runner) driveGrowth(ctx context.Context, mission *store.Mission, data *
 	}
 	if data.Action != nil {
 		return false, r.hold(ctx, "", "commissioning retains its unresolved immutable action before any allocation transition")
+	}
+	if data.Capacity != nil && data.Capacity.Financing != nil && data.BuiltShipID == "" {
+		return r.driveCapacityFinancing(ctx, mission, data)
 	}
 	if mission.Phase == "settling" || mission.Phase == "settled" {
 		return r.finishGrowthControl(ctx, mission, data)

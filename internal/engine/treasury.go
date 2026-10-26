@@ -135,6 +135,9 @@ func obligationReserves(state accountState, snapshot map[string]json.RawMessage,
 	if marque.BankingRegion != "" && marque.CostPence > 0 && marque.CostPence <= maximumPence {
 		required[marque.BankingRegion] += marque.CostPence
 	}
+	for _, loan := range state.Loans {
+		required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], loanReserve(loan))
+	}
 	return required
 }
 
@@ -204,12 +207,19 @@ func (r *Runner) manageTreasury(ctx context.Context) (bool, error) {
 }
 
 func (r *Runner) fundTreasury(ctx context.Context, balances, required map[string]int64) (bool, error) {
+	return r.fundTreasuryMission(ctx, balances, required, "__treasury", nil)
+}
+
+func (r *Runner) fundTreasuryMission(ctx context.Context, balances, required map[string]int64, owner string, repayment *loanRepaymentIntent) (bool, error) {
 	state := r.stateCache
 	regions := make([]string, 0, len(required))
 	for region := range required {
 		regions = append(regions, region)
 	}
 	sort.Strings(regions)
+	if repayment != nil {
+		regions = []string{repayment.Before.BankingRegion}
+	}
 	for _, destination := range regions {
 		shortfall := required[destination] - balances[destination]
 		if shortfall <= 0 {
@@ -224,16 +234,17 @@ func (r *Runner) fundTreasury(ctx context.Context, balances, required map[string
 		}
 		mission := &store.Mission{
 			AccountID:   r.account.ID,
-			ShipID:      "__treasury",
+			ShipID:      owner,
 			Phase:       "remit",
 			Destination: destination,
 			Quantity:    gross,
 			Generation:  uuid.NewString(),
 		}
 		data := missionData{
-			Plan:       Plan{Kind: "treasury"},
-			StartedAt:  time.Now().UTC(),
-			CostsKnown: true,
+			Plan:          Plan{Kind: "treasury"},
+			StartedAt:     time.Now().UTC(),
+			CostsKnown:    true,
+			LoanRepayment: repayment,
 		}
 		if err := r.decision(
 			ctx,

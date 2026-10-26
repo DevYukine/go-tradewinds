@@ -319,7 +319,7 @@ func (f *fakeGameAPI) handleGet(writer http.ResponseWriter, request *http.Reques
 	case "/v1/world/events", "/v1/treasury/ledger", "/v1/fleet/convoys",
 		"/v1/fleet/marques", "/v1/fleet/patrols", "/v1/warehouse/list",
 		"/v1/market/orders", "/v1/market/fills", "/v1/insurance/list",
-		"/v1/future/list", "/v1/contract/list":
+		"/v1/future/list", "/v1/contract/list", "/v1/loan/list":
 		f.writeJSON(writer, http.StatusOK, []any{})
 	case "/v1/company/factors":
 		f.writeJSON(writer, http.StatusOK, f.factorPorts)

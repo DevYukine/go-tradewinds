@@ -90,6 +90,26 @@ func (r *Runner) growthSourceAuthority(input PlanningInput, portID string) bool 
 // Only unpaid cash is committed. Existing cargo, hardware and completed store
 // orders do not reserve their original purchase price a second time.
 func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mission, data *missionData, ship ShipState) {
+	if data.Capacity != nil && data.Capacity.Financing != nil && data.BuiltShipID == "" {
+		financing := data.Capacity.Financing
+		if mission.Phase == "growth_finance_repay" || mission.Phase == "growth_rejected" {
+			for _, accepted := range financing.Loans {
+				if loan, exists := r.loanByID(accepted.ID); exists {
+					required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], max(0, loanFullPayment(loan)-loanReserve(loan)))
+				}
+			}
+		} else {
+			for region, amount := range financing.ProtectedByRegion {
+				for _, accepted := range financing.Loans {
+					if loan, exists := r.loanByID(accepted.ID); exists && loan.BankingRegion == region {
+						amount = max(0, amount-loanReserve(loan))
+					}
+				}
+				required[region] = growthCashTotal(required[region], amount, financing.DonorByRegion[region])
+			}
+		}
+		return
+	}
 	if data.Plan.Kind == "recovery" || mission.Phase == "maintenance_done" || mission.Phase == "done" ||
 		data.Plan.Kind == "maintenance" && data.Plan.StoresToBuy == 0 {
 		return
@@ -640,7 +660,7 @@ func (r *Runner) growthAllocationReady(ctx context.Context, ship ShipState, data
 		return nil
 	}
 	if action.Stage == "dock" {
-		if data.BuyDone || ship.Ship.CurrentPortID != data.Plan.Origin {
+		if !r.loanAuthority() || data.BuyDone || ship.Ship.CurrentPortID != data.Plan.Origin {
 			return nil
 		}
 		input, err := r.committedPlanningInput(ctx, ship)

@@ -18,6 +18,7 @@ const (
 	fetchJSON fetchKind = iota
 	fetchPages
 	fetchContracts
+	fetchBorrowerLoans
 )
 
 type fetchTask struct {
@@ -60,6 +61,8 @@ func fetchWave(ctx context.Context, api *gameapi.Client, tasks []fetchTask) ([]f
 					result.data, result.err = readPages(ctx, api, task.path)
 				case fetchContracts:
 					result.data, result.err = readContracts(ctx, api)
+				case fetchBorrowerLoans:
+					result.data, result.err = readBorrowerLoans(ctx, api)
 				default:
 					result.err = api.Get(ctx, task.path, &result.data)
 				}
@@ -126,6 +129,37 @@ func readPages(ctx context.Context, api *gameapi.Client, path string) (json.RawM
 		}
 		query.Set("cursor", id)
 	}
+}
+
+func readBorrowerLoans(ctx context.Context, api *gameapi.Client) (json.RawMessage, error) {
+	byID := make(map[string]json.RawMessage)
+	var order []string
+	for _, status := range []string{"active", "defaulted"} {
+		rows, err := readPages(ctx, api, "/v1/loan/list?role=borrower&status="+status)
+		if err != nil {
+			return nil, err
+		}
+		var page []json.RawMessage
+		if err := json.Unmarshal(rows, &page); err != nil {
+			return nil, err
+		}
+		for _, row := range page {
+			id, err := pageID(row)
+			if err != nil {
+				return nil, err
+			}
+			if _, exists := byID[id]; !exists {
+				order = append(order, id)
+			}
+			// A later default observation supersedes the same active loan.
+			byID[id] = row
+		}
+	}
+	combined := make([]json.RawMessage, 0, len(order))
+	for _, id := range order {
+		combined = append(combined, byID[id])
+	}
+	return json.Marshal(combined)
 }
 
 func readContracts(ctx context.Context, api *gameapi.Client) (json.RawMessage, error) {

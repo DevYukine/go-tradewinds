@@ -49,6 +49,7 @@ type missionData struct {
 	Capacity                  *capacityIntent         `json:"capacity,omitempty"`
 	Underwriting              *underwritingIntent     `json:"underwriting,omitempty"`
 	Marque                    *marqueIntent           `json:"marque,omitempty"`
+	LoanRepayment             *loanRepaymentIntent    `json:"loan_repayment,omitempty"`
 	SourcingSpentPence        int64                   `json:"sourcing_spent_pence"`
 	SourcingGameDays          float64                 `json:"sourcing_game_days"`
 	ClosingObservedAt         time.Time               `json:"closing_observed_at"`
@@ -114,7 +115,8 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	// pending request blocks all new account mutations rather than being guessed.
 	missions := make(map[string]*store.Mission)
 	dataByShip := make(map[string]missionData)
-	ids := make([]string, 0, len(r.stateCache.Ships)+4)
+	ids := make([]string, 0, len(r.stateCache.Ships)+5)
+	ids = append(ids, "__loans")
 	for _, ship := range r.stateCache.Ships {
 		ids = append(ids, ship.Ship.ID)
 	}
@@ -191,6 +193,11 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	}
 	if r.stateCache.Clock.Paused {
 		return false, r.hold(ctx, "", "world paused; observation continues without mutations")
+	}
+	if r.opts.Execute {
+		if changed, err := r.serviceLoans(ctx); changed || err != nil {
+			return changed, err
+		}
 	}
 	if unresolved {
 		return r.creditOnlyWork(ctx, missions, dataByShip)

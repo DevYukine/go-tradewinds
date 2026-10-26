@@ -37,7 +37,7 @@ func (r *Runner) assessShip(shipID string) {
 		return
 	}
 	switch shipID {
-	case "__treasury", "__growth", "__underwriting", "__marque":
+	case "__treasury", "__growth", "__loans", "__underwriting", "__marque":
 		r.assessHold(shipID)
 		return
 	}
@@ -127,7 +127,7 @@ func (r *Runner) logBlockingStatus(ctx context.Context, now time.Time, fleetFres
 	}
 	for id, status := range r.blockingStatuses {
 		switch id {
-		case "", "__growth", "__treasury", "__underwriting", "__marque":
+		case "", "__growth", "__treasury", "__loans", "__underwriting", "__marque":
 		default:
 			if _, exists := r.ship(id); fleetFresh && !exists {
 				delete(r.blockingStatuses, id)

@@ -25,7 +25,7 @@ type expansionAgent struct {
 // still letting a region be explored again once a build there is affordable.
 const expansionRegionRetry = 24 * time.Hour
 
-func expansionAgentYard(state accountState, agents []expansionAgent, now time.Time) (Port, int64) {
+func expansionAgentYard(state accountState, input PlanningInput, agents []expansionAgent, now time.Time) (Port, int64) {
 	present := make(map[string]bool)
 	for _, ship := range state.Ships {
 		if ship.Ship.Status != "sunk" {
@@ -52,29 +52,24 @@ func expansionAgentYard(state accountState, agents []expansionAgent, now time.Ti
 			continue
 		}
 		var score int64
-		for _, contract := range state.Contracts {
-			if contract.ContractType != "charter" || contract.Status != "open" || contract.Stale || contract.IssuerCompanyID != "" || contract.RemainingQuantity <= 0 || contract.OriginPortID == yard.ID {
+		for _, commodity := range state.Catalog.Commodities {
+			// Exploration needs observed spot supply, not finite charter income
+			// or catalog production with an unknown executable purchase price.
+			_, _, ask := publicSourceEvidence(input, yard, Contract{CommodityID: commodity.ID})
+			if ask <= 0 {
 				continue
 			}
-			// A hull built in the region can carry any good in, so every open
-			// Crown premium there counts, not only goods the yard port makes.
-			origin, exists := findPort(state.Catalog, contract.OriginPortID)
-			// The overseas build is a regional hull, so a port in oceanic water
-			// (Iberia's coast, for example) cannot be served from the yard.
-			if !exists || origin.BankingRegion != yard.BankingRegion || !regionalWater(state.Catalog, origin) {
-				continue
-			}
-			for _, commodity := range state.Catalog.Commodities {
-				if commodity.ID != contract.CommodityID || commodity.BasePricePence < 0 {
+			for _, destination := range state.Catalog.Ports {
+				if destination.ID == yard.ID || destination.IsCove || destination.Phase > state.Clock.UnlockedPhase ||
+					destination.BankingRegion != yard.BankingRegion || !regionalWater(state.Catalog, destination) {
 					continue
 				}
-				premium := max(0, nominalCharterReward(contract)-commodity.BasePricePence)
-				if premium > (math.MaxInt64-score)/contract.RemainingQuantity {
-					score = math.MaxInt64
-				} else {
-					score += premium * contract.RemainingQuantity
+				revenue, _, stress, _, reason := destinationRevenue(input, destination.ID, commodity.ID, 1)
+				if reason == "" {
+					// A conservative one-ton spread ranks exploration only; the
+					// measured capacity planner still admits the eventual hull.
+					score = max(score, revenue-stress-ask)
 				}
-				break
 			}
 		}
 		if score <= 0 {
@@ -126,13 +121,13 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 		r.wakeBy(until)
 		return false, nil
 	}
-	yard, score := expansionAgentYard(r.stateCache, agents, time.Now())
-	if score <= 0 {
-		return false, nil
-	}
 	input, err := r.committedPlanningInput(ctx, ShipState{})
 	if err != nil {
 		return false, err
+	}
+	yard, score := expansionAgentYard(r.stateCache, input, agents, time.Now())
+	if score <= 0 {
+		return false, nil
 	}
 	evidence := growthEvidence{workingByRegion: make(map[string]int64)}
 	if reason, err := r.growthCashFunding(ctx, &evidence); err != nil || reason != "" {
@@ -187,7 +182,7 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 	if cheapest == math.MaxInt64 {
 		return false, r.hold(ctx, "", "expansion agent needs a previously observed regional hull quote to estimate overseas capital")
 	}
-	if err := r.decision(ctx, "", "expansion_agent", "estimate overseas capital from observed quotes before exploring the largest unoccupied Crown charter premium pool", map[string]any{
+	if err := r.decision(ctx, "", "expansion_agent", "estimate overseas capital from observed quotes before exploring an unoccupied region with a positive observed spot spread", map[string]any{
 		"port_id": yard.ID, "region": yard.BankingRegion, "score_pence": score, "estimated_hull_capital_pence": estimatedCapital,
 		"estimated_hull_capital_stale": !bestFresh,
 	}); err != nil {

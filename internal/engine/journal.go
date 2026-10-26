@@ -210,6 +210,7 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 			Kind   string         `json:"kind"`
 			Ship   ShipState      `json:"ship"`
 			Marque letterOfMarque `json:"marque"`
+			Loan   gameapi.Loan   `json:"loan"`
 		}
 		if err := json.Unmarshal(persisted.Response, &evidence); err != nil {
 			return false, fmt.Errorf("invalid reconciliation evidence for %s: %w", persisted.ID, err)
@@ -224,6 +225,14 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 		if action.Stage == "marque" && evidence.Kind == "authoritative_marque" && data.Marque != nil &&
 			validMarque(evidence.Marque) && evidence.Marque.SeaZoneID == data.Marque.Quote.SeaZoneID && evidence.Marque.AddedPiracyBPS == 500 {
 			data.Marque.IssuedID, data.Marque.ExpiresAt = evidence.Marque.ID, evidence.Marque.ExpiresAt
+		}
+		if action.Stage == "loan-accept" {
+			if evidence.Kind != "authoritative_loan" || !r.acceptLoanResult(data, encode(evidence.Loan)) {
+				return false, r.hold(ctx, mission.ShipID, "reconciled borrowing lacks its exact quote-specific loan receipt")
+			}
+		}
+		if action.Stage == "loan-repay" && (evidence.Kind != "authoritative_loan" || !loanRepaymentObserved(evidence.Loan, data.LoanRepayment)) {
+			return false, r.hold(ctx, mission.ShipID, "reconciled repayment lacks its named paid debt")
 		}
 		return r.applyReconciliation(ctx, mission, data)
 	}
@@ -809,6 +818,8 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 	action := data.Action
 	data.CostsKnown = false
 	switch data.Action.Stage {
+	case "loan-accept", "loan-repay":
+		loanResultPhase(mission, data)
 	case "marque":
 		mission.Phase = "done"
 	case "depart":
@@ -893,6 +904,9 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		return errors.New("new action requires current successful server clock authority")
 	}
 	action := data.Action
+	if action.Stage == "loan-accept" || action.Stage == "loan-repay" {
+		return r.loanActionReady(ctx, mission, data)
+	}
 	if mission.ShipID == "__growth" {
 		if data.Capacity != nil {
 			if data.GrowthLane != nil || data.ProvenLane != "" || action.Stage != "build" && action.Stage != "refit" && action.Stage != "dock" {
@@ -971,6 +985,16 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 				return err
 			}
 			input, err = r.sourcingInput(ctx, ship)
+		} else if mission.ShipID == "__loans" {
+			if !r.loanAuthority() || data.LoanRepayment == nil {
+				return errors.New("arrears funding requires current named debt authority")
+			}
+			loan, exists := r.loanByID(data.LoanRepayment.Before.ID)
+			if !exists || loan.Status != "active" || loan.ArrearsPence <= 0 || request.ToRegion != loan.BankingRegion {
+				return errors.New("arrears funding is no longer required by this active loan")
+			}
+			input = r.planningInput(ship)
+			input.ReserveByRegion, err = r.treasuryReserves(ctx)
 		} else {
 			input, err = r.committedPlanningInput(ctx, ship)
 		}
@@ -1037,7 +1061,7 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 	if err := r.incomeActionReady(ctx, ship, data, action); err != nil {
 		return err
 	}
-	if data.Relocation != nil && action.Stage == "dock" && data.Relocation.IdlePilot && ship.Ship.CurrentPortID == data.Plan.Origin {
+	if data.Relocation != nil && action.Stage == "dock" && data.Relocation.IdlePilot && ship.Ship.CurrentPortID == data.Plan.Origin && r.loanAuthority() {
 		if err := r.relocationSpendingReady(ctx, ship, data, 0); err != nil {
 			return err
 		}
@@ -1235,6 +1259,9 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 func (r *Runner) reconcileObservedAction(ctx context.Context, mission *store.Mission, data *missionData, action *store.Action) (bool, error) {
 	if data.Action == nil || action == nil {
 		return false, nil
+	}
+	if data.Action.Stage == "loan-accept" || data.Action.Stage == "loan-repay" {
+		return r.reconcileLoanAction(ctx, mission, data, action)
 	}
 	if data.Action.Stage == "marque" {
 		return r.reconcileMarque(ctx, mission, data, action)

@@ -307,6 +307,92 @@ type Vault struct {
 	BalancePence  int64  `json:"balance_pence"`
 }
 
+// Loan is the complete /v1/loan/list and loan mutation response. Money is
+// integer pence; timestamps are real UTC, not accelerated game time.
+// Annual rates are bps per 360 game days; legacy daily rates remain distinct.
+type Loan struct {
+	ID                          string     `json:"id"`
+	LenderCompanyID             string     `json:"lender_company_id"`
+	BorrowerCompanyID           string     `json:"borrower_company_id"`
+	BankingRegion               string     `json:"banking_region"`
+	PrincipalPence              int64      `json:"principal_pence"`
+	RateBasis                   string     `json:"rate_basis"`
+	DailyRateBPS                int32      `json:"daily_rate_bps"`
+	AnnualRateBPS               *int32     `json:"annual_rate_bps"`
+	TermGameDays                int32      `json:"term_game_days"`
+	Repayment                   string     `json:"repayment"`
+	TotalRepayablePence         *int64     `json:"total_repayable_pence"`
+	InstallmentPence            *int64     `json:"installment_pence"`
+	NextPaymentDueAt            *time.Time `json:"next_payment_due_at"`
+	NextPaymentPence            *int64     `json:"next_payment_pence"`
+	ArrearsPence                int64      `json:"arrears_pence"`
+	ArrearsDueBy                *time.Time `json:"arrears_due_by"`
+	Recourse                    bool       `json:"recourse"`
+	CollateralKind              string     `json:"collateral_kind"`
+	CollateralShipID            *string    `json:"collateral_ship_id"`
+	CollateralPortID            *string    `json:"collateral_port_id"`
+	CollateralCommodityID       *string    `json:"collateral_commodity_id"`
+	CollateralTons              *int32     `json:"collateral_tons"`
+	CollateralContractID        *string    `json:"collateral_contract_id"`
+	CollateralValuePence        int64      `json:"collateral_value_pence"`
+	CollateralStatus            string     `json:"collateral_status"`
+	Status                      string     `json:"status"`
+	OutstandingPrincipalPence   int64      `json:"outstanding_principal_pence"`
+	AccruedInterestPence        int64      `json:"accrued_interest_pence"`
+	OwedPence                   int64      `json:"owed_pence"`
+	PrincipalRepaidPence        int64      `json:"principal_repaid_pence"`
+	InterestPaidPence           int64      `json:"interest_paid_pence"`
+	CollateralCreditPence       int64      `json:"collateral_credit_pence"`
+	ExtinguishedPence           int64      `json:"extinguished_pence"`
+	WrittenOffPence             int64      `json:"written_off_pence"`
+	ForeclosureSurplusPaidPence int64      `json:"foreclosure_surplus_paid_pence"`
+	ForeclosureSurplusOwedPence int64      `json:"foreclosure_surplus_owed_pence"`
+	OfferExpiresAt              time.Time  `json:"offer_expires_at"`
+	DisbursedAt                 *time.Time `json:"disbursed_at"`
+	MaturesAt                   *time.Time `json:"matures_at"`
+	DefaultedAt                 *time.Time `json:"defaulted_at"`
+	ClosedAt                    *time.Time `json:"closed_at"`
+	InterestAccruedThrough      *time.Time `json:"interest_accrued_through"`
+	RequestID                   *string    `json:"request_id"`
+	QuoteID                     *string    `json:"quote_id"`
+	CreatedAt                   time.Time  `json:"created_at"`
+	UpdatedAt                   time.Time  `json:"updated_at"`
+}
+
+// LoanQuote is a stored lender or Goldsmiths quote. AnnualRateBPS is interest
+// per 360 game days on outstanding principal. Money is integer pence;
+// amortised installments fall every 10 game days, with the remainder at maturity.
+type LoanQuote struct {
+	ID                  string    `json:"id"`
+	RequestID           *string   `json:"request_id"`
+	LenderCompanyID     string    `json:"lender_company_id"`
+	LenderName          string    `json:"lender_name"`
+	BorrowerCompanyID   string    `json:"borrower_company_id"`
+	BankingRegion       string    `json:"banking_region"`
+	PrincipalPence      int64     `json:"principal_pence"`
+	AnnualRateBPS       int32     `json:"annual_rate_bps"`
+	TermGameDays        int32     `json:"term_game_days"`
+	Repayment           string    `json:"repayment"`
+	TotalRepayablePence int64     `json:"total_repayable_pence"`
+	InstallmentPence    *int64    `json:"installment_pence"`
+	CollateralShipID    *string   `json:"collateral_ship_id"`
+	Status              string    `json:"status"`
+	ExpiresAt           time.Time `json:"expires_at"`
+	LoanID              *string   `json:"loan_id"`
+	CreatedAt           time.Time `json:"created_at"`
+}
+
+// GoldsmithsQuote is an instant ship-lien quote stored for 6 game hours.
+// Its principal cap includes the ship's loan-to-value limit, the per-loan cap
+// and the house's available funds. Recourse is always true.
+type GoldsmithsQuote struct {
+	Quote             LoanQuote `json:"quote"`
+	RebuildValuePence int64     `json:"rebuild_value_pence"`
+	LoanToValueBPS    int64     `json:"loan_to_value_bps"`
+	MaxPrincipalPence int64     `json:"max_principal_pence"`
+	Recourse          bool      `json:"recourse"`
+}
+
 type Profile struct {
 	Company     Company  `json:"company"`
 	Handle      string   `json:"handle"`

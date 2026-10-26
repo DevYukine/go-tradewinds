@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/DevYukine/go-tradewinds/internal/gameapi"
 	"github.com/DevYukine/go-tradewinds/internal/names"
 	"github.com/DevYukine/go-tradewinds/internal/store"
 	"github.com/google/uuid"
@@ -59,7 +61,7 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 		CannonsPence:           cannons,
 		InitialStoresPence:     in.InitialStoresPence,
 		IncrementalUpkeepPence: in.IncrementalDailyUpkeepPence,
-		EvidenceBasis:          "best accepted voyage repeat net per game day, or half its expected outbound rate",
+		EvidenceBasis:          "best accepted non-charter voyage repeat net per game day, or half its expected outbound rate",
 	}
 	if !in.HasSpareWork {
 		decision.Reason = capacityNoSpareWorkReason
@@ -84,7 +86,13 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 	buffer := growthCashTotal(max(in.ReservePence, ceilBPS(in.HullPricePence, 1_500)), (int64(in.FleetSize)+1)*in.LotCashPence)
 	decision.WorkingCapitalPence = buffer
 	required := growthCashTotal(capital, buffer)
-	if required == math.MaxInt64 || in.SurplusPence < required {
+	if required == math.MaxInt64 {
+		decision.Reason = "capacity growth working cash exceeds integer-pence bounds"
+		return decision
+	}
+	decision.EconomicallyViable = true
+	if in.SurplusPence < required {
+		decision.CashShortfallPence = required - in.SurplusPence
 		decision.Reason = "capacity growth must preserve quote reserves and a cash lot for every ship after the build"
 		return decision
 	}
@@ -110,13 +118,20 @@ func betterCapacityCandidate(candidate, other GrowthDecision) bool {
 	return capital < otherCapital
 }
 
+func betterCapacityFinancingCandidate(candidate, other GrowthDecision) bool {
+	candidate.IncrementalNetPencePerGameDay = candidate.DepthNetPencePerGameDay
+	other.IncrementalNetPencePerGameDay = other.DepthNetPencePerGameDay
+	return betterCapacityCandidate(candidate, other)
+}
+
 type capacityIntent struct {
-	BuildPort       string    `json:"build_port"`
-	BuildClass      string    `json:"build_class"`
-	QuoteLimitPence int64     `json:"quote_limit_pence"`
-	AdmittedAt      time.Time `json:"admitted_at"`
-	RefitAttempts   int       `json:"refit_attempts,omitempty"`
-	RefitRefused    bool      `json:"refit_refused,omitempty"`
+	BuildPort       string             `json:"build_port"`
+	BuildClass      string             `json:"build_class"`
+	QuoteLimitPence int64              `json:"quote_limit_pence"`
+	AdmittedAt      time.Time          `json:"admitted_at"`
+	RefitAttempts   int                `json:"refit_attempts,omitempty"`
+	RefitRefused    bool               `json:"refit_refused,omitempty"`
+	Financing       *capacityFinancing `json:"financing,omitempty"`
 }
 
 func (r *Runner) holdCapacityGrowth(ctx context.Context, reason string) (bool, error) {
@@ -300,16 +315,22 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 	plans := PlanVoyages(planning)
 	input.Hull = hull
 	input.HullPricePence = *quote.TotalCostPence
+	var depthRate float64
 	for _, plan := range plans {
 		basis := plan.Economics.RevenueBasis
-		// Fixed freight is a one-off fee, not repeatable income that can pay
-		// back a hull (see ballastRepeatEconomics).
-		if !plan.Accepted || len(plan.FreightIDs) > 0 || basis != "depth" && basis != "contract" && basis != "gossip" {
+		if !plan.Accepted || len(plan.FreightIDs) > 0 {
+			continue
+		}
+		// A finite charter can be the first load, but never a perpetual rate.
+		input.LotCashPence = max(input.LotCashPence, growthCashTotal(plan.Economics.PurchasePence, plan.Economics.CustomsPence, plan.Economics.StoreCashPence))
+		if plan.ContractID != "" || basis != "depth" && basis != "gossip" {
 			continue
 		}
 		input.HasSpareWork = true
-		input.LotCashPence = max(input.LotCashPence, growthCashTotal(plan.Economics.PurchasePence, plan.Economics.CustomsPence, plan.Economics.StoreCashPence))
 		rate := capacityVoyageRate(plan.Economics)
+		if basis == "depth" {
+			depthRate = max(depthRate, rate)
+		}
 		if rate > input.CandidateRatePencePerGameDay {
 			input.CandidateRatePencePerGameDay = rate
 			input.InitialStoresPence = max(plan.Economics.StoreCashPence, plan.Economics.ProvisionsPence)
@@ -341,21 +362,23 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 	}); err != nil {
 		return GrowthDecision{}, nil, err
 	}
-	if !decision.Accepted {
+	if !decision.EconomicallyViable {
 		return decision, nil, nil
 	}
 	required := clonePence(evidence.required)
 	capital := growthCashTotal(decision.QuotedHullPence, decision.SlippageReservePence, decision.CannonsPence, decision.InitialStoresPence)
 	required[port.BankingRegion] = growthCashTotal(required[port.BankingRegion], capital)
 	_, fees, _, funded := measuredFunding(evidence.balances, required, planning.Rates)
+	decision.FundingFeesPence = fees
 	if !funded {
 		decision.Accepted = false
 		decision.Reason = "capacity growth cannot fund the yard while preserving incumbent commitments and regional reserves"
-	} else if fees > 0 {
+	} else {
 		input.SurplusPence -= fees
 		decision = EvaluateCapacityGrowth(input)
 		decision.FundingFeesPence = fees
 	}
+	decision.DepthNetPencePerGameDay = max(0, depthRate-float64(input.IncrementalDailyUpkeepPence))
 	return decision, required, nil
 }
 
@@ -418,8 +441,22 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 			if err != nil {
 				return false, err
 			}
+			if decision.Accepted || !decision.EconomicallyViable {
+				noLoan := capacityLoanDecision{ShortfallPence: decision.CashShortfallPence, Reason: "no borrowing: " + decision.Reason}
+				if decision.Accepted {
+					noLoan.Reason = "own cash funds this candidate; no borrowing is needed"
+				}
+				if err := r.recordCapacityLoan(ctx, port, hull, noLoan); err != nil {
+					return false, err
+				}
+			}
+			betterUnfunded := betterCapacityCandidate(decision, bestDecision)
+			if decision.EconomicallyViable && bestDecision.EconomicallyViable {
+				betterUnfunded = betterCapacityFinancingCandidate(decision, bestDecision)
+			}
 			if decision.Accepted && (!found || betterCapacityCandidate(decision, bestDecision)) ||
-				!found && (!evaluated || betterCapacityCandidate(decision, bestDecision)) {
+				!found && (!evaluated || decision.EconomicallyViable && !bestDecision.EconomicallyViable ||
+					decision.EconomicallyViable == bestDecision.EconomicallyViable && betterUnfunded) {
 				bestPort, bestHull, bestDecision, bestRequired = port, hull, decision, required
 			}
 			found = found || decision.Accepted
@@ -443,6 +480,12 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 			return false, err
 		}
 	}
+	if !found && evaluated && bestDecision.EconomicallyViable {
+		changed, err := r.considerCapacityFinancing(ctx, bestPort, bestHull, bestDecision, bestRequired, evidence)
+		if changed || err != nil {
+			return changed, err
+		}
+	}
 	if !found {
 		if err := r.hold(ctx, "", bestDecision.Reason); err != nil {
 			return false, err
@@ -463,10 +506,10 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 			return false, r.hold(ctx, "", "capacity growth waits for completed regional yard funding")
 		}
 	}
-	return r.startCapacityGrowth(ctx, bestPort, bestHull, bestDecision)
+	return r.startCapacityGrowth(ctx, bestPort, bestHull, bestDecision, nil)
 }
 
-func (r *Runner) startCapacityGrowth(ctx context.Context, port Port, hull Hull, decision GrowthDecision) (bool, error) {
+func (r *Runner) startCapacityGrowth(ctx context.Context, port Port, hull Hull, decision GrowthDecision, financing *capacityFinancing) (bool, error) {
 	used := decode[[]string](r.snapshot, "_used_ship_names")
 	for _, ship := range r.stateCache.Ships {
 		used = append(used, ship.Ship.Name)
@@ -482,11 +525,16 @@ func (r *Runner) startCapacityGrowth(ctx context.Context, port Port, hull Hull, 
 			BuildPort: port.ID, BuildClass: hull.ID,
 			QuoteLimitPence: growthCashTotal(decision.QuotedHullPence, decision.SlippageReservePence),
 			AdmittedAt:      now,
+			Financing:       financing,
 		},
 		BuildName: name, BuildClass: hull.ID, BuildPort: port.ID,
 		TargetCannons: min(4, hull.MaxCannons), CostsKnown: true,
 		StartedAt: now, StartedGameHours: r.stateCache.Clock.Calendar.TotalGameHours,
 		InitialLedgerIDs: r.ledgerIDs(),
+	}
+	if financing != nil {
+		mission.Phase = "growth_finance"
+		return true, r.saveMission(ctx, mission, &data)
 	}
 	return true, r.stage(ctx, mission, &data, ShipState{}, "build", "/v1/shipyard/build-ship", map[string]any{
 		"port_id": port.ID, "name": name, "ship_class": hull.ID, "build_mode": "turnkey_cash",
@@ -498,6 +546,23 @@ func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) erro
 	if intent == nil || intent.BuildPort != data.BuildPort || intent.BuildClass != data.BuildClass ||
 		intent.QuoteLimitPence <= 0 || intent.AdmittedAt.IsZero() {
 		return errors.New("capacity build requires its matching durable yard, hull and quote ceiling")
+	}
+	if intent.Financing != nil {
+		if intent.Financing.Cancel || len(intent.Financing.Loans) != len(intent.Financing.Quotes) {
+			return errors.New("financed build requires its complete uncanceled debt package")
+		}
+		_, required, err := r.capacityFinanceReady(ctx, data)
+		if err != nil {
+			return err
+		}
+		input := r.planningInput(ShipState{})
+		for region, amount := range required {
+			if input.Balances[region] < amount {
+				return errors.New("financed build waits for its frozen package and protected debt cash")
+			}
+		}
+		_, err = r.capacityYardReady(ctx, data)
+		return err
 	}
 	for _, dataset := range []string{"vaults", "ships", "catalog", "clock", "zones", "rates", "factors", "profile", "warehouses", "contracts", "orders", "fills"} {
 		if !r.fresh(dataset) {
@@ -602,34 +667,49 @@ func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) erro
 			return errors.New("capacity build waits for completed reserve-safe regional yard funding")
 		}
 	}
-	// Turnkey builds have no atomic price cap. Requote after all planning so
-	// only the request round trip separates this check from the first send.
-	var live YardQuote
-	path := "/v1/shipyard/quote?port_id=" + url.QueryEscape(port.ID) + "&ship_class=" + url.QueryEscape(hull.ID) + "&build_mode=turnkey_cash"
-	if err := r.api.Get(ctx, path, &live); err != nil {
-		return fmt.Errorf("refresh capacity build price before first send: %w", err)
+	live, err := r.capacityYardReady(ctx, data)
+	if err != nil {
+		return err
 	}
-	// Admission used the cached quote; a live refusal would otherwise readmit
-	// the same yard and hull every pass, starving ordinary ship missions.
-	refuse := func(reason string) error {
+	extra := max(0, *live.TotalCostPence-growthCashTotal(*quote.TotalCostPence, decision.SlippageReservePence))
+	if evidence.balances[port.BankingRegion]-extra < required[port.BankingRegion] {
 		if err := r.recordGrowthBuildRefusal(ctx, data); err != nil {
 			return err
 		}
-		return errors.New(reason)
-	}
-	if live.PortID != port.ID || live.ShipClass != hull.ID || live.BuildMode != "turnkey_cash" || !live.Available ||
-		live.TotalCostPence == nil || *live.TotalCostPence <= 0 || *live.TotalCostPence > intent.QuoteLimitPence {
-		return refuse("capacity build live turnkey quote is unavailable, mismatched or above the admitted ceiling")
-	}
-	if live.MaterialsPence < 0 || live.NPCMaterialsPence < 0 || live.NPCMaterialsPence > live.MaterialsPence ||
-		live.MaterialsPence-live.NPCMaterialsPence > intent.QuoteLimitPence-*live.TotalCostPence {
-		return refuse("capacity build live player-sourced materials exceed the remaining price headroom")
-	}
-	yardRequired := growthCashTotal(required[port.BankingRegion], max(0, *live.TotalCostPence-*quote.TotalCostPence-decision.SlippageReservePence))
-	if yardRequired == math.MaxInt64 || evidence.balances[port.BankingRegion] < yardRequired {
-		return refuse("capacity build live quote would spend protected regional yard funding")
+		return errors.New("capacity live turnkey quote exceeds protected regional yard funding")
 	}
 	return nil
+}
+
+// Both acceptance and construction check the same no-price-cap endpoint.
+func (r *Runner) capacityYardReady(ctx context.Context, data *missionData) (YardQuote, error) {
+	var live YardQuote
+	path := "/v1/shipyard/quote?port_id=" + url.QueryEscape(data.BuildPort) + "&ship_class=" + url.QueryEscape(data.BuildClass) + "&build_mode=turnkey_cash"
+	if err := r.api.Get(ctx, path, &live); err != nil {
+		var problem *gameapi.APIError
+		if data.Capacity.Financing != nil && errors.As(err, &problem) &&
+			(problem.Status == http.StatusForbidden || problem.Status == http.StatusNotFound || problem.Code == "no_port_presence") {
+			data.Capacity.Financing.Cancel = true
+			if saveErr := r.recordGrowthBuildRefusal(ctx, data); saveErr != nil {
+				return live, saveErr
+			}
+		}
+		return live, fmt.Errorf("refresh capacity turnkey price before first send: %w", err)
+	}
+	intent := data.Capacity
+	if live.PortID == data.BuildPort && live.ShipClass == data.BuildClass && live.BuildMode == "turnkey_cash" && live.Available &&
+		live.TotalCostPence != nil && *live.TotalCostPence > 0 && *live.TotalCostPence <= intent.QuoteLimitPence &&
+		live.MaterialsPence >= 0 && live.NPCMaterialsPence >= 0 && live.NPCMaterialsPence <= live.MaterialsPence &&
+		live.MaterialsPence-live.NPCMaterialsPence <= intent.QuoteLimitPence-*live.TotalCostPence {
+		return live, nil
+	}
+	if intent.Financing != nil {
+		intent.Financing.Cancel = true
+	}
+	if err := r.recordGrowthBuildRefusal(ctx, data); err != nil {
+		return live, err
+	}
+	return live, errors.New("capacity live turnkey quote is unavailable, mismatched or above the admitted ceiling")
 }
 
 func (r *Runner) driveCapacityGrowth(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData) (bool, error) {

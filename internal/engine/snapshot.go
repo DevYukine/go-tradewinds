@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DevYukine/go-tradewinds/internal/gameapi"
 	"github.com/DevYukine/go-tradewinds/internal/store"
 	"go.uber.org/zap"
 )
@@ -22,6 +23,7 @@ type accountState struct {
 	Routes            map[string]Route
 	Contracts         []Contract
 	Vaults            []Vault
+	Loans             []gameapi.Loan
 	InsurancePolicies []InsurancePolicy
 	Rates             []Rate
 	Factors           []string
@@ -41,6 +43,9 @@ func encode(value any) json.RawMessage {
 }
 
 func (r *Runner) applyCapture(ctx context.Context, key string, result fetchResult) bool {
+	if result.err == nil && key == "loans" {
+		result.err = validateBorrowerLoans(result.data, r.account.CompanyID)
+	}
 	if result.err == nil && (key == "insurance" || key == "insurance_owned") {
 		var policies []InsurancePolicy
 		if err := json.Unmarshal(result.data, &policies); err != nil {
@@ -209,6 +214,10 @@ func (r *Runner) refresh(ctx context.Context) error {
 		Metadata: decode[map[string]DatasetMeta](r.snapshot, "_meta"),
 	}
 	previousIdle.Generation = previousIdle.Metadata["clock"].Generation
+	loans, err := r.loanCaptureTask(ctx)
+	if err != nil {
+		return err
+	}
 	if err := r.captureWave(ctx, []fetchTask{
 		{"whoami", "/v1/auth/whoami", fetchJSON},
 		{"player", "/v1/player/profile", fetchJSON},
@@ -222,6 +231,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 		{"world_events", "/v1/world/events?include_expired=true", fetchPages},
 		{"monopolies", "/v1/world/monopolies", fetchPages},
 		{"vaults", "/v1/treasury/vaults", fetchJSON},
+		loans,
 		{"rates", "/v1/treasury/rates", fetchJSON},
 		{"ships", "/v1/fleet/ships", fetchPages},
 		{"warehouses", "/v1/warehouse/list", fetchJSON},
@@ -633,6 +643,7 @@ func (r *Runner) state() accountState {
 		Ports:             decode[map[string]PortDetail](r.snapshot, "ports"),
 		Routes:            decode[map[string]Route](r.snapshot, "routes"),
 		Contracts:         decode[[]Contract](r.snapshot, "contracts"),
+		Loans:             decode[[]gameapi.Loan](r.snapshot, "loans"),
 		InsurancePolicies: decode[[]InsurancePolicy](r.snapshot, "insurance"),
 		Rates:             decode[[]Rate](r.snapshot, "rates"),
 		Factors:           decode[[]string](r.snapshot, "factors"),

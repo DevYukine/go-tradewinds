@@ -14,6 +14,7 @@ import (
 
 func expansionFactorFixture() accountState {
 	xReward, yReward := int64(200), int64(150)
+	now, ask := time.Now().UTC().Add(-time.Second), int64(100)
 	return accountState{
 		Clock: Clock{UnlockedPhase: 1},
 		Catalog: Catalog{
@@ -31,6 +32,35 @@ func expansionFactorFixture() accountState {
 			{ID: "charter-x", ContractType: "charter", Status: "open", OriginPortID: "demand", CommodityID: "x", RemainingQuantity: 10, RewardPerTonPence: &xReward},
 			{ID: "charter-y", ContractType: "charter", Status: "open", OriginPortID: "demand", CommodityID: "y", RemainingQuantity: 10, RewardPerTonPence: &yReward},
 		},
+		Ports: map[string]PortDetail{
+			recoveryHomePort: {CoffeeHouseGossip: []Gossip{
+				{SubjectPortID: "yard-a", SnapshotAt: now, Commodities: []GossipCommodity{
+					{CommodityID: "x", SnapshotAt: now, BestAskPence: &ask},
+					{CommodityID: "y", SnapshotAt: now, BestAskPence: &ask},
+				}},
+				{SubjectPortID: "yard-b", SnapshotAt: now, Commodities: []GossipCommodity{
+					{CommodityID: "x", SnapshotAt: now, BestAskPence: &ask},
+				}},
+				{SubjectPortID: "demand", SnapshotAt: now, Commodities: []GossipCommodity{
+					{CommodityID: "x", SnapshotAt: now, BestBidPence: &xReward},
+					{CommodityID: "y", SnapshotAt: now, BestBidPence: &yReward},
+				}},
+			}},
+		},
+	}
+}
+
+func expansionFactorInput(state accountState) PlanningInput {
+	now := time.Now().UTC()
+	clock := state.Clock
+	clock.RealUTC, clock.Calendar.TimeScale = now, 60
+	return PlanningInput{
+		Now: now, Clock: clock, Generation: "expansion",
+		Catalog: state.Catalog, Markets: state.Markets, Ports: state.Ports,
+		Metadata: map[string]DatasetMeta{
+			"clock":                     {UpdatedAt: now, AttemptedAt: now, Generation: "expansion", Complete: true},
+			"ports/" + recoveryHomePort: {UpdatedAt: now, AttemptedAt: now, Generation: "expansion", Complete: true},
+		},
 	}
 }
 
@@ -42,57 +72,77 @@ func TestExpansionFactorScoring(t *testing.T) {
 		port   string
 		score  int64
 	}{
-		{name: "every regional Crown charter premium", port: "yard-a", score: 1_500},
-		{name: "goods the yard does not make still count", change: func(state *accountState) {
+		{name: "positive observed spot spread", port: "yard-a", score: 50},
+		{name: "observed supply need not be catalog production", change: func(state *accountState) {
 			for i := range state.Catalog.Ports {
 				state.Catalog.Ports[i].Produces, state.Catalog.Ports[i].Manufactures = nil, nil
 			}
-		}, port: "yard-a", score: 1_500},
+		}, port: "yard-a", score: 50},
 		{name: "newer phase beats a richer older region", change: func(state *accountState) {
-			newReward := int64(110)
+			ask, bid := int64(100), int64(140)
 			state.Clock.UnlockedPhase = 2
 			state.Catalog.Ports = append(state.Catalog.Ports,
 				Port{ID: "new-yard", BankingRegion: "america", SeaZoneID: "fixture_sea", HasShipyard: true, Phase: 2},
 				Port{ID: "new-demand", BankingRegion: "america", SeaZoneID: "fixture_sea", Phase: 2},
 			)
-			state.Contracts = append(state.Contracts, Contract{ID: "charter-new", ContractType: "charter", Status: "open", OriginPortID: "new-demand", CommodityID: "x", RemainingQuantity: 10, RewardPerTonPence: &newReward})
-		}, port: "new-yard", score: 100},
+			detail := state.Ports[recoveryHomePort]
+			now := time.Now().UTC().Add(-time.Second)
+			detail.CoffeeHouseGossip = append(detail.CoffeeHouseGossip,
+				Gossip{SubjectPortID: "new-yard", SnapshotAt: now, Commodities: []GossipCommodity{{CommodityID: "x", SnapshotAt: now, BestAskPence: &ask}}},
+				Gossip{SubjectPortID: "new-demand", SnapshotAt: now, Commodities: []GossipCommodity{{CommodityID: "x", SnapshotAt: now, BestBidPence: &bid}}},
+			)
+			state.Ports[recoveryHomePort] = detail
+		}, port: "new-yard", score: 5},
 		{name: "oceanic water cannot host a regional build", change: func(state *accountState) {
 			state.Catalog.SeaZones[0].ZoneClass = "oceanic"
 		}},
-		{name: "charter at yard itself", change: func(state *accountState) {
+		{name: "demand at yard itself", change: func(state *accountState) {
 			state.Catalog.Ports = state.Catalog.Ports[1:2]
-			for i := range state.Contracts {
-				state.Contracts[i].OriginPortID = "yard-a"
-			}
 		}},
 		{name: "commodity missing from catalog", change: func(state *accountState) {
-			for i := range state.Contracts {
-				state.Contracts[i].CommodityID = "z"
-			}
+			state.Catalog.Commodities = []Commodity{{ID: "z"}}
 		}},
 		{name: "coves and locked phases", change: func(state *accountState) {
 			state.Catalog.Ports = state.Catalog.Ports[2:]
 		}},
-		{name: "stale and player charters", change: func(state *accountState) {
-			state.Contracts[0].Stale = true
-			state.Contracts[1].IssuerCompanyID = "another-company"
-		}},
-		{name: "closed and exhausted charters", change: func(state *accountState) {
-			state.Contracts[0].Status = "completed"
-			state.Contracts[1].RemainingQuantity = 0
-		}},
+		{name: "charter-only evidence", change: func(state *accountState) { state.Ports = nil }},
+		{name: "no charters needed", change: func(state *accountState) { state.Contracts = nil }, port: "yard-a", score: 50},
+		{name: "finite rewards cannot increase score", change: func(state *accountState) {
+			reward := int64(1_000_000)
+			for i := range state.Contracts {
+				state.Contracts[i].RewardPerTonPence = &reward
+			}
+		}, port: "yard-a", score: 50},
 		{name: "another region", change: func(state *accountState) {
 			state.Catalog.Ports[2].BankingRegion = "america"
 		}},
-		{name: "non-charter contracts", change: func(state *accountState) {
-			for i := range state.Contracts {
-				state.Contracts[i].ContractType = "freight"
+		{name: "no positive stressed spread", change: func(state *accountState) {
+			ask := int64(1_000)
+			for _, report := range state.Ports[recoveryHomePort].CoffeeHouseGossip {
+				for i := range report.Commodities {
+					report.Commodities[i].BestAskPence = &ask
+				}
 			}
 		}},
-		{name: "no positive premium", change: func(state *accountState) {
-			for i := range state.Catalog.Commodities {
-				state.Catalog.Commodities[i].BasePricePence = 1_000
+		{name: "missing observed supply", change: func(state *accountState) {
+			for _, report := range state.Ports[recoveryHomePort].CoffeeHouseGossip {
+				for i := range report.Commodities {
+					report.Commodities[i].BestAskPence = nil
+				}
+			}
+		}},
+		{name: "stale report", change: func(state *accountState) {
+			detail := state.Ports[recoveryHomePort]
+			for i := range detail.CoffeeHouseGossip {
+				detail.CoffeeHouseGossip[i].SnapshotAt = time.Now().Add(-7 * time.Minute)
+			}
+			state.Ports[recoveryHomePort] = detail
+		}},
+		{name: "stale commodity", change: func(state *accountState) {
+			for _, report := range state.Ports[recoveryHomePort].CoffeeHouseGossip {
+				for i := range report.Commodities {
+					report.Commodities[i].SnapshotAt = time.Now().Add(-7 * time.Minute)
+				}
 			}
 		}},
 		{name: "factor presence", change: func(state *accountState) { state.Factors = []string{"demand"} }},
@@ -105,17 +155,15 @@ func TestExpansionFactorScoring(t *testing.T) {
 			ship := ShipState{}
 			ship.Ship.Status, ship.Ship.CurrentPortID = "sunk", "demand"
 			state.Ships = []ShipState{ship}
-		}, port: "yard-a", score: 1_500},
-		{name: "port ID breaks ties", change: func(state *accountState) {
-			state.Catalog.Ports[0].Manufactures = []string{"y"}
-		}, port: "yard-a", score: 1_500},
+		}, port: "yard-a", score: 50},
+		{name: "port ID breaks ties", port: "yard-a", score: 50},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := expansionFactorFixture()
 			if test.change != nil {
 				test.change(&state)
 			}
-			port, score := expansionAgentYard(state, nil, time.Now())
+			port, score := expansionAgentYard(state, expansionFactorInput(state), nil, time.Now())
 			if port.ID != test.port || score != test.score {
 				t.Fatalf("got %s score %d, want %s score %d", port.ID, score, test.port, test.score)
 			}
@@ -123,12 +171,29 @@ func TestExpansionFactorScoring(t *testing.T) {
 	}
 	now := time.Now()
 	recent := []expansionAgent{{Region: "caribbean", HiredAt: now.Add(-time.Hour)}}
-	if port, score := expansionAgentYard(expansionFactorFixture(), recent, now); port.ID != "" || score != 0 {
+	state := expansionFactorFixture()
+	if port, score := expansionAgentYard(state, expansionFactorInput(state), recent, now); port.ID != "" || score != 0 {
 		t.Fatalf("recent region latch was ignored: %s score %d", port.ID, score)
 	}
 	expired := []expansionAgent{{Region: "caribbean", HiredAt: now.Add(-expansionRegionRetry - time.Minute)}}
-	if port, _ := expansionAgentYard(expansionFactorFixture(), expired, now); port.ID != "yard-a" {
+	if port, _ := expansionAgentYard(state, expansionFactorInput(state), expired, now); port.ID != "yard-a" {
 		t.Fatalf("expired region latch still blocked exploration: %q", port.ID)
+	}
+}
+
+func TestExpansionFactorRequiresFreshObservationAuthority(t *testing.T) {
+	t.Parallel()
+	for _, dataset := range []string{"clock", "ports/" + recoveryHomePort} {
+		t.Run(dataset, func(t *testing.T) {
+			state := expansionFactorFixture()
+			input := expansionFactorInput(state)
+			meta := input.Metadata[dataset]
+			meta.Stale = true
+			input.Metadata[dataset] = meta
+			if port, score := expansionAgentYard(state, input, nil, input.Now); port.ID != "" || score != 0 {
+				t.Fatalf("stale %s still selected %s score %d", dataset, port.ID, score)
+			}
+		})
 	}
 }
 
@@ -172,6 +237,14 @@ func (p *expansionFactorAPI) ServeHTTP(writer http.ResponseWriter, request *http
 	}
 	if request.Method == http.MethodGet && path == "/v1/contract/list" {
 		p.h.api.writeJSON(writer, http.StatusOK, expansionFactorFixture().Contracts)
+		return
+	}
+	if request.Method == http.MethodGet && path == "/v1/world/port" && request.URL.Query().Get("port_id") == recoveryHomePort {
+		p.h.api.mu.Lock()
+		detail := p.h.api.portDocument(recoveryHomePort)
+		p.h.api.mu.Unlock()
+		detail["coffee_house_gossip"] = expansionFactorFixture().Ports[recoveryHomePort].CoffeeHouseGossip
+		p.h.api.writeJSON(writer, http.StatusOK, detail)
 		return
 	}
 	if request.Method != http.MethodPost || path != "/v1/company/hire-factor" && path != "/v1/company/dismiss-factor" {
@@ -221,6 +294,36 @@ func refreshExpansionFactor(t *testing.T, h *recoveryHarness, runner *Runner) {
 	runner.generation = uuid.NewString()
 	if err := runner.refresh(h.ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestExpansionFactorRequiresNonCharterEvidenceBeforeHiring(t *testing.T) {
+	t.Parallel()
+	for _, charterOnly := range []bool{true, false} {
+		t.Run(map[bool]string{true: "charter only", false: "positive repeatable spot evidence"}[charterOnly], func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			newExpansionFactorAPI(h)
+			runner := h.runner(primaryTestKey)
+			refreshExpansionFactor(t, h, runner)
+			if charterOnly {
+				runner.stateCache.Ports = nil
+			}
+			changed, err := runner.considerExpansionAgent(h.ctx)
+			if err != nil || changed == charterOnly {
+				t.Fatalf("charterOnly=%t changed=%t err=%v", charterOnly, changed, err)
+			}
+			if charterOnly {
+				h.missingMission("__treasury")
+				if h.api.mutationCount("/v1/company/hire-factor") != 0 {
+					t.Fatal("finite charter income caused a paid hire")
+				}
+			} else {
+				mission, data := h.mission("__treasury")
+				if mission.Destination != "yard-a" || data.Action == nil || data.Action.Stage != "hire-factor" {
+					t.Fatalf("repeatable spot evidence did not select a hire: %+v %+v", mission, data.Action)
+				}
+			}
+		})
 	}
 }
 
@@ -495,7 +598,11 @@ func TestExpansionFactorDoesNotCascadeWhileAgentPresent(t *testing.T) {
 	refreshExpansionFactor(t, h, runner)
 	runner.snapshot["_expansion_agents"] = encode([]expansionAgent{{PortID: recoveryHomePort, Region: "north", HiredAt: time.Now().UTC()}})
 	runner.stateCache.Factors = append(runner.stateCache.Factors, recoveryHomePort)
-	yard, score := expansionAgentYard(runner.stateCache, decode[[]expansionAgent](runner.snapshot, "_expansion_agents"), time.Now())
+	input, err := runner.committedPlanningInput(h.ctx, ShipState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	yard, score := expansionAgentYard(runner.stateCache, input, decode[[]expansionAgent](runner.snapshot, "_expansion_agents"), time.Now())
 	if yard.ID == "" || score <= 0 {
 		t.Fatal("fixture has no second region worth exploring")
 	}

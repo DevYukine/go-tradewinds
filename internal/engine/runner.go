@@ -110,8 +110,9 @@ type streamMessage struct {
 	financialEpoch uint64
 }
 
-// financialEvents are the official Money events (company scope): each one
-// moves vault cash, so a REST capture can read balances that predate it.
+// financialEvents invalidate financial authority before another first-send.
+// Loan changes can also arrest or transfer collateral, so the next full REST
+// capture must refresh loans and fleet state as well as cash.
 var financialEvents = map[string]bool{
 	"company_upkeep_billed":           true,
 	"auto_remittance":                 true,
@@ -124,6 +125,13 @@ var financialEvents = map[string]bool{
 	"insurance_claim_paid":            true,
 	"insurance_policy_closed":         true,
 	"marque_prize_paid":               true,
+	"loan_disbursed":                  true,
+	"loan_repayment":                  true,
+	"loan_defaulted":                  true,
+	"loan_collateral_seized":          true,
+	"loan_written_off":                true,
+	"loan_foreclosure_surplus_paid":   true,
+	"loan_insurance_loss_paid":        true,
 }
 
 // Run owns the account's one mutation loop. SSE only invalidates REST state;
@@ -554,7 +562,7 @@ func (r *Runner) rememberDecision(key string, fingerprint [sha256.Size]byte, now
 func (r *Runner) hold(ctx context.Context, shipID, reason string) error {
 	holdShipID := shipID
 	switch shipID {
-	case "__treasury", "__growth", "__underwriting", "__marque":
+	case "__treasury", "__growth", "__loans", "__underwriting", "__marque":
 		holdShipID = ""
 	}
 	subjectID := shipID
