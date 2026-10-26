@@ -52,14 +52,9 @@ func (s *Store) RecordRequest(ctx context.Context, accountID, method, path strin
 	}
 	db, cancel := s.query(ctx)
 	defer cancel()
-	return db.Transaction(func(tx *gorm.DB) error {
+	err = db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&row).Error; err != nil {
 			return err
-		}
-		if row.Method == "GET" && row.Path == "/v1/world/leaderboard" && status == 200 && errText == "" {
-			if err := recordStandings(tx, accountID, row.Response, now); err != nil {
-				return err
-			}
 		}
 		return tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "account_id"}, {Name: "name"}},
@@ -69,6 +64,21 @@ func (s *Store) RecordRequest(ctx context.Context, accountID, method, path strin
 			}),
 		}).Create(&counters).Error
 	})
+	if err != nil {
+		return err
+	}
+	// Standings are derived from the committed raw response in their own
+	// transaction, so a payload the parser rejects keeps the raw row needed
+	// to diagnose it.
+	if row.Method == "GET" && row.Path == "/v1/world/leaderboard" && status == 200 && errText == "" {
+		err = db.Transaction(func(tx *gorm.DB) error {
+			return recordStandings(tx, accountID, row.Response, now)
+		})
+		if err != nil {
+			return fmt.Errorf("standings history: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) RecordEvent(ctx context.Context, accountID, id, eventType string, payload json.RawMessage) error {

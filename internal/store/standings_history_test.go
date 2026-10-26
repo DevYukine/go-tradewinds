@@ -34,6 +34,32 @@ func recordStandingsFixture(t *testing.T, db *Store, account string, raw json.Ra
 	}
 }
 
+// A standings write failure must not roll back the raw leaderboard response,
+// which is the evidence needed to diagnose it.
+func TestStandingsHistoryFailureKeepsRawLeaderboardResponse(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	ctx := context.Background()
+	saveTestAccount(t, db, "one")
+	trigger := `CREATE FUNCTION reject_test_standings() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'standings rejected'; END $$;
+CREATE TRIGGER reject_test_standings BEFORE INSERT ON standings_history FOR EACH ROW EXECUTE FUNCTION reject_test_standings();`
+	if err := db.db.Exec(trigger).Error; err != nil {
+		t.Fatal(err)
+	}
+	raw := standingsFixture(t, time.Now().UTC().Truncate(time.Hour), 10_000, 2_000)
+	err := db.RecordRequest(ctx, "one", "GET", "/v1/world/leaderboard", 200, time.Millisecond, nil, raw, "")
+	if err == nil {
+		t.Fatal("a failed standings write was not reported")
+	}
+	var requests int64
+	if err := db.db.Table("requests").Where("account_id = ? AND path = ?", "one", "/v1/world/leaderboard").Count(&requests).Error; err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("standings failure rolled back the raw leaderboard response: %d rows", requests)
+	}
+}
+
 func TestStandingsHistoryDeduplicationRetentionAndRestart(t *testing.T) {
 	db, dsn, key := integrationStore(t)
 	ctx := context.Background()
