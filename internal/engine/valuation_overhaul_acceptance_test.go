@@ -158,6 +158,7 @@ func valuationRank(plans []Plan, destination string) int {
 // arrival or ranking. Today the round-trip valuation charges the return to
 // the delivery plan.
 func TestValuationDeliveryBoundaryIgnoresUnneededReturnLeg(t *testing.T) {
+	t.Parallel()
 	in := valuationInput(t)
 	basePlans := PlanVoyages(in)
 	before := valuationPlanFor(t, basePlans, "dunkirk")
@@ -195,6 +196,7 @@ func TestValuationDeliveryBoundaryIgnoresUnneededReturnLeg(t *testing.T) {
 		t.Fatalf("empty return distance re-ranked destination deliveries: rank before %d after %d",
 			valuationRank(basePlans, "dunkirk"), valuationRank(stretched, "dunkirk"))
 	}
+
 }
 
 // One-way duration and cost must compare the two destinations at their
@@ -203,6 +205,7 @@ func TestValuationDeliveryBoundaryIgnoresUnneededReturnLeg(t *testing.T) {
 // 30nm return. Round-trip valuation is blind to the difference (both round
 // trips sail 150nm) and wrongly crowns the distant port on raw net.
 func TestValuationRanksDestinationsByOneWayDeliveryEconomics(t *testing.T) {
+	t.Parallel()
 	in := valuationInput(t)
 	plans := PlanVoyages(in)
 	near := valuationPlanFor(t, plans, "portsmouth")
@@ -221,12 +224,14 @@ func TestValuationRanksDestinationsByOneWayDeliveryEconomics(t *testing.T) {
 		t.Fatalf("per-day contribution contradicts one-way delivery economics: near %+v far %+v",
 			near.Economics, far.Economics)
 	}
+
 }
 
 // A profitable legal outbound must sail without any return route evidence:
 // a missing dataset or an unusable empty leg removes repeat underwriting,
 // not the delivery itself.
 func TestValuationLegalOutboundDoesNotRequireReturnRoute(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		change func(in *PlanningInput)
@@ -266,6 +271,7 @@ func TestValuationLegalOutboundDoesNotRequireReturnRoute(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // A whole-ton store top-up is cash that must be funded, but only the share
@@ -273,6 +279,7 @@ func TestValuationLegalOutboundDoesNotRequireReturnRoute(t *testing.T) {
 // purchase as consumption expense rejects or mislabels profitable voyages;
 // dropping the funding requirement would launch an unfunded purchase.
 func TestValuationFundsWholeTonStoresWithoutChargingUnusedStoresAsExpense(t *testing.T) {
+	t.Parallel()
 	in := valuationInput(t)
 	valuationScopePortsmouth(&in)
 	in.Ship.Stores.ProvisionsTons = 0
@@ -306,6 +313,7 @@ func TestValuationFundsWholeTonStoresWithoutChargingUnusedStoresAsExpense(t *tes
 			t.Fatalf("voyage was accepted without cash for the whole-ton store top-up: %+v", candidate)
 		}
 	}
+
 }
 
 // Cargo and sealed freight to one shared destination are sized jointly before
@@ -313,6 +321,7 @@ func TestValuationFundsWholeTonStoresWithoutChargingUnusedStoresAsExpense(t *tes
 // shared berth and store costs, yet the single shared trip clears them. The
 // manifest must also leave the sealed freight its hold tons.
 func TestValuationSizesSharedDestinationCargoAndFreightJointly(t *testing.T) {
+	t.Parallel()
 	in := valuationInput(t)
 	valuationScopePortsmouth(&in)
 	in.Markets["portsmouth"] = valuationDestinationBook(t, "portsmouth", 1050, 100)
@@ -360,12 +369,14 @@ func TestValuationSizesSharedDestinationCargoAndFreightJointly(t *testing.T) {
 	if !standaloneCargo || !standaloneFreight {
 		t.Fatalf("standalone shared-cost losers vanished as evidence: cargo %t freight %t", standaloneCargo, standaloneFreight)
 	}
+
 }
 
 // Partial measured depth and the shared hold stay hard bounds while sizing:
 // cargo stops at executable bid depth, a sealed freight keeps its tons, and
 // an absent bid ladder never becomes revenue.
 func TestValuationKeepsPartialDepthAndSharedHoldSafe(t *testing.T) {
+	t.Parallel()
 	t.Run("cargo stops at measured bid depth", func(t *testing.T) {
 		in := valuationInput(t)
 		valuationScopePortsmouth(&in)
@@ -411,4 +422,5 @@ func TestValuationKeepsPartialDepthAndSharedHoldSafe(t *testing.T) {
 			}
 		}
 	})
+
 }

@@ -60,6 +60,7 @@ func incomeFundingFees(t *testing.T, economics Economics) int64 {
 }
 
 func TestIncomeFundingOrdinaryCharterAndFreightUseDonorSurplus(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"charter", "freight"} {
 		t.Run(kind, func(t *testing.T) {
 			in := incomeFundingInput(t, kind)
@@ -93,9 +94,11 @@ func TestIncomeFundingOrdinaryCharterAndFreightUseDonorSurplus(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestIncomeFundingFeesCanEraseOtherwisePositiveIncome(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"charter", "freight"} {
 		t.Run(kind, func(t *testing.T) {
 			in := incomeFundingInput(t, kind)
@@ -115,9 +118,11 @@ func TestIncomeFundingFeesCanEraseOtherwisePositiveIncome(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestIncomeFundingRanksFreightAfterCollateralFundingFees(t *testing.T) {
+	t.Parallel()
 	in := incomeFundingInput(t, "freight")
 	in.Rates[0].FeeBPS = 1_000
 	highCollateral := in.Contracts[0]
@@ -134,9 +139,11 @@ func TestIncomeFundingRanksFreightAfterCollateralFundingFees(t *testing.T) {
 		plans[0].Economics.ExpectedNetPence <= plans[1].Economics.ExpectedNetPence {
 		t.Fatalf("gross reward displaced the better fee-net ordinary freight: %+v", plans)
 	}
+
 }
 
 func TestIncomeFundingCombinesDonorsWithPerTransferRounding(t *testing.T) {
+	t.Parallel()
 	in := incomeFundingInput(t, "freight")
 	in.Contracts[0].RewardPence = 10_000
 	in.Balances = map[string]int64{"channel": 75_000, "donor-a": 100_000, "donor-b": 100_000}
@@ -159,9 +166,11 @@ func TestIncomeFundingCombinesDonorsWithPerTransferRounding(t *testing.T) {
 	if fees := incomeFundingFees(t, e); fees != wantFees {
 		t.Fatalf("funding did not charge each observed transfer once: got=%d want=%d plan=%+v", fees, wantFees, plan)
 	}
+
 }
 
 func TestIncomeFundingProtectsRegionalCashAndRateAuthority(t *testing.T) {
+	t.Parallel()
 	for _, changed := range []string{"donor reserve", "origin reserve", "destination reserve", "stale rates", "failed rates", "missing rates"} {
 		t.Run(changed, func(t *testing.T) {
 			in := incomeFundingInput(t, "freight")
@@ -195,6 +204,7 @@ func TestIncomeFundingProtectsRegionalCashAndRateAuthority(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func incomeFundingRunner(t *testing.T) (*recoveryHarness, *Runner) {
@@ -227,6 +237,7 @@ func incomeFundingRunner(t *testing.T) (*recoveryHarness, *Runner) {
 }
 
 func TestIncomeFundingIncumbentMissionCashCannotBecomeDonorSurplus(t *testing.T) {
+	t.Parallel()
 	h, runner := incomeFundingRunner(t)
 	incumbent := sailingShipRow(recoveryShipCharizard, "Charizard", recoveryFarPort, recoveryHomePort)
 	incumbent["ship"].(map[string]any)["status"] = "berthed"
@@ -260,9 +271,11 @@ func TestIncomeFundingIncumbentMissionCashCannotBecomeDonorSurplus(t *testing.T)
 			t.Fatalf("ordinary income borrowed incumbent procurement cash: %+v", plan)
 		}
 	}
+
 }
 
 func TestIncomeFundingShipOwnsDurableRemittanceAndRejectsChangedOpportunity(t *testing.T) {
+	t.Parallel()
 	h, runner := incomeFundingRunner(t)
 	var funded bool
 	for range 12 {
@@ -381,4 +394,5 @@ func TestIncomeFundingShipOwnsDurableRemittanceAndRejectsChangedOpportunity(t *t
 		rows[0].FeesPence != actualFee || !rows[0].CostsKnown {
 		t.Fatalf("paid pre-buy funding fee must close exactly once as an actual zero-cargo loss: %+v fee=%d", rows, actualFee)
 	}
+
 }

@@ -137,6 +137,7 @@ func growthWindowSendReviewAssertVeto(t *testing.T, h *recoveryHarness, mission 
 }
 
 func TestGrowthWindowSendReviewUnchangedProofSendsOriginalBuild(t *testing.T) {
+	t.Parallel()
 	h, runner, mission, data := growthWindowSendReviewFixture(t)
 	original := *data.Action
 	if _, err := runner.dispatch(h.ctx, mission, &data); err != nil {
@@ -150,9 +151,11 @@ func TestGrowthWindowSendReviewUnchangedProofSendsOriginalBuild(t *testing.T) {
 	if built.BuiltShipID != recoveryBuiltShipID || built.Action != nil {
 		t.Fatalf("real build result did not advance commissioning: %+v", built)
 	}
+
 }
 
 func TestGrowthWindowSendReviewNewEvidenceBeforeDispatch(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"loss", "unknown", "future"} {
 		t.Run(kind, func(t *testing.T) {
 			h, runner, mission, data := growthWindowSendReviewFixture(t)
@@ -164,9 +167,11 @@ func TestGrowthWindowSendReviewNewEvidenceBeforeDispatch(t *testing.T) {
 			growthWindowSendReviewAssertVeto(t, h, mission, original, false)
 		})
 	}
+
 }
 
 func TestGrowthWindowSendReviewNewEvidenceAcrossLimiterWait(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"loss", "unknown", "future"} {
 		t.Run(kind, func(t *testing.T) {
 			h, runner, mission, data := growthWindowSendReviewFixture(t)
@@ -184,9 +189,11 @@ func TestGrowthWindowSendReviewNewEvidenceAcrossLimiterWait(t *testing.T) {
 			growthWindowSendReviewAssertVeto(t, h, mission, original, true)
 		})
 	}
+
 }
 
 func TestGrowthWindowSendReviewProofExpiresAcrossLimiterWait(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := growthWindowRunner(t, h)
 	// Establish the clock only after schema, account, HTTP and observation
@@ -218,9 +225,11 @@ func TestGrowthWindowSendReviewProofExpiresAcrossLimiterWait(t *testing.T) {
 		t.Fatalf("proof did not genuinely expire during the bounded limiter wait: %+v error %v", after, err)
 	}
 	growthWindowSendReviewAssertVeto(t, h, mission, original, true)
+
 }
 
 func TestGrowthWindowSendReviewAttemptedBuildReplaysDespiteNewUncertainty(t *testing.T) {
+	t.Parallel()
 	h, runner, mission, data := growthWindowSendReviewFixture(t)
 	original := *data.Action
 	downstream := h.api.server.Config.Handler
@@ -273,9 +282,11 @@ func TestGrowthWindowSendReviewAttemptedBuildReplaysDespiteNewUncertainty(t *tes
 	if len(h.pending()) != 0 || built.BuiltShipID != recoveryBuiltShipID || built.Action != nil {
 		t.Fatalf("attempted build did not settle into owned-hull commissioning: %+v", built)
 	}
+
 }
 
 func TestGrowthWindowSendReviewOwnedHullStillCommissions(t *testing.T) {
+	t.Parallel()
 	w, runner := newGrowthExecutionWorld(t)
 	built := false
 	for range 20 {
@@ -317,4 +328,5 @@ func TestGrowthWindowSendReviewOwnedHullStillCommissions(t *testing.T) {
 	if w.h.api.mutationCount("/v1/shipyard/build-ship") != 1 {
 		t.Fatal("commissioning bought another hull after build proof became blocked")
 	}
+
 }

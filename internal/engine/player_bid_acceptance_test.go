@@ -3,6 +3,7 @@ package engine
 import "testing"
 
 func TestPlayerBidCapacity(t *testing.T) {
+	t.Parallel()
 	price, quantity := int64(50_000), int64(30)
 	zero, negative := int64(0), int64(-1)
 	for _, tc := range []struct {
@@ -41,4 +42,5 @@ func TestPlayerBidCapacity(t *testing.T) {
 			}
 		})
 	}
+
 }

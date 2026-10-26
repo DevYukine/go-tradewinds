@@ -191,6 +191,7 @@ func stageMarqueExecution(t *testing.T, h *recoveryHarness, runner *Runner) (*st
 }
 
 func TestMarqueExecutionLifecycle(t *testing.T) {
+	t.Parallel()
 	for _, reconcile := range []bool{false, true} {
 		name := "typed receipt"
 		if reconcile {
@@ -262,9 +263,11 @@ func TestMarqueExecutionLifecycle(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestMarqueFirstSendRefreshRejectsChangedPriceOrAdmission(t *testing.T) {
+	t.Parallel()
 	for _, reason := range []string{"price", "final price", "floor", "return"} {
 		t.Run(reason, func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -292,9 +295,11 @@ func TestMarqueFirstSendRefreshRejectsChangedPriceOrAdmission(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestMarqueFirstSendAcceptsTenPercentPriceIncrease(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	proxy := newMarqueExecutionAPI(h)
 	runner := h.runner(primaryTestKey)
@@ -308,9 +313,11 @@ func TestMarqueFirstSendAcceptsTenPercentPriceIncrease(t *testing.T) {
 	if h.api.mutationCount("/v1/fleet/issue-marque") != 1 {
 		t.Fatal("admitted ten percent price increase was not issued")
 	}
+
 }
 
 func TestMarqueDisabledAfterStagingNeverSends(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	newMarqueExecutionAPI(h)
 	runner := h.runner(primaryTestKey)
@@ -332,9 +339,11 @@ func TestMarqueDisabledAfterStagingNeverSends(t *testing.T) {
 		t.Fatal("persisted marque intent spent after MARQUES_ENABLED was turned off")
 	}
 	h.missingMission("__marque")
+
 }
 
 func TestMarqueSwitchControlsWorkAdmission(t *testing.T) {
+	t.Parallel()
 	for _, enabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("enabled=%v", enabled), func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -378,9 +387,11 @@ func TestMarqueSwitchControlsWorkAdmission(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestMarquePendingActionDoesNotBlockUnrelatedShipMutation(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	newMarqueExecutionAPI(h)
 	row := sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)
@@ -415,9 +426,11 @@ func TestMarquePendingActionDoesNotBlockUnrelatedShipMutation(t *testing.T) {
 	if pending.Action == nil || pending.Action.ID != key || len(h.pending()) != 1 {
 		t.Fatal("unrelated ship work lost or replaced the unresolved marque action")
 	}
+
 }
 
 func TestMarqueHomeFundsProtectsCommittedLoadingCash(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	newMarqueExecutionAPI(h)
 	h.api.setVaultBalance("north", 100_000)
@@ -451,9 +464,11 @@ func TestMarqueHomeFundsProtectsCommittedLoadingCash(t *testing.T) {
 	if changed, err := runner.considerMarque(h.ctx); err != nil || changed {
 		t.Fatalf("marque spent cash already committed to loading: changed=%v err=%v", changed, err)
 	}
+
 }
 
 func TestMarqueUnfundableRegionalBudgetSkipsOptionalSpending(t *testing.T) {
+	t.Parallel()
 	for _, missingRates := range []bool{false, true} {
 		name := "insufficient total cash"
 		if missingRates {
@@ -480,9 +495,11 @@ func TestMarqueUnfundableRegionalBudgetSkipsOptionalSpending(t *testing.T) {
 			h.missingMission("__marque")
 		})
 	}
+
 }
 
 func TestMarqueExposureIncludesPersistedReturnAndRecoveryLegs(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	newMarqueExecutionAPI(h)
 	runner := h.runner(primaryTestKey)
@@ -515,9 +532,11 @@ func TestMarqueExposureIncludesPersistedReturnAndRecoveryLegs(t *testing.T) {
 			t.Fatalf("persisted itinerary did not protect %s: %v", zone, exposed)
 		}
 	}
+
 }
 
 func TestMarqueReconciledJournalRestoresIssuedZoneAfterRestart(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	proxy := newMarqueExecutionAPI(h)
 	runner := h.runner(primaryTestKey)
@@ -559,9 +578,11 @@ func TestMarqueReconciledJournalRestoresIssuedZoneAfterRestart(t *testing.T) {
 	if pending := decode[marquePending](runner.snapshot, "_marque_pending"); pending.SeaZoneID != "" {
 		t.Fatalf("matching issued identity did not retire its pending guard: %+v", pending)
 	}
+
 }
 
 func TestMarqueUnknownSailingContinuationHoldsAdmissionAndPreflight(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	proxy := newMarqueExecutionAPI(h)
 	proxy.missingReturnRoute = true
@@ -607,9 +628,11 @@ func TestMarqueUnknownSailingContinuationHoldsAdmissionAndPreflight(t *testing.T
 	if h.api.mutationCount("/v1/fleet/issue-marque") != 0 {
 		t.Fatal("unknown continuation allowed an issue mutation")
 	}
+
 }
 
 func TestMarqueOnlyDomainRefusalPersistsSixHourZoneBackoff(t *testing.T) {
+	t.Parallel()
 	for _, status := range []int{http.StatusBadRequest, http.StatusConflict, http.StatusUnauthorized, http.StatusForbidden, http.StatusTooManyRequests} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -640,4 +663,5 @@ func TestMarqueOnlyDomainRefusalPersistsSixHourZoneBackoff(t *testing.T) {
 			}
 		})
 	}
+
 }

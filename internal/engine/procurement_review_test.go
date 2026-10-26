@@ -82,6 +82,7 @@ func procurementReviewRunner(quantity int64) (*Runner, ShipState, missionData) {
 }
 
 func TestProcurementReviewUsesCurrentDifferentialBills(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name            string
 		quantity        int64
@@ -137,9 +138,11 @@ func TestProcurementReviewUsesCurrentDifferentialBills(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestProcurementReviewUnknownBerthTimingUsesOnlyDecisiveBounds(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		localPrice  int64
@@ -163,9 +166,11 @@ func TestProcurementReviewUnknownBerthTimingUsesOnlyDecisiveBounds(t *testing.T)
 			}
 		})
 	}
+
 }
 
 func TestProcurementReviewKeepsMeasuredPartialLiquidity(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		bids        []Level
@@ -191,9 +196,11 @@ func TestProcurementReviewKeepsMeasuredPartialLiquidity(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestProcurementReviewMissingOrInvalidEvidenceStillHolds(t *testing.T) {
+	t.Parallel()
 	for _, gate := range []string{"stale local book", "missing local depth", "invalid local bids", "overflow local bids", "missing route", "unknown toll", "stale harbour", "missing harbour record", "stale clock", "invalid time scale", "negative current dues"} {
 		t.Run(gate, func(t *testing.T) {
 			runner, ship, data := procurementReviewRunner(20)
@@ -237,6 +244,7 @@ func TestProcurementReviewMissingOrInvalidEvidenceStillHolds(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 type procurementReviewGossipAPI struct {
@@ -335,6 +343,7 @@ func procurementReviewGossipHarness(t *testing.T) (*recoveryHarness, *Runner, *p
 }
 
 func TestProcurementReviewFreshGossipCompletesPurchaseToDeparture(t *testing.T) {
+	t.Parallel()
 	h, runner, _, ship, plan := procurementReviewGossipHarness(t)
 	if _, err := runner.startVoyage(h.ctx, ship, plan); err != nil {
 		t.Fatal(err)
@@ -356,9 +365,11 @@ func TestProcurementReviewFreshGossipCompletesPurchaseToDeparture(t *testing.T) 
 	if data.BoughtQuantity != 1 || data.AcquisitionPence != 100 || data.FeesPence != 2 || data.Plan.PriceSource != plan.PriceSource || data.DepartedCargo[recoveryGrain] != 1 {
 		t.Fatalf("departure overstated gossip quantity or lost actual cost/estimate provenance: %+v", data)
 	}
+
 }
 
 func TestProcurementReviewStaleGossipBlocksSpendingAndContinuation(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"buy preparation", "buy first-send", "paid preparation", "paid first-send"} {
 		t.Run(phase, func(t *testing.T) {
 			h, runner, proxy, ship, plan := procurementReviewGossipHarness(t)
@@ -442,9 +453,11 @@ func TestProcurementReviewStaleGossipBlocksSpendingAndContinuation(t *testing.T)
 			}
 		})
 	}
+
 }
 
 func TestProcurementReviewGossipNeverSuppliesMultiTonDepth(t *testing.T) {
+	t.Parallel()
 	h, runner, _, ship, plan := procurementReviewGossipHarness(t)
 	for _, quantity := range []int64{0, 2, 20} {
 		if _, err := procurementDestinationRevenue(runner.planningInput(ship), plan, quantity); err == nil {
@@ -454,6 +467,7 @@ func TestProcurementReviewGossipNeverSuppliesMultiTonDepth(t *testing.T) {
 	if h.api.mutationCount("/v1/market/place-order") != 0 {
 		t.Fatal("evidence inspection spent funds")
 	}
+
 }
 
 func procurementReviewSettlement(t *testing.T, data missionData, ledger []map[string]any) store.Settlement {
@@ -485,6 +499,7 @@ func procurementReviewSettlement(t *testing.T, data missionData, ledger []map[st
 }
 
 func TestProcurementReviewBetterRecoveryStillSettlesActualLoss(t *testing.T) {
+	t.Parallel()
 	runner, ship, data := procurementReviewRunner(20)
 	proceed, err := runner.procurementDepartureDecision(ship, recoveryFarPort, &data)
 	if err != nil || !proceed {
@@ -505,9 +520,11 @@ func TestProcurementReviewBetterRecoveryStillSettlesActualLoss(t *testing.T) {
 		settled.ExpensesPence != 1_000 || settled.QuantityTons != 20 || net != -1_500 {
 		t.Fatalf("8500p recovery erased the actual 1500p procurement loss: %+v net %d", settled, net)
 	}
+
 }
 
 func TestProcurementReviewActualUnwindFeedsPermanentEconomicHistory(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name        string
 		costsKnown  bool
@@ -591,9 +608,11 @@ func TestProcurementReviewActualUnwindFeedsPermanentEconomicHistory(t *testing.T
 			}
 		})
 	}
+
 }
 
 func TestProcurementReviewStaleGossipAllowsFreshDestinationDepth(t *testing.T) {
+	t.Parallel()
 	h, runner, proxy, ship, plan := procurementReviewGossipHarness(t)
 	procurementReviewExpireGossip(t, runner, proxy)
 	h.api.setFactorPorts(recoveryFarPort)
@@ -624,4 +643,5 @@ func TestProcurementReviewStaleGossipAllowsFreshDestinationDepth(t *testing.T) {
 		data.BoughtQuantity != 1 || data.AcquisitionPence != 100 || data.Plan.PriceSource != plan.PriceSource {
 		t.Fatalf("fresh executable fallback resized, repeated or stranded the original probe: orders %+v departures %+v phase %s data %+v", orders, departures, mission.Phase, data)
 	}
+
 }

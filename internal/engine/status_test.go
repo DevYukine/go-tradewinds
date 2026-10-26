@@ -34,6 +34,7 @@ func observedStatusRunner(h *recoveryHarness) (*Runner, *observer.ObservedLogs) 
 }
 
 func TestStartupStatusRetainsFleetCountsHoldsAndConfiguredMode(t *testing.T) {
+	t.Parallel()
 	for _, execute := range []bool{true, false} {
 		mode := "observe"
 		if execute {
@@ -80,9 +81,11 @@ func TestStartupStatusRetainsFleetCountsHoldsAndConfiguredMode(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestStatusRedactsBeforeCappingHoldingReasons(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	crossing := strings.Repeat("a", 500) + primaryTestKey + strings.Repeat("b", 30)
 	scrubbed := strings.ReplaceAll(crossing, primaryTestKey, "[REDACTED]")
@@ -123,9 +126,11 @@ func TestStatusRedactsBeforeCappingHoldingReasons(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestStatusFailsClosedWhenCredentialsUnreadable(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner, logs := observedStatusRunner(h)
 	runner.holding = []currentHold{{Reason: "waiting near " + primaryTestKey}}
@@ -140,9 +145,11 @@ func TestStatusFailsClosedWhenCredentialsUnreadable(t *testing.T) {
 	if reason := entries[0].ContextMap()["holding_reason"]; reason != "[REDACTED]" {
 		t.Fatalf("holding_reason = %v, want fail-closed redaction", reason)
 	}
+
 }
 
 func TestShipTransitionRedactsActorContext(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner, logs := observedStatusRunner(h)
 	ship := ShipState{}
@@ -159,9 +166,11 @@ func TestShipTransitionRedactsActorContext(t *testing.T) {
 	if len(entries) != 1 || entries[0].ContextMap()["ship"] != "[REDACTED]" {
 		t.Fatalf("arrival actor context was not redacted: %+v", entries)
 	}
+
 }
 
 func TestCompanyControlHoldDoesNotInventAMissingShip(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner, _ := observedStatusRunner(h)
 	changed, err := runner.considerUnderwriting(h.ctx)
@@ -177,6 +186,7 @@ func TestCompanyControlHoldDoesNotInventAMissingShip(t *testing.T) {
 	if len(runner.holding) != 2 || runner.holding[1].ShipID != recoveryShipLapras {
 		t.Fatalf("a real unobserved ship must retain its own hold: %+v", runner.holding)
 	}
+
 }
 
 func joinedHoldReasons(holds []currentHold) string {

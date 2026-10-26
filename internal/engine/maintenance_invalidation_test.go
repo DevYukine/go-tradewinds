@@ -3,6 +3,7 @@ package engine
 import "testing"
 
 func TestInvalidatedStandaloneMaintenanceReleasesShip(t *testing.T) {
+	t.Parallel()
 	for _, restart := range []bool{false, true} {
 		name := "financial_event"
 		if restart {
@@ -41,4 +42,5 @@ func TestInvalidatedStandaloneMaintenanceReleasesShip(t *testing.T) {
 			}
 		})
 	}
+
 }

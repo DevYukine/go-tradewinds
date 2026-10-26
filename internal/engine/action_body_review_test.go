@@ -10,6 +10,7 @@ import (
 )
 
 func TestJournaledBodySurvivesMissionCooldownAndRestart(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setVaultBalance("north", 500_000)
 	h.api.setVaultBalance("south", 100_000)
@@ -61,4 +62,5 @@ func TestJournaledBodySurvivesMissionCooldownAndRestart(t *testing.T) {
 		calls[0].IdempotencyKey != original.ID || !bytes.Equal(calls[0].Body, original.Body) || len(h.pending()) != 0 {
 		t.Fatalf("restart did not complete the exact journaled request: %+v", calls)
 	}
+
 }

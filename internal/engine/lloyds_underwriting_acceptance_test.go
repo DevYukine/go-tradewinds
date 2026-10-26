@@ -6,6 +6,7 @@ import (
 )
 
 func TestLloydsSliceNet(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	policy := InsurancePolicy{
 		ID:                "01ad0001-0000-7000-8000-0000000c0a01",
@@ -70,4 +71,5 @@ func TestLloydsSliceNet(t *testing.T) {
 			}
 		})
 	}
+
 }

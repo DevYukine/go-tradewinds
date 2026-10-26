@@ -14,6 +14,7 @@ import (
 )
 
 func TestGrowthReservesWholeOutstandingCharterLotBeforeRepeatDemand(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setFactorPorts(recoveryHomePort, recoveryFarPort)
 	runner := h.runner(primaryTestKey)
@@ -142,9 +143,11 @@ func TestGrowthReservesWholeOutstandingCharterLotBeforeRepeatDemand(t *testing.T
 			t.Fatalf("release partial-delivery build intent: %v", err)
 		}
 	}
+
 }
 
 func TestIdleUnderarmedShipRefitsBeforeEconomicPlanAndPurchase(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setFactorPorts(recoveryFarPort)
 	idle := sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)
@@ -227,9 +230,11 @@ func TestIdleUnderarmedShipRefitsBeforeEconomicPlanAndPurchase(t *testing.T) {
 	if afterPurchase != afterRefit-purchase-customs || afterPurchase < runner.opts.ReservePence {
 		t.Fatalf("post-refit purchase failed cash/reserve identity: refit cash %d purchase %d customs %d remaining %d", afterRefit, purchase, customs, afterPurchase)
 	}
+
 }
 
 func TestTreasuryCombinesPartialDonorsWithoutSpendingTheirReserves(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	rates := []Rate{
@@ -293,9 +298,11 @@ func TestTreasuryCombinesPartialDonorsWithoutSpendingTheirReserves(t *testing.T)
 	if changed, err := runner.fundTreasury(h.ctx, final, required); err != nil || changed {
 		t.Fatalf("fully funded yard requested another transfer: changed %t error %v", changed, err)
 	}
+
 }
 
 func TestGrowthChargesOutstandingCharterLotOnceAcrossPaybackCycles(t *testing.T) {
+	t.Parallel()
 	input := fundedGrowthFixture()
 	price := int64(10_000)
 	input.Quote.TotalCostPence = &price
@@ -313,9 +320,11 @@ func TestGrowthChargesOutstandingCharterLotOnceAcrossPaybackCycles(t *testing.T)
 	if decision := EvaluateGrowth(input); decision.Accepted {
 		t.Fatal("89t charter capacity covered 60t repeat demand plus the whole outstanding 30t lot")
 	}
+
 }
 
 func TestGrowthMixedFreightKeepsOrdinarySpotBidReservation(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setFactorPorts(recoveryHomePort, recoveryFarPort)
 	runner := h.runner(primaryTestKey)
@@ -407,9 +416,11 @@ func TestGrowthMixedFreightKeepsOrdinarySpotBidReservation(t *testing.T) {
 		t.Fatalf("ordinary outstanding lot and incumbent cycles leave no candidate bid capacity: changed %t error %v", changed, err)
 	}
 	h.missingMission("__growth")
+
 }
 
 func TestGrowthIdleUnderarmedShipWithoutActionableRefitDoesNotVetoBuild(t *testing.T) {
+	t.Parallel()
 	for _, yard := range []bool{false, true} {
 		t.Run(fmt.Sprintf("shipyard_%t", yard), func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -452,9 +463,11 @@ func TestGrowthIdleUnderarmedShipWithoutActionableRefitDoesNotVetoBuild(t *testi
 			}
 		})
 	}
+
 }
 
 func TestGrowthChoosesCapitalReturnAcrossHullCatalogOrders(t *testing.T) {
+	t.Parallel()
 	for _, reverse := range []bool{false, true} {
 		t.Run(fmt.Sprintf("reverse_%t", reverse), func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -504,9 +517,11 @@ func TestGrowthChoosesCapitalReturnAcrossHullCatalogOrders(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestGrowthFundsOneCycleAndInitialStoresOnce(t *testing.T) {
+	t.Parallel()
 	input := fundedGrowthFixture()
 	input.Plan.Economics.Basis = "destination"
 	input.Plan.Economics.PurchasePence = 10_000
@@ -525,9 +540,11 @@ func TestGrowthFundsOneCycleAndInitialStoresOnce(t *testing.T) {
 	if decision := EvaluateGrowth(input); decision.Accepted {
 		t.Fatalf("one-penny short commissioning package spent protected obligations: %+v", decision)
 	}
+
 }
 
 func TestGrowthReservesFullRepeatUpkeepAndRejectsOverflow(t *testing.T) {
+	t.Parallel()
 	input := fundedGrowthFixture()
 	input.Plan.Economics.Basis = "destination"
 	input.Plan.Economics.BallastRepeatGameDays = 5
@@ -543,9 +560,11 @@ func TestGrowthReservesFullRepeatUpkeepAndRejectsOverflow(t *testing.T) {
 	if decision := EvaluateGrowth(input); decision.Accepted {
 		t.Fatal("overflowing public proof slice became positive growth evidence")
 	}
+
 }
 
 func TestGrowthPricesMarginalRepeatInsteadOfCloningCheapFirstStock(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.seedLaneProofs()
 	runner := h.runner(primaryTestKey)
@@ -581,9 +600,11 @@ func TestGrowthPricesMarginalRepeatInsteadOfCloningCheapFirstStock(t *testing.T)
 	if asks.Depth.Asks[0].RemainingQuantity != 20 || asks.Depth.Asks[1].RemainingQuantity != 10_000 {
 		t.Fatal("capital simulation depleted the authoritative source observation")
 	}
+
 }
 
 func TestGrowthPackageChargesOnlyNewRegionalCommitments(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.seedLaneProofs()
 	runner := h.runner(primaryTestKey)
@@ -630,4 +651,5 @@ func TestGrowthPackageChargesOnlyNewRegionalCommitments(t *testing.T) {
 	if !betterGrowthPackage(existing, marginal) || betterGrowthPackage(marginal, existing) {
 		t.Fatal("equally productive package with extra dedicated regional cash ranked first")
 	}
+
 }

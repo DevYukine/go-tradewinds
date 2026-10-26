@@ -411,6 +411,7 @@ func concurrencyRunner(h *recoveryHarness, fake *snapshotConcurrencyAPI) *Runner
 // keep the child groups (ship details, ports, books, yard quotes, routes) in
 // the same measurement so no wave may exceed the cap either.
 func TestCaptureWaveOverlapsIndependentDatasetsWithinWorkerCap(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	fake := newSnapshotConcurrencyAPI(t, []map[string]any{
 		stationaryShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, "berthed", 0, 3),
@@ -460,6 +461,7 @@ func TestCaptureWaveOverlapsIndependentDatasetsWithinWorkerCap(t *testing.T) {
 			t.Fatalf("overlapped wave left dataset %s unfresh: %+v", dataset, runner.meta[dataset])
 		}
 	}
+
 }
 
 // TestDefinitiveDatasetFailureRetainsLastGoodWhileSiblingsUpdate fails the
@@ -470,6 +472,7 @@ func TestCaptureWaveOverlapsIndependentDatasetsWithinWorkerCap(t *testing.T) {
 // refresh itself must still succeed, and successful siblings must move to the
 // new generation.
 func TestDefinitiveDatasetFailureRetainsLastGoodWhileSiblingsUpdate(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	fake := newSnapshotConcurrencyAPI(t, nil)
 
@@ -523,6 +526,7 @@ func TestDefinitiveDatasetFailureRetainsLastGoodWhileSiblingsUpdate(t *testing.T
 	if !runner.fresh("catalog") {
 		t.Fatal("a successful sibling must stay fresh in the new generation")
 	}
+
 }
 
 // TestOwnerCancellationJoinsFetchWorkersWithoutPublishingGeneration gates the
@@ -532,6 +536,7 @@ func TestDefinitiveDatasetFailureRetainsLastGoodWhileSiblingsUpdate(t *testing.T
 // detached context), and the store must not gain a snapshot whose metadata
 // claims the canceled generation is complete.
 func TestOwnerCancellationJoinsFetchWorkersWithoutPublishingGeneration(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	fake := newSnapshotConcurrencyAPI(t, nil)
 	fake.gatePaths("/v1/world/clock")
@@ -581,12 +586,14 @@ func TestOwnerCancellationJoinsFetchWorkersWithoutPublishingGeneration(t *testin
 			}
 		}
 	}
+
 }
 
 // Five blocked siblings leave only the clock worker able to accept the seventh
 // task. Its arrival proves the clock's client-side fetch and timestamp are
 // complete, unlike merely observing the server write its clock response.
 func TestClockEnvelopeSurvivesWaveJoinWithoutRestamping(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	fake := newSnapshotConcurrencyAPI(t, nil)
 	fake.gatePaths(
@@ -653,4 +660,5 @@ func TestClockEnvelopeSurvivesWaveJoinWithoutRestamping(t *testing.T) {
 	if count := fake.arrivedCount("/v1/world/clock"); count != 1 {
 		t.Fatalf("clock dataset fetched %d times, want a single early fetch that the join must not repeat", count)
 	}
+
 }

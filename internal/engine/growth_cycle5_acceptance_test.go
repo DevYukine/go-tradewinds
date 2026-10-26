@@ -9,6 +9,7 @@ import (
 )
 
 func TestGrowthCycle5ActionlessPostSettlementCancellationReleasesDespiteCompanyUpkeep(t *testing.T) {
+	t.Parallel()
 	w, runner := newGrowthExecutionWorld(t)
 	first, _ := w.until(runner, func(mission *store.Mission, data missionData) bool {
 		return mission != nil && mission.Phase == "settled" && data.GrowthLane != nil &&
@@ -188,4 +189,5 @@ func TestGrowthCycle5ActionlessPostSettlementCancellationReleasesDespiteCompanyU
 	if northAfter != northBefore-upkeepPence-freshCash {
 		t.Errorf("post-settlement cash identity lost or duplicated an expense: got %d want %d", northAfter, northBefore-upkeepPence-freshCash)
 	}
+
 }

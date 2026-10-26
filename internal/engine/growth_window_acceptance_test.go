@@ -81,6 +81,7 @@ func preserveGrowthWindowHistory(t *testing.T, h *recoveryHarness) {
 }
 
 func TestGrowthWindowOldTerminalEvidenceAllowsFundedBuild(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		kind    string
@@ -128,9 +129,11 @@ func TestGrowthWindowOldTerminalEvidenceAllowsFundedBuild(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestGrowthWindowRecentAndFutureEvidenceVetoesBuild(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		kind    string
@@ -171,9 +174,11 @@ func TestGrowthWindowRecentAndFutureEvidenceVetoesBuild(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestGrowthWindowNeedsTwoRecentDeliveredCycles(t *testing.T) {
+	t.Parallel()
 	for _, recent := range []int{0, 1} {
 		t.Run(fmt.Sprintf("recent_%d", recent), func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -197,9 +202,11 @@ func TestGrowthWindowNeedsTwoRecentDeliveredCycles(t *testing.T) {
 			h.missingMission("__growth")
 		})
 	}
+
 }
 
 func TestGrowthWindowUsesHostUTCRegardlessOfServerSkew(t *testing.T) {
+	t.Parallel()
 	for _, skew := range []time.Duration{-48 * time.Hour, 48 * time.Hour} {
 		t.Run(skew.String(), func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -225,12 +232,14 @@ func TestGrowthWindowUsesHostUTCRegardlessOfServerSkew(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // BeginAction assigns host UTC at creation and request timestamps are immutable.
 // This covers an unresolved journal action without aging it; the separate
 // old-active-mission case covers a liability started outside the proof window.
 func TestGrowthWindowOutstandingJournalStillBlocks(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.seedLaneProofs()
 	action, err := h.db.BeginAction(h.ctx, &store.Action{
@@ -256,9 +265,11 @@ func TestGrowthWindowOutstandingJournalStillBlocks(t *testing.T) {
 	if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		t.Fatal("an unresolved journal action permitted construction")
 	}
+
 }
 
 func TestGrowthWindowOldActiveMissionStillReservesCapital(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.seedLaneProofs()
 	runner := growthWindowRunner(t, h)
@@ -280,9 +291,11 @@ func TestGrowthWindowOldActiveMissionStillReservesCapital(t *testing.T) {
 	if !reflect.DeepEqual(retained.Plan, plan) || retained.BuyDone {
 		t.Fatalf("growth rewrote an old but active mission: %+v", retained)
 	}
+
 }
 
 func TestGrowthWindowExpiredButActiveFreightStillProtectsDestination(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.seedLaneProofs()
 	h.api.setVaultBalance("south", 0)
@@ -317,9 +330,11 @@ func TestGrowthWindowExpiredButActiveFreightStillProtectsDestination(t *testing.
 	if actual, exists := runner.contract(contract.ID); !exists || !reflect.DeepEqual(actual, contract) {
 		t.Fatalf("active freight was discarded or relabelled: %+v", actual)
 	}
+
 }
 
 func TestGrowthWindowFreshProofDoesNotBypassEconomicGuards(t *testing.T) {
+	t.Parallel()
 	for _, guard := range []string{"capital", "payback", "source_depth", "destination_depth"} {
 		t.Run(guard, func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -349,4 +364,5 @@ func TestGrowthWindowFreshProofDoesNotBypassEconomicGuards(t *testing.T) {
 			}
 		})
 	}
+
 }

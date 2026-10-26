@@ -3,6 +3,7 @@ package engine
 import "testing"
 
 func TestObligationReservesFundObservedArrivalNotSailingOrigin(t *testing.T) {
+	t.Parallel()
 	const reserve int64 = 75_000
 	state := accountState{
 		HomePortID: recoveryHomePort,
@@ -62,4 +63,5 @@ func TestObligationReservesFundObservedArrivalNotSailingOrigin(t *testing.T) {
 	if required["north"] != wantNorth {
 		t.Fatalf("stationary presence, incoming arrival and factor-inclusive home bills need %dp, got %v", wantNorth, required)
 	}
+
 }

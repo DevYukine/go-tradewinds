@@ -43,6 +43,7 @@ func growthScaledThroughputFixture() GrowthInput {
 }
 
 func TestGrowthScalesSupportedThroughputBeyondIncumbentRate(t *testing.T) {
+	t.Parallel()
 	decision := EvaluateGrowth(growthScaledThroughputFixture())
 	if !decision.Accepted || math.Abs(decision.IncrementalNetPencePerGameDay-199_000) > 1e-9 {
 		t.Fatalf("a supported 40t lot (2x the proven 20t lot, 120t depth, 200000p/day sized, 1000p/day marginal upkeep) must scale marginal throughput beyond the incumbent's absolute 100000p/day rate instead of capping it: %+v", decision)
@@ -57,9 +58,11 @@ func TestGrowthScalesSupportedThroughputBeyondIncumbentRate(t *testing.T) {
 	if decision := EvaluateGrowth(lossMaking); decision.Accepted {
 		t.Fatalf("marginal upkeep above the scaled contribution eliminated the profit but still funded construction: %+v", decision)
 	}
+
 }
 
 func TestGrowthFundedPartialLotBelowProvenLotStillPaysBack(t *testing.T) {
+	t.Parallel()
 	partial := fundedGrowthFixture()
 	partial.Plan.Quantity = 10
 	decision := EvaluateGrowth(partial)
@@ -72,6 +75,7 @@ func TestGrowthFundedPartialLotBelowProvenLotStillPaysBack(t *testing.T) {
 	if decision := EvaluateGrowth(unsized); decision.Accepted {
 		t.Fatalf("a partial lot whose marginal upkeep consumes its scaled contribution funded construction: %+v", decision)
 	}
+
 }
 
 // persistGrowthOverhaulSettlement writes one durable cost-known settlement
@@ -120,6 +124,7 @@ func growthOverhaulHistory(t *testing.T, h *recoveryHarness, withOldestLoss bool
 }
 
 func TestGrowthRemembersOldestLossBeyondBoundedHistory(t *testing.T) {
+	t.Parallel()
 	control := newRecoveryHarness(t)
 	control.api.setFactorPorts(recoveryHomePort, recoveryFarPort)
 	growthOverhaulHistory(t, control, false)
@@ -151,9 +156,11 @@ func TestGrowthRemembersOldestLossBeyondBoundedHistory(t *testing.T) {
 	if remembered.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		remembered.t.Fatal("a build request was sent although the loss-inclusive lane net is not positive")
 	}
+
 }
 
 func TestGrowthOldLossRemainsInPermanentHistory(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	asOf := time.Now().UTC().Truncate(time.Microsecond)
 	persistGrowthOverhaulSettlement(t, h, "growth-permanent-loss", asOf.Add(-13*time.Hour), 0, 10_010_000, 10_000)
@@ -176,4 +183,5 @@ func TestGrowthOldLossRemainsInPermanentHistory(t *testing.T) {
 	if err != nil || len(rows) != 3 || rows[2].ID != "growth-permanent-loss" {
 		t.Fatalf("growth cohort changed retained settlement evidence: %+v, %v", rows, err)
 	}
+
 }

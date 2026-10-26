@@ -27,6 +27,7 @@ func snapshotContractPage(status string) []Contract {
 }
 
 func TestContractCaptureKeepsOrderedPagesStatusesAndNewestDuplicate(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var queries []string
 	runner := newRetentionRunner(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -69,9 +70,11 @@ func TestContractCaptureKeepsOrderedPagesStatusesAndNewestDuplicate(t *testing.T
 	if !runner.fresh("contracts") {
 		t.Fatalf("complete contract task is not fresh: %+v", runner.meta["contracts"])
 	}
+
 }
 
 func TestFailedLaterContractPageRetainsWholeLastGoodAggregate(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var queries []string
 	runner := newRetentionRunner(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -118,9 +121,11 @@ func TestFailedLaterContractPageRetainsWholeLastGoodAggregate(t *testing.T) {
 	if !runner.fresh("zones") || string(runner.snapshot["zones"]) != `[{"id":"new-zone"}]` {
 		t.Fatal("contract page failure hid the independent successful dataset")
 	}
+
 }
 
 func TestListCaptureRejectsNullAndRepeatedIDsWithoutPublishingPartialRows(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"null", "repeated id"} {
 		t.Run(scenario, func(t *testing.T) {
 			runner := newRetentionRunner(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -143,9 +148,11 @@ func TestListCaptureRejectsNullAndRepeatedIDsWithoutPublishingPartialRows(t *tes
 			}
 		})
 	}
+
 }
 
 func TestCaptureWaveReducesOnlyAfterJoinInDescriptorOrder(t *testing.T) {
+	t.Parallel()
 	entered := make(chan string, 3)
 	completed := make(chan string, 3)
 	gates := map[string]chan struct{}{"a": make(chan struct{}), "b": make(chan struct{}), "c": make(chan struct{})}
@@ -205,9 +212,11 @@ func TestCaptureWaveReducesOnlyAfterJoinInDescriptorOrder(t *testing.T) {
 			t.Fatalf("completion order misattributed %s: data %s meta %+v", port, values[port], runner.meta["books/"+port])
 		}
 	}
+
 }
 
 func TestDatasetFailureLogsSafeBoundedCauseAndSingleRecovery(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	core, logs := observer.New(zap.DebugLevel)
@@ -238,6 +247,7 @@ func TestDatasetFailureLogsSafeBoundedCauseAndSingleRecovery(t *testing.T) {
 	if len(recoveries) != 1 || recoveries[0].Level != zap.InfoLevel || recoveries[0].ContextMap()["dataset"] != "zones" {
 		t.Fatalf("dataset recovery was missing or repeated: %+v", recoveries)
 	}
+
 }
 
 type datasetCredentialBarrierCore struct {
@@ -253,6 +263,7 @@ func (core datasetCredentialBarrierCore) Check(entry zapcore.Entry, checked *zap
 }
 
 func TestDatasetFailureScrubsAfterEnabledLogCheckAndFailsClosed(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	core, logs := observer.New(zap.WarnLevel)
@@ -271,4 +282,5 @@ func TestDatasetFailureScrubsAfterEnabledLogCheckAndFailsClosed(t *testing.T) {
 	if !checked || len(failures) != 1 || failures[0].ContextMap()["cause"] != "[REDACTED]" || failures[0].ContextMap()["dataset"] != "[REDACTED]" {
 		t.Fatalf("credential lookup before Check or fail-open dataset fields: checked %t logs %+v", checked, failures)
 	}
+
 }

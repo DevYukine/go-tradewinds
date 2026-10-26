@@ -11,6 +11,7 @@ import (
 )
 
 func TestActionDispositionDistinguishesAmbiguousFromDefinite(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -32,9 +33,11 @@ func TestActionDispositionDistinguishesAmbiguousFromDefinite(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestMissionStageKeysAreStableButNeverTradeAndDepartTogether(t *testing.T) {
+	t.Parallel()
 	first := actionID("account-a", "generation-a", "buy", 0)
 	if first != actionID("account-a", "generation-a", "buy", 0) {
 		t.Fatal("restored mission changed logical action identity")
@@ -49,9 +52,11 @@ func TestMissionStageKeysAreStableButNeverTradeAndDepartTogether(t *testing.T) {
 			t.Fatal("account, generation, stage or definite-outcome attempt collided")
 		}
 	}
+
 }
 
 func TestArrivalProvenanceNeverIncludesLocalOrSealedCargo(t *testing.T) {
+	t.Parallel()
 	departed := map[string]int64{"provisions": 20, "sawn_planks": 5}
 	actual := map[string]int64{"provisions": 15, "sawn_planks": 5, "silver_bullion": 10}
 	sealed := map[string]int64{"provisions": 8}
@@ -66,9 +71,11 @@ func TestArrivalProvenanceNeverIncludesLocalOrSealedCargo(t *testing.T) {
 	if loss["provisions"] != 0 {
 		t.Fatal("unknown post-loss allocation released sealed cargo")
 	}
+
 }
 
 func TestAllSealedManifestReservationsAggregateBeforeSale(t *testing.T) {
+	t.Parallel()
 	obligations := []freightObligation{
 		{ContractID: "one", Commodity: "provisions", Quantity: 5},
 		{ContractID: "two", Commodity: "provisions", Quantity: 8},
@@ -79,9 +86,11 @@ func TestAllSealedManifestReservationsAggregateBeforeSale(t *testing.T) {
 	if reserved["provisions"] != 13 || reserved["sawn_planks"] != 7 {
 		t.Fatalf("multiple contracts or consequential tender lost reservations: %+v", reserved)
 	}
+
 }
 
 func TestExpiredDepartureRequiresActualDestinationEvidence(t *testing.T) {
+	t.Parallel()
 	before := ShipState{}
 	before.Ship.ID = "ship-a"
 	before.Ship.Status = "berthed"
@@ -104,9 +113,11 @@ func TestExpiredDepartureRequiresActualDestinationEvidence(t *testing.T) {
 	if departureObserved(before, actual, "portsmouth") {
 		t.Fatal("different ship satisfied a durable mission")
 	}
+
 }
 
 func TestPaginationUnderstandsConsumerResultWrappers(t *testing.T) {
+	t.Parallel()
 	for _, body := range []string{`{"id":"plain"}`, `{"ship":{"id":"wrapped"}}`, `{"convoy":{"id":"convoy"}}`} {
 		if id, err := pageID(json.RawMessage(body)); err != nil || id == "" {
 			t.Fatalf("documented list wrapper rejected: %s, %v", body, err)
@@ -115,9 +126,11 @@ func TestPaginationUnderstandsConsumerResultWrappers(t *testing.T) {
 	if _, err := pageID(json.RawMessage(`{"quantity":5}`)); err == nil {
 		t.Fatal("pagination silently accepted an unpageable row")
 	}
+
 }
 
 func TestMissingTradeQuantitiesCannotAdvanceProcurement(t *testing.T) {
+	t.Parallel()
 	var incomplete tradeResult
 	if err := json.Unmarshal([]byte(`{"commodity_id":"provisions","total_gross_pence":100}`), &incomplete); err != nil {
 		t.Fatal(err)
@@ -132,9 +145,11 @@ func TestMissingTradeQuantitiesCannotAdvanceProcurement(t *testing.T) {
 	if !validTrade(zeroFill) {
 		t.Fatal("explicit zero IOC fill must remain a definite result, not a timeout")
 	}
+
 }
 
 func TestActualOverheadIsClaimedOnceAcrossOverlappingMissions(t *testing.T) {
+	t.Parallel()
 	runner := &Runner{
 		snapshot: map[string]json.RawMessage{
 			"ledger": json.RawMessage(`[
@@ -161,9 +176,11 @@ func TestActualOverheadIsClaimedOnceAcrossOverlappingMissions(t *testing.T) {
 	if restarted != 0 {
 		t.Fatalf("durable claim was lost on restart: %d", restarted)
 	}
+
 }
 
 func TestFreightStopsKeepAllSealsAndUseActualDeadlines(t *testing.T) {
+	t.Parallel()
 	early := time.Date(2026, 6, 1, 1, 0, 0, 0, time.UTC)
 	late := early.Add(time.Hour)
 	obligations := []freightObligation{
@@ -183,9 +200,11 @@ func TestFreightStopsKeepAllSealsAndUseActualDeadlines(t *testing.T) {
 	if freightStops(obligations)[0].Deadline != nil {
 		t.Fatal("unknown acceptance deadline was replaced by a guessed deadline")
 	}
+
 }
 
 func TestAcquiredCashMarginUsesActualFillNotStress(t *testing.T) {
+	t.Parallel()
 	reward := int64(21_958)
 	now := time.Date(2026, 10, 22, 17, 0, 0, 0, time.UTC)
 	in := PlanningInput{
@@ -258,9 +277,11 @@ func TestAcquiredCashMarginUsesActualFillNotStress(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestProvisionCustomsArePaidOnceAndKnownTollsStillReduceNet(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		actualToll int64
@@ -298,9 +319,11 @@ func TestProvisionCustomsArePaidOnceAndKnownTollsStillReduceNet(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestGossipAcquiredRevenueDoesNotConvertPriceStressIntoExpense(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 22, 17, 0, 0, 0, time.UTC)
 	var detail PortDetail
 	if err := json.Unmarshal([]byte(`{
@@ -334,9 +357,11 @@ func TestGossipAcquiredRevenueDoesNotConvertPriceStressIntoExpense(t *testing.T)
 	if revenue, reason := acquiredRevenue(in, plan, 2, nil); revenue != 0 || reason == "" {
 		t.Fatalf("gossip fabricated remote bid quantity: %d, %s", revenue, reason)
 	}
+
 }
 
 func TestAuthAndThrottleRefusalsPreserveCarriedInCharterOpportunity(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		status int
@@ -377,9 +402,11 @@ func TestAuthAndThrottleRefusalsPreserveCarriedInCharterOpportunity(t *testing.T
 			}
 		})
 	}
+
 }
 
 func TestActualCharterDomainRefusalStillRejectsOnlyThatCharter(t *testing.T) {
+	t.Parallel()
 	mission := store.Mission{Phase: "arrival"}
 	data := missionData{
 		Action: &durableAction{
@@ -394,9 +421,11 @@ func TestActualCharterDomainRefusalStillRejectsOnlyThatCharter(t *testing.T) {
 		mission.Phase != "arrival" || data.Action != nil {
 		t.Fatalf("actual refusal either remained retryable or invalidated all cargo: %+v", data)
 	}
+
 }
 
 func TestFreightDepartureChecksDetourBeforeImmutableStop(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		change func(*Runner, string)
@@ -469,4 +498,5 @@ func TestFreightDepartureChecksDetourBeforeImmutableStop(t *testing.T) {
 			}
 		})
 	}
+
 }

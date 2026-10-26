@@ -17,6 +17,7 @@ import (
 )
 
 func TestDispatchLogsFreshCommitOnceButNotCompletedActionReplay(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	core, logs := observer.New(zap.DebugLevel)
@@ -55,9 +56,11 @@ func TestDispatchLogsFreshCommitOnceButNotCompletedActionReplay(t *testing.T) {
 	if len(h.api.mutationsFor("/v1/company/settings")) != calls || logs.FilterMessage("action committed").Len() != 1 {
 		t.Fatal("completed-action recovery resent a mutation or duplicated its success announcement")
 	}
+
 }
 
 func TestDispatchUninterpretableSuccessWarnsWithoutClaimingSuccess(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	interceptLoggingMutation(t, h, func(writer http.ResponseWriter, request *http.Request) {
 		// The real fixture applies the mutation; only the returned outcome is
@@ -91,9 +94,11 @@ func TestDispatchUninterpretableSuccessWarnsWithoutClaimingSuccess(t *testing.T)
 	if len(warnings) != 1 || warnings[0].Level != zap.WarnLevel || warnings[0].ContextMap()["action_id"] != actionID {
 		t.Fatalf("missing action-specific reconciliation warning: %+v", warnings)
 	}
+
 }
 
 func TestDispatchUnresolvedWarningDeduplicatesByActionIdentity(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	interceptLoggingMutation(t, h, func(writer http.ResponseWriter, request *http.Request) {
 		// A definitive in-flight response is unresolved without transport retry
@@ -138,9 +143,11 @@ func TestDispatchUnresolvedWarningDeduplicatesByActionIdentity(t *testing.T) {
 	if logs.FilterMessage("action committed").Len() != 0 {
 		t.Fatal("unresolved actions emitted a success announcement")
 	}
+
 }
 
 func TestDispatchCommittedInfoRedactsCredentialEchoFromSuccessfulResponse(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	const accountSecret = "synthetic passphrase, never used against the real game"
 	const patternSecret = "tw_live_synthetic_response_credential"
@@ -183,9 +190,11 @@ func TestDispatchCommittedInfoRedactsCredentialEchoFromSuccessfulResponse(t *tes
 			}
 		}
 	}
+
 }
 
 func TestDispatchCommittedInfoFailsClosedWhenCredentialsBecomeUnreadable(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	const accountSecret = "synthetic passphrase, never used against the real game"
 	const patternSecret = "tw_live_synthetic_unreadable_credentials"
@@ -259,6 +268,7 @@ func TestDispatchCommittedInfoFailsClosedWhenCredentialsBecomeUnreadable(t *test
 			}
 		}
 	}
+
 }
 
 // Check is the boundary immediately before outcome strings are scrubbed.
@@ -330,6 +340,7 @@ func interceptLoggingMutation(t *testing.T, h *recoveryHarness, mutation http.Ha
 }
 
 func TestDispatchLogsTypedMutationFamiliesWithActualOutcomesAndSilentReplay(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		stage    string
 		path     string
@@ -523,9 +534,11 @@ func TestDispatchLogsTypedMutationFamiliesWithActualOutcomesAndSilentReplay(t *t
 			}
 		})
 	}
+
 }
 
 func TestNamedBuildRecoveryLogsEverySupportedJournalPathWithoutInventingCost(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"pending_expiry", "committed_uninterpreted", "persisted_reconciliation"} {
 		t.Run(state, func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -591,9 +604,11 @@ func TestNamedBuildRecoveryLogsEverySupportedJournalPathWithoutInventingCost(t *
 			}
 		})
 	}
+
 }
 
 func TestRejectedActionPolicyRedactsBeforeBoundingAndKeepsReplaySilent(t *testing.T) {
+	t.Parallel()
 	const accountSecret = "synthetic passphrase, never used against the real game"
 	for _, test := range []struct {
 		code   string
@@ -674,4 +689,5 @@ func TestRejectedActionPolicyRedactsBeforeBoundingAndKeepsReplaySilent(t *testin
 			}
 		})
 	}
+
 }

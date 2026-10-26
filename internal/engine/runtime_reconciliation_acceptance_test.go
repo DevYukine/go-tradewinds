@@ -348,6 +348,7 @@ func findDecision(t *testing.T, h *recoveryHarness, shipID, needle string) store
 // retained origin port, a durable mission's origin, or datasets retained from
 // an earlier generation.
 func TestPrivateDatasetsRequireCurrentStationaryPresence(t *testing.T) {
+	t.Parallel()
 	t.Run("a sailing ship does not authorize its retained origin port", func(t *testing.T) {
 		h := newRecoveryHarness(t)
 		proxy := installReconciliationProxy(t, h)
@@ -442,6 +443,7 @@ func TestPrivateDatasetsRequireCurrentStationaryPresence(t *testing.T) {
 			t.Fatal("legitimate roadstead presence lost its yard quote capture")
 		}
 	})
+
 }
 
 // A sealed obligation's full accepted quantity is the precondition for a new
@@ -451,6 +453,7 @@ func TestPrivateDatasetsRequireCurrentStationaryPresence(t *testing.T) {
 // report the aggregate deficit and collateral at risk when several
 // same-commodity obligations share one hold.
 func TestShortSealedFreightHoldsNewTendersAndKeepsMaintenance(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	proxy := installReconciliationProxy(t, h)
 	proxy.setContractRows([]map[string]any{freightContractRow("freight-a", "active", false)})
@@ -550,6 +553,7 @@ func TestShortSealedFreightHoldsNewTendersAndKeepsMaintenance(t *testing.T) {
 			t.Fatalf("shortfall hold settled %s without delivery", obligation.ContractID)
 		}
 	}
+
 }
 
 // Only an explicit fresh REST record naming the persisted contract settles an
@@ -557,6 +561,7 @@ func TestShortSealedFreightHoldsNewTendersAndKeepsMaintenance(t *testing.T) {
 // unresolved and never authorize a new tender, a 409's prose never proves a
 // terminal state, and a default's collateral loss is booked exactly once.
 func TestFreightTerminalReconciliationRequiresExplicitFreshRESTState(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name          string
 		rowStatus     string
@@ -759,6 +764,7 @@ func TestFreightTerminalReconciliationRequiresExplicitFreshRESTState(t *testing.
 			t.Fatalf("liveness flow changed the tender traffic: %+v", h.api.mutationsFor("/v1/contract/deliver-freight"))
 		}
 	})
+
 }
 
 // Delivery accounting is bound to the immutable journaled request. A stored
@@ -767,6 +773,7 @@ func TestFreightTerminalReconciliationRequiresExplicitFreshRESTState(t *testing.
 // original bytes and key even with an empty hold, and an orphaned pending
 // request blocks every account mutation.
 func TestDeliveryOutcomeAccountingBindsToImmutableRequest(t *testing.T) {
+	t.Parallel()
 	freightFixture := func() []freightObligation {
 		return []freightObligation{
 			{ContractID: "freight-a", Commodity: recoveryGrain, Quantity: 24, Destination: recoveryFarPort, Deadline: new(time.Now().UTC().Add(6 * time.Hour)), RewardPence: 9_000, CollateralPence: 5_000},
@@ -973,6 +980,7 @@ func TestDeliveryOutcomeAccountingBindsToImmutableRequest(t *testing.T) {
 			}
 		}
 	})
+
 }
 
 // expireTenderRetry clears the durable bounded tender retry deadline from the
@@ -1049,6 +1057,7 @@ func charterContractRow(id string, remainingQuantity int64) map[string]any {
 // with a fresh identity once the host retry deadline has passed and fresh
 // REST still shows the matching active contract with the full manifest.
 func TestRefusedTenderRetriesBoundedAndRearmsOnFreshState(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	proxy := installReconciliationProxy(t, h)
 	proxy.setContractRows([]map[string]any{freightContractRow("freight-a", "active", false)})
@@ -1159,6 +1168,7 @@ func TestRefusedTenderRetriesBoundedAndRearmsOnFreshState(t *testing.T) {
 	if data.Action != nil || data.Freight[0].Settled || data.ExpensesPence != 0 {
 		t.Fatalf("second capacity refusal was not bounded and consumed: %+v", data)
 	}
+
 }
 
 // A charter that was definitively refused must not stay latched forever: the
@@ -1166,6 +1176,7 @@ func TestRefusedTenderRetriesBoundedAndRearmsOnFreshState(t *testing.T) {
 // restart), and changed contract terms must re-open that charter instead of
 // suppressing it globally.
 func TestCharterRefusalLatchRefreshesOnAuthoritativeChange(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	proxy := installReconciliationProxy(t, h)
 	proxy.setContractRows([]map[string]any{charterContractRow("charter-a", 24)})
@@ -1243,6 +1254,7 @@ func TestCharterRefusalLatchRefreshesOnAuthoritativeChange(t *testing.T) {
 	if data.Action.ID == charterAttempt {
 		t.Fatal("re-opened charter reused the refused action identity")
 	}
+
 }
 
 // An ambiguous action quarantines new spending account-wide, but it must not
@@ -1252,6 +1264,7 @@ func TestCharterRefusalLatchRefreshesOnAuthoritativeChange(t *testing.T) {
 // ambiguous request keeps its exact key and body. An orphaned pending request
 // (unknown resources) still blocks everything.
 func TestAmbiguousQuarantineBlocksSpendingButLetsOtherShipsDeliver(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	proxy := installReconciliationProxy(t, h)
 	proxy.setContractRows([]map[string]any{
@@ -1369,4 +1382,5 @@ func TestAmbiguousQuarantineBlocksSpendingButLetsOtherShipsDeliver(t *testing.T)
 	if len(h.pending()) != 1 {
 		t.Fatalf("quarantine left unexpected journal rows: %+v", h.pending())
 	}
+
 }

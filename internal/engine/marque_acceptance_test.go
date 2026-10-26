@@ -7,6 +7,7 @@ import (
 )
 
 func TestEvaluateMarqueAcceptance(t *testing.T) {
+	t.Parallel()
 	base := MarqueInput{
 		Quote: MarqueQuote{
 			CostPence:             500_000,
@@ -88,9 +89,11 @@ func TestEvaluateMarqueAcceptance(t *testing.T) {
 			reasons[reason] = tc.name
 		})
 	}
+
 }
 
 func TestMarqueQuoteDecodeOpenAPIFields(t *testing.T) {
+	t.Parallel()
 	var quote MarqueQuote
 	err := json.Unmarshal([]byte(`{
 		"sea_zone_id":"western_approaches",
@@ -118,4 +121,5 @@ func TestMarqueQuoteDecodeOpenAPIFields(t *testing.T) {
 	if quote != want {
 		t.Fatalf("decoded marque quote = %+v, want %+v", quote, want)
 	}
+
 }

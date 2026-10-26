@@ -10,6 +10,7 @@ import (
 )
 
 func TestPricedLloydsUnderwriting(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		change   func(*Runner, *InsurancePolicy, *[]InsurancePolicy, *UnderwritingBudget)
@@ -110,9 +111,11 @@ func TestPricedLloydsUnderwriting(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestLloydsSliceNetRoundingAndBounds(t *testing.T) {
+	t.Parallel()
 	policy := uwAccCandidate()
 	policy.InsuredValuePence = 1_234_567
 	policy.PremiumBPS = 300
@@ -133,9 +136,11 @@ func TestLloydsSliceNetRoundingAndBounds(t *testing.T) {
 			t.Fatalf("invalid expected loss %d accepted with net %d", invalidLoss, net)
 		}
 	}
+
 }
 
 func TestPricedLloydsRejectsMalformedEstimates(t *testing.T) {
+	t.Parallel()
 	for _, field := range []string{"lloyds_expected_loss_bps", "lloyds_min_premium_bps", "premium_margin_bps"} {
 		for _, value := range []any{"100", 1.5, int64(-1), int64(10001)} {
 			t.Run(fmt.Sprintf("%s/%v", field, value), func(t *testing.T) {
@@ -170,4 +175,5 @@ func TestPricedLloydsRejectsMalformedEstimates(t *testing.T) {
 			})
 		}
 	}
+
 }

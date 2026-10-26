@@ -61,10 +61,12 @@ func integrationStore(t *testing.T) (*Store, string, []byte) {
 	if err == nil && (parsed.Scheme == "postgres" || parsed.Scheme == "postgresql") {
 		query := parsed.Query()
 		query.Set("search_path", schema)
+		// Throwaway schemas need no commit durability.
+		query.Set("synchronous_commit", "off")
 		parsed.RawQuery = query.Encode()
 		dsn = parsed.String()
 	} else {
-		dsn += " search_path=" + schema
+		dsn += " search_path=" + schema + " synchronous_commit=off"
 	}
 	key := bytes.Repeat([]byte{0x42}, 32)
 	db, err = Open(ctx, dsn, key, zap.NewNop())

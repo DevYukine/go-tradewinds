@@ -196,6 +196,7 @@ func piracyInsuranceRequireNoSend(t *testing.T, h *recoveryHarness, shipID strin
 }
 
 func TestPiracyInsuranceLoadingStagingAndFirstSend(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []string{"buy", "accept-freight"} {
 		for _, boundary := range []string{"staging", "first-send"} {
 			for _, status := range []string{"open", "active"} {
@@ -225,9 +226,11 @@ func TestPiracyInsuranceLoadingStagingAndFirstSend(t *testing.T) {
 			}
 		}
 	}
+
 }
 
 func TestPiracyInsuranceRetainsObservedPolicyUntilFreshTerminalRelease(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []string{"outage", "invalid policy"} {
 		t.Run(failure, func(t *testing.T) {
 			h, runner, proxy, mission, data, ship := piracyInsuranceLoadingFixture(t, "buy")
@@ -282,9 +285,11 @@ func TestPiracyInsuranceRetainsObservedPolicyUntilFreshTerminalRelease(t *testin
 			}
 		})
 	}
+
 }
 
 func TestPiracyInsuranceDeparturePolicySet(t *testing.T) {
+	t.Parallel()
 	for _, boundary := range []string{"preparation", "first-send"} {
 		for _, scenario := range []string{"matching", "origin conflict", "destination conflict", "matching then conflicting", "conflicting then matching", "stale matching", "foreign company", "foreign ship", "settled_safe", "claimed_loss", "cancelled", "never observed outage", "active past expiry"} {
 			t.Run(boundary+"/"+scenario, func(t *testing.T) {
@@ -374,9 +379,11 @@ func TestPiracyInsuranceDeparturePolicySet(t *testing.T) {
 			})
 		}
 	}
+
 }
 
 func TestPiracyInsuranceMixedCaseOwnerAndShip(t *testing.T) {
+	t.Parallel()
 	h, runner, proxy, mission, data, ship := piracyInsuranceLoadingFixture(t, "buy")
 	// The shared company/ship UUIDs contain digits only. Give this isolated
 	// observation letter-bearing UUIDs so case folding is really tested.
@@ -401,9 +408,11 @@ func TestPiracyInsuranceMixedCaseOwnerAndShip(t *testing.T) {
 		t.Fatal(err)
 	}
 	piracyInsuranceRequireNoSend(t, h, shipID)
+
 }
 
 func TestPiracyInsuranceCompletedLoadingPhasesAdvance(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"buy", "freight"} {
 		t.Run(phase, func(t *testing.T) {
 			h, runner, proxy, mission, data, ship := piracyInsuranceLoadingFixture(t, "accept-freight")
@@ -430,9 +439,11 @@ func TestPiracyInsuranceCompletedLoadingPhasesAdvance(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestPiracyInsuranceStoresAndDeliveryRemainAllowed(t *testing.T) {
+	t.Parallel()
 	t.Run("stores", func(t *testing.T) {
 		h, runner, proxy, mission, data, ship := piracyInsuranceLoadingFixture(t, "buy")
 		piracyInsuranceBoard(proxy, piracyInsurancePolicy())
@@ -503,9 +514,11 @@ func TestPiracyInsuranceStoresAndDeliveryRemainAllowed(t *testing.T) {
 			t.Fatalf("insurance blocked legitimate cargo sale: calls %+v data %+v", calls, retained)
 		}
 	})
+
 }
 
 func TestPiracyInsuranceHeldHullDoesNotStarveSecondHull(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setFactorPorts(recoveryFarPort)
 	rows := []map[string]any{}
@@ -555,9 +568,11 @@ func TestPiracyInsuranceHeldHullDoesNotStarveSecondHull(t *testing.T) {
 			t.Fatalf("insured first hull retained a blocked cargo reservation: %+v", retained)
 		}
 	}
+
 }
 
 func TestPiracyInsuranceGrowthReuseDoesNotCommitOrBuyReplacement(t *testing.T) {
+	t.Parallel()
 	h, runner, proxy, _, _, ship := piracyInsuranceLoadingFixture(t, "buy")
 	if err := h.db.DeleteMission(h.ctx, h.account.ID, ship.Ship.ID); err != nil {
 		t.Fatal(err)
@@ -583,9 +598,11 @@ func TestPiracyInsuranceGrowthReuseDoesNotCommitOrBuyReplacement(t *testing.T) {
 	if !bytes.Equal(encode(before), encode(after)) || h.api.mutationCount("/v1/shipyard/build-ship") != 0 || len(h.pending()) != 0 {
 		t.Fatalf("insurance-held reusable hull reserved capital or bought replacement: reserves %v -> %v pending %+v", before, after, h.pending())
 	}
+
 }
 
 func TestPiracyInsuranceSourcingAdmissionAndFunding(t *testing.T) {
+	t.Parallel()
 	for _, conflict := range []bool{false, true} {
 		name := "matching empty sourcing"
 		if conflict {
@@ -654,9 +671,11 @@ func TestPiracyInsuranceSourcingAdmissionAndFunding(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestPiracyInsurancePostWaitExpiryHasDurableNoSendProof(t *testing.T) {
+	t.Parallel()
 	h, runner, mission, data, ship := procurementRecoveryFixture(t, false)
 	proxy := installUWExecProxy(t, h)
 	piracyInsuranceBoard(proxy, piracyInsurancePolicy())
@@ -727,9 +746,11 @@ func TestPiracyInsurancePostWaitExpiryHasDurableNoSendProof(t *testing.T) {
 	if retained.Action != nil || h.api.mutationCount("/v1/fleet/depart") != 0 || len(h.pending()) != 0 {
 		t.Fatalf("restart replayed a proven never-sent insured departure: %+v", retained)
 	}
+
 }
 
 func TestPiracyInsuranceImmutableLoadingRecovery(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []string{"buy", "accept-freight"} {
 		for _, state := range []string{"attempted", "completed"} {
 			t.Run(stage+"/"+state, func(t *testing.T) {
@@ -813,9 +834,11 @@ func TestPiracyInsuranceImmutableLoadingRecovery(t *testing.T) {
 			})
 		}
 	}
+
 }
 
 func TestPiracyInsuranceOwnPolicyOnLaterGeneralBoardPage(t *testing.T) {
+	t.Parallel()
 	h, runner, _, mission, data, ship := piracyInsuranceLoadingFixture(t, "buy")
 	foreignRows := make([]map[string]any, 200)
 	for index := range foreignRows {
@@ -846,9 +869,11 @@ func TestPiracyInsuranceOwnPolicyOnLaterGeneralBoardPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	piracyInsuranceRequireNoSend(t, h, ship.Ship.ID)
+
 }
 
 func TestPiracyInsuranceUnrelatedPoliciesDoNotBlockLoading(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"foreign company", "foreign ship", "settled_safe", "claimed_loss", "cancelled", "unavailable never observed"} {
 		t.Run(scenario, func(t *testing.T) {
 			h, runner, proxy, mission, data, ship := piracyInsuranceLoadingFixture(t, "buy")
@@ -895,9 +920,11 @@ func TestPiracyInsuranceUnrelatedPoliciesDoNotBlockLoading(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestPiracyInsuranceEmptySourcingDeparture(t *testing.T) {
+	t.Parallel()
 	for _, conflict := range []bool{false, true} {
 		name := "matching"
 		if conflict {
@@ -971,9 +998,11 @@ func TestPiracyInsuranceEmptySourcingDeparture(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestPiracyInsuranceImmutableDepartureRecovery(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"attempted", "completed"} {
 		t.Run(state, func(t *testing.T) {
 			h, runner, mission, data, ship := procurementRecoveryFixture(t, false)
@@ -1056,9 +1085,11 @@ func TestPiracyInsuranceImmutableDepartureRecovery(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestPiracyInsuranceSourcingFundingFirstSend(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setFleet([]map[string]any{sourcingReviewShipRow()})
 	h.api.setVaultBalance("north", 0)
@@ -1091,9 +1122,11 @@ func TestPiracyInsuranceSourcingFundingFirstSend(t *testing.T) {
 	if h.api.mutationCount("/v1/treasury/remit") != 0 || retained.Action != nil || len(h.pending()) != 0 {
 		t.Fatalf("first-send sourcing funding ignored conflicting insurance: %+v calls %+v", retained, h.api.mutationsFor("/v1/treasury/remit"))
 	}
+
 }
 
 func TestPiracyInsuranceCompletedBuyPrunesUnavailableOptionalFreight(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{"missing", "cancelled", "open"} {
 		t.Run(status, func(t *testing.T) {
 			h, runner, mission, data, ship := procurementRecoveryFixture(t, false)
@@ -1144,9 +1177,11 @@ func TestPiracyInsuranceCompletedBuyPrunesUnavailableOptionalFreight(t *testing.
 			}
 		})
 	}
+
 }
 
 func TestPiracyInsuranceBlockedCargoFallsBackToMatchingEmptySourcing(t *testing.T) {
+	t.Parallel()
 	for _, status := range []string{"active", "settled_safe"} {
 		t.Run(status, func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -1189,6 +1224,7 @@ func TestPiracyInsuranceBlockedCargoFallsBackToMatchingEmptySourcing(t *testing.
 			}
 		})
 	}
+
 }
 
 func piracyInsuranceCharterRow(id string, quantity, reward int64) map[string]any {
@@ -1202,6 +1238,7 @@ func piracyInsuranceCharterRow(id string, quantity, reward int64) map[string]any
 }
 
 func TestPiracyInsuranceInspectionDoesNotFundOrHandoffBlockedLoading(t *testing.T) {
+	t.Parallel()
 	for _, funding := range []string{"requires transfer", "already funded"} {
 		t.Run(funding, func(t *testing.T) {
 			h, runner, proxy, _, _, _ := piracyInsuranceLoadingFixture(t, "buy")
@@ -1334,6 +1371,7 @@ func TestPiracyInsuranceInspectionDoesNotFundOrHandoffBlockedLoading(t *testing.
 			}
 		})
 	}
+
 }
 
 // Serve finite source depth while retaining the shared fake's real purchase
@@ -1420,6 +1458,7 @@ func piracyInsuranceReservationFixture(t *testing.T) (*recoveryHarness, *Runner,
 }
 
 func TestPiracyInsuranceOnlyHypotheticalLoadingReservationsSuspend(t *testing.T) {
+	t.Parallel()
 	for _, boundary := range []string{"unattempted", "paid stores", "staged action", "pending action", "purchased cargo", "accepted freight", "empty relocation", "return bundle", "stale ships", "stale contracts"} {
 		t.Run(boundary, func(t *testing.T) {
 			h, runner, proxy, plan := piracyInsuranceReservationFixture(t)
@@ -1542,9 +1581,11 @@ func TestPiracyInsuranceOnlyHypotheticalLoadingReservationsSuspend(t *testing.T)
 			}
 		})
 	}
+
 }
 
 func TestPiracyInsuranceSuspendedReservationLetsOtherHullTradeBeforeRelease(t *testing.T) {
+	t.Parallel()
 	h, runner, proxy, plan := piracyInsuranceReservationFixture(t)
 	baseline, err := runner.committedPlanningInput(h.ctx, harnessShip(t, runner, recoveryShipCharizard))
 	if err != nil {
@@ -1662,9 +1703,11 @@ func TestPiracyInsuranceSuspendedReservationLetsOtherHullTradeBeforeRelease(t *t
 	if cash < baseline.ReserveByRegion["north"] || cash != initialCash-4_080 {
 		t.Fatalf("released mission lost exact purchase/customs cash or spent protected operating funds: initial %dp final %dp reserve %dp", initialCash, cash, baseline.ReserveByRegion["north"])
 	}
+
 }
 
 func TestPiracyInsuranceHeldFutureDestinationDoesNotCreateTreasuryObligation(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setFleet([]map[string]any{stationaryShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, "berthed", 0, 4)})
 	proxy := installUWExecProxy(t, h)
@@ -1689,9 +1732,11 @@ func TestPiracyInsuranceHeldFutureDestinationDoesNotCreateTreasuryObligation(t *
 	if !bytes.Equal(encode(before), encode(after)) {
 		t.Fatalf("unattempted insurance-held destination created hypothetical treasury bills: %v -> %v", before, after)
 	}
+
 }
 
 func TestPiracyInsuranceHeldGrowthCargoDoesNotStageReplacementFunding(t *testing.T) {
+	t.Parallel()
 	w, runner := newGrowthExecutionWorld(t)
 	mission, data := w.until(runner, func(mission *store.Mission, data missionData) bool {
 		return mission != nil && data.Action != nil && data.Action.Stage == "buy"
@@ -1737,9 +1782,11 @@ func TestPiracyInsuranceHeldGrowthCargoDoesNotStageReplacementFunding(t *testing
 			t.Fatalf("held growth cargo reached market transport: %+v", call)
 		}
 	}
+
 }
 
 func TestPiracyInsuranceCommissioningKeepsAdmittedCapitalReserved(t *testing.T) {
+	t.Parallel()
 	w, runner := newGrowthExecutionWorld(t)
 	w.until(runner, func(_ *store.Mission, _ missionData) bool {
 		mission, err := w.h.db.GetMission(w.h.ctx, w.h.account.ID, "__growth")
@@ -1774,9 +1821,11 @@ func TestPiracyInsuranceCommissioningKeepsAdmittedCapitalReserved(t *testing.T) 
 			t.Fatalf("insurance observation released commissioning's finite market commitment at %s: before %+v after %+v", port, beforeBook, afterBook)
 		}
 	}
+
 }
 
 func TestPiracyInsuranceSourcingSelectsHighestRankedPolicyCompatibleSource(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"second-ranked source", "third-ranked source", "stale insurance", "conflicting live policies"} {
 		t.Run(scenario, func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -1939,4 +1988,5 @@ func TestPiracyInsuranceSourcingSelectsHighestRankedPolicyCompatibleSource(t *te
 			}
 		})
 	}
+
 }

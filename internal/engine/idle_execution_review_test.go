@@ -59,6 +59,7 @@ func idleExecutionReviewRecordClock(t *testing.T, w *idleFallbackWorld, runner *
 }
 
 func TestIdleExecutionReviewCachedClockAfterGapCannotCreditDowntime(t *testing.T) {
+	t.Parallel()
 	w := newIdleFallbackWorld(t)
 	runner := w.h.runner(primaryTestKey)
 	w.observe(t, runner, 100)
@@ -72,9 +73,11 @@ func TestIdleExecutionReviewCachedClockAfterGapCannotCreditDowntime(t *testing.T
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), false)
 	idleExecutionReviewRecordClock(t, w, runner, 112, serverUTC.Add(2*time.Hour), false)
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), true)
+
 }
 
 func TestIdleExecutionReviewBackwardUTCRecoversFromCoherentNewBaseline(t *testing.T) {
+	t.Parallel()
 	w := newIdleFallbackWorld(t)
 	runner := w.h.runner(primaryTestKey)
 	w.observe(t, runner, 100)
@@ -88,6 +91,7 @@ func TestIdleExecutionReviewBackwardUTCRecoversFromCoherentNewBaseline(t *testin
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), false)
 	idleExecutionReviewRecordClock(t, w, runner, 97, oldUTC.Add(-53*time.Minute), false)
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), true)
+
 }
 
 func idleExecutionReviewSetFree(t *testing.T, w *idleFallbackWorld, runner *Runner, free int64) {
@@ -232,6 +236,7 @@ func idleExecutionReviewNoSend(t *testing.T, w *idleFallbackWorld, runner *Runne
 }
 
 func TestIdleExecutionReviewOriginFirstSendHonorsClockRebase(t *testing.T) {
+	t.Parallel()
 	w, runner, mission, data := idleExecutionReviewPilot(t)
 	idleExecutionReviewTransport(t, w, runner)
 	w.observe(t, runner, 110)
@@ -241,6 +246,7 @@ func TestIdleExecutionReviewOriginFirstSendHonorsClockRebase(t *testing.T) {
 		t.Fatal("regressed observation unexpectedly remains eligible")
 	}
 	idleExecutionReviewNoSend(t, w, runner, mission, &data, action)
+
 }
 
 func idleExecutionReviewIncome(t *testing.T, w *idleFallbackWorld, runner *Runner) {
@@ -259,14 +265,17 @@ func idleExecutionReviewIncome(t *testing.T, w *idleFallbackWorld, runner *Runne
 }
 
 func TestIdleExecutionReviewNewOrdinaryIncomeWinsBeforeFirstSend(t *testing.T) {
+	t.Parallel()
 	w, runner, mission, data := idleExecutionReviewPilot(t)
 	idleExecutionReviewTransport(t, w, runner)
 	action := idleExecutionReviewStageStores(t, w, runner, mission, &data)
 	idleExecutionReviewIncome(t, w, runner)
 	idleExecutionReviewNoSend(t, w, runner, mission, &data, action)
+
 }
 
 func TestIdleExecutionReviewPostLimiterRechecksCashAndPermanentCosts(t *testing.T) {
+	t.Parallel()
 	for _, change := range []string{"shrinking cash", "unknown probe cost", "new ordinary income"} {
 		t.Run(change, func(t *testing.T) {
 			w, runner, mission, data := idleExecutionReviewPilot(t)
@@ -306,9 +315,11 @@ func TestIdleExecutionReviewPostLimiterRechecksCashAndPermanentCosts(t *testing.
 			}
 		})
 	}
+
 }
 
 func TestIdleExecutionReviewTieredStoreIOCUsesCurrentReducedCap(t *testing.T) {
+	t.Parallel()
 	w, runner, mission, data := idleExecutionReviewPilot(t)
 	idleExecutionReviewTransport(t, w, runner)
 	idleExecutionReviewSetFree(t, w, runner, 100_000)
@@ -336,9 +347,11 @@ func TestIdleExecutionReviewTieredStoreIOCUsesCurrentReducedCap(t *testing.T) {
 	data.Plan = plan
 	action := idleExecutionReviewStageStores(t, w, runner, mission, &data)
 	idleExecutionReviewNoSend(t, w, runner, mission, &data, action)
+
 }
 
 func TestIdleExecutionReviewActiveCostsAndBillsCountOnceWithoutGrowingCap(t *testing.T) {
+	t.Parallel()
 	w, runner, mission, data := idleExecutionReviewPilot(t)
 	w.h.api.setFleet([]map[string]any{destinationShipRow(recoveryShipBlastoise, "Blastoise", data.Plan.Destination, "berthed", 1.5, nil, nil)})
 	mission.Phase = "inspect"
@@ -378,9 +391,11 @@ func TestIdleExecutionReviewActiveCostsAndBillsCountOnceWithoutGrowingCap(t *tes
 	if data.Relocation.ExpenseCapPence != cap {
 		t.Fatal("risk revalidation mutated the immutable cap")
 	}
+
 }
 
 func TestIdleExecutionReviewAttemptedIdentityAndSafetyRemainRecoverable(t *testing.T) {
+	t.Parallel()
 	for _, safety := range []bool{false, true} {
 		t.Run(fmt.Sprintf("safety=%v", safety), func(t *testing.T) {
 			w, runner, mission, data := idleExecutionReviewPilot(t)
@@ -413,4 +428,5 @@ func TestIdleExecutionReviewAttemptedIdentityAndSafetyRemainRecoverable(t *testi
 			}
 		})
 	}
+
 }

@@ -34,6 +34,7 @@ func newRetentionRunner(t *testing.T, handler http.Handler) *Runner {
 }
 
 func TestFinishGroupPrunesHistoricalKeysAndMetadataOrphans(t *testing.T) {
+	t.Parallel()
 	runner := New(nil, nil, store.Account{ID: "acc-retention"}, zap.NewNop(), Options{})
 	runner.generation = "gen-a"
 	now := time.Now().UTC()
@@ -70,9 +71,11 @@ func TestFinishGroupPrunesHistoricalKeysAndMetadataOrphans(t *testing.T) {
 	if !runner.fresh("books") {
 		t.Fatal("a pruned group whose only current child is fresh must stay fresh")
 	}
+
 }
 
 func TestFailedCurrentCaptureKeepsLastGoodDataAndVisibleFailure(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int64
 	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		requests.Add(1)
@@ -117,9 +120,11 @@ func TestFailedCurrentCaptureKeepsLastGoodDataAndVisibleFailure(t *testing.T) {
 	if count := requests.Load(); count != 1 {
 		t.Fatalf("capture attempted %d requests, want exactly one", count)
 	}
+
 }
 
 func TestTravelCyclesReplaceBooksInsteadOfAccumulatingHistory(t *testing.T) {
+	t.Parallel()
 	books := map[string]string{
 		"le_havre":   `{"visibility":"quay","commodities":["tea"]}`,
 		"portsmouth": `{"visibility":"quay","commodities":["rum"]}`,
@@ -167,9 +172,11 @@ func TestTravelCyclesReplaceBooksInsteadOfAccumulatingHistory(t *testing.T) {
 	if !runner.fresh("books") {
 		t.Fatal("the group must stay fresh when its only current child is fresh")
 	}
+
 }
 
 func TestHistoricalBloatPrunesBelowStoreSnapshotBudget(t *testing.T) {
+	t.Parallel()
 	runner := New(nil, nil, store.Account{ID: "acc-retention"}, zap.NewNop(), Options{})
 	runner.generation = "gen-a"
 	// Ten abandoned origins each carrying a stale megabyte-scale book push the
@@ -199,9 +206,11 @@ func TestHistoricalBloatPrunesBelowStoreSnapshotBudget(t *testing.T) {
 	if kept >= storeSnapshotBudgetBytes {
 		t.Fatalf("pruned snapshot is %d bytes, want below the store's %d byte budget", kept, storeSnapshotBudgetBytes)
 	}
+
 }
 
 func TestFinishGroupRequiresCompleteCurrentGenerationChildren(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		generation string
@@ -240,4 +249,5 @@ func TestFinishGroupRequiresCompleteCurrentGenerationChildren(t *testing.T) {
 			}
 		})
 	}
+
 }

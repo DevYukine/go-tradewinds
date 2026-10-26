@@ -141,6 +141,7 @@ func destinationSeedSoldVoyage(t *testing.T, h *recoveryHarness, finish bool, ex
 }
 
 func TestNewEconomicMissionsCarryFinishAtDestination(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	// One legitimate far factor authorizes the executable portb bids as
 	// demand evidence for the spot plan; its native upkeep stays modeled.
@@ -160,9 +161,11 @@ func TestNewEconomicMissionsCarryFinishAtDestination(t *testing.T) {
 	if h.api.mutationCount("/v1/fleet/depart") != 0 {
 		t.Fatal("planning a new voyage sent a departure")
 	}
+
 }
 
 func TestDestinationCompletionSettlesOnceAndNeverReturnsEmpty(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	destinationSeedSoldVoyage(t, h, true, "")
 	runner := h.runner(primaryTestKey)
@@ -222,6 +225,7 @@ func TestDestinationCompletionSettlesOnceAndNeverReturnsEmpty(t *testing.T) {
 	if h.api.mutationCount("/v1/fleet/depart") != 0 {
 		t.Fatal("a completed economic mission returned home empty")
 	}
+
 }
 
 func destinationOnlySettlement(t *testing.T, h *recoveryHarness) store.Settlement {
@@ -245,6 +249,7 @@ func destinationOnlySettlement(t *testing.T, h *recoveryHarness) store.Settlemen
 }
 
 func TestDestinationCompletionHonorsTurnaroundUnlock(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	unlock := time.Now().UTC().Add(15 * time.Minute)
 	h.api.setFleet([]map[string]any{destinationShipRow(recoveryShipBlastoise, "Blastoise", recoveryFarPort, "anchored_roadstead", 3, &unlock, nil)})
@@ -280,9 +285,11 @@ func TestDestinationCompletionHonorsTurnaroundUnlock(t *testing.T) {
 	if h.api.mutationCount("/v1/fleet/depart") != 0 {
 		t.Fatal("destination completion staged an empty return departure")
 	}
+
 }
 
 func TestLegacyMissionWithoutFinishFlagReturnsHome(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setFleet([]map[string]any{destinationShipRow(recoveryShipBlastoise, "Blastoise", recoveryFarPort, "anchored_roadstead", 3, nil, nil)})
 	destinationSeedAction(t, h, "legacy-action-1", "/v1/market/place-order", `{"ok":true}`, `{"commodity_id":"grain","filled_quantity":24,"total_gross_pence":30000,"customs_duty_pence":92}`)
@@ -318,9 +325,11 @@ func TestLegacyMissionWithoutFinishFlagReturnsHome(t *testing.T) {
 	if rows := destinationSettlements(t, h, ""); len(rows) != 0 {
 		t.Fatalf("legacy return invented a destination settlement: %+v", rows)
 	}
+
 }
 
 func TestRelocationProbeClosesAtSourceWithoutPurchaseOrReturn(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setFleet([]map[string]any{destinationShipRow(recoveryShipBlastoise, "Blastoise", recoveryFarPort, "anchored_roadstead", 3, nil, nil)})
 	destinationSeedAction(t, h, "relocation-action-1", "/v1/fleet/depart",
@@ -357,9 +366,11 @@ func TestRelocationProbeClosesAtSourceWithoutPurchaseOrReturn(t *testing.T) {
 	if h.api.mutationCount("/v1/fleet/depart") != 0 {
 		t.Fatal("closed probe sailed home empty instead of replanning where it stands")
 	}
+
 }
 
 func TestDestinationClosingWaitsForCargoSealsAndResolvedActions(t *testing.T) {
+	t.Parallel()
 	t.Run("residual unsealed cargo", func(t *testing.T) {
 		h := newRecoveryHarness(t)
 		h.api.setFleet([]map[string]any{destinationShipRow(recoveryShipBlastoise, "Blastoise", recoveryFarPort, "anchored_roadstead", 3, nil, map[string]int64{recoveryGrain: 10})})
@@ -439,4 +450,5 @@ func TestDestinationClosingWaitsForCargoSealsAndResolvedActions(t *testing.T) {
 			t.Fatalf("unresolved request destroyed the durable mission: row %v err %v", row, err)
 		}
 	})
+
 }

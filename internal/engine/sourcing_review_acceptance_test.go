@@ -152,6 +152,7 @@ func sourcingReviewCounts(t *testing.T, h *recoveryHarness) (details, summaries 
 }
 
 func TestSourcingReviewDiagnosticsStayBoundedAcrossEquivalentPasses(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setFleet([]map[string]any{sourcingReviewShipRow()})
 	runner := h.runner(primaryTestKey)
@@ -195,9 +196,11 @@ func TestSourcingReviewDiagnosticsStayBoundedAcrossEquivalentPasses(t *testing.T
 	if len(runner.decisionHashes) > 2048 {
 		t.Fatalf("decision fingerprint cache holds %d entries; the cache must stay bounded", len(runner.decisionHashes))
 	}
+
 }
 
 func TestDecisionCacheEvictsBeyondCapacity(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setFleet([]map[string]any{sourcingReviewShipRow()})
 	runner := h.runner(primaryTestKey)
@@ -213,6 +216,7 @@ func TestDecisionCacheEvictsBeyondCapacity(t *testing.T) {
 	if len(runner.decisionHashes) > 2048 {
 		t.Fatalf("decision fingerprint cache grew to %d entries; the cap must evict", len(runner.decisionHashes))
 	}
+
 }
 
 // sourcingDepartureSeed persists a relocation mission already staged at its
@@ -347,6 +351,7 @@ func sourcingReviewDecisionReasons(t *testing.T, h *recoveryHarness) string {
 }
 
 func TestRelocationDepartureWaitsForFreshlyRequiredStores(t *testing.T) {
+	t.Parallel()
 	t.Run("hazard raises the fresh target above physical stores", func(t *testing.T) {
 		h := newRecoveryHarness(t)
 		h.api.setFleet([]map[string]any{sourcingReviewShipRow()})
@@ -373,4 +378,5 @@ func TestRelocationDepartureWaitsForFreshlyRequiredStores(t *testing.T) {
 			t.Fatalf("relocation with stores above the freshly required target never departed; decisions: %s", sourcingReviewDecisionReasons(t, h))
 		}
 	})
+
 }

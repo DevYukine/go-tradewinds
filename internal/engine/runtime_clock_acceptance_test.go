@@ -31,6 +31,7 @@ func coherentClockMeta(hostNow time.Time, generation string) DatasetMeta {
 }
 
 func TestServerBoundsProjectConservativeServerInterval(t *testing.T) {
+	t.Parallel()
 	const generation = "clock-generation"
 	hostNow := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
 
@@ -179,6 +180,7 @@ func TestServerBoundsProjectConservativeServerInterval(t *testing.T) {
 			})
 		}
 	})
+
 }
 
 // The turnaround lock timestamp is a server instant. A host clock ahead of the
@@ -187,6 +189,7 @@ func TestServerBoundsProjectConservativeServerInterval(t *testing.T) {
 // server has already unlocked it. The persisted retry cooldown, in contrast,
 // remains a purely host-domain deadline.
 func TestDepartureUnlockFollowsConservativeServerTime(t *testing.T) {
+	t.Parallel()
 	capture := time.Now().UTC()
 	cases := []struct {
 		name       string
@@ -270,6 +273,7 @@ func TestDepartureUnlockFollowsConservativeServerTime(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // Freight admission compares a server delivery deadline against the projected
@@ -279,6 +283,7 @@ func TestDepartureUnlockFollowsConservativeServerTime(t *testing.T) {
 // day at time scale 1 projects 99,106 seconds out, so the two cases below sit
 // either side of that projection plus the skew.
 func TestFreightDeadlineAdmissionUsesConservativeServerUpper(t *testing.T) {
+	t.Parallel()
 	capture := time.Now().UTC()
 	cases := []struct {
 		name       string
@@ -357,4 +362,5 @@ func TestFreightDeadlineAdmissionUsesConservativeServerUpper(t *testing.T) {
 			}
 		})
 	}
+
 }

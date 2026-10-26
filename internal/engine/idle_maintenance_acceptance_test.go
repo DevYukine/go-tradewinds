@@ -292,6 +292,7 @@ func idleMaintenanceRequireRetired(t *testing.T, h *recoveryHarness, runner *Run
 }
 
 func TestIdleMaintenanceRoadsteadInspectsOnceThenWaitsDurably(t *testing.T) {
+	t.Parallel()
 	h, runner, _, reserves := idleMaintenanceFixture(t, true)
 	if book := runner.stateCache.Markets[recoveryHomePort]; book.Visibility != "roadstead" || len(book.Books) != 0 {
 		t.Fatalf("roadstead fixture leaked executable prices: %+v", book)
@@ -321,9 +322,11 @@ func TestIdleMaintenanceRoadsteadInspectsOnceThenWaitsDurably(t *testing.T) {
 		!runner.fresh("books/"+recoveryHomePort) || runner.stateCache.Markets[recoveryHomePort].Visibility != "quay" {
 		t.Fatalf("wait spent protected funds or discarded the observed quay quote: balances %v reserves %v", input.Balances, reserves)
 	}
+
 }
 
 func TestIdleMaintenanceFreshDonorFundsExactCurrentStoresOnce(t *testing.T) {
+	t.Parallel()
 	h, runner, proxy, reserves := idleMaintenanceFixture(t, true)
 	for range 4 {
 		if _, err := h.tick(runner); err != nil {
@@ -393,9 +396,11 @@ func TestIdleMaintenanceFreshDonorFundsExactCurrentStoresOnce(t *testing.T) {
 	if h.api.mutationCount("/v1/fleet/dock") != 1 || h.api.mutationCount("/v1/fleet/offshore") != 0 || len(h.pending()) != 0 {
 		t.Fatal("maintenance completion restarted navigation or retained unresolved spending")
 	}
+
 }
 
 func TestIdleMaintenanceIncompleteQuotesAndRatesFailClosed(t *testing.T) {
+	t.Parallel()
 	for _, unavailable := range []string{"missing quote", "failed quote", "missing rates", "failed rates"} {
 		t.Run(unavailable, func(t *testing.T) {
 			h, runner, proxy, _ := idleMaintenanceFixture(t, false)
@@ -433,9 +438,11 @@ func TestIdleMaintenanceIncompleteQuotesAndRatesFailClosed(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestIdleMaintenanceFundingPreservesOtherMissionDonorCommitments(t *testing.T) {
+	t.Parallel()
 	h, runner, proxy, _ := idleMaintenanceFixture(t, false)
 	baseline, err := runner.committedPlanningInput(h.ctx, harnessShip(t, runner, recoveryShipBlastoise))
 	if err != nil {
@@ -498,9 +505,11 @@ func TestIdleMaintenanceFundingPreservesOtherMissionDonorCommitments(t *testing.
 	if other.Quantity != 10 || retained.BuyDone || retained.BoughtQuantity != 0 || retained.Plan.BuyLimitPence != 500 {
 		t.Fatalf("maintenance funding rewrote another ship's procurement: %+v", retained)
 	}
+
 }
 
 func TestIdleMaintenanceFirstSendRechecksChangedDonor(t *testing.T) {
+	t.Parallel()
 	for _, restart := range []bool{false, true} {
 		name := "same process"
 		if restart {
@@ -528,9 +537,11 @@ func TestIdleMaintenanceFirstSendRechecksChangedDonor(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestIdleMaintenanceImmutableFundingRecovery(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"attempted", "completed"} {
 		t.Run(state, func(t *testing.T) {
 			h, runner, proxy, _ := idleMaintenanceFixture(t, false)
@@ -595,9 +606,11 @@ func TestIdleMaintenanceImmutableFundingRecovery(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestIdleMaintenanceExternallySatisfiedAfterRemitRetires(t *testing.T) {
+	t.Parallel()
 	h, runner, proxy, _ := idleMaintenanceFixture(t, false)
 	idleMaintenanceFundDonor(t, h, runner, proxy)
 	mission, data := idleMaintenanceUntilRemit(t, h, runner)
@@ -621,6 +634,7 @@ func TestIdleMaintenanceExternallySatisfiedAfterRemitRetires(t *testing.T) {
 		h.api.mutationCount("/v1/fleet/offshore") != 0 || len(h.pending()) != 0 {
 		t.Fatal("externally satisfied maintenance spent again instead of retiring")
 	}
+
 }
 
 func idleMaintenanceUntilProvision(t *testing.T, h *recoveryHarness, runner *Runner) (*store.Mission, missionData) {
@@ -651,6 +665,7 @@ func idleMaintenanceUntilProvision(t *testing.T, h *recoveryHarness, runner *Run
 }
 
 func TestIdleMaintenanceDockReconciliationContinuesUnfundedIntent(t *testing.T) {
+	t.Parallel()
 	h, runner, proxy, _ := idleMaintenanceFixture(t, true)
 	proxy.loseDockReceipt.Store(true)
 	var mission *store.Mission
@@ -709,9 +724,11 @@ func TestIdleMaintenanceDockReconciliationContinuesUnfundedIntent(t *testing.T) 
 	if retained.Plan.Kind != "maintenance" || retained.ProvisionsPence != 0 || h.api.mutationCount("/v1/fleet/offshore") != 0 {
 		t.Fatalf("docking reconciliation discarded replenishment instead of holding its unfunded continuation: %+v", retained)
 	}
+
 }
 
 func TestIdleMaintenanceUnfilledAndPartialProvisionContinue(t *testing.T) {
+	t.Parallel()
 	for _, outcome := range []string{"zero", "partial", "rejected"} {
 		t.Run(outcome, func(t *testing.T) {
 			h, runner, proxy, reserves := idleMaintenanceFixture(t, false)
@@ -786,9 +803,11 @@ func TestIdleMaintenanceUnfilledAndPartialProvisionContinue(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestIdleMaintenanceUnsentInvalidationPreservesActualFees(t *testing.T) {
+	t.Parallel()
 	h, runner, proxy, _ := idleMaintenanceFixture(t, false)
 	idleMaintenanceFundDonor(t, h, runner, proxy)
 	mission, data := idleMaintenanceUntilRemit(t, h, runner)
@@ -841,9 +860,11 @@ func TestIdleMaintenanceUnsentInvalidationPreservesActualFees(t *testing.T) {
 		completed.ExpensesPence != 0 || h.api.mutationCount("/v1/market/place-order") != 1 {
 		t.Fatalf("resumed maintenance lost earlier fees or duplicated procurement: %+v", completed)
 	}
+
 }
 
 func TestIdleMaintenanceFundingRechecksNeedQuoteAndCapacityBeforeFirstSend(t *testing.T) {
+	t.Parallel()
 	for _, changed := range []string{"already satisfied", "quote unavailable", "rates unavailable", "hold full"} {
 		t.Run(changed, func(t *testing.T) {
 			h, runner, proxy, _ := idleMaintenanceFixture(t, false)
@@ -889,9 +910,11 @@ func TestIdleMaintenanceFundingRechecksNeedQuoteAndCapacityBeforeFirstSend(t *te
 			}
 		})
 	}
+
 }
 
 func TestIdleMaintenanceFundedStoresRemainReservedAcrossOtherConsumers(t *testing.T) {
+	t.Parallel()
 	h, runner, proxy, _ := idleMaintenanceFixture(t, false)
 	idleMaintenanceFundDonor(t, h, runner, proxy)
 	mission, data := idleMaintenanceUntilRemit(t, h, runner)
@@ -948,9 +971,11 @@ func TestIdleMaintenanceFundedStoresRemainReservedAcrossOtherConsumers(t *testin
 	if h.api.mutationCount("/v1/treasury/remit") != before {
 		t.Fatal("treasury mutated before an admitted durable transfer")
 	}
+
 }
 
 func TestIdleMaintenanceHeldHullDoesNotJustifyReplacementGrowth(t *testing.T) {
+	t.Parallel()
 	w, runner := newGrowthExecutionWorld(t)
 	w.until(runner, func(_ *store.Mission, _ missionData) bool {
 		control, intent, err := runner.loadMission(w.h.ctx, "__growth")
@@ -987,9 +1012,11 @@ func TestIdleMaintenanceHeldHullDoesNotJustifyReplacementGrowth(t *testing.T) {
 	if retained.Plan.Kind != "maintenance" || w.h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		t.Fatalf("reusable hull awaiting maintenance was replaced by new capital: %+v", retained)
 	}
+
 }
 
 func TestIdleMaintenanceEmbeddedProvisionKeepsEconomicMissionAndSeals(t *testing.T) {
+	t.Parallel()
 	h, runner, _, reserves := idleMaintenanceFixture(t, false)
 	proxy := installUWExecProxy(t, h)
 	proxy.contractRows = []map[string]any{freightContractRow("economic-mission-seal", "active", false)}
@@ -1035,9 +1062,11 @@ func TestIdleMaintenanceEmbeddedProvisionKeepsEconomicMissionAndSeals(t *testing
 	if calls := h.api.mutationsFor("/v1/market/place-order"); len(calls) != 1 || calls[0].Status != http.StatusOK {
 		t.Fatalf("embedded replenishment did not execute once: %+v", calls)
 	}
+
 }
 
 func TestIdleMaintenanceQuoteVetoKeepsPreviouslyFundedCashProtected(t *testing.T) {
+	t.Parallel()
 	for _, satisfied := range []bool{false, true} {
 		name := "stores still needed"
 		if satisfied {
@@ -1197,9 +1226,11 @@ func TestIdleMaintenanceQuoteVetoKeepsPreviouslyFundedCashProtected(t *testing.T
 			}
 		})
 	}
+
 }
 
 func TestIdleMaintenanceSatisfiedStoresReleaseUnaffordableOptionalRefit(t *testing.T) {
+	t.Parallel()
 	h, runner, proxy, _ := idleMaintenanceFixture(t, false)
 	h.api.mu.Lock()
 	h.api.fleet[0]["ship"].(map[string]any)["cannons_count"] = 2
@@ -1300,9 +1331,11 @@ func TestIdleMaintenanceSatisfiedStoresReleaseUnaffordableOptionalRefit(t *testi
 	if mission.Quantity <= 0 || data.Plan.Kind == "maintenance" || !data.BuyDone || data.BoughtQuantity <= 0 {
 		t.Fatalf("income purchase did not advance a real economic mission: %+v", data)
 	}
+
 }
 
 func TestIdleMaintenanceSatisfiedStoresDoNotSkipCommissioningArmament(t *testing.T) {
+	t.Parallel()
 	w, runner := newGrowthExecutionWorld(t)
 	w.until(runner, func(_ *store.Mission, _ missionData) bool {
 		control, data, err := runner.loadMission(w.h.ctx, "__growth")
@@ -1347,6 +1380,7 @@ func TestIdleMaintenanceSatisfiedStoresDoNotSkipCommissioningArmament(t *testing
 			t.Fatal("new hull bought cargo before mandatory commissioning armament")
 		}
 	}
+
 }
 
 type maintenanceReservationDepthAPI struct {
@@ -1439,6 +1473,7 @@ func (p *maintenanceReservationDepthAPI) ServeHTTP(writer http.ResponseWriter, r
 }
 
 func TestIdleMaintenanceShrinkingDepthReallocatesOnlyUnattemptedQuotes(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []struct {
 		name      string
 		firstNeed int64
@@ -1598,9 +1633,11 @@ func TestIdleMaintenanceShrinkingDepthReallocatesOnlyUnattemptedQuotes(t *testin
 			}
 		})
 	}
+
 }
 
 func TestIdleMaintenanceRoadsteadHealthyStoresDoNotDockForUnaffordableGuns(t *testing.T) {
+	t.Parallel()
 	h, runner, _, _ := idleMaintenanceFixture(t, true)
 	h.api.mu.Lock()
 	shipRow := h.api.fleet[0]["ship"].(map[string]any)
@@ -1651,4 +1688,5 @@ func TestIdleMaintenanceRoadsteadHealthyStoresDoNotDockForUnaffordableGuns(t *te
 	if local != input.Balances["north"] || donor != input.Balances["south"] || status != "anchored_roadstead" {
 		t.Fatalf("gun-only wait moved the ship or spent protected liquidity: cash %d/%d initial %v status %v", local, donor, input.Balances, status)
 	}
+
 }

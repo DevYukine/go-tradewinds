@@ -7,6 +7,7 @@ import (
 )
 
 func TestPlayerBidGossipPricesWholeLotWithNPCStress(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name           string
 		ask            int64
@@ -106,9 +107,11 @@ func TestPlayerBidGossipPricesWholeLotWithNPCStress(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestRestingPlayerBidReservationsUseUnfilledBidTons(t *testing.T) {
+	t.Parallel()
 	runner := Runner{snapshot: map[string]json.RawMessage{"orders": json.RawMessage(`[
 		{"port_id":"portsmouth","commodity_id":"coarse_cloth","side":"bid","quantity":20,"filled_quantity":5},
 		{"port_id":"portsmouth","commodity_id":"coarse_cloth","side":"bid","quantity":10,"filled_quantity":2},
@@ -120,4 +123,5 @@ func TestRestingPlayerBidReservationsUseUnfilledBidTons(t *testing.T) {
 	if reserved["portsmouth"]["coarse_cloth"] != 23 || reserved["amsterdam"]["coarse_cloth"] != 7 {
 		t.Fatalf("wrong resting bid reservations: %+v", reserved)
 	}
+
 }

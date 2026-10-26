@@ -8,6 +8,7 @@ import (
 )
 
 func TestMarquePlannerRejectsOwnZonesForEveryVoyageKind(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"charter", "freight", "spot"} {
 		t.Run(kind, func(t *testing.T) {
 			in := inputFixture(t)
@@ -52,4 +53,5 @@ func TestMarquePlannerRejectsOwnZonesForEveryVoyageKind(t *testing.T) {
 			}
 		})
 	}
+
 }

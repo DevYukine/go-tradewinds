@@ -636,6 +636,7 @@ func uwExecRequireNoPositions(t *testing.T, h *recoveryHarness, context string) 
 // released, and no replay ever sending another request once membership
 // confirms the owned slice.
 func TestUnderwritingExecutionStagesExactlyOneMinimumSlice(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	base := time.Now().UTC()
 	proxy := installUWExecProxy(t, h)
@@ -696,12 +697,14 @@ func TestUnderwritingExecutionStagesExactlyOneMinimumSlice(t *testing.T) {
 	uwExecRequirePosition(t, h, id, uwExecCollateralCeiling, uwExecPremiumFloor+1, "restart after accepted position")
 	uwExecRequireReleasedMission(t, h, "restart after accepted position")
 	uwExecRequireNoOrphanDecision(t, h)
+
 }
 
 // A crash between storing the accepted 200 and consuming it must consume the
 // stored response on replay: the position is accounted, the mission is
 // released, and the stored outcome is never re-sent over the wire.
 func TestUnderwritingExecutionConsumesStoredSuccessWithoutResend(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	base := time.Now().UTC()
 	id, _ := uwExecSeedPendingUnderwrite(t, h, base)
@@ -719,6 +722,7 @@ func TestUnderwritingExecutionConsumesStoredSuccessWithoutResend(t *testing.T) {
 	uwExecRequirePosition(t, h, id, uwExecCollateralCeiling, uwExecPremiumFloor+1, "replayed stored success")
 	uwExecRequireReleasedMission(t, h, "replayed stored success")
 	uwExecRequireNoOrphanDecision(t, h)
+
 }
 
 // Every way a typed 200 can fail to name exactly one admissible owned slice
@@ -726,6 +730,7 @@ func TestUnderwritingExecutionConsumesStoredSuccessWithoutResend(t *testing.T) {
 // second request, no replacement key, no persisted position, and a durable
 // hold decision.
 func TestUnderwritingExecutionHoldsInvalidTypedSuccessResponses(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		body func(base time.Time) []byte
@@ -798,6 +803,7 @@ func TestUnderwritingExecutionHoldsInvalidTypedSuccessResponses(t *testing.T) {
 			uwExecRequireHold(t, h, test.name)
 		})
 	}
+
 }
 
 // A lost response leaves the exposure unresolved: only the original key may
@@ -805,6 +811,7 @@ func TestUnderwritingExecutionHoldsInvalidTypedSuccessResponses(t *testing.T) {
 // covered_bps figure that already includes our slice never authorizes a
 // replacement request, a persisted position, or a cleared mission.
 func TestUnderwritingExecutionLostResponseNeverMintsReplacementKey(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	base := time.Now().UTC()
 	proxy := installUWExecProxy(t, h)
@@ -849,12 +856,14 @@ func TestUnderwritingExecutionLostResponseNeverMintsReplacementKey(t *testing.T)
 	}
 	uwExecRequireNoPositions(t, h, "lost response with public membership")
 	uwExecRequireNoOrphanDecision(t, h)
+
 }
 
 // A pending __underwriting request is a restored control mission, not an
 // orphan: the exposure stays unresolved while a different ship's fully
 // evidenced cash-credit-only freight delivery proceeds untouched.
 func TestUnderwritingExecutionPendingMissionIsControlAndFleetWorkContinues(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	base := time.Now().UTC()
 	proxy := installUWExecProxy(t, h)
@@ -886,6 +895,7 @@ func TestUnderwritingExecutionPendingMissionIsControlAndFleetWorkContinues(t *te
 	uwExecRequireRetainedAction(t, h, id, body, "unresolved underwriting beside fleet work")
 	uwExecRequireNoPositions(t, h, "unresolved underwriting beside fleet work")
 	uwExecRequireNoOrphanDecision(t, h)
+
 }
 
 // c0orc11: after one accepted owned receipt, a fresh different otherwise
@@ -895,6 +905,7 @@ func TestUnderwritingExecutionPendingMissionIsControlAndFleetWorkContinues(t *te
 // identity-linked own-vault collateral debit in a fresh ledger, further
 // decisions are permitted within the pilot budget.
 func TestUnderwritingExecutionFundingEvidenceGatesNextSlice(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	base := time.Now().UTC()
 	proxy := installUWExecProxy(t, h)
@@ -1003,4 +1014,5 @@ func TestUnderwritingExecutionFundingEvidenceGatesNextSlice(t *testing.T) {
 		t.Fatalf("position state wrong after the gate opened: funded=%v second=%v (%+v)", funded, second, positions)
 	}
 	uwExecRequireNoOrphanDecision(t, h)
+
 }

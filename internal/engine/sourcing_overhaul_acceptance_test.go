@@ -24,6 +24,7 @@ import (
 )
 
 func TestPlanningInputSkipsUnusedZeroBalanceRegionFunding(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	ship := sourcingFixture[ShipState](t, `{"ship":{"id":"`+recoveryShipBlastoise+`","name":"Blastoise","ship_class":"`+recoveryHull+`","status":"sailing","current_port_id":"`+recoveryHomePort+`"}}`)
@@ -78,6 +79,7 @@ func TestPlanningInputSkipsUnusedZeroBalanceRegionFunding(t *testing.T) {
 	if accepted[0].Destination != "amsterdam" {
 		t.Fatalf("sourcing probe drifted from the evidenced source: %+v", accepted[0])
 	}
+
 }
 
 // sourcingStorePurchaseFixture forces the probe to buy its whole both-way safe
@@ -96,6 +98,7 @@ func sourcingStorePurchaseFixture(t *testing.T) PlanningInput {
 }
 
 func TestSourcingInspectCapsConsumedExpenseNotStorePurchaseCash(t *testing.T) {
+	t.Parallel()
 	t.Run("full purchase cash funded, consumed expense capped", func(t *testing.T) {
 		in := sourcingStorePurchaseFixture(t)
 		accepted := acceptedRelocations(planSourcingRelocation(in))
@@ -147,4 +150,5 @@ func TestSourcingInspectCapsConsumedExpenseNotStorePurchaseCash(t *testing.T) {
 			t.Fatalf("source inspection accepted against an impossible charter deadline: %+v", accepted)
 		}
 	})
+
 }

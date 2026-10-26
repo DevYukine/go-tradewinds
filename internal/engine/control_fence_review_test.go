@@ -18,6 +18,7 @@ import (
 )
 
 func TestControlInvalidationCannotStageAnUnsentDebit(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setVaultBalance("north", 500_000)
 	h.api.setVaultBalance("south", 100_000)
@@ -44,6 +45,7 @@ func TestControlInvalidationCannotStageAnUnsentDebit(t *testing.T) {
 	if len(h.pending()) != 0 || h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		t.Fatal("a control invalidation created a debit request")
 	}
+
 }
 
 func TestStreamControlsPersistNeverSentProofAndRecoverAfterRestart(t *testing.T) {
@@ -145,9 +147,11 @@ func TestStreamControlsPersistNeverSentProofAndRecoverAfterRestart(t *testing.T)
 			}
 		})
 	}
+
 }
 
 func TestControlVetoRetainsAmbiguousRequestUntilFreshReplay(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setVaultBalance("north", 500_000)
 	h.api.setVaultBalance("south", 100_000)
@@ -186,4 +190,5 @@ func TestControlVetoRetainsAmbiguousRequestUntilFreshReplay(t *testing.T) {
 		calls[0].IdempotencyKey != original.ID || !bytes.Equal(calls[0].Body, original.Body) || len(h.pending()) != 0 {
 		t.Fatalf("fresh restart did not complete exactly the retained request: %+v", calls)
 	}
+
 }

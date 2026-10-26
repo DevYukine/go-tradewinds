@@ -119,9 +119,11 @@ func TestControllerCoverageStopsAtTheActualShipOrCompanyAction(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestAssessmentCoverageRequiresActualFleetMembership(t *testing.T) {
+	t.Parallel()
 	runner := New(nil, nil, store.Account{CompanyID: recoveryCompanyID}, nil, Options{})
 	runner.stateCache.Ships = []ShipState{operationShip(recoveryShipLapras, "Lapras", "berthed", recoveryHomePort)}
 	for _, id := range []string{"", "__treasury", "__growth", "__underwriting", recoveryCompanyID, recoveryShipCharizard} {
@@ -135,9 +137,11 @@ func TestAssessmentCoverageRequiresActualFleetMembership(t *testing.T) {
 	if !slices.Equal(runner.assessedShipIDs, []string{recoveryShipLapras}) {
 		t.Fatalf("real ship assessment was missing or duplicated: %v", runner.assessedShipIDs)
 	}
+
 }
 
 func TestConcurrentRequestJournalFailuresAreBoundedByCauseAndRecover(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	core, logs := observer.New(zap.DebugLevel)
@@ -211,9 +215,11 @@ func TestConcurrentRequestJournalFailuresAreBoundedByCauseAndRecover(t *testing.
 		t.Fatalf("a new outage after recovery must receive its own warning: %+v", warnings)
 	}
 	exec("ALTER TABLE requests DROP CONSTRAINT status_review_journal_rejected")
+
 }
 
 func TestRequestJournalOutageDoesNotSampleDistinctCommittedActions(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	core, logs := observer.New(zap.DebugLevel)
@@ -247,4 +253,5 @@ func TestRequestJournalOutageDoesNotSampleDistinctCommittedActions(t *testing.T)
 	if warnings := logs.FilterMessage("record request").All(); len(warnings) != 1 {
 		t.Fatalf("business action callbacks restarted the same diagnostic warning: %+v", warnings)
 	}
+
 }

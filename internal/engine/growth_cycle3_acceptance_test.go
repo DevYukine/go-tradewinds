@@ -15,6 +15,7 @@ import (
 )
 
 func TestGrowthCycle3LegacyHullLossRetainsUnknownAnchoredHistory(t *testing.T) {
+	t.Parallel()
 	for _, missingBaseline := range []bool{true, false} {
 		t.Run(fmt.Sprintf("missing_baseline_%t", missingBaseline), func(t *testing.T) {
 			w, runner := newGrowthExecutionWorld(t)
@@ -172,9 +173,11 @@ func TestGrowthCycle3LegacyHullLossRetainsUnknownAnchoredHistory(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestGrowthCycle3TerminalAnchorlessUncertaintyHoldsButKnownNoEffectReleases(t *testing.T) {
+	t.Parallel()
 	for _, knownNoEffect := range []bool{false, true} {
 		t.Run(fmt.Sprintf("known_no_effect_%t", knownNoEffect), func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -247,9 +250,11 @@ func TestGrowthCycle3TerminalAnchorlessUncertaintyHoldsButKnownNoEffectReleases(
 			t.Error("actual paid stores without terminal evidence were deleted or settled against an invented anchor")
 		}
 	})
+
 }
 
 func TestGrowthCycle3OrdinaryDepthLossConvergesWithoutChangingAttemptedRequests(t *testing.T) {
+	t.Parallel()
 	for _, attempted := range []bool{false, true} {
 		t.Run(fmt.Sprintf("already_attempted_%t", attempted), func(t *testing.T) {
 			w, runner := newGrowthExecutionWorld(t)
@@ -399,9 +404,11 @@ func TestGrowthCycle3OrdinaryDepthLossConvergesWithoutChangingAttemptedRequests(
 			}
 		})
 	}
+
 }
 
 func TestGrowthCycle3ReservedCoastalWorkDoesNotVetoOceanicBuild(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.seedLaneProofs()
 	const oceanPort = "cycle3-ocean-port"
@@ -551,4 +558,5 @@ func TestGrowthCycle3ReservedCoastalWorkDoesNotVetoOceanicBuild(t *testing.T) {
 	if completed.Generation != control.Generation || outcome.BuiltShipID != recoveryBuiltShipID || outcome.Action != nil || outcome.BuildCostPence != 20_000 {
 		t.Fatalf("oceanic build did not retain its accounted authoritative result: %+v", outcome)
 	}
+
 }

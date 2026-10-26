@@ -68,6 +68,7 @@ func fundedGrowthFixture() GrowthInput {
 // candidate + 20t incumbent) = 80t), and must not be required to cover the
 // whole payback (3 cycles * 40t = 120t under the old rule).
 func TestGrowthRollingSourceDepthReplacesWholePaybackStock(t *testing.T) {
+	t.Parallel()
 	rolling := fundedGrowthFixture()
 	rolling.ObservedAskCapacityTons = 100
 	if decision := EvaluateGrowth(rolling); !decision.Accepted {
@@ -78,12 +79,14 @@ func TestGrowthRollingSourceDepthReplacesWholePaybackStock(t *testing.T) {
 	if decision := EvaluateGrowth(scarce); decision.Accepted {
 		t.Fatal("79t of source depth funded two 40t cycle lots")
 	}
+
 }
 
 // TestGrowthSpotBidsNeedRollingDeliverableDepth covers G2: a spot lane needs
 // measured spare destination bids of 2*(20t candidate + 20t incumbent) = 80t,
 // not 120t of whole-payback bids, and 79t must still fail.
 func TestGrowthSpotBidsNeedRollingDeliverableDepth(t *testing.T) {
+	t.Parallel()
 	spot := fundedGrowthFixture()
 	spot.Plan.Kind = "spot"
 	spot.ContractRemainingTons = -1
@@ -96,6 +99,7 @@ func TestGrowthSpotBidsNeedRollingDeliverableDepth(t *testing.T) {
 	if decision := EvaluateGrowth(scarce); decision.Accepted {
 		t.Fatal("79t of spot bids funded two 40t cycle lots")
 	}
+
 }
 
 // TestGrowthOtherSourceOverlapConsumesOnlySourceAsks covers G2 allocation: a
@@ -103,6 +107,7 @@ func TestGrowthSpotBidsNeedRollingDeliverableDepth(t *testing.T) {
 // only. The exact two-cycle ask boundary rises from 80t to 2*(20+20+20)=120t
 // while the charter and destination pools stay untouched.
 func TestGrowthOtherSourceOverlapConsumesOnlySourceAsks(t *testing.T) {
+	t.Parallel()
 	overlap := fundedGrowthFixture()
 	overlap.OtherSourceCycleTons = 20
 	overlap.ObservedAskCapacityTons = 120
@@ -114,6 +119,7 @@ func TestGrowthOtherSourceOverlapConsumesOnlySourceAsks(t *testing.T) {
 	if decision := EvaluateGrowth(short); decision.Accepted {
 		t.Fatal("119t of source depth covered three 40t cycle lots")
 	}
+
 }
 
 // TestGrowthOtherDestinationOverlapConsumesOnlySpotBids covers G2 allocation:
@@ -121,6 +127,7 @@ func TestGrowthOtherSourceOverlapConsumesOnlySourceAsks(t *testing.T) {
 // The exact two-cycle bid boundary rises from 80t to 120t while source asks
 // keep their own 80t boundary.
 func TestGrowthOtherDestinationOverlapConsumesOnlySpotBids(t *testing.T) {
+	t.Parallel()
 	overlap := fundedGrowthFixture()
 	overlap.Plan.Kind = "spot"
 	overlap.ContractRemainingTons = -1
@@ -134,6 +141,7 @@ func TestGrowthOtherDestinationOverlapConsumesOnlySpotBids(t *testing.T) {
 	if decision := EvaluateGrowth(short); decision.Accepted {
 		t.Fatal("119t of spot bids covered three 40t cycle lots")
 	}
+
 }
 
 // TestGrowthOtherContractOverlapConsumesOnlyCharterCapacity covers G2
@@ -141,6 +149,7 @@ func TestGrowthOtherDestinationOverlapConsumesOnlySpotBids(t *testing.T) {
 // capacity only. The exact remaining-ton boundary rises from 120t to
 // max(2,ceil(P/C)+1)*(20+20+20)=180t while asks stay at their 80t boundary.
 func TestGrowthOtherContractOverlapConsumesOnlyCharterCapacity(t *testing.T) {
+	t.Parallel()
 	overlap := fundedGrowthFixture()
 	overlap.OtherContractCycleTons = 20
 	overlap.ContractRemainingTons = 180
@@ -152,6 +161,7 @@ func TestGrowthOtherContractOverlapConsumesOnlyCharterCapacity(t *testing.T) {
 	if decision := EvaluateGrowth(short); decision.Accepted {
 		t.Fatal("179t of contract capacity covered the 180t payback demand")
 	}
+
 }
 
 // TestGrowthCharterCapacityCoversPaybackAndExpiry pins the finite-charter
@@ -160,6 +170,7 @@ func TestGrowthOtherContractOverlapConsumesOnlyCharterCapacity(t *testing.T) {
 // payback P=175000/99000 and cycle C=1), and expiry must not fall short of
 // P+C. The boundaries are exact on both sides.
 func TestGrowthCharterCapacityCoversPaybackAndExpiry(t *testing.T) {
+	t.Parallel()
 	baseline := EvaluateGrowth(fundedGrowthFixture())
 	if !baseline.Accepted {
 		t.Fatalf("funded proven lane rejected before charter boundaries: %s", baseline.Reason)
@@ -183,12 +194,14 @@ func TestGrowthCharterCapacityCoversPaybackAndExpiry(t *testing.T) {
 	if decision := EvaluateGrowth(earlyExpiry); decision.Accepted {
 		t.Fatal("charter expiring before payback plus one delivery cycle was accepted")
 	}
+
 }
 
 // TestGrowthFundingBoundaryIsExact covers G3: the single-region fixture
 // requires exactly 283000p (175000 capital + 10000 new working capital +
 // 20000 incumbent working capital + 3000 upkeep horizon + 75000 reserve).
 func TestGrowthFundingBoundaryIsExact(t *testing.T) {
+	t.Parallel()
 	funded := fundedGrowthFixture()
 	funded.BalancePence = 283_000
 	if decision := EvaluateGrowth(funded); !decision.Accepted {
@@ -199,6 +212,7 @@ func TestGrowthFundingBoundaryIsExact(t *testing.T) {
 	if decision := EvaluateGrowth(short); decision.Accepted {
 		t.Fatal("growth was authorized one pence short of protected working capital, upkeep horizon and reserve")
 	}
+
 }
 
 // TestGrowthProofRequiresPositiveLossInclusiveNet covers PROOF: cumulative
@@ -207,6 +221,7 @@ func TestGrowthFundingBoundaryIsExact(t *testing.T) {
 // +6193p settlement clears only the positive-proof gate — payback still
 // fails, so proof alone never authorizes construction.
 func TestGrowthProofRequiresPositiveLossInclusiveNet(t *testing.T) {
+	t.Parallel()
 	zero := fundedGrowthFixture()
 	zero.Proofs = []LaneProof{
 		{GameSeconds: 86_400, NetPence: -18_333, CostsKnown: true},
@@ -225,6 +240,7 @@ func TestGrowthProofRequiresPositiveLossInclusiveNet(t *testing.T) {
 	if decision.PaybackGameDays <= positive.MaxPaybackDays {
 		t.Fatalf("rejection did not reach the payback gate, so the positive-proof clearance was not isolated: %+v", decision)
 	}
+
 }
 
 // TestGrowthStagesBuildForThirteenShipFleetWithoutCeiling drives G1 through
@@ -233,6 +249,7 @@ func TestGrowthProofRequiresPositiveLossInclusiveNet(t *testing.T) {
 // fleet, and staging must persist an intent without sending it. Fresh factors
 // authorize both private books and the yard while the incumbent fleet sails.
 func TestGrowthStagesBuildForThirteenShipFleetWithoutCeiling(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	fleet := make([]map[string]any, 0, 13)
 	fleet = append(fleet, sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryFarPort, recoveryHomePort))
@@ -266,6 +283,7 @@ func TestGrowthStagesBuildForThirteenShipFleetWithoutCeiling(t *testing.T) {
 	if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		t.Fatal("staging must not send the build request")
 	}
+
 }
 
 // growthMissionWithHoldDiagnostics loads the durable growth intent and, when
@@ -296,6 +314,7 @@ func growthMissionWithHoldDiagnostics(t *testing.T, h *recoveryHarness, runner *
 // on the seeded lane so no idle ship can absorb the plan before the build,
 // and manageTreasury's beneficial repair is not run here, not prohibited.
 func TestGrowthBlockedWhileAnyVaultIsNegative(t *testing.T) {
+	t.Parallel()
 	control := newRecoveryHarness(t)
 	control.api.setFactorPorts(recoveryHomePort, recoveryFarPort)
 	control.api.setVaultBalance("south", 1_000_000)
@@ -332,4 +351,5 @@ func TestGrowthBlockedWhileAnyVaultIsNegative(t *testing.T) {
 	if blocked.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		blocked.t.Fatal("a build request was sent while a vault was negative")
 	}
+
 }

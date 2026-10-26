@@ -275,7 +275,7 @@ func stageFundedGrowthBuild(t *testing.T, h *recoveryHarness) *Runner {
 // regional reserves) unfunded, must reject the dispatch before transport.
 // An already-attempted (journaled) build keeps its immutable replay.
 func TestBuildFirstSendRevalidatesQuoteAndFunding(t *testing.T) {
-
+	t.Parallel()
 	t.Run("stale yard quote rejects first send", func(t *testing.T) {
 		h := newRecoveryHarness(t)
 		proxy := installReviewProxy(t, h)
@@ -344,6 +344,7 @@ func TestBuildFirstSendRevalidatesQuoteAndFunding(t *testing.T) {
 			t.Fatalf("attempted build lost its immutable replay: %+v", calls)
 		}
 	})
+
 }
 
 // Escalated c0-sec-sec-5: the dispatch path validated the financial epoch only
@@ -355,6 +356,7 @@ func TestBuildFirstSendRevalidatesQuoteAndFunding(t *testing.T) {
 // never-sent request with kind never_sent_financial_event and release the
 // intent with its build obligations intact.
 func TestGrowthPreflightInvalidatesEpochPublishedDuringWork(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	runner := stageFundedGrowthBuild(t, h)
 	_, staged := h.mission("__growth")
@@ -480,6 +482,7 @@ func TestGrowthPreflightInvalidatesEpochPublishedDuringWork(t *testing.T) {
 	if evidence.Kind != neverSentFinancialEvent {
 		t.Fatalf("reconciliation kind = %q, want %q", evidence.Kind, neverSentFinancialEvent)
 	}
+
 }
 
 // reviewSettlementsBarrier takes an ACCESS EXCLUSIVE lock on the harness
@@ -570,6 +573,7 @@ func reviewSettlementsBarrier(t *testing.T, h *recoveryHarness) (lock func() int
 // attempted request keeps its original key and body replay even after the
 // freshness loss.
 func TestSpendingFirstSendRequiresFreshVaultAuthority(t *testing.T) {
+	t.Parallel()
 	stageBuy := func(t *testing.T, h *recoveryHarness) (*Runner, string) {
 		t.Helper()
 		// First-send validation is the target, not the planner: put the ship
@@ -670,6 +674,7 @@ func TestSpendingFirstSendRequiresFreshVaultAuthority(t *testing.T) {
 			t.Fatalf("replay changed the immutable request: %+v", replayed)
 		}
 	})
+
 }
 
 // A3: the quarantine credit-only pass must never tender a recovered
@@ -678,6 +683,7 @@ func TestSpendingFirstSendRequiresFreshVaultAuthority(t *testing.T) {
 // An eligible arrival-phase mission with a matching destination still earns
 // its credit during the same quarantine.
 func TestQuarantineCreditSkipsDepartPhaseMission(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	proxy := installReviewProxy(t, h)
 	proxy.setContractRows([]map[string]any{
@@ -781,6 +787,7 @@ func TestQuarantineCreditSkipsDepartPhaseMission(t *testing.T) {
 	if len(pending) != 1 || pending[0].ID != ambiguousID {
 		t.Fatalf("quarantined request was not durably retained: %+v", pending)
 	}
+
 }
 
 // A6: a sunk ship must reconcile authoritative terminal freight before the
@@ -788,6 +795,7 @@ func TestQuarantineCreditSkipsDepartPhaseMission(t *testing.T) {
 // mission finishes across restarts, while active or missing contracts remain
 // unresolved instead of fabricating a settlement.
 func TestSunkShipReconcilesTerminalFreightBeforeFinish(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		rowStatus  string
@@ -886,4 +894,5 @@ func TestSunkShipReconcilesTerminalFreightBeforeFinish(t *testing.T) {
 			}
 		})
 	}
+
 }

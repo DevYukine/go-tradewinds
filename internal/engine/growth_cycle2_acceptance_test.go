@@ -60,6 +60,7 @@ func growthCycle2Cash(t *testing.T, w *growthExecutionWorld) store.Settlement {
 }
 
 func TestGrowthCycle2CommissioningCashSurvivesPermanentCloseout(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []struct {
 		name    string
 		abort   bool
@@ -202,11 +203,13 @@ func TestGrowthCycle2CommissioningCashSurvivesPermanentCloseout(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // Store migration acceptance owns the v4-to-v5 transformation. This test starts
 // at its explicit zero-allocation output, not at an arbitrary missing lane.
 func TestGrowthCycle2MigratedPaidBuildClosesWithoutInventingAllocation(t *testing.T) {
+	t.Parallel()
 	for _, ambiguous := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ambiguous_%t", ambiguous), func(t *testing.T) {
 			w, runner := newGrowthExecutionWorld(t)
@@ -344,9 +347,11 @@ func TestGrowthCycle2MigratedPaidBuildClosesWithoutInventingAllocation(t *testin
 			}
 		})
 	}
+
 }
 
 func TestGrowthCycle2AccruingBerthDuesDoNotStarveProcurement(t *testing.T) {
+	t.Parallel()
 	w, runner := newGrowthExecutionWorld(t)
 	w.until(runner, func(mission *store.Mission, data missionData) bool {
 		return mission != nil && mission.Phase == "provision" && data.Action == nil
@@ -410,9 +415,11 @@ func TestGrowthCycle2AccruingBerthDuesDoNotStarveProcurement(t *testing.T) {
 	if purchases != 1 || w.h.api.mutationCount("/v1/fleet/depart") != 1 {
 		t.Fatalf("changing dues caused a quote-only loop instead of one funded purchase/departure: purchases %d departures %d; holds %v", purchases, w.h.api.mutationCount("/v1/fleet/depart"), runner.holding)
 	}
+
 }
 
 func TestGrowthCycle2ReturningLotProtectsOrdinaryPlanningAndFirstSend(t *testing.T) {
+	t.Parallel()
 	for _, boundary := range []string{"source_asks", "spot_destination_bids", "charter_quantity"} {
 		t.Run(boundary, func(t *testing.T) {
 			w, runner := newGrowthExecutionWorld(t)
@@ -563,4 +570,5 @@ func TestGrowthCycle2ReturningLotProtectsOrdinaryPlanningAndFirstSend(t *testing
 			}
 		})
 	}
+
 }

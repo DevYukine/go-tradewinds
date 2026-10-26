@@ -8,6 +8,7 @@ import (
 )
 
 func TestWithoutMonopolizedNPCAsks(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	ports := []Port{
 		{ID: "plymouth", BankingRegion: "channel"},
@@ -116,4 +117,5 @@ func TestWithoutMonopolizedNPCAsks(t *testing.T) {
 			}
 		})
 	}
+
 }

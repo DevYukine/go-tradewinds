@@ -3,6 +3,7 @@ package engine
 import "testing"
 
 func TestGrowthRankingIncludesNewRegionalCashFloors(t *testing.T) {
+	t.Parallel()
 	remote := growthPackage{
 		port:           Port{ID: "remote"},
 		decision:       GrowthDecision{QuotedHullPence: 99000, IncrementalNetPencePerGameDay: 2000},
@@ -22,4 +23,5 @@ func TestGrowthRankingIncludesNewRegionalCashFloors(t *testing.T) {
 	if !betterGrowthPackage(remote, established) {
 		t.Fatal("already-protected regional cash was charged again to the marginal ship")
 	}
+
 }

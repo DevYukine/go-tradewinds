@@ -7,6 +7,7 @@ import (
 )
 
 func TestSourcingUnknownCommercialHistoryCannotEraseOrReplenishSeed(t *testing.T) {
+	t.Parallel()
 	history := store.EconomicHistory{
 		UnknownCosts:       true,
 		CommercialNetPence: 1_000_000,
@@ -24,4 +25,5 @@ func TestSourcingUnknownCommercialHistoryCannotEraseOrReplenishSeed(t *testing.T
 	if allowance := sourcingLifetimeAllowance(history); allowance != 0 {
 		t.Fatalf("unmeasured prior discovery spending allowed the seed to reset: %dp", allowance)
 	}
+
 }

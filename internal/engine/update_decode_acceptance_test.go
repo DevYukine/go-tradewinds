@@ -8,6 +8,7 @@ import (
 )
 
 func TestUpdateDecodeGossipPlayerDepth(t *testing.T) {
+	t.Parallel()
 	var gossip Gossip
 	err := json.Unmarshal([]byte(`{
 		"subject_port_id":"plymouth",
@@ -65,9 +66,11 @@ func TestUpdateDecodeGossipPlayerDepth(t *testing.T) {
 			t.Fatalf("unobserved gossip prices/quantities became values: %+v", missing)
 		}
 	}
+
 }
 
 func TestUpdateDecodeShipHullAndNPCLevel(t *testing.T) {
+	t.Parallel()
 	var ship ShipState
 	if err := json.Unmarshal([]byte(`{"ship":{"id":"lapras","created_at":"2026-10-25T10:30:00Z","dispatches_sealed":true}}`), &ship); err != nil {
 		t.Fatal(err)
@@ -113,9 +116,11 @@ func TestUpdateDecodeShipHullAndNPCLevel(t *testing.T) {
 			t.Fatalf("null=%t manufactured ship/hull/NPC facts: ship=%+v hull=%+v level=%+v", missing, absentShip.Ship, absentHull, absentLevel)
 		}
 	}
+
 }
 
 func TestUpdateDecodeLloydsEstimate(t *testing.T) {
+	t.Parallel()
 	var estimate LloydsEstimate
 	if err := json.Unmarshal([]byte(`{"id":"policy-1","lloyds_expected_loss_bps":100,"lloyds_min_premium_bps":150,"premium_margin_bps":200}`), &estimate); err != nil {
 		t.Fatal(err)
@@ -135,9 +140,11 @@ func TestUpdateDecodeLloydsEstimate(t *testing.T) {
 			t.Fatalf("missing Lloyd's estimates became observations: %+v", missing)
 		}
 	}
+
 }
 
 func TestUpdateTermsHashIgnoresLloydsFields(t *testing.T) {
+	t.Parallel()
 	const originalJSON = `{
 		"id":"01ad0001-0000-7000-8000-0000000c0a01",
 		"insured_company_id":"01a16469-7564-711d-b8da-e69d7d73e623",
@@ -163,4 +170,5 @@ func TestUpdateTermsHashIgnoresLloydsFields(t *testing.T) {
 	if insuranceTermsHash(updated) == insuranceTermsHash(original) {
 		t.Fatal("terms hash ignored a contractual premium change")
 	}
+
 }

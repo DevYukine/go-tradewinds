@@ -164,6 +164,7 @@ func sourcingExposure(plan Plan) int64 {
 }
 
 func TestSourcingProbeEligibilityRejectsUnsafeOrUnprovenSources(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		change func(t *testing.T, in *PlanningInput)
@@ -261,6 +262,7 @@ func TestSourcingProbeEligibilityRejectsUnsafeOrUnprovenSources(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // sourcingStripProduction removes amsterdam's catalog manufacture evidence and
@@ -300,6 +302,7 @@ func sourcingReplaceGossip(t *testing.T, in *PlanningInput, raw string) {
 // is not executable inventory or price, so it must never revoke eligibility
 // for relocating to a source that actually holds public supply evidence.
 func TestUnstockedLocalManufactureDoesNotSuppressRemoteSourcing(t *testing.T) {
+	t.Parallel()
 	in := sourcingInputFixture(t)
 	in.Catalog.Ports[0].Manufactures = append(in.Catalog.Ports[0].Manufactures, "sawn_planks")
 	accepted := acceptedRelocations(planSourcingRelocation(in))
@@ -309,9 +312,11 @@ func TestUnstockedLocalManufactureDoesNotSuppressRemoteSourcing(t *testing.T) {
 	if accepted[0].Destination != "amsterdam" || accepted[0].Economics.RevenuePence != 0 {
 		t.Fatalf("unexpected probe under unstocked local manufacture: %+v", accepted[0])
 	}
+
 }
 
 func TestSourcingProbePlansBoundedCostOnlyRelocation(t *testing.T) {
+	t.Parallel()
 	in := sourcingInputFixture(t)
 	plans := planSourcingRelocation(in)
 	accepted := acceptedRelocations(plans)
@@ -343,9 +348,11 @@ func TestSourcingProbePlansBoundedCostOnlyRelocation(t *testing.T) {
 	if accepted := acceptedRelocations(planSourcingRelocation(roadstead)); len(accepted) == 0 {
 		t.Fatalf("stationary roadstead ship was denied the bounded probe: %+v", plans)
 	}
+
 }
 
 func TestSourcingProbeUsesPublicEvidenceWithoutPrivateBooksOrRemoteRevenue(t *testing.T) {
+	t.Parallel()
 	// Each variant starts from its own fixture: Catalog.Ports, Markets and
 	// Metadata alias shared backing storage, so shallow copies would leak
 	// mutations between the evidence scenarios.
@@ -383,9 +390,11 @@ func TestSourcingProbeUsesPublicEvidenceWithoutPrivateBooksOrRemoteRevenue(t *te
 	if accepted := acceptedRelocations(planSourcingRelocation(staleGossipWithProduction)); len(accepted) == 0 {
 		t.Fatalf("stale gossip wrongly revoked manufacture-based eligibility: %+v", planSourcingRelocation(staleGossipWithProduction))
 	}
+
 }
 
 func TestSourcingProbeShortlistsAtMostThreePairsCheapestExposureFirst(t *testing.T) {
+	t.Parallel()
 	in := sourcingInputFixture(t)
 	addSourcingSource(t, &in, "rouen", 300, 920)
 	accepted := acceptedRelocations(planSourcingRelocation(in))
@@ -408,9 +417,11 @@ func TestSourcingProbeShortlistsAtMostThreePairsCheapestExposureFirst(t *testing
 	if accepted := acceptedRelocations(planSourcingRelocation(four)); len(accepted) > 3 {
 		t.Fatalf("candidate shortlist grew past three pairs: %+v", accepted)
 	}
+
 }
 
 func TestSourcingProbeAllowanceIsMinOfTwoHundredCrownsAndTwoPercent(t *testing.T) {
+	t.Parallel()
 	// Base fixture: floor((1_000_000-75_000)/50) = 18_500p. Every variant
 	// rebuilds the fixture because Balances and ReserveByRegion are shared
 	// maps behind a struct copy.
@@ -442,6 +453,7 @@ func TestSourcingProbeAllowanceIsMinOfTwoHundredCrownsAndTwoPercent(t *testing.T
 	if accepted := acceptedRelocations(planSourcingRelocation(expensive)); len(accepted) != 0 {
 		t.Fatalf("probe accepted beyond the absolute 200 Crown allowance: %+v", accepted)
 	}
+
 }
 
 func sourcingArrivalFixture(t *testing.T, asks []Level, rewardPerTon, spentPence int64) (PlanningInput, Plan, Contract) {
@@ -469,6 +481,7 @@ var sourcingArrivalLadder = []Level{
 }
 
 func TestRelocationArrivalSelectsWholeTonsOnAllCosts(t *testing.T) {
+	t.Parallel()
 	t.Run("exhaustive winner and all-cost pence identity", func(t *testing.T) {
 		in, probe, charter := sourcingArrivalFixture(t, sourcingArrivalLadder, 3000, 18_500)
 		plan := sizeRelocationCargo(in, probe, charter, 18_500)
@@ -525,9 +538,11 @@ func TestRelocationArrivalSelectsWholeTonsOnAllCosts(t *testing.T) {
 			t.Fatalf("lot was not bounded by observed ask depth: %+v", plan)
 		}
 	})
+
 }
 
 func TestRelocationArrivalRefusesUnpricedLateOrStaleEvidence(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		change func(t *testing.T, in *PlanningInput, charter *Contract)
@@ -572,12 +587,14 @@ func TestRelocationArrivalRefusesUnpricedLateOrStaleEvidence(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 // TestGrowthEvidenceCountsRelocationLossesButNeverZeroTonProbes pins plan E14:
 // the two-positive-known-cycle and loss-inclusive growth gates survive the new
 // probe settlements unchanged.
 func TestGrowthEvidenceCountsRelocationLossesButNeverZeroTonProbes(t *testing.T) {
+	t.Parallel()
 	control := fundedGrowthFixture()
 	if decision := EvaluateGrowth(control); !decision.Accepted {
 		t.Fatalf("funded proven lane control rejected: %s", decision.Reason)
@@ -605,4 +622,5 @@ func TestGrowthEvidenceCountsRelocationLossesButNeverZeroTonProbes(t *testing.T)
 	if decision := EvaluateGrowth(unknown); decision.Accepted {
 		t.Fatal("unknown probe cost basis funded fleet growth")
 	}
+
 }

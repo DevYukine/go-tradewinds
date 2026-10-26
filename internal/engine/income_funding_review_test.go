@@ -163,6 +163,7 @@ func incomeReviewRequireNoSend(t *testing.T, h *recoveryHarness, action durableA
 }
 
 func TestIncomeFundingReviewExpiredFreightCannotFundPlanning(t *testing.T) {
+	t.Parallel()
 	for _, mixed := range []bool{false, true} {
 		name := "freight"
 		if mixed {
@@ -200,9 +201,11 @@ func TestIncomeFundingReviewExpiredFreightCannotFundPlanning(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestIncomeFundingReviewExpiredFreightCannotStageRemittance(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"freight", "charter+freight"} {
 		t.Run(kind, func(t *testing.T) {
 			h, runner, ship, plan := incomeReviewFixture(t, kind, false, 4)
@@ -220,9 +223,11 @@ func TestIncomeFundingReviewExpiredFreightCannotStageRemittance(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestIncomeFundingReviewFreightExpiryDuringLimiterWaitStopsFundingAndSubsidizedBuy(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []struct {
 		kind  string
 		stage string
@@ -245,9 +250,11 @@ func TestIncomeFundingReviewFreightExpiryDuringLimiterWaitStopsFundingAndSubsidi
 			incomeReviewRequireNoSend(t, h, action)
 		})
 	}
+
 }
 
 func TestIncomeFundingReviewStaleVoyageCannotProvisionOrDock(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []string{"provision", "dock"} {
 		for _, postWait := range []bool{false, true} {
 			name := stage + "/before-dispatch"
@@ -290,9 +297,11 @@ func TestIncomeFundingReviewStaleVoyageCannotProvisionOrDock(t *testing.T) {
 			})
 		}
 	}
+
 }
 
 func TestIncomeFundingReviewIndependentSafetyMaintenanceRemainsAvailable(t *testing.T) {
+	t.Parallel()
 	for _, roadstead := range []bool{false, true} {
 		t.Run(map[bool]string{false: "provision", true: "dock"}[roadstead], func(t *testing.T) {
 			h, runner, _, reserves := idleMaintenanceFixture(t, roadstead)
@@ -322,9 +331,11 @@ func TestIncomeFundingReviewIndependentSafetyMaintenanceRemainsAvailable(t *test
 			}
 		})
 	}
+
 }
 
 func TestIncomeFundingReviewAccruedBerthDuesAllowReserveSafePartialFundingProgress(t *testing.T) {
+	t.Parallel()
 	h, runner, ship, plan := incomeReviewFixture(t, "charter", false, 4)
 	mission, data := incomeReviewStage(t, h, runner, ship, plan, "remit")
 	action := *data.Action
@@ -382,9 +393,11 @@ func TestIncomeFundingReviewAccruedBerthDuesAllowReserveSafePartialFundingProgre
 			t.Fatalf("partial funding spent protected %s cash: balance=%d reserve=%d", region, input.Balances[region], reserve)
 		}
 	}
+
 }
 
 func TestIncomeFundingReviewAttemptedFundingRetainsImmutableReplay(t *testing.T) {
+	t.Parallel()
 	h, runner, ship, plan := incomeReviewFixture(t, "freight", false, 4)
 	mission, data := incomeReviewStage(t, h, runner, ship, plan, "remit")
 	action := *data.Action
@@ -401,4 +414,5 @@ func TestIncomeFundingReviewAttemptedFundingRetainsImmutableReplay(t *testing.T)
 	if len(calls) != 1 || calls[0].IdempotencyKey != action.ID || !bytes.Equal(calls[0].Body, action.Body) {
 		t.Fatalf("expired opportunity rewrote or suppressed an already-attempted immutable remittance: %+v", calls)
 	}
+
 }

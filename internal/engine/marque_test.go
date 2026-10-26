@@ -15,6 +15,7 @@ import (
 )
 
 func TestMarqueExposureProtectsFleetPlansAndUnderwriting(t *testing.T) {
+	t.Parallel()
 	state := accountState{
 		HomePortID: "home",
 		Catalog: Catalog{
@@ -89,9 +90,11 @@ func TestMarqueExposureProtectsFleetPlansAndUnderwriting(t *testing.T) {
 	if _, err := marqueExposure(state, nil, positions); err == nil {
 		t.Fatal("missing underwriting route was treated as no exposure")
 	}
+
 }
 
 func TestMarqueExposureAllowsSailingMissionWithoutSyntheticOrigin(t *testing.T) {
+	t.Parallel()
 	ship := ShipState{}
 	ship.Ship.ID, ship.Ship.ShipClass, ship.Ship.Status = "sailing", "hoy", "sailing"
 	ship.RouteLegs = []RouteLeg{{FromNode: "voyage", ToNode: "arrival"}}
@@ -122,9 +125,11 @@ func TestMarqueExposureAllowsSailingMissionWithoutSyntheticOrigin(t *testing.T) 
 	if err != nil || !exposed["future"] {
 		t.Fatalf("retained departed port replaced the sailing arrival's known future route: %v %v", exposed, err)
 	}
+
 }
 
 func TestMarqueMissionPlansRequireEverySailingContinuation(t *testing.T) {
+	t.Parallel()
 	firstDeadline, secondDeadline := time.Now().Add(time.Hour), time.Now().Add(2*time.Hour)
 	base := Plan{Kind: "spot", Origin: "home", Destination: "arrival"}
 	cases := []struct {
@@ -175,9 +180,11 @@ func TestMarqueMissionPlansRequireEverySailingContinuation(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestMarqueSourcingRouteRejectsOwnActiveOrPendingZone(t *testing.T) {
+	t.Parallel()
 	input := sourcingInputFixture(t)
 	hull, _ := findHull(input.Catalog, "hoy")
 	if _, err := sourcingRouteReady(input, "le_havre", "amsterdam", hull); err != nil {
@@ -187,9 +194,11 @@ func TestMarqueSourcingRouteRejectsOwnActiveOrPendingZone(t *testing.T) {
 	if _, err := sourcingRouteReady(input, "le_havre", "amsterdam", hull); err == nil || !strings.Contains(err.Error(), "letter of marque") {
 		t.Fatalf("sourcing failed to reject our active/pending marque in plain language: %v", err)
 	}
+
 }
 
 func TestMarqueQuoteRefreshRetainsLastGoodAndUsesRealTimeTTL(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int64
 	var fail atomic.Bool
 	runner := newRetentionRunner(t, http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -245,9 +254,11 @@ func TestMarqueQuoteRefreshRetainsLastGoodAndUsesRealTimeTTL(t *testing.T) {
 	if requests.Load() != 4 {
 		t.Fatal("failed quote retried before thirty real minutes elapsed")
 	}
+
 }
 
 func TestMarqueOutcomesMergeSurvivesOmittedHistory(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	outcomes := map[string]marqueOutcome{"old": {ID: "old", CostPence: 10_000, PrizePence: 7_000}}
 	marques := []letterOfMarque{
@@ -264,9 +275,11 @@ func TestMarqueOutcomesMergeSurvivesOmittedHistory(t *testing.T) {
 	if len(restored) != 2 || restored["old"].PrizePence != 7_000 || restored["new"].PrizePence != 19_000 {
 		t.Fatalf("expired outcomes were duplicated, lost or not updated: %+v", restored)
 	}
+
 }
 
 func TestMarquePendingProtectsOnlyItsHomeFundsAndZone(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	state := accountState{
 		HomePortID: "home", Catalog: Catalog{Ports: []Port{{ID: "home", BankingRegion: "north"}}},
@@ -306,9 +319,11 @@ func TestMarquePendingProtectsOnlyItsHomeFundsAndZone(t *testing.T) {
 			t.Fatalf("HTTP %d left the marque control intent active: %+v %+v", status, mission, data)
 		}
 	}
+
 }
 
 func TestMarqueDecodeRejectsMissingPricingAndPrizeEvidence(t *testing.T) {
+	t.Parallel()
 	quote := MarqueQuote{
 		SeaZoneID: "zone", AddedPiracyBPS: 500, DurationGameHours: 60,
 		CostPence: 10_000, ExpectedNetPrizePence: 17_000, LadenPassagesPerDay: 2,
@@ -340,4 +355,5 @@ func TestMarqueDecodeRejectsMissingPricingAndPrizeEvidence(t *testing.T) {
 			t.Fatalf("missing %s was treated as observed zero money", field)
 		}
 	}
+
 }

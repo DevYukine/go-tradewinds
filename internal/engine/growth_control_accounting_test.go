@@ -25,6 +25,7 @@ func growthControlRows(t *testing.T, w *growthExecutionWorld, generation string)
 }
 
 func TestGrowthSunkCommissioningPermanentlyRetainsOperatingCash(t *testing.T) {
+	t.Parallel()
 	for _, unknown := range []bool{false, true} {
 		name := "known"
 		if unknown {
@@ -111,9 +112,11 @@ func TestGrowthSunkCommissioningPermanentlyRetainsOperatingCash(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestGrowthUnbuiltTerminalControlSettlesPreviouslyPaidTransferFee(t *testing.T) {
+	t.Parallel()
 	for _, phase := range []string{"growth_rejected", "growth_build"} {
 		t.Run(phase, func(t *testing.T) {
 			w, runner := newGrowthExecutionWorld(t)
@@ -188,9 +191,11 @@ func TestGrowthUnbuiltTerminalControlSettlesPreviouslyPaidTransferFee(t *testing
 			}
 		})
 	}
+
 }
 
 func TestGrowthCommissioningBuildsActualArmamentBeforeStoresAndDeparture(t *testing.T) {
+	t.Parallel()
 	w, runner := newGrowthExecutionWorld(t)
 	w.until(runner, func(_ *store.Mission, _ missionData) bool {
 		w.h.api.mu.Lock()
@@ -234,9 +239,11 @@ func TestGrowthCommissioningBuildsActualArmamentBeforeStoresAndDeparture(t *test
 			refit, stores, buy, departure, armed, status)
 	}
 	w.h.missingMission("__growth")
+
 }
 
 func TestGrowthCapitalOnlyHullLossRetainsNewCommissioningBillsOnce(t *testing.T) {
+	t.Parallel()
 	w, runner := newGrowthExecutionWorld(t)
 	w.until(runner, func(_ *store.Mission, _ missionData) bool {
 		w.h.api.mu.Lock()
@@ -275,9 +282,11 @@ func TestGrowthCapitalOnlyHullLossRetainsNewCommissioningBillsOnce(t *testing.T)
 	if replayed := growthControlRows(t, w, control.Generation); len(replayed) != 1 || replayed[0].ExpensesPence != 37 {
 		t.Fatalf("commissioning bill duplicated after the control disappeared: %+v", replayed)
 	}
+
 }
 
 func TestGrowthMissingCommissioningTimeRetainsUnknownSettlement(t *testing.T) {
+	t.Parallel()
 	w, runner := newGrowthExecutionWorld(t)
 	w.until(runner, func(_ *store.Mission, _ missionData) bool {
 		w.h.api.mu.Lock()
@@ -338,9 +347,11 @@ func TestGrowthMissingCommissioningTimeRetainsUnknownSettlement(t *testing.T) {
 	if err != nil || !history.UnknownCosts {
 		t.Fatalf("missing-time uncertainty disappeared from consumer history: %+v error %v", history, err)
 	}
+
 }
 
 func TestGrowthWithdrawnRoadsteadSuccessorWithoutAnchorRetainsUnknownBasis(t *testing.T) {
+	t.Parallel()
 	w, runner := newGrowthExecutionWorld(t)
 	w.until(runner, func(_ *store.Mission, _ missionData) bool {
 		w.h.api.mu.Lock()
@@ -405,9 +416,11 @@ func TestGrowthWithdrawnRoadsteadSuccessorWithoutAnchorRetainsUnknownBasis(t *te
 	if afterMutations != beforeMutations || len(w.settlementRows()) != 0 {
 		t.Fatal("unknown roadstead closeout issued an incidental action or fabricated a settlement")
 	}
+
 }
 
 func TestGrowthAnchorlessCapitalIndicationsCannotBecomeNoEffectCancellation(t *testing.T) {
+	t.Parallel()
 	for _, retainIdentity := range []bool{false, true} {
 		name := "paid-capital-only"
 		if retainIdentity {
@@ -450,4 +463,5 @@ func TestGrowthAnchorlessCapitalIndicationsCannotBecomeNoEffectCancellation(t *t
 			}
 		})
 	}
+
 }

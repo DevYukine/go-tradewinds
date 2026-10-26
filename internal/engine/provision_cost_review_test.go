@@ -7,6 +7,7 @@ import (
 )
 
 func TestProvisionConsumptionIncludesEachFillCustomsRounding(t *testing.T) {
+	t.Parallel()
 	var book Market
 	if err := json.Unmarshal([]byte(`{
 		"port_id":"source","visibility":"quay","customs_bps":1,
@@ -38,9 +39,11 @@ func TestProvisionConsumptionIncludesEachFillCustomsRounding(t *testing.T) {
 	if got, err := provisionsExpense(book, 2); err != nil || got != 3 {
 		t.Fatalf("one two-ton fill paid two independently rounded fees: %dp, %v", got, err)
 	}
+
 }
 
 func TestProvisionReplacementRejectsUnrepresentableCash(t *testing.T) {
+	t.Parallel()
 	var book Market
 	if err := json.Unmarshal([]byte(`{
 		"books":[{"commodity_id":"provisions","depth":{"asks":[
@@ -53,4 +56,5 @@ func TestProvisionReplacementRejectsUnrepresentableCash(t *testing.T) {
 	if _, err := provisionsExpense(book, 1); err == nil {
 		t.Fatal("replacement cash overflow was admitted as an operating cost")
 	}
+
 }

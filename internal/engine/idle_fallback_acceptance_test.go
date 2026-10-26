@@ -169,6 +169,7 @@ func idleFallbackExhaustSeed(t *testing.T, h *recoveryHarness) {
 }
 
 func TestIdleFallbackEarnsSixObservedHoursAcrossRestartAndMaintenance(t *testing.T) {
+	t.Parallel()
 	w := newIdleFallbackWorld(t)
 	idleFallbackExhaustSeed(t, w.h)
 	runner := w.h.runner(primaryTestKey)
@@ -215,9 +216,11 @@ func TestIdleFallbackEarnsSixObservedHoursAcrossRestartAndMaintenance(t *testing
 	if pairs != 3 {
 		t.Fatalf("idle refresh inspected %d source/charter pairs, want exactly the bounded three", pairs)
 	}
+
 }
 
 func TestIdleFallbackRequiresTwentyFourRealMinutesAndLatestMatchingCompletion(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		legacyAge    time.Duration
@@ -266,9 +269,11 @@ func TestIdleFallbackRequiresTwentyFourRealMinutesAndLatestMatchingCompletion(t 
 			idleFallbackExpect(t, in, tc.want)
 		})
 	}
+
 }
 
 func TestIdleFallbackInvalidClockObservationsRebaseWithoutCredit(t *testing.T) {
+	t.Parallel()
 	for _, invalid := range []string{"paused", "failed clock", "regressed clock", "stale clock"} {
 		t.Run(invalid, func(t *testing.T) {
 			w := newIdleFallbackWorld(t)
@@ -299,9 +304,11 @@ func TestIdleFallbackInvalidClockObservationsRebaseWithoutCredit(t *testing.T) {
 			idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), true)
 		})
 	}
+
 }
 
 func TestIdleFallbackPhysicalWorkResetsEarnedHours(t *testing.T) {
+	t.Parallel()
 	for _, activity := range []string{"cargo", "sailing", "active freight", "port change"} {
 		t.Run(activity, func(t *testing.T) {
 			w := newIdleFallbackWorld(t)
@@ -334,9 +341,11 @@ func TestIdleFallbackPhysicalWorkResetsEarnedHours(t *testing.T) {
 			idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), true)
 		})
 	}
+
 }
 
 func TestIdleFallbackBudgetUsesOneLiquiditySeedAndEveryPermanentProbeExpense(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		free    int64
@@ -402,9 +411,11 @@ func TestIdleFallbackBudgetUsesOneLiquiditySeedAndEveryPermanentProbeExpense(t *
 			}
 		})
 	}
+
 }
 
 func TestIdleFallbackDoesNotBorrowAnotherShipOrAccountsIdleHours(t *testing.T) {
+	t.Parallel()
 	w := newIdleFallbackWorld(t)
 	idleFallbackExhaustSeed(t, w.h)
 	runner := w.h.runner(primaryTestKey)
@@ -478,9 +489,11 @@ func TestIdleFallbackDoesNotBorrowAnotherShipOrAccountsIdleHours(t *testing.T) {
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipCharizard), false)
 	w.observe(t, runner, 112)
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipCharizard), true)
+
 }
 
 func TestIdleFallbackDoesNotOverrideIncomeOrSafetyGuards(t *testing.T) {
+	t.Parallel()
 	for _, guard := range []string{"ordinary income", "stale charter", "stale route", "unsafe route", "protected cash"} {
 		t.Run(guard, func(t *testing.T) {
 			w := newIdleFallbackWorld(t)
@@ -525,9 +538,11 @@ func TestIdleFallbackDoesNotOverrideIncomeOrSafetyGuards(t *testing.T) {
 			idleFallbackExpect(t, in, false)
 		})
 	}
+
 }
 
 func TestIdleFallbackKeepsActiveAndAmbiguousExplorationExclusive(t *testing.T) {
+	t.Parallel()
 	for _, ambiguous := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ambiguous=%v", ambiguous), func(t *testing.T) {
 			w := newIdleFallbackWorld(t)
@@ -560,4 +575,5 @@ func TestIdleFallbackKeepsActiveAndAmbiguousExplorationExclusive(t *testing.T) {
 			}
 		})
 	}
+
 }

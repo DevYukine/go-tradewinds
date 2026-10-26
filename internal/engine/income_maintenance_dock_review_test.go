@@ -66,6 +66,7 @@ func incomeArmamentDockFixture(t *testing.T) (*recoveryHarness, *Runner, int64) 
 }
 
 func TestIncomeMaintenanceDockReviewInsuredPendingIncomeAllowsIndependentArmament(t *testing.T) {
+	t.Parallel()
 	for _, restart := range []bool{false, true} {
 		name := "first-send"
 		if restart {
@@ -134,9 +135,11 @@ func TestIncomeMaintenanceDockReviewInsuredPendingIncomeAllowsIndependentArmamen
 			}
 		})
 	}
+
 }
 
 func TestIncomeMaintenanceDockReviewExpiredVoyageStillCannotOpenDiscretionaryBerth(t *testing.T) {
+	t.Parallel()
 	h, runner, ship, plan := incomeReviewFixture(t, "charter", true, 4)
 	h.api.mu.Lock()
 	h.api.fleet[0]["ship"].(map[string]any)["status"] = "anchored_roadstead"
@@ -153,4 +156,5 @@ func TestIncomeMaintenanceDockReviewExpiredVoyageStillCannotOpenDiscretionaryBer
 		t.Fatal("live, already-armed voyage did not reach the limiter boundary")
 	}
 	incomeReviewRequireNoSend(t, h, action)
+
 }

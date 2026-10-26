@@ -212,6 +212,7 @@ func procurementRecoveryRequireDeparture(t *testing.T, h *recoveryHarness, runne
 }
 
 func TestProcurementRecoveryDeliversBetterRecoveryAndSettlesLoss(t *testing.T) {
+	t.Parallel()
 	h, runner, mission, data, ship := procurementRecoveryFixture(t, false)
 	if _, err := runner.prepareDeparture(h.ctx, ship, mission, &data); err != nil {
 		t.Fatalf("prepare recovery departure: %v", err)
@@ -248,9 +249,11 @@ func TestProcurementRecoveryDeliversBetterRecoveryAndSettlesLoss(t *testing.T) {
 		return
 	}
 	t.Fatal("delivered recovery never published its loss-inclusive settlement")
+
 }
 
 func TestProcurementRecoveryFirstSendDoesNotReintroduceSunkCostGate(t *testing.T) {
+	t.Parallel()
 	h, runner, mission, data, ship := procurementRecoveryFixture(t, false)
 	// Persist the existing immutable departure intent directly so this case
 	// still reaches journal preflight even while preparation is unfixed.
@@ -260,9 +263,11 @@ func TestProcurementRecoveryFirstSendDoesNotReintroduceSunkCostGate(t *testing.T
 		t.Fatal(err)
 	}
 	procurementRecoveryRequireDeparture(t, h, runner, mission, &data)
+
 }
 
 func TestProcurementRecoveryPreservesAcceptedSealWithoutSunkCostIdle(t *testing.T) {
+	t.Parallel()
 	h, runner, mission, data, ship := procurementRecoveryFixture(t, true)
 	if _, err := runner.prepareDeparture(h.ctx, ship, mission, &data); err != nil {
 		t.Fatal(err)
@@ -275,9 +280,11 @@ func TestProcurementRecoveryPreservesAcceptedSealWithoutSunkCostIdle(t *testing.
 	if orders := h.api.mutationsFor("/v1/market/place-order"); len(orders) != 0 {
 		t.Fatalf("accepted seals were offered for liquidation: %+v", orders)
 	}
+
 }
 
 func TestProcurementRecoveryChoosesExecutableLocalRecoveryWhenBetter(t *testing.T) {
+	t.Parallel()
 	for _, firstSend := range []bool{false, true} {
 		name := "preparation"
 		if firstSend {
@@ -319,9 +326,11 @@ func TestProcurementRecoveryChoosesExecutableLocalRecoveryWhenBetter(t *testing.
 			}
 		})
 	}
+
 }
 
 func TestProcurementRecoveryStillRequiresEvidenceAndSafeDeparture(t *testing.T) {
+	t.Parallel()
 	for _, gate := range []string{"missing destination depth", "stale destination book", "stale local book", "missing route", "illegal hull route", "short stores", "missing seal deadline", "expired seal deadline"} {
 		for _, firstSend := range []bool{false, true} {
 			name := gate + "/preparation"
@@ -397,4 +406,5 @@ func TestProcurementRecoveryStillRequiresEvidenceAndSafeDeparture(t *testing.T) 
 			})
 		}
 	}
+
 }

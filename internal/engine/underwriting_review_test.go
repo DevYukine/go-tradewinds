@@ -34,6 +34,7 @@ func underwritingReviewRefresh(t *testing.T, h *recoveryHarness, runner *Runner)
 }
 
 func TestUnderwritingReviewCandidateCannotEscapeItsRetainedEvidence(t *testing.T) {
+	t.Parallel()
 	candidate := uwAccCandidate()
 	if decision := EvaluateUnderwriting(candidate, uwAccSafeHistory(8), uwAccBudget()); !decision.Accepted {
 		t.Fatalf("positive control is not admissible: %+v", decision)
@@ -62,9 +63,11 @@ func TestUnderwritingReviewCandidateCannotEscapeItsRetainedEvidence(t *testing.T
 			}
 		})
 	}
+
 }
 
 func TestUnderwritingReviewPermanentCensorshipSurvivesRestart(t *testing.T) {
+	t.Parallel()
 	for _, priorStatus := range []string{"terms_changed", "settled_safe", "claimed_loss", "cancelled"} {
 		t.Run(priorStatus, func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -116,9 +119,11 @@ func TestUnderwritingReviewPermanentCensorshipSurvivesRestart(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestUnderwritingReviewPostWaitPreflightRejectsNewPermanentContradiction(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	base := time.Now().UTC()
 	proxy := installUWExecProxy(t, h)
@@ -169,9 +174,11 @@ func TestUnderwritingReviewPostWaitPreflightRejectsNewPermanentContradiction(t *
 	if data.Action != nil || data.LastActionID != "" {
 		t.Fatalf("never-sent policy veto was treated as a receipt: %+v", data)
 	}
+
 }
 
 func TestUnderwritingReviewDisputedOwnedClosureVetoesFurtherRisk(t *testing.T) {
+	t.Parallel()
 	for _, contradiction := range []string{"reopened", "conflicting terminal", "changed terms"} {
 		t.Run(contradiction, func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -256,9 +263,11 @@ func TestUnderwritingReviewDisputedOwnedClosureVetoesFurtherRisk(t *testing.T) {
 			}
 		})
 	}
+
 }
 
 func TestUnderwritingReviewReservesEveryRegionalDeficitAndMeasuredFee(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		feeBPS        int64
@@ -335,9 +344,11 @@ func TestUnderwritingReviewReservesEveryRegionalDeficitAndMeasuredFee(t *testing
 			}
 		})
 	}
+
 }
 
 func TestUnderwritingReviewUnfundableCommitmentDoesNotBlockSafeShipping(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	base := time.Now().UTC()
 	proxy := installUWExecProxy(t, h)
@@ -370,9 +381,11 @@ func TestUnderwritingReviewUnfundableCommitmentDoesNotBlockSafeShipping(t *testi
 	if len(data.Freight) != 1 || !data.Freight[0].Settled || data.ProceedsPence != 9_000 {
 		t.Fatalf("safe shipping did not retain its authoritative delivery: %+v", data)
 	}
+
 }
 
 func TestUnderwritingReviewInvalidReceiptIdentityRetainsCommittedAmbiguity(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name       string
 		receiptID  string
@@ -425,4 +438,5 @@ func TestUnderwritingReviewInvalidReceiptIdentityRetainsCommittedAmbiguity(t *te
 			}
 		})
 	}
+
 }

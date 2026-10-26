@@ -60,6 +60,7 @@ func (core recoveryCredentialBarrierCore) Check(entry zapcore.Entry, checked *za
 }
 
 func TestActionLogDockAndOffshoreOutcomesAreInfoOnceWithSilentReplay(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []string{"dock", "offshore"} {
 		t.Run(stage, func(t *testing.T) {
 			h := newRecoveryHarness(t)
@@ -131,9 +132,11 @@ func TestActionLogDockAndOffshoreOutcomesAreInfoOnceWithSilentReplay(t *testing.
 			}
 		})
 	}
+
 }
 
 func TestActionLogAuthoritativeRecoveryIsLabelledOnceWithoutInventingMoney(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	var attempts atomic.Int64
 	actionLogIntercept(t, h, func(writer http.ResponseWriter, request *http.Request) {
@@ -199,9 +202,11 @@ func TestActionLogAuthoritativeRecoveryIsLabelledOnceWithoutInventingMoney(t *te
 	if logs.FilterMessage("action committed").Len() != 0 {
 		t.Fatal("a reconciled recovery must not masquerade as a fresh commit")
 	}
+
 }
 
 func TestActionLogRecoveryFailsClosedAtActorContextBoundary(t *testing.T) {
+	t.Parallel()
 	const accountSecret = "synthetic passphrase, never used against the real game"
 	const patternSecret = "tw_live_synthetic_recovery_actor_credential"
 	h := newRecoveryHarness(t)
@@ -289,4 +294,5 @@ func TestActionLogRecoveryFailsClosedAtActorContextBoundary(t *testing.T) {
 			}
 		}
 	}
+
 }

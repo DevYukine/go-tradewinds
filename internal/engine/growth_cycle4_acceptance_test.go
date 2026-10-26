@@ -8,6 +8,7 @@ import (
 )
 
 func TestGrowthCycle4UnanchoredWithdrawnExposureSurvivesActualHullHandoff(t *testing.T) {
+	t.Parallel()
 	for _, exposure := range []string{"paid_capital", "post_baseline_bill_only", "built_id_only", "existing_markerless_successor"} {
 		t.Run(exposure, func(t *testing.T) {
 			w, runner := newGrowthExecutionWorld(t)
@@ -218,9 +219,11 @@ func TestGrowthCycle4UnanchoredWithdrawnExposureSurvivesActualHullHandoff(t *tes
 			}
 		})
 	}
+
 }
 
 func TestGrowthCycle4UnsentBuildCancellationIgnoresUnrelatedUpkeepLedgerDebit(t *testing.T) {
+	t.Parallel()
 	w, runner := newGrowthExecutionWorld(t)
 	w.until(runner, func(_ *store.Mission, _ missionData) bool {
 		control, data, err := runner.loadMission(w.h.ctx, "__growth")
@@ -339,4 +342,5 @@ func TestGrowthCycle4UnsentBuildCancellationIgnoresUnrelatedUpkeepLedgerDebit(t 
 	if actualNorth != initialNorth-upkeepPence-20_000 {
 		t.Errorf("actual cash did not pay exactly the company debit and one replacement hull: got %d want %d", actualNorth, initialNorth-upkeepPence-20_000)
 	}
+
 }

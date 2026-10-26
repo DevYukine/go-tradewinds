@@ -12,6 +12,7 @@ import (
 )
 
 func TestUnderwritingFundingRequiresUniqueOwnedDebitIdentity(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	position := store.UnderwritingPosition{ID: "owned-slice", PolicyID: "policy", CollateralPence: 50000, AcceptedAt: now}
 	vaults := []Vault{{AccountID: "own-vault", AccountType: "vault", BankingRegion: "north"}}
@@ -47,9 +48,11 @@ func TestUnderwritingFundingRequiresUniqueOwnedDebitIdentity(t *testing.T) {
 	if proof := underwritingFundingEvidence(position, []json.RawMessage{encode(entry), encode(duplicate)}, vaults); proof != nil {
 		t.Fatal("ambiguous matching debits were treated as unique funding evidence")
 	}
+
 }
 
 func TestInsuranceCaptureRejectsMissingCoverageWithoutReplacingLastGood(t *testing.T) {
+	t.Parallel()
 	policy := uwExecPolicy(time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC))
 	policy.CoveredBPS = 0
 	complete := encode([]InsurancePolicy{policy})
@@ -74,9 +77,11 @@ func TestInsuranceCaptureRejectsMissingCoverageWithoutReplacingLastGood(t *testi
 			t.Fatal("explicit zero coverage was rejected as absent")
 		}
 	}
+
 }
 
 func TestUnderwritingProtectsCapableFallbackVaults(t *testing.T) {
+	t.Parallel()
 	runner := &Runner{}
 	runner.stateCache.HomePortID = "home"
 	runner.stateCache.Catalog.Ports = []Port{
@@ -109,9 +114,11 @@ func TestUnderwritingProtectsCapableFallbackVaults(t *testing.T) {
 			t.Errorf("ineligible funding account %s unnecessarily blocks a pilot", region)
 		}
 	}
+
 }
 
 func TestUnderwritingAdmissionUsesObservedServerTime(t *testing.T) {
+	t.Parallel()
 	h := newRecoveryHarness(t)
 	base := time.Now().UTC()
 	proxy := installUWExecProxy(t, h)
@@ -140,4 +147,5 @@ func TestUnderwritingAdmissionUsesObservedServerTime(t *testing.T) {
 	if decision := EvaluateUnderwriting(policy, history, budget); !decision.Accepted {
 		t.Fatalf("server-valid funded policy was rejected: %s", decision.Reason)
 	}
+
 }
