@@ -134,7 +134,11 @@ func (r *Runner) procurementDepartureDecision(ship ShipState, destination string
 	}
 	revenue, err := procurementDestinationRevenue(input, data.Plan, data.BoughtQuantity)
 	if err != nil {
-		return false, err
+		accepted, ok := paidSpotRevenue(input, data.Plan, data.BoughtQuantity)
+		if !ok {
+			return false, err
+		}
+		revenue = accepted
 	}
 	// Both exits settle the current origin stay. Paid invoices, acquisition,
 	// existing stores and fixed fleet upkeep are not another continuation bill.
@@ -213,6 +217,39 @@ func (r *Runner) procurementDepartureDecision(ship ShipState, destination string
 		return false, nil
 	}
 	return false, errors.New("current origin berth stay cannot distinguish the better recovery")
+}
+
+// paidSpotRevenue values paid spot cargo when the destination cannot price the
+// whole lot. A destination quay book goes stale as soon as no ship is there to
+// refresh it, usually right after buying for it, and holding paid cargo in port
+// only accrues dues. Without a fresh book, value the tons aboard at the per-ton
+// sell floor accepted at purchase (worst depth fill, stressed NPC bid or
+// one-ton probe floor; never freight income), lowered by any fresh gossip
+// floor. A fresh thin book counts only receipts that fill now. It is used only
+// for paid cargo and never authorizes a purchase.
+func paidSpotRevenue(in PlanningInput, plan Plan, quantity int64) (int64, bool) {
+	if !strings.HasPrefix(plan.Kind, "spot") || !plan.Accepted || !in.fresh("clock") || quantity <= 0 {
+		return 0, false
+	}
+	if in.fresh("books/" + plan.Destination) {
+		receipts, _, err := procurementBidRevenue(in, plan.Destination, plan.Commodity, quantity)
+		if err != nil {
+			return 0, false
+		}
+		return receipts, true
+	}
+	perTon := plan.SellLimitPence
+	if _, gossipFloor, _, _, reason := destinationRevenue(in, plan.Destination, plan.Commodity, 1); reason == "" {
+		perTon = min(perTon, gossipFloor)
+	}
+	if perTon <= 0 {
+		return 0, false
+	}
+	revenue := checkedPenceProduct(quantity, perTon)
+	if revenue == math.MaxInt64 {
+		return 0, false
+	}
+	return revenue, true
 }
 
 // A fresh empty or partially filled bid ladder is known limited liquidity, not

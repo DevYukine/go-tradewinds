@@ -363,7 +363,7 @@ func TestProcurementReviewFreshGossipCompletesPurchaseToDeparture(t *testing.T) 
 	}
 }
 
-func TestProcurementReviewStaleGossipBlocksSpendingAndContinuation(t *testing.T) {
+func TestProcurementReviewStaleGossipBlocksSpendingButNotPaidCargo(t *testing.T) {
 	t.Parallel()
 	for _, phase := range []string{"buy preparation", "buy first-send", "paid preparation", "paid first-send"} {
 		t.Run(phase, func(t *testing.T) {
@@ -423,7 +423,10 @@ func TestProcurementReviewStaleGossipBlocksSpendingAndContinuation(t *testing.T)
 				}
 			}
 			if _, err := procurementDestinationRevenue(runner.planningInput(ship), plan, 1); err == nil {
-				t.Fatal("stale gossip retained destination receipt authority")
+				t.Fatal("stale gossip retained destination receipt authority for purchases")
+			}
+			if revenue, ok := paidSpotRevenue(runner.planningInput(ship), plan, 1); !ok || revenue != plan.SellLimitPence {
+				t.Fatalf("paid cargo lost its accepted sell-floor valuation when gossip expired: %d, %t", revenue, ok)
 			}
 			var err error
 			if data.Action != nil {
@@ -434,17 +437,21 @@ func TestProcurementReviewStaleGossipBlocksSpendingAndContinuation(t *testing.T)
 				_, err = runner.driveMission(h.ctx, ship, mission, &data)
 			}
 			if err != nil {
-				t.Fatalf("stale receipt evidence should hold the mission: %v", err)
+				t.Fatal(err)
 			}
-			wantPurchases := 0
-			if paid {
-				wantPurchases = 1
+			if !paid {
+				if h.api.mutationCount("/v1/market/place-order") != 0 || h.api.mutationCount("/v1/fleet/depart") != 0 {
+					t.Fatalf("stale gossip spent or departed: purchases %+v departures %+v", h.api.mutationsFor("/v1/market/place-order"), h.api.mutationsFor("/v1/fleet/depart"))
+				}
+				return
 			}
-			if h.api.mutationCount("/v1/market/place-order") != wantPurchases || h.api.mutationCount("/v1/fleet/depart") != 0 {
-				t.Fatalf("stale gossip spent or continued: purchases %+v departures %+v", h.api.mutationsFor("/v1/market/place-order"), h.api.mutationsFor("/v1/fleet/depart"))
+			mission, data = h.mission(ship.Ship.ID)
+			if h.api.mutationCount("/v1/market/place-order") != 1 || data.AcquisitionPence != 100 || data.BoughtQuantity != 1 {
+				t.Fatalf("stale gossip repeated or erased the completed purchase: %+v", data)
 			}
-			if paid && (data.AcquisitionPence != 100 || data.BoughtQuantity != 1) {
-				t.Fatalf("holding stale evidence reopened or erased the completed purchase: %+v", data)
+			departed := h.api.mutationCount("/v1/fleet/depart") == 1 || (data.Action != nil && data.Action.Stage == "depart")
+			if data.Plan.Kind != "spot" || !departed {
+				t.Fatalf("paid cargo did not sail on its accepted floor: kind %s phase %s action %+v", data.Plan.Kind, mission.Phase, data.Action)
 			}
 		})
 	}

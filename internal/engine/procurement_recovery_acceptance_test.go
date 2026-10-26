@@ -327,7 +327,7 @@ func TestProcurementRecoveryChoosesExecutableLocalRecoveryWhenBetter(t *testing.
 
 func TestProcurementRecoveryStillRequiresEvidenceAndSafeDeparture(t *testing.T) {
 	t.Parallel()
-	for _, gate := range []string{"missing destination depth", "stale destination book", "stale local book", "missing route", "illegal hull route", "short stores", "missing seal deadline", "expired seal deadline"} {
+	for _, gate := range []string{"missing destination depth", "stale local book", "missing route", "illegal hull route", "short stores", "missing seal deadline", "expired seal deadline"} {
 		for _, firstSend := range []bool{false, true} {
 			name := gate + "/preparation"
 			if firstSend {
@@ -353,10 +353,6 @@ func TestProcurementRecoveryStillRequiresEvidenceAndSafeDeparture(t *testing.T) 
 						}
 					}
 					runner.stateCache.Markets[recoveryFarPort] = book
-				case "stale destination book":
-					meta := runner.meta["books/"+recoveryFarPort]
-					meta.Stale = true
-					runner.meta["books/"+recoveryFarPort] = meta
 				case "stale local book":
 					meta := runner.meta["books/"+recoveryHomePort]
 					meta.Stale = true
@@ -392,12 +388,85 @@ func TestProcurementRecoveryStillRequiresEvidenceAndSafeDeparture(t *testing.T) 
 				if data.Action != nil && data.Action.Stage == "depart" {
 					t.Fatalf("unsafe recovery retained a dispatchable departure despite %s", gate)
 				}
-				if (gate == "missing destination depth" || gate == "stale destination book" || gate == "stale local book") &&
+				if (gate == "missing destination depth" || gate == "stale local book") &&
 					(mission.Destination != recoveryFarPort || data.Plan.Kind != "spot") {
 					t.Fatalf("unknown recovery evidence must hold, not irreversibly select liquidation: destination=%s kind=%s", mission.Destination, data.Plan.Kind)
 				}
 				if len(h.api.mutationsFor("/v1/market/place-order")) != 0 {
 					t.Fatal("missing recovery evidence triggered an unverified liquidation")
+				}
+			})
+		}
+	}
+}
+
+// A destination book goes stale as soon as no ship is present to refresh it,
+// which is usually right after buying cargo for it. Paid cargo is then valued
+// at its accepted sell floor instead of being held in port, and a fresh thin
+// destination book counts the receipts that fill now.
+func TestProcurementRecoveryPaidCargoIsNotStrandedByMissingDestinationDepth(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		staleBook  bool
+		thinBids   []Level
+		localBids  []Level
+		wantUnwind bool
+	}{
+		{name: "stale book sails on the accepted floor", staleBook: true},
+		{name: "stale book with a better full local exit liquidates", staleBook: true,
+			localBids: []Level{{PricePence: 2_000, RemainingQuantity: 20}}, wantUnwind: true},
+		{name: "fresh thin book sails on its measured receipts",
+			thinBids: []Level{{PricePence: 900, RemainingQuantity: 15}}},
+	} {
+		for _, firstSend := range []bool{false, true} {
+			name := test.name + "/preparation"
+			if firstSend {
+				name = test.name + "/first-send"
+			}
+			t.Run(name, func(t *testing.T) {
+				h, runner, mission, data, ship := procurementRecoveryFixture(t, false)
+				if firstSend {
+					if err := runner.stage(h.ctx, mission, &data, ship, "depart", "/v1/fleet/depart", map[string]any{
+						"ship_id": ship.Ship.ID, "dest_port_id": recoveryFarPort,
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if test.staleBook {
+					meta := runner.meta["books/"+recoveryFarPort]
+					meta.Stale = true
+					runner.meta["books/"+recoveryFarPort] = meta
+				}
+				if test.thinBids != nil {
+					runner.stateCache.Markets[recoveryFarPort] = procurementReviewBook(recoveryFarPort, test.thinBids)
+				}
+				if test.localBids != nil {
+					runner.stateCache.Markets[recoveryHomePort] = procurementReviewBook(recoveryHomePort, test.localBids)
+				}
+				var err error
+				if firstSend {
+					_, err = runner.dispatch(h.ctx, mission, &data)
+				} else {
+					_, err = runner.prepareDeparture(h.ctx, ship, mission, &data)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				departed := len(h.api.mutationsFor("/v1/fleet/depart")) == 1 || (data.Action != nil && data.Action.Stage == "depart")
+				if test.wantUnwind {
+					// First-send refuses the staged departure; the next
+					// preparation pass performs the unwind.
+					if len(h.api.mutationsFor("/v1/fleet/depart")) != 0 || !firstSend && data.Plan.Kind != "aborted" {
+						t.Fatalf("better measured local exit did not unwind: kind %s action %+v", data.Plan.Kind, data.Action)
+					}
+					return
+				}
+				if !departed || data.Plan.Kind != "spot" {
+					t.Fatalf("missing destination depth stranded paid cargo: kind %s action %+v", data.Plan.Kind, data.Action)
+				}
+				if len(h.api.mutationsFor("/v1/market/place-order")) != 0 {
+					t.Fatal("sailing on paid cargo placed an order")
 				}
 			})
 		}
