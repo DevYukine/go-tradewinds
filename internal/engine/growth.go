@@ -53,22 +53,26 @@ type GrowthInput struct {
 }
 
 type GrowthDecision struct {
-	Accepted                      bool    `json:"accepted"`
-	EconomicallyViable            bool    `json:"economically_viable"`
-	CashShortfallPence            int64   `json:"cash_shortfall_pence"`
-	Reason                        string  `json:"reason"`
-	QuotedHullPence               int64   `json:"quoted_hull_pence"`
-	SlippageReservePence          int64   `json:"slippage_reserve_pence"`
-	CannonsPence                  int64   `json:"cannons_pence"`
-	InitialStoresPence            int64   `json:"initial_stores_pence"`
-	WorkingCapitalPence           int64   `json:"working_capital_pence"`
-	FundingFeesPence              int64   `json:"funding_fees_pence"`
-	IncrementalUpkeepPence        int64   `json:"incremental_upkeep_pence"`
-	UpkeepReservePence            int64   `json:"upkeep_reserve_pence"`
-	IncrementalNetPencePerGameDay float64 `json:"incremental_net_pence_per_game_day"`
-	DepthNetPencePerGameDay       float64 `json:"depth_net_pence_per_game_day"`
-	PaybackGameDays               float64 `json:"payback_game_days"`
-	EvidenceBasis                 string  `json:"evidence_basis"`
+	Accepted                      bool                `json:"accepted"`
+	EconomicallyViable            bool                `json:"economically_viable"`
+	CashShortfallPence            int64               `json:"cash_shortfall_pence"`
+	Reason                        string              `json:"reason"`
+	QuotedHullPence               int64               `json:"quoted_hull_pence"`
+	SlippageReservePence          int64               `json:"slippage_reserve_pence"`
+	CannonsPence                  int64               `json:"cannons_pence"`
+	InitialStoresPence            int64               `json:"initial_stores_pence"`
+	WorkingCapitalPence           int64               `json:"working_capital_pence"`
+	FundingFeesPence              int64               `json:"funding_fees_pence"`
+	IncrementalUpkeepPence        int64               `json:"incremental_upkeep_pence"`
+	UpkeepReservePence            int64               `json:"upkeep_reserve_pence"`
+	IncrementalNetPencePerGameDay float64             `json:"incremental_net_pence_per_game_day"`
+	DepthNetPencePerGameDay       float64             `json:"depth_net_pence_per_game_day"`
+	PaybackGameDays               float64             `json:"payback_game_days"`
+	EvidenceBasis                 string              `json:"evidence_basis"`
+	Competition                   CompetitionEvidence `json:"competition"`
+	DepthCompetition              CompetitionEvidence `json:"depth_competition"`
+	competitionComparable         bool
+	depthCompetitionComparable    bool
 }
 
 func growthWorkingCapital(plan Plan) int64 {
@@ -644,6 +648,7 @@ func (r *Runner) evaluateGrowthCandidate(ctx context.Context, port Port, hull Hu
 		MaxPaybackDays:              r.opts.MaxPaybackDays,
 	}
 	decision := evaluateGrowth(input, proof)
+	decision.Competition = quoted.destinationCompetition(plan.Destination)
 	if !decision.Accepted {
 		return decision, nil, nil
 	}
@@ -669,6 +674,7 @@ func (r *Runner) evaluateGrowthCandidate(ctx context.Context, port Port, hull Hu
 	if fees > 0 {
 		input.FundingFeesPence = fees
 		decision = evaluateGrowth(input, proof)
+		decision.Competition = quoted.destinationCompetition(plan.Destination)
 		if !decision.Accepted {
 			return decision, nil, nil
 		}
@@ -696,6 +702,9 @@ func betterGrowthPackage(candidate, other growthPackage) bool {
 	}
 	if candidate.decision.IncrementalNetPencePerGameDay != other.decision.IncrementalNetPencePerGameDay {
 		return candidate.decision.IncrementalNetPencePerGameDay > other.decision.IncrementalNetPencePerGameDay
+	}
+	if candidate.decision.Competition.PreferenceShips != other.decision.Competition.PreferenceShips {
+		return candidate.decision.Competition.PreferenceShips < other.decision.Competition.PreferenceShips
 	}
 	if candidate.port.ID != other.port.ID {
 		return candidate.port.ID < other.port.ID

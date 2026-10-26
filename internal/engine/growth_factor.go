@@ -46,6 +46,13 @@ func expansionAgentYard(state accountState, input PlanningInput, agents []expans
 	}
 	var best Port
 	var bestScore int64
+	type yardCandidate struct {
+		port        Port
+		score       int64
+		competition CompetitionEvidence
+	}
+	var candidates []yardCandidate
+	var economicBest int64
 	for _, yard := range state.Catalog.Ports {
 		if !yard.HasShipyard || yard.IsCove || yard.Phase > state.Clock.UnlockedPhase || yard.BankingRegion == "" || present[yard.BankingRegion] ||
 			!regionalWater(state.Catalog, yard) {
@@ -75,12 +82,19 @@ func expansionAgentYard(state accountState, input PlanningInput, agents []expans
 		if score <= 0 {
 			continue
 		}
-		// Newer phases hold fewer established traders, so the most recently
-		// unlocked region is explored before an older one.
-		newerPhase := best.ID == "" || yard.Phase > best.Phase
-		samePhase := yard.Phase == best.Phase
-		if newerPhase || samePhase && (score > bestScore || score == bestScore && yard.ID < best.ID) {
-			best, bestScore = yard, score
+		economicBest = max(economicBest, score)
+		candidates = append(candidates, yardCandidate{yard, score, competitionAt(input.Competition, yard.BankingRegion)})
+	}
+	var bestCompetition CompetitionEvidence
+	for _, candidate := range candidates {
+		comparable := economicallyComparable(float64(candidate.score), float64(economicBest))
+		bestComparable := economicallyComparable(float64(bestScore), float64(economicBest))
+		better := candidate.score > bestScore || candidate.score == bestScore && candidate.port.ID < best.ID
+		if comparable && bestComparable && candidate.competition.PreferenceShips != bestCompetition.PreferenceShips {
+			better = candidate.competition.PreferenceShips < bestCompetition.PreferenceShips
+		}
+		if best.ID == "" || better {
+			best, bestScore, bestCompetition = candidate.port, candidate.score, candidate.competition
 		}
 	}
 	return best, bestScore
@@ -185,6 +199,7 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 	if err := r.decision(ctx, "", "expansion_agent", "estimate overseas capital from observed quotes before exploring an unoccupied region with a positive observed spot spread", map[string]any{
 		"port_id": yard.ID, "region": yard.BankingRegion, "score_pence": score, "estimated_hull_capital_pence": estimatedCapital,
 		"estimated_hull_capital_stale": !bestFresh,
+		"competition":                  competitionAt(input.Competition, yard.BankingRegion),
 	}); err != nil {
 		return false, err
 	}

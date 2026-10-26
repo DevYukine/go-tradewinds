@@ -26,35 +26,8 @@ func (s *Store) Competition(ctx context.Context, accountID string, at time.Time)
 	defer cancel()
 	var result CompetitionSummary
 	err := db.Transaction(func(tx *gorm.DB) error {
-		var owners []struct {
-			ID              string
-			CompanyID       string
-			SnapshotCompany string
-			Name            string
-		}
-		if err := tx.Table("accounts AS a").
-			Select("a.id, a.company_id, s.data #>> '{profile,company,id}' AS snapshot_company, s.data #>> '{profile,company,name}' AS name").
-			Joins("LEFT JOIN snapshots AS s ON s.account_id = a.id").Order("a.id").Limit(maxDashboardAccounts + 1).Scan(&owners).Error; err != nil {
+		if err := competitionOwners(tx, &input); err != nil {
 			return err
-		}
-		if len(owners) > maxDashboardAccounts {
-			return ErrResponseTooLarge
-		}
-		found := false
-		for _, owner := range owners {
-			found = found || owner.ID == accountID
-			if owner.CompanyID == "" {
-				continue
-			}
-			if owner.Name == "" || owner.SnapshotCompany != owner.CompanyID {
-				input.OwnCompaniesComplete = false
-			}
-			if owner.Name != "" {
-				input.OwnCompanies = append(input.OwnCompanies, owner.Name)
-			}
-		}
-		if !found {
-			return ErrNotFound
 		}
 		scrubber := displayScrubber{store: s, tx: tx}
 		credentials := scrubber.credentials(accountID)
@@ -70,7 +43,9 @@ func (s *Store) Competition(ctx context.Context, accountID string, at time.Time)
 		if err := tx.Table("snapshots").Select("COALESCE(octet_length(data::text), 0)").Where("account_id = ?", accountID).Scan(&size).Error; err != nil {
 			return err
 		}
-		if size > maxSnapshotBytes {
+		// PostgreSQL's jsonb text adds whitespace absent from SaveSnapshot's
+		// compact JSON; that rendering is bounded by twice the compact cap.
+		if size > 2*maxSnapshotBytes {
 			return ErrResponseTooLarge
 		}
 		if err := tx.Table("snapshots").Select("data -> 'catalog' AS catalog, data -> 'ports' AS ports, data -> '_meta' AS metadata").
@@ -82,47 +57,110 @@ func (s *Store) Competition(ctx context.Context, accountID string, at time.Time)
 			return err
 		}
 		input.Ports = ports
-		var rows []struct {
-			SourceTime  string
-			PortID      string
-			CompanyName string
-			ShipName    string
-			ShipClass   string
-			Direction   string
-			OtherPortID *string
-		}
-		if err := tx.Table("events").Select(`payload ->> 'timestamp' AS source_time,
-			payload #>> '{payload,port_id}' AS port_id,
-			payload #>> '{payload,company_name}' AS company_name,
-			payload #>> '{payload,ship_name}' AS ship_name,
-			payload #>> '{payload,ship_class}' AS ship_class,
-			payload #>> '{payload,direction}' AS direction,
-			payload #>> '{payload,other_port_id}' AS other_port_id`).
-			Where("account_id = ? AND created_at >= ? AND created_at <= ?", accountID, input.At.Add(-CompetitionWindow), input.At).
-			Where("event_type IN ('ship_sailed', 'ship_entered_port')").
-			Order("created_at DESC, id DESC").Limit(maxCompetitionEvents + 1).Scan(&rows).Error; err != nil {
+		if err := competitionSailings(tx, &input); err != nil {
 			return err
-		}
-		if len(rows) > maxCompetitionEvents {
-			input.EventsTruncated = true
-			rows = rows[:maxCompetitionEvents]
-		}
-		input.Sailings = make([]gameapi.SailingNotice, 0, len(rows))
-		for _, row := range rows {
-			seenAt, err := time.Parse(time.RFC3339Nano, row.SourceTime)
-			if err != nil {
-				continue
-			}
-			input.Sailings = append(input.Sailings, gameapi.SailingNotice{
-				PortID: row.PortID, CompanyName: row.CompanyName, ShipName: row.ShipName,
-				ShipClass: row.ShipClass, Direction: row.Direction, SeenAt: seenAt, OtherPortID: row.OtherPortID,
-			})
 		}
 		result = AggregateCompetition(input)
 		scrubCompetition(&result, credentials)
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	return result, err
+}
+
+// CompetitionActivityInput loads bounded local activity and owner-name
+// projections only. Trading already has catalog, ports and metadata in memory;
+// it must not run the dashboard transaction or decrypt display credentials.
+func (s *Store) CompetitionActivityInput(ctx context.Context, accountID string, at time.Time) (CompetitionInput, error) {
+	input := CompetitionInput{AccountID: accountID, At: at.UTC(), OwnCompaniesComplete: true}
+	if !validID(accountID) || at.IsZero() {
+		return input, fmt.Errorf("competition query: %w", ErrInvalidInput)
+	}
+	db, cancel := s.query(ctx)
+	defer cancel()
+	if err := competitionOwners(db, &input); err != nil {
+		return input, err
+	}
+	err := competitionSailings(db, &input)
+	return input, err
+}
+
+func competitionOwners(tx *gorm.DB, input *CompetitionInput) error {
+	var owners []struct {
+		ID              string
+		CompanyID       string
+		SnapshotCompany string
+		Name            string
+	}
+	if err := tx.Table("accounts AS a").
+		Select("a.id, a.company_id, s.data #>> '{profile,company,id}' AS snapshot_company, s.data #>> '{profile,company,name}' AS name").
+		Joins("LEFT JOIN snapshots AS s ON s.account_id = a.id").Order("a.id").Limit(maxDashboardAccounts + 1).Scan(&owners).Error; err != nil {
+		return err
+	}
+	if len(owners) > maxDashboardAccounts {
+		return ErrResponseTooLarge
+	}
+	found := false
+	for _, owner := range owners {
+		found = found || owner.ID == input.AccountID
+		if owner.CompanyID == "" {
+			continue
+		}
+		if owner.Name == "" || owner.SnapshotCompany != owner.CompanyID {
+			input.OwnCompaniesComplete = false
+		}
+		if owner.Name != "" {
+			input.OwnCompanies = append(input.OwnCompanies, owner.Name)
+		}
+	}
+	if !found {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func competitionSailings(db *gorm.DB, input *CompetitionInput) error {
+	var rows []struct {
+		SourceTime  string
+		PortID      string
+		CompanyName string
+		ShipName    string
+		ShipClass   string
+		Direction   string
+		OtherPortID *string
+	}
+	if err := db.Table("events").Select(`payload ->> 'timestamp' AS source_time,
+		payload #>> '{payload,port_id}' AS port_id,
+		payload #>> '{payload,company_name}' AS company_name,
+		payload #>> '{payload,ship_name}' AS ship_name,
+		payload #>> '{payload,ship_class}' AS ship_class,
+		payload #>> '{payload,direction}' AS direction,
+		payload #>> '{payload,other_port_id}' AS other_port_id`).
+		Where("account_id = ? AND created_at >= ? AND created_at <= ?", input.AccountID, input.At.Add(-CompetitionWindow), input.At).
+		Where("event_type IN ('ship_sailed', 'ship_entered_port')").
+		Order("created_at DESC, id DESC").Limit(maxCompetitionEvents + 1).Scan(&rows).Error; err != nil {
+		return err
+	}
+	if len(rows) > maxCompetitionEvents {
+		input.EventsTruncated = true
+		rows = rows[:maxCompetitionEvents]
+	}
+	input.Sailings = make([]gameapi.SailingNotice, 0, len(rows))
+	for _, row := range rows {
+		seenAt, err := time.Parse(time.RFC3339Nano, row.SourceTime)
+		if err != nil {
+			continue
+		}
+		input.Sailings = append(input.Sailings, gameapi.SailingNotice{
+			PortID: row.PortID, CompanyName: row.CompanyName, ShipName: row.ShipName,
+			ShipClass: row.ShipClass, Direction: row.Direction, SeenAt: seenAt, OtherPortID: row.OtherPortID,
+		})
+	}
+	return nil
+}
+
+// CompetitionPorts projects the runner's already-captured snapshot.
+func CompetitionPorts(catalogRaw, portsRaw, metadataRaw json.RawMessage, at time.Time) ([]CompetitionPortObservation, error) {
+	return competitionPorts(catalogRaw, portsRaw, metadataRaw, at)
 }
 
 func competitionPorts(catalogRaw, portsRaw, metadataRaw json.RawMessage, at time.Time) ([]CompetitionPortObservation, error) {

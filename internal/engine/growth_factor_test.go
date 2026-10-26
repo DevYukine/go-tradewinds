@@ -78,7 +78,7 @@ func TestExpansionFactorScoring(t *testing.T) {
 				state.Catalog.Ports[i].Produces, state.Catalog.Ports[i].Manufactures = nil, nil
 			}
 		}, port: "yard-a", score: 50},
-		{name: "newer phase beats a richer older region", change: func(state *accountState) {
+		{name: "newer phase does not beat a richer older region", change: func(state *accountState) {
 			ask, bid := int64(100), int64(140)
 			state.Clock.UnlockedPhase = 2
 			state.Catalog.Ports = append(state.Catalog.Ports,
@@ -92,7 +92,7 @@ func TestExpansionFactorScoring(t *testing.T) {
 				Gossip{SubjectPortID: "new-demand", SnapshotAt: now, Commodities: []GossipCommodity{{CommodityID: "x", SnapshotAt: now, BestBidPence: &bid}}},
 			)
 			state.Ports[recoveryHomePort] = detail
-		}, port: "new-yard", score: 5},
+		}, port: "yard-a", score: 50},
 		{name: "oceanic water cannot host a regional build", change: func(state *accountState) {
 			state.Catalog.SeaZones[0].ZoneClass = "oceanic"
 		}},

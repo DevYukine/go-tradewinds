@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"math"
 	"slices"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/DevYukine/go-tradewinds/internal/store"
 )
 
 const maximumPence int64 = 1_000_000_000_000
@@ -161,26 +162,28 @@ type Economics struct {
 }
 
 type Plan struct {
-	Kind             string     `json:"kind"`
-	ShipID           string     `json:"ship_id"`
-	Origin           string     `json:"origin"`
-	Destination      string     `json:"destination"`
-	Commodity        string     `json:"commodity"`
-	ContractID       string     `json:"contract_id,omitempty"`
-	FreightIDs       []string   `json:"freight_ids"`
-	Quantity         int64      `json:"quantity"`
-	BuyLimitPence    int64      `json:"buy_limit_pence"`
-	SellLimitPence   int64      `json:"sell_limit_pence"`
-	StoresToBuy      int64      `json:"stores_to_buy"`
-	StoresLimitPence int64      `json:"stores_limit_pence"`
-	TargetStoresTons float64    `json:"target_stores_tons"`
-	Deadline         *time.Time `json:"deadline,omitempty"`
-	Economics        Economics  `json:"economics"`
-	Accepted         bool       `json:"accepted"`
-	Reason           string     `json:"reason"`
-	PriceSource      string     `json:"price_source"`
-	ExpectedArrival  time.Time  `json:"expected_arrival"`
-	playerBidStress  bool
+	Kind                  string              `json:"kind"`
+	ShipID                string              `json:"ship_id"`
+	Origin                string              `json:"origin"`
+	Destination           string              `json:"destination"`
+	Commodity             string              `json:"commodity"`
+	ContractID            string              `json:"contract_id,omitempty"`
+	FreightIDs            []string            `json:"freight_ids"`
+	Quantity              int64               `json:"quantity"`
+	BuyLimitPence         int64               `json:"buy_limit_pence"`
+	SellLimitPence        int64               `json:"sell_limit_pence"`
+	StoresToBuy           int64               `json:"stores_to_buy"`
+	StoresLimitPence      int64               `json:"stores_limit_pence"`
+	TargetStoresTons      float64             `json:"target_stores_tons"`
+	Deadline              *time.Time          `json:"deadline,omitempty"`
+	Economics             Economics           `json:"economics"`
+	Accepted              bool                `json:"accepted"`
+	Reason                string              `json:"reason"`
+	PriceSource           string              `json:"price_source"`
+	ExpectedArrival       time.Time           `json:"expected_arrival"`
+	Competition           CompetitionEvidence `json:"competition"`
+	competitionComparable bool
+	playerBidStress       bool
 }
 
 type PlayerBidSellFill struct {
@@ -222,6 +225,7 @@ type PlanningInput struct {
 	PlayerBidSellFills        []PlayerBidSellFill
 	FleetDailyUpkeepPence     int64
 	Rates                     []Rate
+	Competition               *store.CompetitionSummary
 	ignorePlayerBids          bool
 }
 
@@ -269,6 +273,10 @@ func betterPlan(candidate, other Plan) bool {
 	otherCosted := other.Economics.GameDays > 0
 	if candidateCosted != otherCosted {
 		return candidateCosted
+	}
+	if candidate.competitionComparable && other.competitionComparable &&
+		candidate.Competition.PreferenceShips != other.Competition.PreferenceShips {
+		return candidate.Competition.PreferenceShips < other.Competition.PreferenceShips
 	}
 	if candidate.Economics.NetPencePerGameDay != other.Economics.NetPencePerGameDay {
 		return candidate.Economics.NetPencePerGameDay > other.Economics.NetPencePerGameDay
@@ -426,9 +434,7 @@ func PlanVoyages(in PlanningInput) []Plan {
 	if len(plans) == 0 {
 		plans = append(plans, reject(Plan{Kind: "hold", ShipID: ship.Ship.ID}, "no observed charter, executable destination book or local freight"))
 	}
-	sort.SliceStable(plans, func(i, j int) bool {
-		return betterPlan(plans[i], plans[j])
-	})
+	rankPlans(plans, in)
 	return plans
 }
 

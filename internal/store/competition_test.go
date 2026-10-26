@@ -153,6 +153,16 @@ func TestPostgresCompetitionIsAccountScopedAndUsesSourceTime(t *testing.T) {
 	if !result.OwnCompaniesComplete || *region.ForeignShips != 1 || region.TopCompetitors[0].Name != "Rival" || region.Ports[1].ForeignShips != nil {
 		t.Fatalf("account scope, own exclusion or upstream replay filter failed: %+v", result)
 	}
+	input, err := database.CompetitionActivityInput(ctx, "one", at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.Ports = []CompetitionPortObservation{{ID: "a", Region: "north"}, {ID: "b", Region: "north"}}
+	activity := AggregateCompetition(input)
+	if !activity.OwnCompaniesComplete || *activity.Regions[0].ForeignShips != *region.ForeignShips ||
+		activity.Regions[0].Sightings != region.Sightings {
+		t.Fatalf("lightweight activity load differs from dashboard evidence: %+v", activity)
+	}
 	if _, err := database.Competition(ctx, "missing", at); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing account: %v", err)
 	}

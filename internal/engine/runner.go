@@ -69,6 +69,9 @@ type Runner struct {
 	// premium taper window, loaded at each refresh.
 	charterProceedsPence int64
 	sourcingHistory      sourcingHistoryCache
+	competition          *store.CompetitionSummary
+	competitionNextLoad  time.Time
+	competitionCoverage  map[string]competitionCoverage
 }
 
 func New(api *gameapi.Client, db *store.Store, account store.Account, log *zap.Logger, opts Options) *Runner {
@@ -513,13 +516,7 @@ func (r *Runner) wakeBy(deadline time.Time) {
 func (r *Runner) decision(ctx context.Context, shipID, kind, reason string, details any) error {
 	const retention = 7 * 24 * time.Hour
 	key := shipID + "|" + kind
-	fingerprintDetails := details
-	if plan, ok := details.(Plan); ok && plan.Kind == "relocation" {
-		// A rolling ETA alone is not a new economic decision. Keep it in the
-		// stored plan, but do not let it defeat diagnostic deduplication.
-		plan.ExpectedArrival = time.Time{}
-		fingerprintDetails = plan
-	}
+	fingerprintDetails := competitionFingerprintDetails(details)
 	digest := sha256.New()
 	digest.Write([]byte(reason))
 	digest.Write([]byte{0})
@@ -615,6 +612,7 @@ func (r *Runner) planningInputFrom(ship ShipState, state accountState) PlanningI
 		Metadata:              r.meta,
 		Generation:            r.generation,
 		FleetDailyUpkeepPence: upkeep,
+		Competition:           r.competition,
 		Rates:                 state.Rates,
 		ReservedPlayerBidTons: r.restingBidReservations(),
 		PlayerBidSellFills:    decode[[]PlayerBidSellFill](r.snapshot, "fills"),

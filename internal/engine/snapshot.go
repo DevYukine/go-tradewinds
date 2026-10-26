@@ -621,6 +621,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
 		return err
 	}
+	r.refreshCompetition(ctx)
 	r.stateCache = r.state()
 	r.stateCache.Markets = withoutOwnOrders(r.stateCache.Markets, r.ownedOrders())
 	if scale := r.stateCache.Clock.Calendar.TimeScale; scale > 0 {

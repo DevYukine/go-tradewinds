@@ -112,6 +112,10 @@ func betterCapacityCandidate(candidate, other GrowthDecision) bool {
 	}
 	returnRate := candidate.IncrementalNetPencePerGameDay / float64(capital)
 	otherReturnRate := other.IncrementalNetPencePerGameDay / float64(otherCapital)
+	if candidate.competitionComparable && other.competitionComparable &&
+		candidate.Competition.PreferenceShips != other.Competition.PreferenceShips {
+		return candidate.Competition.PreferenceShips < other.Competition.PreferenceShips
+	}
 	if returnRate != otherReturnRate {
 		return returnRate > otherReturnRate
 	}
@@ -121,6 +125,10 @@ func betterCapacityCandidate(candidate, other GrowthDecision) bool {
 func betterCapacityFinancingCandidate(candidate, other GrowthDecision) bool {
 	candidate.IncrementalNetPencePerGameDay = candidate.DepthNetPencePerGameDay
 	other.IncrementalNetPencePerGameDay = other.DepthNetPencePerGameDay
+	candidate.competitionComparable = candidate.depthCompetitionComparable
+	other.competitionComparable = other.depthCompetitionComparable
+	candidate.Competition = candidate.DepthCompetition
+	other.Competition = other.DepthCompetition
 	return betterCapacityCandidate(candidate, other)
 }
 
@@ -304,6 +312,22 @@ func capacityVoyageRate(economics Economics) float64 {
 	return 0
 }
 
+func betterCapacityEarningPlan(candidate, other Plan) bool {
+	rate, otherRate := capacityVoyageRate(candidate.Economics), capacityVoyageRate(other.Economics)
+	if rate != otherRate {
+		return rate > otherRate
+	}
+	stores := max(candidate.Economics.StoreCashPence, candidate.Economics.ProvisionsPence)
+	otherStores := max(other.Economics.StoreCashPence, other.Economics.ProvisionsPence)
+	if stores != otherStores {
+		return stores < otherStores
+	}
+	if candidate.Competition.PreferenceShips != other.Competition.PreferenceShips {
+		return candidate.Competition.PreferenceShips < other.Competition.PreferenceShips
+	}
+	return candidate.Destination < other.Destination
+}
+
 func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote YardQuote, input CapacityGrowthInput, evidence *growthEvidence) (GrowthDecision, map[string]int64, error) {
 	planning, err := r.committedPlanningInputExcept(ctx, growthCandidate(port, hull), "__growth")
 	if err != nil {
@@ -315,9 +339,10 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 	plans := PlanVoyages(planning)
 	input.Hull = hull
 	input.HullPricePence = *quote.TotalCostPence
-	var depthRate float64
+	var earningPlan, depthPlan Plan
 	for _, plan := range plans {
 		basis := plan.Economics.RevenueBasis
+		plan.Competition = planning.destinationCompetition(plan.Destination)
 		if !plan.Accepted || len(plan.FreightIDs) > 0 {
 			continue
 		}
@@ -327,16 +352,17 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 			continue
 		}
 		input.HasSpareWork = true
-		rate := capacityVoyageRate(plan.Economics)
-		if basis == "depth" {
-			depthRate = max(depthRate, rate)
+		if basis == "depth" && betterCapacityEarningPlan(plan, depthPlan) {
+			depthPlan = plan
 		}
-		if rate > input.CandidateRatePencePerGameDay {
-			input.CandidateRatePencePerGameDay = rate
-			input.InitialStoresPence = max(plan.Economics.StoreCashPence, plan.Economics.ProvisionsPence)
+		if betterCapacityEarningPlan(plan, earningPlan) {
+			earningPlan = plan
 		}
 	}
+	input.CandidateRatePencePerGameDay = capacityVoyageRate(earningPlan.Economics)
+	input.InitialStoresPence = max(earningPlan.Economics.StoreCashPence, earningPlan.Economics.ProvisionsPence)
 	decision := EvaluateCapacityGrowth(input)
+	decision.Competition = earningPlan.Competition
 	// Only the best candidate is recorded by the caller; record every yard and
 	// hull too so an operator can see why a present yard does not build. The
 	// details are coarse on purpose: decisions deduplicate on their details,
@@ -359,6 +385,8 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		"capital_crowns":      growthCashTotal(decision.QuotedHullPence, decision.SlippageReservePence, decision.CannonsPence, decision.InitialStoresPence) / 1_000 * 10,
 		"accepted_voyages":    acceptedRoutes,
 		"plan_rejections":     rejections,
+		"competition":         decision.Competition,
+		"depth_competition":   depthPlan.Competition,
 	}); err != nil {
 		return GrowthDecision{}, nil, err
 	}
@@ -377,8 +405,10 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		input.SurplusPence -= fees
 		decision = EvaluateCapacityGrowth(input)
 		decision.FundingFeesPence = fees
+		decision.Competition = earningPlan.Competition
 	}
-	decision.DepthNetPencePerGameDay = max(0, depthRate-float64(input.IncrementalDailyUpkeepPence))
+	decision.DepthNetPencePerGameDay = max(0, capacityVoyageRate(depthPlan.Economics)-float64(input.IncrementalDailyUpkeepPence))
+	decision.DepthCompetition = depthPlan.Competition
 	return decision, required, nil
 }
 
@@ -404,6 +434,7 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 	grownFleet := make([]ShipState, len(r.stateCache.Ships)+1)
 	copy(grownFleet, r.stateCache.Ships)
 	buildBackoffs := decode[map[string]time.Time](r.snapshot, "_growth_build_backoffs")
+	var candidates []capacityCandidate
 	for _, port := range r.stateCache.Catalog.Ports {
 		if !port.HasShipyard || port.Phase > r.stateCache.Clock.UnlockedPhase {
 			continue
@@ -450,18 +481,23 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 					return false, err
 				}
 			}
-			betterUnfunded := betterCapacityCandidate(decision, bestDecision)
-			if decision.EconomicallyViable && bestDecision.EconomicallyViable {
-				betterUnfunded = betterCapacityFinancingCandidate(decision, bestDecision)
-			}
-			if decision.Accepted && (!found || betterCapacityCandidate(decision, bestDecision)) ||
-				!found && (!evaluated || decision.EconomicallyViable && !bestDecision.EconomicallyViable ||
-					decision.EconomicallyViable == bestDecision.EconomicallyViable && betterUnfunded) {
-				bestPort, bestHull, bestDecision, bestRequired = port, hull, decision, required
-			}
-			found = found || decision.Accepted
-			evaluated = true
+			candidates = append(candidates, capacityCandidate{port: port, hull: hull, decision: decision, required: required})
 		}
+	}
+	markCapacityCompetition(candidates)
+	for _, candidate := range candidates {
+		port, hull, decision, required := candidate.port, candidate.hull, candidate.decision, candidate.required
+		betterUnfunded := betterCapacityCandidate(decision, bestDecision)
+		if decision.EconomicallyViable && bestDecision.EconomicallyViable {
+			betterUnfunded = betterCapacityFinancingCandidate(decision, bestDecision)
+		}
+		if decision.Accepted && (!found || betterCapacityCandidate(decision, bestDecision)) ||
+			!found && (!evaluated || decision.EconomicallyViable && !bestDecision.EconomicallyViable ||
+				decision.EconomicallyViable == bestDecision.EconomicallyViable && betterUnfunded) {
+			bestPort, bestHull, bestDecision, bestRequired = port, hull, decision, required
+		}
+		found = found || decision.Accepted
+		evaluated = true
 	}
 	key := "capacity_growth"
 	if evaluated {

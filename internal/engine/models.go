@@ -159,6 +159,7 @@ type Gossip struct {
 
 type PortDetail struct {
 	ID                   string   `json:"id"`
+	Visibility           string   `json:"visibility"`
 	BerthDuesPerDayPence int64    `json:"berth_dues_per_day_pence"`
 	OccupiedBerths       int64    `json:"occupied_berths"`
 	EffectiveBerths      int64    `json:"effective_berths"`
