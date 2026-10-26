@@ -332,6 +332,8 @@ func TestIncomeFundingReviewIndependentSafetyMaintenanceRemainsAvailable(t *test
 func TestIncomeFundingReviewAccruedBerthDuesAllowReserveSafePartialFundingProgress(t *testing.T) {
 	t.Parallel()
 	h, runner, ship, plan := incomeReviewFixture(t, "charter", false, 4)
+	// Isolate voyage funding fees from independent capacity-growth remittances.
+	runner.opts.CapacityPaybackDays = 0.000001
 	mission, data := incomeReviewStage(t, h, runner, ship, plan, "remit")
 	action := *data.Action
 	berthedAt := time.Now().UTC().Add(-60 * time.Hour)

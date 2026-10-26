@@ -250,6 +250,24 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 		} else {
 			mission.Phase = "maintenance_done"
 		}
+	case "hire-factor", "dismiss-factor":
+		var result struct {
+			PortID    string `json:"port_id"`
+			HasFactor *bool  `json:"has_factor"`
+		}
+		var request struct {
+			PortID string `json:"port_id"`
+		}
+		if json.Unmarshal(response, &result) != nil || json.Unmarshal(data.Action.Body, &request) != nil ||
+			request.PortID == "" || result.PortID != request.PortID || result.HasFactor == nil || *result.HasFactor != (stage == "hire-factor") {
+			return r.reconcileCommitted(ctx, mission, data)
+		}
+		if stage == "hire-factor" {
+			if err := r.recordExpansionAgent(ctx, data); err != nil {
+				return false, err
+			}
+		}
+		mission.Phase = "done"
 	case "settings":
 		var result struct {
 			AutoRemitForBills *bool  `json:"auto_remit_for_bills"`
@@ -333,6 +351,13 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 		return false, err
 	}
 	domainRefusal := status >= 400 && status < 500 && status != 401 && status != 403 && status != 429
+	factorStage := stage == "hire-factor" || stage == "dismiss-factor"
+	factorDomainRefusal := factorStage && (domainRefusal || status == 403 && (problem.Code == "no_factor_at_cove" || problem.Code == "no_port_presence"))
+	if stage == "hire-factor" && factorDomainRefusal && (problem.Code == "no_factor_at_cove" || problem.Code == "no_port_presence") {
+		if err := r.recordExpansionAgent(ctx, data); err != nil {
+			return false, err
+		}
+	}
 	if stage == "build" && domainRefusal {
 		if err := r.recordGrowthBuildRefusal(ctx, data); err != nil {
 			return false, err
@@ -355,6 +380,12 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 			data.CooldownUntil = maxTime(data.CooldownUntil, time.Now().Add(5*time.Second))
 		}
 	}
+	if stage == "hire-factor" && factorDomainRefusal && problem.Code != "no_factor_at_cove" && problem.Code != "no_port_presence" {
+		r.snapshot["_expansion_agent_retry_at"] = encode(data.CooldownUntil)
+		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+			return false, err
+		}
+	}
 	if stage == "deliver-charter" && status != 401 && status != 403 && status != 429 {
 		var request struct {
 			ContractID string `json:"contract_id"`
@@ -372,7 +403,7 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 	if err := r.saveMission(ctx, mission, data); err != nil {
 		return false, err
 	}
-	if status == 401 || status == 403 || (stage == "settings" && status != 429) {
+	if status == 401 || status == 403 && !factorDomainRefusal || (stage == "settings" && status != 429) {
 		return false, fmt.Errorf("execution stopped after definitive HTTP %d; journal and mission retained", status)
 	}
 	return true, nil
@@ -391,7 +422,7 @@ func applyRejectedResult(mission *store.Mission, data *missionData, status int, 
 	// This is not evidence that cargo, a charter or a quote is unavailable.
 	if stage == "build" {
 		mission.Phase = "growth_rejected"
-	} else if stage == "marque" || stage == "settings" || stage == "remit" && mission.ShipID == "__treasury" {
+	} else if stage == "marque" || stage == "settings" || stage == "hire-factor" || stage == "dismiss-factor" || stage == "remit" && mission.ShipID == "__treasury" {
 		mission.Phase = "done"
 	} else if data.Plan.Kind == "maintenance" {
 		mission.Phase = "maintenance"
@@ -444,6 +475,27 @@ func (r *Runner) reconcileCommitted(ctx context.Context, mission *store.Mission,
 	known := &store.Action{ID: data.Action.ID, Body: data.Action.Body, State: store.ActionComplete}
 	if changed, err := r.reconcileObservedAction(ctx, mission, data, known); changed || err != nil {
 		return changed, err
+	}
+	if data.Action.Stage == "hire-factor" && r.fresh("factors") {
+		var request struct {
+			PortID string `json:"port_id"`
+		}
+		if json.Unmarshal(data.Action.Body, &request) == nil && request.PortID != "" {
+			for _, portID := range r.stateCache.Factors {
+				if portID != request.PortID {
+					continue
+				}
+				if err := r.recordExpansionAgent(ctx, data); err != nil {
+					return false, err
+				}
+				data.CostsKnown = false
+				data.LastActionID = data.Action.ID
+				data.Sequence++
+				data.Action = nil
+				mission.Phase = "done"
+				return true, r.saveMission(ctx, mission, data)
+			}
+		}
 	}
 	if data.Action.Stage == "build" && r.fresh("ships") {
 		for _, candidate := range r.stateCache.Ships {

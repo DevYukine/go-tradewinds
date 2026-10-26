@@ -297,66 +297,33 @@ func (s *Store) economicHistory(ctx context.Context, accountID, lane string, asO
 	return result, err
 }
 
-// CapacityDeliveryHistory retains every window delivery, the latest ten known
-// lots, and positive proof since the newest ship's creation. Encrypted ship
-// identities require decoding proof, but its time bound prevents a lifetime scan.
-func (s *Store) CapacityDeliveryHistory(ctx context.Context, accountID string, windowStart, asOf time.Time, newestShipID string, newestCreatedAt time.Time) ([]Settlement, error) {
-	if !validID(accountID) || windowStart.IsZero() || asOf.Before(windowStart) || newestShipID != "" && newestCreatedAt.IsZero() {
+// CapacityDeliveryHistory returns the latest ten known-cost delivery lots.
+func (s *Store) CapacityDeliveryHistory(ctx context.Context, accountID string, asOf time.Time) ([]Settlement, error) {
+	if !validID(accountID) || asOf.IsZero() {
 		return nil, fmt.Errorf("capacity delivery history: %w", ErrInvalidInput)
 	}
 	db, cancel := s.query(ctx)
 	defer cancel()
 	deliveryKinds := []string{"spot", "charter", "freight", "spot+freight", "charter+freight", "recovery"}
-	latestLots := db.Model(&settlementRow{}).Select("id").
-		Where("account_id = ? AND completed_at <= ? AND quantity_tons > 0 AND costs_known", accountID, asOf).
-		Where("kind IN ?", deliveryKinds).Order("completed_at DESC, id").Limit(10)
-	proofStart := windowStart
-	if newestShipID != "" && newestCreatedAt.Before(proofStart) {
-		proofStart = newestCreatedAt
-	}
 	rows, err := db.Model(&settlementRow{}).
-		Where("account_id = ? AND completed_at <= ? AND quantity_tons > 0", accountID, asOf).
+		Where("account_id = ? AND completed_at <= ? AND quantity_tons > 0 AND costs_known", accountID, asOf).
 		Where("kind IN ?", deliveryKinds).
-		Where("completed_at >= ? OR id IN (?)", proofStart, latestLots).
-		Order("completed_at DESC, id").Rows()
+		Order("completed_at DESC, id").Limit(10).Rows()
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	deliveries := make([]Settlement, 0, 10)
-	proven := newestShipID == ""
-	knownLots := 0
 	for rows.Next() {
 		var stored settlementRow
 		if err := db.ScanRows(rows, &stored); err != nil {
 			return nil, err
 		}
-		withinWindow := !stored.CompletedAt.Before(windowStart)
-		if !withinWindow && knownLots >= 10 && (proven || stored.CompletedAt.Before(newestCreatedAt)) {
-			break
-		}
 		value, err := s.decodeSettlement(stored)
 		if err != nil {
 			return nil, err
 		}
-		var costs int64
-		costsKnown := value.CostsKnown
-		for _, cost := range []int64{value.AcquisitionPence, value.FeesPence, value.ProvisionsPence, value.ExpensesPence} {
-			if cost < 0 || cost > math.MaxInt64-costs {
-				costsKnown = false
-				break
-			}
-			costs += cost
-		}
-		provesNewest := !proven && !value.CompletedAt.Before(newestCreatedAt) && value.ShipID == newestShipID && costsKnown && value.ProceedsPence > costs
-		recentLot := value.CostsKnown && knownLots < 10
-		if recentLot {
-			knownLots++
-		}
-		if withinWindow || recentLot || provesNewest {
-			deliveries = append(deliveries, value)
-		}
-		proven = proven || provesNewest
+		deliveries = append(deliveries, value)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

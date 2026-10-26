@@ -14,8 +14,7 @@ Run commands from the project directory so `.env` is found. Existing environment
 | `LOG_LEVEL` | Console logging threshold: `debug`, `info` (default), `warn`, or `error` |
 | `RESERVE_PENCE` | Operating cash reserve, default 100,000 pence |
 | `MAX_PAYBACK_GAME_DAYS` | Maximum lane-forecast ship-investment payback horizon, default 30 game days |
-| `CAPACITY_PAYBACK_GAME_DAYS` | Maximum payback for capacity growth priced from recorded fleet earnings, default 180 game days |
-| `SMALL_FLEET_TARGET` | Fleet size below which idle cash funds the cheapest capable hull without an earnings record, default 5 ships |
+| `CAPACITY_PAYBACK_GAME_DAYS` | Maximum payback for capacity growth priced from the new hull's best planned voyage, default 420 game days (about 7 real days) |
 | `MARQUES_ENABLED` | Issue letters of marque automatically; default `false` because the game charges the live price with no price cap |
 | `COMPOSE_PROJECT_NAME` | Stable local Compose project and volume identity; default `tradewinds` |
 | `POSTGRES_PASSWORD` | Local Compose PostgreSQL password |
@@ -143,25 +142,19 @@ Any negative vault or underfunded active/obligated region defers construction, n
 
 #### Capacity growth
 
-When the lane-proof path above refuses or finds no package, capacity growth decides instead. Idle cash is meant to become ships, not sit in the vault.
+When the lane-proof path above refuses or finds no package, capacity growth decides instead. Idle cash is meant to become ships, not sit in the vault. One rule applies at every fleet size. A hull is bought when:
 
-Below `SMALL_FLEET_TARGET` ships, idle cash funds the cheapest capable hull that has an accepted first voyage at its yard after incumbent commitments. Recent coffee-house gossip of other companies' prices counts as that evidence here, alongside observed depth and live contracts. No earnings record or payback is required, but every build must still:
+- its yard has an accepted voyage for it after incumbent ships' commitments are removed, priced from observed depth, live contracts or recent coffee-house gossip of other companies' prices;
+- its rate, the best such voyage's repeat net per game day (the ballast-repeat figure, which includes the return leg, or else half the stress-adjusted net per game day), minus the hull's marginal daily upkeep, repays hull price, a 10% quote cushion, guns to `min(4, max_cannons)` and initial stores within `CAPACITY_PAYBACK_GAME_DAYS`;
+- that capital is at most half of surplus cash, so one build never takes most of the vault;
+- surplus cash above protected reserves also covers a buffer of `max(RESERVE_PENCE, 15% of hull price)` plus one cargo-cash lot per ship including the new one. A lot is the median recent known-cost lot, but never less than the planned voyage's own purchase, customs and store cash. Only the capital and the yard region's own reserve must be in the yard's region; the buffer is checked fleet-wide and is not remitted;
+- no hull was lost in the last 24 real hours and no build price overrun happened in that time. Sunk hulls without a reliable loss timestamp block growth; a mission hull missing from a fresh complete fleet list is timed as a loss at that observation.
 
-- leave the buffer below (protected reserves plus one cargo-cash lot for every ship including the new one), so trading is never starved;
-- cost at most a third of surplus cash including the 10% quote cushion, guns and stores, so the fleet grows step by step and stops when cash runs down;
-- wait 90 real minutes after the newest ship joined, 24 real hours after a ship loss or build price overrun, and for any build already in progress.
+Candidates are ranked by net per game day over capital. Packets are never bought for cargo. A sourcing relocation does not pause growth, because capacity funding reserves the relocation's cash.
 
-In this mode a sourcing relocation does not pause growth. From the target onward, a hull is bought only when all of these hold:
+#### Expansion agents
 
-- the candidate hull has an accepted voyage at the yard after incumbent ships' commitments are removed, priced from observed destination depth or live contract terms (gossip-priced lots do not count);
-- the newest hull has completed a positive delivery (one ship counts as proven), and no ship joined the fleet in the last 90 real minutes;
-- all-time known-cost realized net plus recorded losses from unknown-cost settlements is positive; unknown gains never offset those losses;
-- the last 24 real hours of realized net is positive with no future completion. Settlements with unknown commercial or relocation costs do not pause growth: like the all-time figure, their recorded losses are charged and any unknown gain is ignored. Aborted zero-ton build/refit closeouts with zero acquisition and proceeds are accepted only for an unbuilt or still-surviving hull; their recorded fees, stores and expenses still reduce window net;
-- no hull was lost in that window. Sunk hulls without a reliable loss timestamp block growth; a mission hull missing from a fresh complete fleet list is timed as a loss at that observation. First observed loss times persist across restart;
-- that window net per active ship game day, minus the hull's incremental daily upkeep, repays hull price, a 10% quote cushion, guns to `min(4, max_cannons)` and initial stores within `CAPACITY_PAYBACK_GAME_DAYS`;
-- surplus cash above protected reserves covers that capital plus a buffer of `max(RESERVE_PENCE, 15% of hull price)` and one median recent known-cost lot of cargo cash per ship including the new one. Only the capital and the yard region's own reserve must be in the yard's region; the buffer is checked fleet-wide and is not remitted.
-
-Established-fleet candidates are ranked by net earnings per game day over capital; fleet-fill candidates by lowest capital. A larger hold scales the established-fleet rate (by hold over fleet average hold, clamped to 0.5x to 2x) only when recorded deliveries fill at least 80% of effective hold. Packets are never bought for cargo. From the fleet target onward, growth does not run while a sourcing handoff is active.
+A yard is only evaluated where we have a stationary ship or a Resident Factor, because its quote and quay books need presence. When no yard where we are present offers an accepted build for economic reasons (no spare work, payback, capital or rate), the runner may hire one factor (750 Crowns once, then about 120 Crowns per game day) at a shipyard in a banking region where we have no presence. It waits instead when a present yard is held only by missing or stale data, a build backoff, an unresolved action or a price-overrun pause. It picks the unlocked, non-cove yard whose region has the largest open Crown or Admiralty charter premium (reward above catalog base price, times remaining tons) at other ports for goods that yard port produces or manufactures. New regions with few traders carry these premiums; on 2026-10-26 the Caribbean expansion charters paid twice base price. The overseas yard cannot be quoted before the factor exists, so the runner estimates the build from the cheapest regional hull quote at a yard where we are present, or the latest one observed. It hires only when surplus covers that estimate, the capacity cash buffer and the hire fee, and the estimate is at most half of the surplus left after the hire and remittance fees (the same limit the build itself applies). The estimate is recorded on the decision. The yard's region is funded first. Only one expansion agent is active at a time. The factor is dismissed after 2 real hours unless a growth build is pending or being funded at its yard or a mission uses that port, and a region is never hired into twice. A definitive port refusal latches the region; a funds refusal only backs off.
 
 The durable `__growth` intent builds the hull turnkey, arms it at the yard, records the commissioning settlement and deletes itself. The hull then joins normal planning; idle maintenance buys its stores. If the yard evicts the hull to the roadstead before it is armed, the intent docks it again. If the yard region can no longer pay for the guns, the hull holds unarmed in port instead of trading. A definitive refit refusal or three refit attempts releases the hull to normal operations, where maintenance arms it later. Growth decisions record the chosen candidate's capital, buffer, rate and payback, or the blocking reason.
 

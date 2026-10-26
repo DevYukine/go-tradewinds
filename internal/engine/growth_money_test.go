@@ -205,6 +205,9 @@ func TestIdleUnderarmedShipRefitsBeforeEconomicPlanAndPurchase(t *testing.T) {
 	if afterRefit != 200_000-4*15_000 || h.api.mutationCount("/v1/market/place-order") != 0 {
 		t.Fatalf("refit did not precede cargo spending: cash %d mutations %+v", afterRefit, h.api.mutationsFor("/v1/market/place-order"))
 	}
+	// Once a voyage is committed, legitimate spare-work growth may run before
+	// its purchase. Isolate procurement here, after the unguarded refit checks.
+	runner.opts.CapacityPaybackDays = 0.000001
 	for range 8 {
 		if _, err := h.tick(runner); err != nil {
 			t.Fatalf("plan and purchase after refit: %v", err)

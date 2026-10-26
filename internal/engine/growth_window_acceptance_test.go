@@ -131,7 +131,7 @@ func TestGrowthWindowOldTerminalEvidenceAllowsFundedBuild(t *testing.T) {
 	}
 }
 
-func TestGrowthWindowRecentAndFutureEvidenceVetoesBuild(t *testing.T) {
+func TestGrowthWindowRecentEvidenceFallsBackToCapacityAndFutureVetoesBuild(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name    string
@@ -167,7 +167,14 @@ func TestGrowthWindowRecentAndFutureEvidenceVetoesBuild(t *testing.T) {
 			if _, err := runner.considerGrowth(h.ctx); err != nil {
 				t.Fatalf("consider unsafe cohort: %v", err)
 			}
-			h.missingMission("__growth")
+			if test.offset > 0 {
+				h.missingMission("__growth")
+			} else {
+				_, data := h.mission("__growth")
+				if data.Capacity == nil || data.Action == nil || data.Action.Stage != "build" {
+					t.Fatalf("recent earnings gate did not fall back to plan-priced capacity: %+v", data)
+				}
+			}
 			if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 				t.Fatal("unsafe cohort sent a construction request")
 			}
@@ -175,7 +182,7 @@ func TestGrowthWindowRecentAndFutureEvidenceVetoesBuild(t *testing.T) {
 	}
 }
 
-func TestGrowthWindowNeedsTwoRecentDeliveredCycles(t *testing.T) {
+func TestGrowthWindowInsufficientLaneCyclesFallsBackToCapacity(t *testing.T) {
 	t.Parallel()
 	for _, recent := range []int{0, 1} {
 		t.Run(fmt.Sprintf("recent_%d", recent), func(t *testing.T) {
@@ -197,7 +204,10 @@ func TestGrowthWindowNeedsTwoRecentDeliveredCycles(t *testing.T) {
 			if _, err := runner.considerGrowth(h.ctx); err != nil {
 				t.Fatalf("consider insufficient recent delivery proof: %v", err)
 			}
-			h.missingMission("__growth")
+			_, data := h.mission("__growth")
+			if data.Capacity == nil || data.Action == nil || data.Action.Stage != "build" {
+				t.Fatalf("insufficient lane cycles did not fall back to plan-priced capacity: %+v", data)
+			}
 		})
 	}
 }
@@ -333,6 +343,10 @@ func TestGrowthWindowFreshProofDoesNotBypassEconomicGuards(t *testing.T) {
 			h := newRecoveryHarness(t)
 			h.seedLaneProofs()
 			runner := growthWindowRunner(t, h)
+			if guard != "capital" {
+				// Isolate lane guards without weakening reserve-only capital.
+				runner.opts.CapacityPaybackDays = 0.000001
+			}
 			switch guard {
 			case "capital":
 				for i := range runner.stateCache.Vaults {

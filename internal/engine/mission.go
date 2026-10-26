@@ -235,7 +235,13 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return changed, err
 		}
 	}
-	if missions["__growth"] == nil && missions["__treasury"] == nil && (!sourcingActive || r.fleetBelowTarget()) {
+	if r.opts.Execute && missions["__treasury"] == nil {
+		changed, err := r.manageExpansionAgents(ctx)
+		if changed || err != nil {
+			return changed, err
+		}
+	}
+	if missions["__growth"] == nil && missions["__treasury"] == nil {
 		changed, err := r.considerGrowth(ctx)
 		if changed || err != nil {
 			return changed, err

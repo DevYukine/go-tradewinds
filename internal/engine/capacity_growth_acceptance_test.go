@@ -8,21 +8,17 @@ import (
 
 func capacityGrowthAcceptanceInput() CapacityGrowthInput {
 	return CapacityGrowthInput{
-		Hull:                        Hull{ID: "hoy", HoldCapacityTons: 40, MaxCannons: 4},
-		HullPricePence:              2_486_427,
-		InitialStoresPence:          50_000,
-		SurplusPence:                11_300_000,
-		AllTimeNetPence:             2_917_222,
-		WindowNetPence:              1_733_800,
-		ActiveShipGameDays:          60,
-		FleetSize:                   5,
-		SmallFleetTarget:            5,
-		LotCashPence:                480_000,
-		IncrementalDailyUpkeepPence: 1_192,
-		ReservePence:                100_000,
-		MaxPaybackDays:              180,
-		HasSpareWork:                true,
-		NewestShipProven:            true,
+		Hull:                         Hull{ID: "hoy", HoldCapacityTons: 40, MaxCannons: 4},
+		HullPricePence:               2_486_427,
+		InitialStoresPence:           50_000,
+		SurplusPence:                 11_300_000,
+		CandidateRatePencePerGameDay: 1_733_800.0 / 60,
+		FleetSize:                    5,
+		LotCashPence:                 480_000,
+		IncrementalDailyUpkeepPence:  1_192,
+		ReservePence:                 100_000,
+		MaxPaybackDays:               420,
+		HasSpareWork:                 true,
 	}
 }
 
@@ -33,7 +29,7 @@ func TestEvaluateCapacityGrowthLiveShaped(t *testing.T) {
 	if !got.Accepted {
 		t.Fatalf("live-shaped affordable hoy rejected: %+v", got)
 	}
-	wantNet := float64(in.WindowNetPence)/in.ActiveShipGameDays - float64(in.IncrementalDailyUpkeepPence)
+	wantNet := in.CandidateRatePencePerGameDay - float64(in.IncrementalDailyUpkeepPence)
 	if math.IsNaN(got.IncrementalNetPencePerGameDay) || math.Abs(got.IncrementalNetPencePerGameDay-wantNet) > 1 {
 		t.Fatalf("net/day = %v, want within 1 penny of %v", got.IncrementalNetPencePerGameDay, wantNet)
 	}
@@ -54,9 +50,6 @@ func TestEvaluateCapacityGrowthLiveShaped(t *testing.T) {
 
 func TestEvaluateCapacityGrowthRejectRules(t *testing.T) {
 	t.Parallel()
-	// Rule 6 is the scaling calculation, not a rejection gate. Each other
-	// rule has an isolated failure; alternatives within one gate may share
-	// its reason, but different gates must explain different failures.
 	cases := []struct {
 		name   string
 		rule   int
@@ -68,14 +61,11 @@ func TestEvaluateCapacityGrowthRejectRules(t *testing.T) {
 		{"no cannon capacity", 1, func(in *CapacityGrowthInput) { in.Hull.MaxCannons = 0 }},
 		{"hold consumed by guns", 1, func(in *CapacityGrowthInput) { in.Hull.HoldCapacityTons = 8 }},
 		{"no spare work", 2, func(in *CapacityGrowthInput) { in.HasSpareWork = false }},
-		{"newest ship unproven", 3, func(in *CapacityGrowthInput) { in.NewestShipProven = false }},
-		{"no all-time realized profit", 4, func(in *CapacityGrowthInput) { in.AllTimeNetPence = 0 }},
-		{"insufficient active game days", 5, func(in *CapacityGrowthInput) { in.ActiveShipGameDays = 0.99 }},
-		{"nonpositive window net", 5, func(in *CapacityGrowthInput) { in.WindowNetPence = 0 }},
-		{"upkeep consumes observed rate", 7, func(in *CapacityGrowthInput) { in.IncrementalDailyUpkeepPence = 28_897 }},
-		{"disabled payback limit", 8, func(in *CapacityGrowthInput) { in.MaxPaybackDays = 0 }},
-		{"payback exceeds limit", 8, func(in *CapacityGrowthInput) { in.MaxPaybackDays = 100 }},
-		{"insufficient surplus", 9, func(in *CapacityGrowthInput) { in.SurplusPence = 3_000_000 }},
+		{"upkeep consumes candidate rate", 3, func(in *CapacityGrowthInput) { in.IncrementalDailyUpkeepPence = 28_897 }},
+		{"nonfinite candidate rate", 3, func(in *CapacityGrowthInput) { in.CandidateRatePencePerGameDay = math.Inf(1) }},
+		{"disabled payback limit", 4, func(in *CapacityGrowthInput) { in.MaxPaybackDays = 0 }},
+		{"payback exceeds limit", 4, func(in *CapacityGrowthInput) { in.MaxPaybackDays = 100 }},
+		{"insufficient surplus", 5, func(in *CapacityGrowthInput) { in.SurplusPence = 3_000_000 }},
 	}
 	reasonRules := make(map[string]int)
 	for _, tc := range cases {
@@ -94,93 +84,39 @@ func TestEvaluateCapacityGrowthRejectRules(t *testing.T) {
 	}
 }
 
-func TestEvaluateCapacityGrowthCapacityScaling(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name        string
-		fleetSize   int
-		fillRatio   float64
-		averageHold float64
-		hullTons    int64
-		multiplier  float64
-	}{
-		{"full established fleet caps at double rate", 5, 0.9, 40, 160, 2},
-		{"underfilled fleet is unscaled", 5, 0.79, 40, 160, 1},
-		{"fill threshold permits scaling", 5, 0.8, 40, 160, 2},
-		{"missing average hold is unscaled", 5, 0.9, 0, 160, 1},
-		{"smaller hull scaling floors at half rate", 5, 0.9, 40, 10, 0.5},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			in := capacityGrowthAcceptanceInput()
-			in.FleetSize = tc.fleetSize
-			in.FleetFillRatio = tc.fillRatio
-			in.FleetAverageHoldTons = tc.averageHold
-			in.Hull.HoldCapacityTons = tc.hullTons
-			// Keep the lower-clamp case affordable under the same payback gate.
-			in.MaxPaybackDays = 250
-			got := EvaluateCapacityGrowth(in)
-			if !got.Accepted {
-				t.Fatalf("scaling fixture rejected: %+v", got)
-			}
-			wantNet := float64(in.WindowNetPence)/in.ActiveShipGameDays*tc.multiplier - float64(in.IncrementalDailyUpkeepPence)
-			if math.IsNaN(got.IncrementalNetPencePerGameDay) || math.Abs(got.IncrementalNetPencePerGameDay-wantNet) > 1 {
-				t.Fatalf("scaled net/day = %v, want %v (rate multiplier %v)", got.IncrementalNetPencePerGameDay, wantNet, tc.multiplier)
-			}
-		})
-	}
-}
-
-func TestEvaluateCapacityGrowthFillsFleetBelowTarget(t *testing.T) {
+func TestEvaluateCapacityGrowthOneShipWithoutHistory(t *testing.T) {
 	t.Parallel()
 	in := capacityGrowthAcceptanceInput()
 	in.FleetSize = 1
-	// Below the target no earnings, proof or payback gate applies.
-	in.NewestShipProven = false
-	in.AllTimeNetPence = -1
-	in.WindowNetPence = -1
-	in.ActiveShipGameDays = 0
-	in.MaxPaybackDays = 0
+	in.SurplusPence = 11_000_000
+	in.CandidateRatePencePerGameDay = 10_000
 	got := EvaluateCapacityGrowth(in)
-	if !got.Accepted {
-		t.Fatalf("fleet below target was not filled: %+v", got)
+	if !got.Accepted || got.PaybackGameDays > 420 {
+		t.Fatalf("one-ship fleet without earnings history rejected: %+v", got)
 	}
-	idle := in
-	idle.HasSpareWork = false
-	if got := EvaluateCapacityGrowth(idle); got.Accepted {
-		t.Fatalf("fleet fill bought a hull with no profitable first voyage: %+v", got)
+	capital := growthCashTotal(got.QuotedHullPence, got.SlippageReservePence, got.CannonsPence, got.InitialStoresPence)
+	in.CandidateRatePencePerGameDay = float64(capital)/421 + float64(in.IncrementalDailyUpkeepPence)
+	if slow := EvaluateCapacityGrowth(in); slow.Accepted {
+		t.Fatalf("payback beyond 420 game days admitted: %+v", slow)
 	}
-	wantBuffer := max(in.ReservePence, (in.HullPricePence*1_500+9_999)/10_000) + int64(in.FleetSize+1)*in.LotCashPence
-	if got.WorkingCapitalPence != wantBuffer {
-		t.Fatalf("fill mode working cash = %d, want %d", got.WorkingCapitalPence, wantBuffer)
+	in.CandidateRatePencePerGameDay = 10_000
+	in.SurplusPence = 2*capital - 1
+	if over := EvaluateCapacityGrowth(in); over.Accepted || !strings.Contains(over.Reason, "half") {
+		t.Fatalf("capital exceeding half the surplus admitted: %+v", over)
 	}
-	capital := got.QuotedHullPence + got.SlippageReservePence + got.CannonsPence + got.InitialStoresPence
-	in.SurplusPence = 3*capital - 1
-	if over := EvaluateCapacityGrowth(in); over.Accepted {
-		t.Fatalf("fill mode spent more than a third of surplus on one hull: %+v", over)
+	in.SurplusPence = 2 * capital
+	if half := EvaluateCapacityGrowth(in); !half.Accepted {
+		t.Fatalf("capital exactly half the surplus rejected: %+v", half)
 	}
-	in.SurplusPence = 3 * capital
-	if third := EvaluateCapacityGrowth(in); !third.Accepted {
-		t.Fatalf("fill mode rejected a hull costing exactly a third of surplus: %+v", third)
-	}
-	// Large working-cash lots make the trading floor, not the spend cap, bind.
 	in.LotCashPence = 3_000_000
-	wantBuffer = max(in.ReservePence, (in.HullPricePence*1_500+9_999)/10_000) + int64(in.FleetSize+1)*in.LotCashPence
-	in.SurplusPence = capital + wantBuffer - 1
-	if short := EvaluateCapacityGrowth(in); short.Accepted {
-		t.Fatalf("fill mode spent reserves or working cash: %+v", short)
+	buffer := max(in.ReservePence, ceilBPS(in.HullPricePence, 1_500)) + int64(in.FleetSize+1)*in.LotCashPence
+	in.SurplusPence = capital + buffer - 1
+	if short := EvaluateCapacityGrowth(in); short.Accepted || !strings.Contains(short.Reason, "cash lot") {
+		t.Fatalf("build spent protected working cash: %+v", short)
 	}
-	in.SurplusPence = capital + wantBuffer
-	if exact := EvaluateCapacityGrowth(in); !exact.Accepted {
-		t.Fatalf("fill mode rejected exactly funded hull: %+v", exact)
-	}
-	cheaper := in
-	cheaper.HullPricePence = in.HullPricePence / 2
-	if !betterCapacityCandidate(EvaluateCapacityGrowth(cheaper), EvaluateCapacityGrowth(in)) {
-		t.Fatal("fill mode did not prefer the cheaper hull")
-	}
-	in.FleetSize = in.SmallFleetTarget
-	if full := EvaluateCapacityGrowth(in); full.Accepted {
-		t.Fatalf("earnings gates did not return at the fleet target: %+v", full)
+	in.SurplusPence++
+	if exact := EvaluateCapacityGrowth(in); !exact.Accepted || exact.WorkingCapitalPence != buffer {
+		t.Fatalf("exactly funded build rejected: %+v", exact)
 	}
 }
 

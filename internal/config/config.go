@@ -21,7 +21,6 @@ type Config struct {
 	ReservePence        int64
 	MaxPaybackDays      float64
 	CapacityPaybackDays float64
-	SmallFleetTarget    int
 	MarquesEnabled      bool
 }
 
@@ -64,13 +63,9 @@ func Load() (Config, error) {
 	if err != nil || math.IsNaN(cfg.MaxPaybackDays) || cfg.MaxPaybackDays <= 0 || cfg.MaxPaybackDays > 365 {
 		return cfg, errors.New("MAX_PAYBACK_GAME_DAYS must be within (0, 365]")
 	}
-	cfg.CapacityPaybackDays, err = strconv.ParseFloat(env("CAPACITY_PAYBACK_GAME_DAYS", "180"), 64)
+	cfg.CapacityPaybackDays, err = strconv.ParseFloat(env("CAPACITY_PAYBACK_GAME_DAYS", "420"), 64)
 	if err != nil || math.IsNaN(cfg.CapacityPaybackDays) || cfg.CapacityPaybackDays <= 0 || cfg.CapacityPaybackDays > 720 {
 		return cfg, errors.New("CAPACITY_PAYBACK_GAME_DAYS must be within (0, 720]")
-	}
-	cfg.SmallFleetTarget, err = strconv.Atoi(env("SMALL_FLEET_TARGET", "5"))
-	if err != nil || cfg.SmallFleetTarget < 1 {
-		return cfg, errors.New("SMALL_FLEET_TARGET must be an integer of at least 1")
 	}
 	cfg.MarquesEnabled, err = strconv.ParseBool(env("MARQUES_ENABLED", "false"))
 	if err != nil {

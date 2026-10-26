@@ -147,6 +147,8 @@ func TestGrowthRemembersOldestLossBeyondBoundedHistory(t *testing.T) {
 	if err := runner.refresh(remembered.ctx); err != nil {
 		t.Fatalf("refresh loss-inclusive history world: %v", err)
 	}
+	// The loss vetoes lane replication, not independently priced capacity.
+	runner.opts.CapacityPaybackDays = 0.000001
 	if _, err := runner.considerGrowth(remembered.ctx); err != nil {
 		t.Fatalf("considerGrowth with the durable oldest loss: %v", err)
 	}

@@ -797,10 +797,6 @@ type recoveryHarness struct {
 	schema  string
 	// marques enables MARQUES_ENABLED for runners built by this harness.
 	marques bool
-	// fleetTarget is SMALL_FLEET_TARGET for runners built by this harness. It
-	// defaults to 1 so growth tests exercise the earnings rules; cash-funded
-	// fleet fill tests raise it.
-	fleetTarget int
 }
 
 func newRecoveryHarness(t *testing.T) *recoveryHarness {
@@ -822,13 +818,13 @@ func newRecoveryHarness(t *testing.T) *recoveryHarness {
 	if err := db.SaveAccount(ctx, account, credentials); err != nil {
 		t.Fatalf("save test account: %v", err)
 	}
-	return &recoveryHarness{t: t, ctx: ctx, db: db, account: account, api: newFakeGameAPI(t), dsn: dsn, schema: schema, fleetTarget: 1}
+	return &recoveryHarness{t: t, ctx: ctx, db: db, account: account, api: newFakeGameAPI(t), dsn: dsn, schema: schema}
 }
 
 func (h *recoveryHarness) runner(apiKey string) *Runner {
 	h.t.Helper()
 	client := gameapi.New(h.api.server.URL, apiKey, zap.NewNop())
-	instance := New(client, h.db, h.account, zap.NewNop(), Options{Execute: true, MarquesEnabled: h.marques, SmallFleetTarget: h.fleetTarget})
+	instance := New(client, h.db, h.account, zap.NewNop(), Options{Execute: true, MarquesEnabled: h.marques})
 	snapshot, err := h.db.Snapshot(h.ctx, h.account.ID)
 	if err != nil {
 		h.t.Fatalf("load persisted snapshot: %v", err)

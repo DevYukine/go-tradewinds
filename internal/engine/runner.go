@@ -22,7 +22,6 @@ type Options struct {
 	ReservePence        int64
 	MaxPaybackDays      float64
 	CapacityPaybackDays float64
-	SmallFleetTarget    int
 	MarquesEnabled      bool
 }
 
@@ -78,10 +77,7 @@ func New(api *gameapi.Client, db *store.Store, account store.Account, log *zap.L
 		opts.MaxPaybackDays = 12
 	}
 	if opts.CapacityPaybackDays <= 0 || opts.CapacityPaybackDays > 720 {
-		opts.CapacityPaybackDays = 180
-	}
-	if opts.SmallFleetTarget < 1 {
-		opts.SmallFleetTarget = 5
+		opts.CapacityPaybackDays = 420
 	}
 	return &Runner{
 		api:              api,

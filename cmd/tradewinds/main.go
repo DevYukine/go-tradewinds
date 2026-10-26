@@ -163,7 +163,6 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 					ReservePence:        cfg.ReservePence,
 					MaxPaybackDays:      cfg.MaxPaybackDays,
 					CapacityPaybackDays: cfg.CapacityPaybackDays,
-					SmallFleetTarget:    cfg.SmallFleetTarget,
 					MarquesEnabled:      cfg.MarquesEnabled,
 				})
 				runners = append(runners, accountRunner{runner: runner, log: engineLog})

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -20,40 +21,28 @@ const capacityHistoryWindow = 24 * time.Hour
 
 // capacityFleetFillShare bounds one cash-funded build to 1/N of surplus so idle
 // cash scales the fleet gradually instead of draining into hulls at once.
-const capacityFleetFillShare = 3
+const capacityFleetFillShare = 2
 
-var (
-	capacityEvidenceBasis  = fmt.Sprintf("recorded %.0f-real-hour fleet net per active ship game day", capacityHistoryWindow.Hours())
-	capacityShipLossReason = fmt.Sprintf("capacity growth waits %.0f real hours after a ship loss", capacityHistoryWindow.Hours())
-	capacityFleetFillBasis = "owner policy: below SMALL_FLEET_TARGET, idle cash funds the cheapest capable hull with a profitable first voyage, at most a third of surplus"
-)
+const capacityNoSpareWorkReason = "capacity growth needs an executable profitable voyage after incumbent commitments"
+
+var capacityShipLossReason = fmt.Sprintf("capacity growth waits %.0f real hours after a ship loss", capacityHistoryWindow.Hours())
 
 type CapacityGrowthInput struct {
-	Hull                        Hull
-	HullPricePence              int64
-	InitialStoresPence          int64
-	SurplusPence                int64
-	AllTimeNetPence             int64
-	WindowNetPence              int64
-	ActiveShipGameDays          float64
-	FleetSize                   int
-	SmallFleetTarget            int
-	FleetAverageHoldTons        float64
-	FleetFillRatio              float64
-	LotCashPence                int64
-	IncrementalDailyUpkeepPence int64
-	ReservePence                int64
-	MaxPaybackDays              float64
-	HasSpareWork                bool
-	NewestShipProven            bool
+	Hull                         Hull
+	HullPricePence               int64
+	InitialStoresPence           int64
+	SurplusPence                 int64
+	FleetSize                    int
+	CandidateRatePencePerGameDay float64
+	LotCashPence                 int64
+	IncrementalDailyUpkeepPence  int64
+	ReservePence                 int64
+	MaxPaybackDays               float64
+	HasSpareWork                 bool
 }
 
-// Below SmallFleetTarget the owner wants idle cash turned into hulls that have
-// work: a build needs a profitable first voyage (gossip of other companies'
-// prices counts) but no earnings record, its capital may use at most a third
-// of the surplus, and reserves plus every ship's working cash stay untouched.
-// From the target onward, recorded earnings must repay the capital within
-// MaxPaybackDays.
+// Every hull must repay its capital from an accepted plan while preserving
+// operating cash and leaving at least half the surplus uncommitted.
 func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 	decision := GrowthDecision{}
 	guns := min(int64(4), in.Hull.MaxCannons)
@@ -61,7 +50,6 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 		decision.Reason = "capacity growth requires a priced trading hull with room for cannons and cargo"
 		return decision
 	}
-	fill := in.FleetSize < in.SmallFleetTarget
 	slippage := ceilBPS(in.HullPricePence, 1_000)
 	cannons := guns * 15_000
 	capital := growthCashTotal(in.HullPricePence, slippage, cannons, in.InitialStoresPence)
@@ -75,33 +63,22 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 		CannonsPence:           cannons,
 		InitialStoresPence:     in.InitialStoresPence,
 		IncrementalUpkeepPence: in.IncrementalDailyUpkeepPence,
-		EvidenceBasis:          capacityFleetFillBasis,
+		EvidenceBasis:          "best accepted voyage repeat net per game day, or half its stressed outbound rate",
 	}
 	if !in.HasSpareWork {
-		decision.Reason = "capacity growth needs an executable profitable voyage after incumbent commitments"
+		decision.Reason = capacityNoSpareWorkReason
 		return decision
 	}
-	if !fill {
-		if reason := capacityFleetBlockReason(in); reason != "" {
-			decision.Reason = reason
-			return decision
-		}
-		rate := float64(in.WindowNetPence) / in.ActiveShipGameDays
-		if in.FleetFillRatio >= 0.8 && in.FleetAverageHoldTons > 0 {
-			rate *= min(2, max(0.5, float64(in.Hull.HoldCapacityTons)/in.FleetAverageHoldTons))
-		}
-		net := rate - float64(in.IncrementalDailyUpkeepPence)
-		if net <= 0 || math.IsNaN(net) || math.IsInf(net, 0) {
-			decision.Reason = "capacity growth marginal fleet upkeep consumes the observed per-ship earning rate"
-			return decision
-		}
-		decision.IncrementalNetPencePerGameDay = net
-		decision.PaybackGameDays = float64(capital) / net
-		decision.EvidenceBasis = capacityEvidenceBasis
-		if in.MaxPaybackDays <= 0 || math.IsNaN(in.MaxPaybackDays) || math.IsInf(in.MaxPaybackDays, 0) || decision.PaybackGameDays > in.MaxPaybackDays {
-			decision.Reason = "capacity growth hull, slippage, cannon and store capital exceeds maximum game-day payback"
-			return decision
-		}
+	net := in.CandidateRatePencePerGameDay - float64(in.IncrementalDailyUpkeepPence)
+	if net <= 0 || math.IsNaN(net) || math.IsInf(net, 0) {
+		decision.Reason = "capacity growth marginal fleet upkeep consumes the candidate voyage earning rate"
+		return decision
+	}
+	decision.IncrementalNetPencePerGameDay = net
+	decision.PaybackGameDays = float64(capital) / net
+	if in.MaxPaybackDays <= 0 || math.IsNaN(in.MaxPaybackDays) || math.IsInf(in.MaxPaybackDays, 0) || decision.PaybackGameDays > in.MaxPaybackDays {
+		decision.Reason = "capacity growth hull, slippage, cannon and store capital exceeds maximum game-day payback"
+		return decision
 	}
 	if in.FleetSize < 0 || in.LotCashPence < 0 ||
 		in.LotCashPence > 0 && int64(in.FleetSize) >= math.MaxInt64/in.LotCashPence {
@@ -115,29 +92,13 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 		decision.Reason = "capacity growth must preserve quote reserves and a cash lot for every ship after the build"
 		return decision
 	}
-	if fill && capital > in.SurplusPence/capacityFleetFillShare {
-		decision.Reason = "capacity growth below the fleet target spends at most a third of surplus cash per hull"
+	if capital > in.SurplusPence/capacityFleetFillShare {
+		decision.Reason = "capacity growth spends at most half of surplus cash per hull"
 		return decision
 	}
 	decision.Accepted = true
-	decision.Reason = "recorded fleet earnings cover capacity payback, marginal upkeep and every ship's working cash"
-	if fill {
-		decision.Reason = "fleet below SMALL_FLEET_TARGET: the hull costs at most a third of surplus and keeps every ship's working cash"
-	}
+	decision.Reason = "candidate voyage earnings cover payback and marginal upkeep; capital uses at most half the surplus and preserves every ship's working cash"
 	return decision
-}
-
-func capacityFleetBlockReason(in CapacityGrowthInput) string {
-	if !in.NewestShipProven {
-		return "capacity growth waits for the newest ship to complete a positive delivery"
-	}
-	if in.AllTimeNetPence <= 0 {
-		return "capacity growth requires positive all-time recorded realized net"
-	}
-	if in.ActiveShipGameDays < 1 || math.IsNaN(in.ActiveShipGameDays) || math.IsInf(in.ActiveShipGameDays, 0) || in.WindowNetPence <= 0 {
-		return fmt.Sprintf("capacity growth needs positive %.0f-real-hour recorded net and at least one active ship game day", capacityHistoryWindow.Hours())
-	}
-	return ""
 }
 
 func betterCapacityCandidate(candidate, other GrowthDecision) bool {
@@ -243,27 +204,12 @@ func (r *Runner) capacityLosses(ctx context.Context, asOf time.Time) (string, er
 	return "", nil
 }
 
-// fleetBelowTarget reports whether owner fleet-fill policy applies: a relocating
-// ship then no longer pauses growth, because every ship's working cash is
-// still reserved before a build.
-func (r *Runner) fleetBelowTarget() bool {
-	active := 0
-	for _, ship := range r.stateCache.Ships {
-		if ship.Ship.Status != "sunk" {
-			active++
-		}
-	}
-	return active < r.opts.SmallFleetTarget
-}
-
 func (r *Runner) capacityFleetInput(ctx context.Context, evidence *growthEvidence) (CapacityGrowthInput, string, error) {
 	input := CapacityGrowthInput{
-		SurplusPence:     evidence.available,
-		SmallFleetTarget: r.opts.SmallFleetTarget,
-		ReservePence:     r.opts.ReservePence,
-		MaxPaybackDays:   r.opts.CapacityPaybackDays,
+		SurplusPence:   evidence.available,
+		ReservePence:   r.opts.ReservePence,
+		MaxPaybackDays: r.opts.CapacityPaybackDays,
 	}
-	windowStart := evidence.asOf.Add(-capacityHistoryWindow)
 	if until := decode[time.Time](r.snapshot, "_capacity_growth_paused_until"); evidence.asOf.Before(until) {
 		r.wakeBy(until)
 		return input, fmt.Sprintf("capacity growth pauses for %.0f real hours after a build price overrun", capacityHistoryWindow.Hours()), nil
@@ -275,67 +221,28 @@ func (r *Runner) capacityFleetInput(ctx context.Context, evidence *growthEvidenc
 	if scale <= 0 || r.stateCache.Clock.Paused {
 		return input, "capacity growth requires an unpaused authoritative game time scale", nil
 	}
-	var newest ShipState
-	var newestCreatedAt time.Time
-	var totalHold float64
-	allHoldsKnown, allCreationTimesKnown := true, true
 	for _, ship := range r.stateCache.Ships {
 		if ship.Ship.Status == "sunk" {
 			continue
 		}
 		input.FleetSize++
-		activeSince := windowStart
-		if ship.Ship.CreatedAt == nil || ship.Ship.CreatedAt.IsZero() {
-			allCreationTimesKnown = false
-		} else {
-			if ship.Ship.CreatedAt.After(activeSince) {
-				activeSince = *ship.Ship.CreatedAt
+		if ship.Voyage == nil && ship.Ship.Status != "sailing" {
+			mission, data, err := r.loadMission(ctx, ship.Ship.ID)
+			if err != nil {
+				return input, "", err
 			}
-			if ship.Ship.CreatedAt.After(newestCreatedAt) {
-				newestCreatedAt = *ship.Ship.CreatedAt
-				newest = ship
+			if mission != nil && (data.Plan.Destination == "" || data.Plan.Kind == "maintenance" ||
+				data.Relocation == nil && !r.reserveGrowthMission(&growthEvidence{}, mission, &data)) {
+				return input, "capacity growth waits for every stationary incumbent to have a voyage commitment", nil
 			}
 		}
-		input.ActiveShipGameDays += max(0, evidence.asOf.Sub(activeSince).Seconds()) * scale / 86_400
-		hold := ship.HoldCapacityTons
-		if hold <= 0 {
-			if hull, exists := findHull(r.stateCache.Catalog, ship.Ship.ShipClass); exists {
-				hold = hull.HoldCapacityTons
-			}
-		}
-		if hold <= 0 {
-			allHoldsKnown = false
-		} else {
-			totalHold += float64(hold)
-		}
 	}
-	if !newestCreatedAt.IsZero() && evidence.asOf.Before(newestCreatedAt.Add(90*time.Minute)) {
-		r.wakeBy(newestCreatedAt.Add(90 * time.Minute))
-		return input, "capacity growth waits 90 real minutes after the newest ship was created", nil
-	}
-	if input.FleetSize > 0 && allHoldsKnown {
-		input.FleetAverageHoldTons = totalHold / float64(input.FleetSize)
-	}
-	lifetime, err := r.db.EconomicHistory(ctx, r.account.ID, "")
-	if err != nil {
-		return input, "", err
-	}
-	if lifetime.UnknownLossPence < 0 && lifetime.NetPence < math.MinInt64-lifetime.UnknownLossPence {
-		return input, "", errors.New("capacity growth all-time net exceeds integer-pence bounds")
-	}
-	input.AllTimeNetPence = lifetime.NetPence + lifetime.UnknownLossPence
 	window, err := r.db.EconomicHistoryWindow(ctx, r.account.ID, "", evidence.asOf, capacityHistoryWindow)
 	if err != nil {
 		return input, "", err
 	}
 	if window.FutureCompletion {
 		return input, "capacity growth rejects future-dated settlement evidence", nil
-	}
-	// Settlements with unknown costs (routine for freight settled outside our
-	// delivery) are charged at their recorded loss instead of pausing growth:
-	// they can only lower the earnings estimate, never raise it.
-	if window.UnknownLossPence < 0 && window.NetPence < math.MinInt64-window.UnknownLossPence {
-		return input, "", errors.New("capacity growth window net exceeds integer-pence bounds")
 	}
 	var controlIDs []string
 	if err := json.Unmarshal(window.ControlCloseoutIDs, &controlIDs); err != nil {
@@ -354,40 +261,15 @@ func (r *Runner) capacityFleetInput(ctx context.Context, evidence *growthEvidenc
 			return input, "capacity growth requires a surviving hull for an unknown-cost shipyard closeout", nil
 		}
 	}
-	input.WindowNetPence = window.NetPence + window.UnknownLossPence
-	input.NewestShipProven = input.FleetSize == 1
-	proofShipID := ""
-	if input.FleetSize > 1 && allCreationTimesKnown {
-		proofShipID = newest.Ship.ID
-	}
-	deliveries, err := r.db.CapacityDeliveryHistory(ctx, r.account.ID, windowStart, evidence.asOf, proofShipID, newestCreatedAt)
+	deliveries, err := r.db.CapacityDeliveryHistory(ctx, r.account.ID, evidence.asOf)
 	if err != nil {
 		return input, "", err
 	}
 	lots := make([]int64, 0, min(10, len(deliveries)))
-	var deliveredTons, effectiveHold float64
-	fillKnown := true
 	for _, delivery := range deliveries {
 		if delivery.CostsKnown && len(lots) < 10 {
 			lots = append(lots, growthCashTotal(delivery.AcquisitionPence, delivery.FeesPence, delivery.ProvisionsPence))
 		}
-		cost := growthCashTotal(delivery.AcquisitionPence, delivery.FeesPence, delivery.ProvisionsPence, delivery.ExpensesPence)
-		if proofShipID != "" && !delivery.CompletedAt.Before(newestCreatedAt) && delivery.ShipID == proofShipID && delivery.CostsKnown && delivery.ProceedsPence > cost {
-			input.NewestShipProven = true
-		}
-		if delivery.CompletedAt.Before(windowStart) {
-			continue
-		}
-		ship, exists := r.ship(delivery.ShipID)
-		if !exists || ship.EffectiveHoldCapacityTons <= 0 {
-			fillKnown = false
-		} else {
-			effectiveHold += float64(ship.EffectiveHoldCapacityTons)
-		}
-		deliveredTons += float64(delivery.QuantityTons)
-	}
-	if fillKnown && effectiveHold > 0 {
-		input.FleetFillRatio = min(1, max(0, deliveredTons/effectiveHold))
 	}
 	if len(lots) > 0 {
 		sort.Slice(lots, func(i, j int) bool { return lots[i] < lots[j] })
@@ -398,10 +280,17 @@ func (r *Runner) capacityFleetInput(ctx context.Context, evidence *growthEvidenc
 			input.LotCashPence = lots[middle-1] + (lots[middle]-lots[middle-1])/2 + (lots[middle]-lots[middle-1])%2
 		}
 	}
-	if input.FleetSize < input.SmallFleetTarget {
-		return input, "", nil
+	return input, "", nil
+}
+
+func capacityVoyageRate(economics Economics) float64 {
+	if economics.BallastRepeatGameDays > 0 {
+		return float64(economics.BallastRepeatNetPence) / economics.BallastRepeatGameDays
 	}
-	return input, capacityFleetBlockReason(input), nil
+	if economics.GameDays > 0 {
+		return float64(economics.StressNetPence) / (2 * economics.GameDays)
+	}
+	return 0
 }
 
 func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote YardQuote, input CapacityGrowthInput, evidence *growthEvidence) (GrowthDecision, map[string]int64, error) {
@@ -409,21 +298,23 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 	if err != nil {
 		return GrowthDecision{}, nil, err
 	}
-	// Fleet net already prices incumbents; admission separately charges the
-	// candidate's nonlinear marginal upkeep, as the lane-growth path does.
+	// Charge the candidate's nonlinear marginal upkeep separately from its
+	// voyage rate rather than assigning the incumbent fleet's upkeep to it.
 	planning.FleetDailyUpkeepPence = 0
 	plans := PlanVoyages(planning)
 	input.Hull = hull
 	input.HullPricePence = *quote.TotalCostPence
-	fill := input.FleetSize < input.SmallFleetTarget
 	for _, plan := range plans {
 		basis := plan.Economics.RevenueBasis
-		// Below the fleet target, recent gossip of other companies' bids is
-		// enough evidence that the new hull has a profitable first trade.
-		if plan.Accepted && (basis == "depth" || basis == "contract" || fill && basis == "gossip") {
-			input.HasSpareWork = true
+		if !plan.Accepted || basis != "depth" && basis != "contract" && basis != "gossip" {
+			continue
+		}
+		input.HasSpareWork = true
+		input.LotCashPence = max(input.LotCashPence, growthCashTotal(plan.Economics.PurchasePence, plan.Economics.CustomsPence, plan.Economics.StoreCashPence))
+		rate := capacityVoyageRate(plan.Economics)
+		if rate > input.CandidateRatePencePerGameDay {
+			input.CandidateRatePencePerGameDay = rate
 			input.InitialStoresPence = max(plan.Economics.StoreCashPence, plan.Economics.ProvisionsPence)
-			break
 		}
 	}
 	decision := EvaluateCapacityGrowth(input)
@@ -462,12 +353,21 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 	var bestPort Port
 	var bestHull Hull
 	var bestRequired map[string]int64
-	found, evaluated := false, false
+	found, evaluated, canExpand := false, false, true
 	oldUpkeep := DailyUpkeep(r.stateCache.Ships, r.stateCache.Catalog, len(r.stateCache.Factors))
 	grownFleet := make([]ShipState, len(r.stateCache.Ships)+1)
 	copy(grownFleet, r.stateCache.Ships)
+	buildBackoffs := decode[map[string]time.Time](r.snapshot, "_growth_build_backoffs")
 	for _, port := range r.stateCache.Catalog.Ports {
 		if !port.HasShipyard || port.Phase > r.stateCache.Clock.UnlockedPhase {
+			continue
+		}
+		present := slices.Contains(r.stateCache.Factors, port.ID)
+		for _, ship := range r.stateCache.Ships {
+			present = present || ship.Ship.CurrentPortID == port.ID && ship.Voyage == nil &&
+				(ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead")
+		}
+		if !present {
 			continue
 		}
 		for _, hull := range r.stateCache.Catalog.ShipClasses {
@@ -476,6 +376,14 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 			}
 			quote, err := r.growthQuote(port, hull)
 			if err != nil {
+				key := port.ID + "|" + hull.ID
+				observed, exists := r.stateCache.Quotes[key]
+				if !exists || !r.fresh("yard_quotes/"+key) || !r.fresh("books/"+port.ID) ||
+					r.stateCache.Markets[port.ID].Visibility != "quay" || time.Now().Before(buildBackoffs[key]) ||
+					observed.PortID != port.ID || observed.ShipClass != hull.ID {
+					// An observed unavailable hull is not missing authority.
+					canExpand = false
+				}
 				if !evaluated {
 					bestDecision.Reason = err.Error()
 				}
@@ -502,8 +410,24 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 	if err := r.decision(ctx, "", key, bestDecision.Reason, bestDecision); err != nil {
 		return false, err
 	}
+	target := ""
+	if found {
+		target = bestPort.ID
+	}
+	if decode[string](r.snapshot, "_capacity_growth_port") != target {
+		r.snapshot["_capacity_growth_port"] = encode(target)
+		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+			return false, err
+		}
+	}
 	if !found {
-		return false, r.hold(ctx, "", bestDecision.Reason)
+		if err := r.hold(ctx, "", bestDecision.Reason); err != nil {
+			return false, err
+		}
+		if r.opts.Execute && canExpand {
+			return r.considerExpansionAgent(ctx)
+		}
+		return false, nil
 	}
 	if !r.opts.Execute {
 		return false, r.hold(ctx, "", "observe mode: admitted capacity-growth hull is not built")
