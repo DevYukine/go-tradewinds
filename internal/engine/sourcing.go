@@ -352,6 +352,15 @@ func sourcingRouteReady(in PlanningInput, from, to string, hull Hull) (Route, er
 		return Route{}, err
 	}
 	for _, leg := range route.Legs {
+		for _, node := range []string{leg.FromNode, leg.ToNode} {
+			zone := node
+			if port, exists := findPort(in.Catalog, node); exists {
+				zone = port.SeaZoneID
+			}
+			if in.MarqueZones[zone] {
+				return Route{}, fmt.Errorf("sourcing route crosses %s, where we hold an in-force or pending letter of marque", zone)
+			}
+		}
 		for _, zone := range in.Catalog.SeaZones {
 			if zone.ID != leg.FromNode && zone.ID != leg.ToNode {
 				continue
@@ -616,6 +625,33 @@ func (r *Runner) committedPlanningInput(ctx context.Context, ship ShipState) (Pl
 	return r.committedPlanningInputExcept(ctx, ship, "")
 }
 
+func addPlayerBidReservation(reserved map[string]map[string]int64, port, commodity string, tons int64) {
+	if port == "" || commodity == "" || tons <= 0 {
+		return
+	}
+	if reserved[port] == nil {
+		reserved[port] = make(map[string]int64)
+	}
+	reserved[port][commodity] = growthCashTotal(reserved[port][commodity], tons)
+}
+
+func (r *Runner) restingBidReservations() map[string]map[string]int64 {
+	reserved := make(map[string]map[string]int64)
+	orders := decode[[]struct {
+		PortID         string `json:"port_id"`
+		CommodityID    string `json:"commodity_id"`
+		Side           string `json:"side"`
+		Quantity       int64  `json:"quantity"`
+		FilledQuantity int64  `json:"filled_quantity"`
+	}](r.snapshot, "orders")
+	for _, order := range orders {
+		if order.Side == "bid" && order.Quantity > 0 && order.FilledQuantity >= 0 && order.FilledQuantity < order.Quantity {
+			addPlayerBidReservation(reserved, order.PortID, order.CommodityID, order.Quantity-order.FilledQuantity)
+		}
+	}
+	return reserved
+}
+
 func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipState, excludedMission string) (PlanningInput, error) {
 	input := r.planningInput(ship)
 	required, err := r.treasuryReserves(ctx)
@@ -662,6 +698,19 @@ func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipStat
 			for _, contractID := range data.Plan.FreightIDs {
 				reservedFreight[contractID] = true
 			}
+			if data.Plan.ContractID == "" && mission.Phase != "settling" && mission.Phase != "settled" {
+				delivered := data.DeliveredQuantity
+				for _, freight := range data.Freight {
+					if freight.Settled {
+						delivered = max(0, delivered-freight.Quantity)
+					}
+				}
+				addPlayerBidReservation(input.ReservedPlayerBidTons, data.Plan.Destination, data.Plan.Commodity, max(0, data.Plan.Quantity-delivered))
+			}
+		}
+		if data.GrowthLane != nil && data.GrowthLane.NextPlan != nil && data.GrowthLane.NextPlan.ContractID == "" {
+			next := data.GrowthLane.NextPlan
+			addPlayerBidReservation(input.ReservedPlayerBidTons, next.Destination, next.Commodity, next.Quantity)
 		}
 		if ordinaryIncomePending(&data) && (mission.Phase == "provision" || mission.Phase == "buy" || mission.Phase == "freight") &&
 			!r.loadingReservationSuspended(mission, &data, owner) {

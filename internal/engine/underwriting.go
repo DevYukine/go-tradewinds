@@ -30,6 +30,36 @@ type InsurancePolicy struct {
 	TermsChanged      bool      `json:"terms_changed,omitempty"`
 }
 
+type LloydsEstimate struct {
+	PolicyID         string `json:"id"`
+	ExpectedLossBPS  *int64 `json:"lloyds_expected_loss_bps"`
+	MinPremiumBPS    *int64 `json:"lloyds_min_premium_bps"`
+	PremiumMarginBPS *int64 `json:"premium_margin_bps"`
+}
+
+func (estimate *LloydsEstimate) UnmarshalJSON(data []byte) error {
+	type wireEstimate LloydsEstimate
+	var decoded wireEstimate
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	value := LloydsEstimate(decoded)
+	if !validLloydsEstimate(value) {
+		return errors.New("Lloyd's estimate has a rate outside 0..10000 bps")
+	}
+	*estimate = value
+	return nil
+}
+
+func validLloydsEstimate(estimate LloydsEstimate) bool {
+	for _, rate := range []*int64{estimate.ExpectedLossBPS, estimate.MinPremiumBPS, estimate.PremiumMarginBPS} {
+		if rate != nil && (*rate < 0 || *rate > 10000) {
+			return false
+		}
+	}
+	return true
+}
+
 func insuranceUUID(id string) bool {
 	return len(id) == 36 && uuid.Validate(id) == nil
 }
@@ -105,6 +135,20 @@ func validHullPolicy(policy InsurancePolicy) bool {
 		policy.TotalPremiumPence == ceilBPS(policy.InsuredValuePence, policy.PremiumBPS) && !policy.TermsChanged
 }
 
+// lloydsSliceNet uses Lloyd's upper bound on the expected claim, not a
+// measured total-loss probability.
+func lloydsSliceNet(policy InsurancePolicy, estimate LloydsEstimate, sliceBPS int64) (netPence int64, ok bool) {
+	if !validHullPolicy(policy) || !validLloydsEstimate(estimate) ||
+		estimate.ExpectedLossBPS == nil || estimate.PremiumMarginBPS == nil ||
+		*estimate.PremiumMarginBPS < 50 || sliceBPS <= 0 || sliceBPS > 10000 {
+		return 0, false
+	}
+	premium := policy.TotalPremiumPence * sliceBPS / 10000
+	collateral := ceilBPS(policy.InsuredValuePence, sliceBPS)
+	netPence = premium - ceilBPS(collateral, *estimate.ExpectedLossBPS)
+	return netPence, netPence > 0
+}
+
 func sameInsuranceTerms(left, right InsurancePolicy) bool {
 	return strings.EqualFold(left.ID, right.ID) && strings.EqualFold(left.InsuredCompanyID, right.InsuredCompanyID) &&
 		strings.EqualFold(left.ShipID, right.ShipID) && left.OriginPortID == right.OriginPortID && left.DestPortID == right.DestPortID &&
@@ -137,10 +181,7 @@ func ceilRatio(value, numerator, denominator int64) int64 {
 	return int64(quotient)
 }
 
-// EvaluateUnderwriting admits a minimum fully collateralized pilot, never a
-// claim of demonstrated positive EV. Direction-only observations omit hull,
-// season and correlated-risk calibration. Unresolved policies are censored.
-func EvaluateUnderwriting(policy InsurancePolicy, history []InsurancePolicy, budget UnderwritingBudget) UnderwritingDecision {
+func underwritingAdmission(policy InsurancePolicy, history []InsurancePolicy, budget UnderwritingBudget) UnderwritingDecision {
 	decision := UnderwritingDecision{PolicyID: policy.ID, SliceBPS: 500}
 	if !validHullPolicy(policy) || !retainedInsuranceTermsAgree(policy, history) || budget.Now.IsZero() || policy.ExpiresAt.IsZero() ||
 		!policy.ExpiresAt.After(budget.Now) || policy.CreatedAt.After(budget.Now) || policy.UpdatedAt.After(budget.Now) ||
@@ -169,6 +210,19 @@ func EvaluateUnderwriting(policy InsurancePolicy, history []InsurancePolicy, bud
 		decision.Reason = "full collateral exceeds uncommitted regional cash or the permanent pilot loss budget"
 		return decision
 	}
+	decision.Accepted = true
+	return decision
+}
+
+// EvaluateUnderwriting admits a minimum fully collateralized pilot, never a
+// claim of demonstrated positive EV. Direction-only observations omit hull,
+// season and correlated-risk calibration. Unresolved policies are censored.
+func EvaluateUnderwriting(policy InsurancePolicy, history []InsurancePolicy, budget UnderwritingBudget) UnderwritingDecision {
+	decision := underwritingAdmission(policy, history, budget)
+	if !decision.Accepted {
+		return decision
+	}
+	decision.Accepted = false
 
 	byID := make(map[string]InsurancePolicy, len(history))
 	for _, row := range history {

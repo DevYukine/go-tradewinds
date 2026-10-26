@@ -55,6 +55,7 @@ type ShipClass struct {
 	CrewRequired        int32                     `json:"crew_required"`
 	BaseLaborCostPence  int64                     `json:"base_labor_cost_pence"`
 	BuildMaterials      []ShipMaterialRequirement `json:"build_materials"`
+	CanSealDispatches   bool                      `json:"can_seal_dispatches"`
 }
 
 type ShipMaterialRequirement struct {
@@ -126,6 +127,7 @@ type Ship struct {
 	ConvoyID              *string    `json:"convoy_id"`
 	CreatedAt             time.Time  `json:"created_at"`
 	UpdatedAt             time.Time  `json:"updated_at"`
+	DispatchesSealed      bool       `json:"dispatches_sealed"`
 }
 
 // ShipDetail is ShipResult in the official schema, including stores and cargo
@@ -287,11 +289,15 @@ type PortGossip struct {
 }
 
 type GossipCommodity struct {
-	CommodityID  string    `json:"commodity_id"`
-	CurrentStock int32     `json:"current_stock"`
-	BestBidPence *int64    `json:"best_bid_pence"`
-	BestAskPence *int64    `json:"best_ask_pence"`
-	SnapshotAt   time.Time `json:"snapshot_at"`
+	CommodityID           string    `json:"commodity_id"`
+	CurrentStock          int32     `json:"current_stock"`
+	BestBidPence          *int64    `json:"best_bid_pence"`
+	BestAskPence          *int64    `json:"best_ask_pence"`
+	SnapshotAt            time.Time `json:"snapshot_at"`
+	BestPlayerBidPence    *int64    `json:"best_player_bid_pence"`
+	BestPlayerBidQuantity *int64    `json:"best_player_bid_quantity"`
+	BestPlayerAskPence    *int64    `json:"best_player_ask_pence"`
+	BestPlayerAskQuantity *int64    `json:"best_player_ask_quantity"`
 }
 
 type Vault struct {

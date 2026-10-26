@@ -199,9 +199,9 @@ The immutable 200 response must identify one exact owned slice with present, bou
 | Regional remittance | Observed fee and reserve-preserving funding, not income |
 | Warehouses and factors | Access and storage have recurring/capital costs; ownership is not proof of a profitable trade |
 | Futures and market-making | No demonstrated executable edge justifies speculative exposure |
-| Marques, patrols and privateering | Unpublished encounter odds and recovery/ammunition costs prevent a measured positive-net claim |
+| Marques | Supported but off by default (`MARQUES_ENABLED`); when enabled, issued only from the server's traffic-priced quote, outside our own fleet's exposure and within a small budget with a realized stop; see the update audit below |
 | Convoys | Require economic justification and an owner-provided naming theme before creation |
-| Ship disposal | No published voluntary sale, scrap or transfer operation |
+| Ship disposal and purchase | Players may list and buy ships in port; not used yet because a bought hull keeps its seller's name |
 
 ### Announced piracy update (2026-10-24)
 
@@ -247,6 +247,22 @@ Final cash includes hull/gun purchases, withheld initial stores, fleet upkeep an
 A separate real-CLI fixture built one hull, bought initial stores and four cannons, and executed two actual 48-ton deliveries with one controller-selected empty return. Three process runs retained the admitted allocation and issued no duplicate mutations. Its finite 104-ton source and buyer books were consumed by the two shipments plus an explicit external source order; no return plan or mission was injected by the harness.
 
 The corrected permanent history, actual receipts and regional vault changes independently reconcile to **37,929 pence of operating net**, including 204 pence of commissioning stores/customs and all 75 pence of navigation charges exactly once. The 120,000-pence hull/gun investment is separate, not silently excluded from the vault reconciliation. This synthetic execution took 11.22 seconds, with accelerated authoritative arrivals and no calibrated hazards or fleet-upkeep schedule. It proves commissioning, conditional continuation and accounting—not live earnings or future market replenishment.
+
+### Game update audit (2026-10-25)
+
+Checked against the [published guide](https://tradewinds.kibb.io/skill.md) and [OpenAPI schema](https://tradewinds.kibb.io/api-docs/openapi.json) fetched on 2026-10-25. No request the bot already sends changed shape. Responses gained fields the bot now decodes: ship `created_at` and `dispatches_sealed`, ship class `can_seal_dispatches`, book level `is_npc`, gossip `best_player_*`, and Lloyd's estimates on open policy listings.
+
+At that time the bot held one hoy and about 113,945 Crowns idle. Growth had last built on 2026-10-22: the lane-proof path needs two positive delivered cycles inside 12 real hours plus repeat destination depth, which one ship rarely observes. The owner asked for a small fleet of cheap hulls first and for idle cash to be invested. Capacity growth (see `docs/runbook.md`) prices new hulls from recent recorded fleet earnings instead. An observe-only run of an earlier development build, on an earlier copy of the live database and with a 12 real hour earnings window, admitted a hoy at Amsterdam (turnkey 24,003 Crowns, about 302 Crowns per game day of recorded net per ship over that 12 hour window after 11.92 Crowns of extra upkeep, payback about 91 game days). A later build with the 24 hour window held growth at 2026-10-26 00:15 UTC because a freight settlement with unknown costs completed inside the window. Such settlements recur from routine freight handling: the live database held four, all zero-ton freight, completed between 2026-10-23 03:47 and 2026-10-25 23:18 UTC. The owner asked that they no longer pause growth, so their recorded losses now reduce window net and their recorded gains are ignored. On a fresh copy at 2026-10-26 09:43 UTC the relaxed build held instead because no candidate hull had an executable profitable voyage; the existing hoy at Portsmouth found no destination with observed depth either. These are recorded rates, not forecasts: a new hull that finds no work lowers the per-ship rate and pauses further buying, and a ship loss in the window pauses it too.
+
+| Update item | Treatment |
+| --- | --- |
+| Player orders in gossip | Where we have no live book, a fresh gossiped player bid's tons, minus our resting bids, our sales there since the observation and other missions' undelivered tons, can price a whole spot lot. Gossip's best bid covers the whole book, so the lot is admitted only when that best bid is above the player bid (a known non-player floor) and the lot stays positive with every ton valued at it less 25%, because the player order may be gone on arrival. Otherwise gossip still prices one ton. Gossip-priced lots never justify buying a hull. |
+| Royal monopolies | `GET /v1/world/monopolies` is fetched every refresh. Crown (NPC) asks for a commodity in a region where another company holds an in-force monopoly are removed from planning books, so no plan relies on purchases the server refuses. Player asks stay. Buying monopolies is not used: the quote prices them at a tenth of Crown sales and they pay only with resale volume we have not measured. |
+| Lloyd's quote and estimates | Underwriting uses the per-policy expected-loss upper bound when present (see runbook). Our own voyages are still not insured. |
+| Marques repriced | The quote prices a marque at 60% of expected prize after the Admiral's tenth, from 7 game days of laden passages. A marque is issued only when the zone is outside our routes, ports and underwritten policies, the price is not the floor, at least one laden passage per game day was recorded, the zone has room under the 5,000 bps cap, expected prize is at least 1.4x cost, cost is at most 5% of liquid funds (10% for all marques in force), and three or more finished marques have not returned less than 0.8x their cost. While our marque is in force the planner avoids that zone. The prize estimate depends on past traffic and is not a measured outcome until marques finish. |
+| Turnkey builds from player asks | Already reflected in yard quotes; no change. |
+| Player charters | Already planned exactly like Crown charters. |
+| Not adopted yet | Ship purchases (naming), commissions, envelopes and packets (no measured buyer demand), loans, the credit board, banks, ventures and ship shares (counterparty and default risk without credit history), convoy announcements. Idle cash goes to ships first. |
 
 ## Durable economic record
 

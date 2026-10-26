@@ -34,6 +34,7 @@ type Hull struct {
 	HoldCapacityTons    int64  `json:"hold_capacity_tons"`
 	MaxCannons          int64  `json:"max_cannons"`
 	CrewRequired        int64  `json:"crew_required"`
+	CanSealDispatches   bool   `json:"can_seal_dispatches"`
 }
 
 type Zone struct {
@@ -72,6 +73,9 @@ type ShipState struct {
 		TurnaroundUnlocksAt *time.Time `json:"turnaround_unlocks_at"`
 		DockQueuedAt        *time.Time `json:"dock_queued_at"`
 		BerthedAt           *time.Time `json:"berthed_at"`
+		CreatedAt           *time.Time `json:"created_at"`
+		UpdatedAt           *time.Time `json:"updated_at"`
+		DispatchesSealed    bool       `json:"dispatches_sealed"`
 	} `json:"ship"`
 	HoldCapacityTons          int64            `json:"hold_capacity_tons"`
 	EffectiveHoldCapacityTons int64            `json:"effective_hold_capacity_tons"`
@@ -108,6 +112,7 @@ type Level struct {
 	OrderID           string `json:"order_id"`
 	PricePence        int64  `json:"price_pence"`
 	RemainingQuantity int64  `json:"remaining_quantity"`
+	IsNPC             bool   `json:"is_npc"`
 }
 
 type CommodityBook struct {
@@ -126,16 +131,22 @@ type Market struct {
 	Books      []CommodityBook `json:"books"`
 }
 
+type GossipCommodity struct {
+	CommodityID           string    `json:"commodity_id"`
+	SnapshotAt            time.Time `json:"snapshot_at"`
+	BestBidPence          *int64    `json:"best_bid_pence"`
+	BestAskPence          *int64    `json:"best_ask_pence"`
+	BestPlayerBidPence    *int64    `json:"best_player_bid_pence"`
+	BestPlayerBidQuantity *int64    `json:"best_player_bid_quantity"`
+	BestPlayerAskPence    *int64    `json:"best_player_ask_pence"`
+	BestPlayerAskQuantity *int64    `json:"best_player_ask_quantity"`
+}
+
 type Gossip struct {
-	SubjectPortID string    `json:"subject_port_id"`
-	SnapshotAt    time.Time `json:"snapshot_at"`
-	AgeSeconds    int64     `json:"age_seconds"`
-	Commodities   []struct {
-		CommodityID  string    `json:"commodity_id"`
-		SnapshotAt   time.Time `json:"snapshot_at"`
-		BestBidPence *int64    `json:"best_bid_pence"`
-		BestAskPence *int64    `json:"best_ask_pence"`
-	} `json:"commodities"`
+	SubjectPortID string            `json:"subject_port_id"`
+	SnapshotAt    time.Time         `json:"snapshot_at"`
+	AgeSeconds    int64             `json:"age_seconds"`
+	Commodities   []GossipCommodity `json:"commodities"`
 }
 
 type PortDetail struct {
@@ -183,11 +194,13 @@ type Rate struct {
 }
 
 type YardQuote struct {
-	PortID         string `json:"port_id"`
-	ShipClass      string `json:"ship_class"`
-	BuildMode      string `json:"build_mode"`
-	Available      bool   `json:"available"`
-	TotalCostPence *int64 `json:"total_cost_pence"`
+	PortID            string `json:"port_id"`
+	ShipClass         string `json:"ship_class"`
+	BuildMode         string `json:"build_mode"`
+	Available         bool   `json:"available"`
+	TotalCostPence    *int64 `json:"total_cost_pence"`
+	MaterialsPence    int64  `json:"materials_pence"`
+	NPCMaterialsPence int64  `json:"npc_materials_pence"`
 }
 
 type DatasetMeta struct {

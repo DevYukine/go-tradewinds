@@ -13,15 +13,24 @@ import (
 	"time"
 )
 
-func putGrowthHistoryEvidence(t *testing.T, db *Store, row Settlement) {
+type growthSettlementAction struct {
+	Path   string
+	ShipID string
+}
+
+func putGrowthHistoryEvidence(t *testing.T, db *Store, row Settlement, overrides ...growthSettlementAction) {
 	t.Helper()
 	ctx := context.Background()
 	row.ActionID = row.ID + "-action"
-	row.ShipID = "growth-history-ship"
+	source := growthSettlementAction{Path: "/v1/fleet/depart", ShipID: "growth-history-ship"}
+	if len(overrides) > 0 {
+		source = overrides[0]
+	}
+	row.ShipID = source.ShipID
 	row.MissionID = row.ID + "-mission"
 	if _, err := db.BeginAction(ctx, &Action{
 		ID: row.ActionID, AccountID: row.AccountID, Method: http.MethodPost,
-		Path: "/v1/fleet/depart", Body: json.RawMessage(`{"ship_id":"growth-history-ship","dest_port_id":"portb"}`),
+		Path: source.Path, Body: json.RawMessage(`{"ship_id":"growth-history-ship","dest_port_id":"portb"}`),
 	}); err != nil {
 		t.Fatalf("begin history action: %v", err)
 	}
@@ -270,6 +279,90 @@ func TestGrowthHistoryRejectsInvalidScope(t *testing.T) {
 	} {
 		if _, err := db.GrowthHistory(context.Background(), test.account, test.lane, test.asOf); !errors.Is(err, ErrInvalidInput) {
 			t.Fatalf("invalid growth query reached storage: %v", err)
+		}
+	}
+}
+
+func TestEconomicHistoryWindowKeepsExactNetAndTradingUncertainty(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	ctx := context.Background()
+	asOf := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	const accountID = "capacity-history"
+	const exact = int64(9_007_199_254_740_993)
+	saveTestAccount(t, db, accountID)
+	for _, row := range []Settlement{
+		{ID: "capacity-boundary-profit", Kind: "spot", CostsKnown: true, QuantityTons: 1, ProceedsPence: exact, ExpensesPence: 17, CompletedAt: asOf.Add(-24 * time.Hour)},
+		{ID: "capacity-outside-loss", Kind: "aborted", CostsKnown: true, AcquisitionPence: 100, CompletedAt: asOf.Add(-24*time.Hour - time.Microsecond)},
+		{ID: "capacity-old-unknown", Kind: "spot", QuantityTons: 1, AcquisitionPence: 100, ProceedsPence: 25, CompletedAt: asOf.Add(-25 * time.Hour)},
+		{ID: "capacity-control-closeout", Kind: "aborted", FeesPence: 3, ProvisionsPence: 5, ExpensesPence: 7, CompletedAt: asOf.Add(-time.Hour)},
+	} {
+		row.AccountID, row.Lane, row.GameSeconds = accountID, "window", 3_600
+		source := growthSettlementAction{Path: "/v1/market/place-order", ShipID: "growth-history-ship"}
+		if row.ID == "capacity-control-closeout" {
+			source = growthSettlementAction{Path: "/v1/shipyard/build-ship"}
+		}
+		putGrowthHistoryEvidence(t, db, row, source)
+	}
+	history, err := db.EconomicHistoryWindow(ctx, accountID, "window", asOf, 24*time.Hour)
+	if err != nil || history.NetPence != exact-32 || history.UnknownLossPence != 0 || history.UnknownCosts || history.UnknownProbeCosts || history.FutureCompletion {
+		t.Fatalf("capacity cohort changed exact net, bounds or control-closeout exemption: %+v, %v", history, err)
+	}
+	var controlIDs []string
+	if err := json.Unmarshal(history.ControlCloseoutIDs, &controlIDs); err != nil || len(controlIDs) != 1 || controlIDs[0] != "capacity-control-closeout" {
+		t.Fatalf("capacity control identity was not retained for exact fleet validation: %q, %v", history.ControlCloseoutIDs, err)
+	}
+	controls, err := db.SettlementsByID(ctx, accountID, controlIDs)
+	if err != nil || len(controls) != 1 || controls[0].ShipID != "" {
+		t.Fatalf("capacity control identity did not decode its unbuilt hull: %+v, %v", controls, err)
+	}
+	laneProof, err := db.GrowthHistory(ctx, accountID, "window", asOf)
+	if err != nil || !laneProof.UnknownCosts {
+		t.Fatalf("capacity closeout exemption relaxed lane-proof rules: %+v, %v", laneProof, err)
+	}
+	lifetime, err := db.EconomicHistory(ctx, accountID, "window")
+	if err != nil || !lifetime.UnknownCosts || lifetime.NetPence != exact-117 || lifetime.UnknownLossPence != -90 {
+		t.Fatalf("capacity cohort rewrote permanent history: %+v, %v", lifetime, err)
+	}
+	putGrowthHistoryEvidence(t, db, Settlement{
+		ID: "capacity-future-profit", AccountID: accountID, Lane: "window", Kind: "spot", CostsKnown: true,
+		QuantityTons: 1, GameSeconds: 3_600, ProceedsPence: 100, CompletedAt: asOf.Add(time.Microsecond),
+	})
+	history, err = db.EconomicHistoryWindow(ctx, accountID, "window", asOf, 24*time.Hour)
+	if err != nil || !history.FutureCompletion || history.NetPence != exact-32 {
+		t.Fatalf("future settlement supplied capacity earnings or escaped its veto: %+v, %v", history, err)
+	}
+	// Uncertain rows contribute only their recorded losses; recorded gains are ignored.
+	for _, test := range []struct {
+		name        string
+		kind        string
+		tons        int64
+		known       bool
+		proceeds    int64
+		acquisition int64
+		wantLoss    int64
+		probe       bool
+		path        string
+	}{
+		{name: "spot", kind: "spot", tons: 1, path: "/v1/market/place-order"},
+		{name: "spot-gain", kind: "spot", tons: 1, proceeds: 500, path: "/v1/market/place-order"},
+		{name: "aborted", kind: "aborted", tons: 1, path: "/v1/market/place-order"},
+		{name: "unknown", kind: "unknown", path: "/v1/market/place-order"},
+		{name: "unknown-known-gain", kind: "unknown", known: true, proceeds: 500, path: "/v1/market/place-order"},
+		{name: "unknown-known-loss", kind: "unknown", known: true, acquisition: 75, wantLoss: -75, path: "/v1/market/place-order"},
+		{name: "relocation", kind: "relocation", probe: true, path: "/v1/market/place-order"},
+		{name: "unwind", kind: "aborted", acquisition: 1, wantLoss: -1, path: "/v1/shipyard/build-ship"},
+		{name: "dock", kind: "aborted", path: "/v1/fleet/dock"},
+		{name: "market-abort", kind: "aborted", acquisition: 40, wantLoss: -40, path: "/v1/market/place-order"},
+	} {
+		row := Settlement{
+			ID: "capacity-unknown-" + test.name, AccountID: accountID, Lane: test.name, Kind: test.kind, CostsKnown: test.known,
+			QuantityTons: test.tons, ProceedsPence: test.proceeds, AcquisitionPence: test.acquisition, GameSeconds: 3_600, CompletedAt: asOf.Add(-time.Hour),
+		}
+		putGrowthHistoryEvidence(t, db, row, growthSettlementAction{Path: test.path})
+		history, err := db.EconomicHistoryWindow(ctx, accountID, row.Lane, asOf, 24*time.Hour)
+		if err != nil || !history.UnknownCosts || history.UnknownProbeCosts != test.probe ||
+			history.NetPence != 0 || history.UnknownLossPence != test.wantLoss {
+			t.Fatalf("uncertain %s row was not charged only its recorded loss %d: %+v, %v", test.name, test.wantLoss, history, err)
 		}
 	}
 }

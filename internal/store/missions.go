@@ -49,6 +49,27 @@ func lockMissionAccount(tx *gorm.DB, accountID string) error {
 	return tx.Exec("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", "tradewinds:mission-slot:"+accountID).Error
 }
 
+func (s *Store) Missions(ctx context.Context, accountID string) ([]Mission, error) {
+	if !validID(accountID) {
+		return nil, fmt.Errorf("mission account query: %w", ErrInvalidInput)
+	}
+	db, cancel := s.query(ctx)
+	defer cancel()
+	var privateRows []missionRow
+	if err := db.Where("account_id = ?", accountID).Order("ship_lookup").Find(&privateRows).Error; err != nil {
+		return nil, err
+	}
+	missions := make([]Mission, 0, len(privateRows))
+	for _, stored := range privateRows {
+		mission, err := s.decodeMission(stored)
+		if err != nil {
+			return nil, err
+		}
+		missions = append(missions, *mission)
+	}
+	return missions, nil
+}
+
 func (s *Store) PutMission(ctx context.Context, mission *Mission) error {
 	if !validMission(mission) {
 		return fmt.Errorf("mission fields: %w", ErrInvalidInput)

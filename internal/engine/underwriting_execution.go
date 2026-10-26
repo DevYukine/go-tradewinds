@@ -285,6 +285,74 @@ func (r *Runner) underwritingBudget(ctx context.Context, policy InsurancePolicy,
 
 func (r *Runner) pricedUnderwriting(policy InsurancePolicy, history []InsurancePolicy, budget UnderwritingBudget) UnderwritingDecision {
 	decision := EvaluateUnderwriting(policy, history, budget)
+	var listings []json.RawMessage
+	if err := json.Unmarshal(r.snapshot["insurance"], &listings); err != nil {
+		decision.Accepted = false
+		decision.Reason = fmt.Sprintf("insurance estimates could not be decoded: %v", err)
+		return decision
+	}
+	estimates := make(map[string]LloydsEstimate, len(listings))
+	for _, listing := range listings {
+		var identity struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(listing, &identity); err != nil {
+			decision.Accepted = false
+			decision.Reason = fmt.Sprintf("insurance estimate identity could not be decoded: %v", err)
+			return decision
+		}
+		var estimate LloydsEstimate
+		if err := json.Unmarshal(listing, &estimate); err != nil {
+			if strings.EqualFold(identity.ID, policy.ID) {
+				decision.Accepted = false
+				decision.Reason = fmt.Sprintf("Lloyd's estimate could not be decoded: %v", err)
+				return decision
+			}
+			continue
+		}
+		if estimate.ExpectedLossBPS != nil {
+			estimates[strings.ToLower(estimate.PolicyID)] = estimate
+		}
+	}
+	estimate, hasEstimate := estimates[strings.ToLower(policy.ID)]
+	var lloydsNet int64
+	if hasEstimate {
+		if admission := underwritingAdmission(policy, history, budget); !admission.Accepted {
+			return admission
+		}
+		var ok bool
+		lloydsNet, ok = lloydsSliceNet(policy, estimate, decision.SliceBPS)
+		if !ok {
+			decision.Accepted = false
+			decision.Reason = "Lloyd's estimate lacks a positive hull-only slice net or at least 50 bps premium margin"
+			return decision
+		}
+		decision.ExpectedClaimsPence = decision.PremiumPence - lloydsNet
+		decision.ExpectedNetPence = lloydsNet - budget.OpportunityCostPence
+		decision.EstimatedLossBPS = *estimate.ExpectedLossBPS
+		decision.ConservativeLossBPS = *estimate.ExpectedLossBPS
+		decision.Accepted = decision.ExpectedNetPence > 0
+		decision.Reason = "minimum hull-only pilot has positive net using Lloyd's expected-claim upper bound after shipping opportunity cost; full loss remains affordable"
+		if !decision.Accepted {
+			decision.Reason = "Lloyd's underwriting net is not positive after shipping opportunity cost"
+		}
+		if decision.EstimatedLockGameDays <= 0 {
+			// The public policy omits hull class; use the slowest observed
+			// matching route rather than depending on map iteration order.
+			for _, route := range r.stateCache.Routes {
+				hull, exists := findHull(r.stateCache.Catalog, route.ShipClass)
+				if route.FromPort != policy.OriginPortID || route.ToPort != policy.DestPortID ||
+					!exists || hull.BaseSpeedCentiknots <= 0 || route.TotalDistanceNM <= 0 {
+					continue
+				}
+				sailingDays := float64(route.TotalDistanceNM) / (float64(hull.BaseSpeedCentiknots) / 100 * 0.8) / 24
+				decision.EstimatedLockGameDays = max(decision.EstimatedLockGameDays, sailingDays)
+			}
+			if decision.EstimatedLockGameDays <= 0 {
+				decision.EstimatedLockGameDays = 15
+			}
+		}
+	}
 	if !decision.Accepted {
 		return decision
 	}
@@ -306,6 +374,14 @@ func (r *Runner) pricedUnderwriting(policy InsurancePolicy, history []InsuranceP
 		return decision
 	}
 	budget.OpportunityCostPence = int64(opportunity)
+	if hasEstimate {
+		decision.ExpectedNetPence = lloydsNet - budget.OpportunityCostPence
+		decision.Accepted = decision.ExpectedNetPence > 0
+		if !decision.Accepted {
+			decision.Reason = "Lloyd's underwriting net is not positive after shipping opportunity cost"
+		}
+		return decision
+	}
 	return EvaluateUnderwriting(policy, history, budget)
 }
 

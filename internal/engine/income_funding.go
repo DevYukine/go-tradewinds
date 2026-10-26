@@ -70,6 +70,9 @@ func addFundingFees(plan Plan, fees int64) Plan {
 	if plan.Economics.ExpectedNetPence <= 0 {
 		return reject(plan, "non-positive destination contribution after measured funding fees")
 	}
+	if plan.playerBidStress && plan.Economics.ExpectedNetPence-plan.Economics.PriceUncertaintyStressPence <= 0 {
+		return reject(plan, "player bid lot is not net-positive at the stressed gossip NPC bid after funding fees")
+	}
 	return plan
 }
 

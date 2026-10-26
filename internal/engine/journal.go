@@ -207,8 +207,9 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 	}
 	if persisted.State == store.ActionReconciled {
 		var evidence struct {
-			Kind string    `json:"kind"`
-			Ship ShipState `json:"ship"`
+			Kind   string         `json:"kind"`
+			Ship   ShipState      `json:"ship"`
+			Marque letterOfMarque `json:"marque"`
 		}
 		if err := json.Unmarshal(persisted.Response, &evidence); err != nil {
 			return false, fmt.Errorf("invalid reconciliation evidence for %s: %w", persisted.ID, err)
@@ -219,6 +220,10 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 		if action.Stage == "build" && evidence.Kind == "authoritative_named_build" &&
 			evidence.Ship.Ship.ID != "" && evidence.Ship.Ship.Name == data.BuildName && evidence.Ship.Ship.ShipClass == data.BuildClass {
 			data.BuiltShipID = evidence.Ship.Ship.ID
+		}
+		if action.Stage == "marque" && evidence.Kind == "authoritative_marque" && data.Marque != nil &&
+			validMarque(evidence.Marque) && evidence.Marque.SeaZoneID == data.Marque.Quote.SeaZoneID && evidence.Marque.AddedPiracyBPS == 500 {
+			data.Marque.IssuedID, data.Marque.ExpiresAt = evidence.Marque.ID, evidence.Marque.ExpiresAt
 		}
 		return r.applyReconciliation(ctx, mission, data)
 	}
@@ -356,6 +361,20 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 	if status >= 200 && status < 300 {
 		if changed && data.Action == nil && data.LastActionID == action.ID {
 			if outcome == actionSuccess {
+				if action.Stage == "build" && data.Capacity != nil && data.BuildCostPence > data.Capacity.QuoteLimitPence {
+					if entry := r.log.Check(zap.WarnLevel, "capacity build receipt exceeded the admitted turnkey quote ceiling"); entry != nil {
+						fields := []zap.Field{
+							zap.Int64("quote_limit_pence", data.Capacity.QuoteLimitPence),
+							zap.Int64("actual_cost_pence", data.BuildCostPence),
+						}
+						texts := []outcomeText{
+							{field: "ship_id", value: data.BuiltShipID},
+							{field: "build_port", value: data.BuildPort},
+							{field: "build_class", value: data.BuildClass},
+						}
+						entry.Write(r.scrubOutcomeFields(ctx, fields, texts)...)
+					}
+				}
 				r.logCommittedAction(ctx, mission, data, action, response)
 			}
 		} else if entry := r.log.Check(zap.WarnLevel, "committed action requires authoritative reconciliation"); entry != nil {
@@ -790,6 +809,8 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 	action := data.Action
 	data.CostsKnown = false
 	switch data.Action.Stage {
+	case "marque":
+		mission.Phase = "done"
 	case "depart":
 		data.DepartedCargo = data.Action.Before.CargoManifest
 		mission.Phase = "sailing"
@@ -809,6 +830,9 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 			mission.Phase = "maintenance"
 		}
 	case "refit":
+		if data.Capacity != nil {
+			data.Capacity.RefitAttempts++
+		}
 		if data.Plan.Kind == "maintenance" {
 			mission.Phase = "maintenance"
 		} else if mission.ShipID == "__growth" {
@@ -869,12 +893,20 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		return errors.New("new action requires current successful server clock authority")
 	}
 	action := data.Action
-	if mission.ShipID == "__growth" && (data.GrowthLane == nil ||
-		data.GrowthLane.AdmissionID != mission.Generation || data.GrowthLane.withdrawn()) {
-		return errors.New("new commissioning spend requires its active admitted allocation; withdrawn intents only resolve attempted actions and close")
+	if mission.ShipID == "__growth" {
+		if data.Capacity != nil {
+			if data.GrowthLane != nil || data.ProvenLane != "" || action.Stage != "build" && action.Stage != "refit" && action.Stage != "dock" {
+				return errors.New("capacity commissioning only builds and arms its own hull without a lane allocation")
+			}
+		} else if data.GrowthLane == nil || data.GrowthLane.AdmissionID != mission.Generation || data.GrowthLane.withdrawn() {
+			return errors.New("new commissioning spend requires its active admitted allocation; withdrawn intents only resolve attempted actions and close")
+		}
 	}
 	if action.Stage == "underwrite" {
 		return r.underwritingPreflight(ctx, data, true)
+	}
+	if action.Stage == "marque" {
+		return r.marquePreflight(ctx, data, true)
 	}
 	var request struct {
 		ShipID      string `json:"ship_id"`
@@ -982,6 +1014,9 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			request.ShipClass != data.BuildClass || request.Name == "" || request.Name != data.BuildName || request.BuildMode != "turnkey_cash" {
 			return errors.New("new build requires its matching immutable growth intent")
 		}
+		if data.Capacity != nil {
+			return r.capacityBuildReady(ctx, data)
+		}
 		return r.growthBuildReady(ctx, data)
 	}
 	if request.ShipID == "" {
@@ -1088,6 +1123,10 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			}
 		}
 	case "refit":
+		if data.Capacity != nil && (request.ShipID != data.BuiltShipID || ship.Ship.CurrentPortID != data.Capacity.BuildPort ||
+			ship.Ship.ShipClass != data.Capacity.BuildClass || request.Cannons != data.TargetCannons) {
+			return errors.New("capacity refit requires its actual built hull, admitted yard and cannon target")
+		}
 		port, err := r.spendingPort(ship)
 		if err != nil {
 			return err
@@ -1105,7 +1144,11 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		if err != nil {
 			return err
 		}
-		if input.Balances[port.BankingRegion]-added*15_000-data.GrowthWorkingCapitalPence < input.ReserveByRegion[port.BankingRegion] {
+		workingCapital := data.GrowthWorkingCapitalPence
+		if data.Capacity != nil {
+			workingCapital = 0
+		}
+		if input.Balances[port.BankingRegion]-added*15_000-workingCapital < input.ReserveByRegion[port.BankingRegion] {
 			return errors.New("new refit would spend protected regional reserves or commissioning working capital")
 		}
 	case "buy", "sell", "provision":
@@ -1190,7 +1233,13 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 }
 
 func (r *Runner) reconcileObservedAction(ctx context.Context, mission *store.Mission, data *missionData, action *store.Action) (bool, error) {
-	if data.Action == nil || action == nil || !r.fresh("ships") {
+	if data.Action == nil || action == nil {
+		return false, nil
+	}
+	if data.Action.Stage == "marque" {
+		return r.reconcileMarque(ctx, mission, data, action)
+	}
+	if !r.fresh("ships") {
 		return false, nil
 	}
 	var request struct {

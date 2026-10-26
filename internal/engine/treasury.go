@@ -131,6 +131,10 @@ func obligationReserves(state accountState, snapshot map[string]json.RawMessage,
 			required[region] += pending.CollateralPence
 		}
 	}
+	marque := decode[marquePending](snapshot, "_marque_pending")
+	if marque.BankingRegion != "" && marque.CostPence > 0 && marque.CostPence <= maximumPence {
+		required[marque.BankingRegion] += marque.CostPence
+	}
 	return required
 }
 

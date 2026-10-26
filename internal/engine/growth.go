@@ -384,7 +384,7 @@ func (r *Runner) reserveGrowthMission(evidence *growthEvidence, mission *store.M
 	return data.Plan.Kind != "maintenance" && mission.Phase != "settling" && mission.Phase != "settled"
 }
 
-func (r *Runner) growthFunding(ctx context.Context, evidence *growthEvidence) (string, error) {
+func (r *Runner) growthCashFunding(ctx context.Context, evidence *growthEvidence) (string, error) {
 	for _, vault := range r.stateCache.Vaults {
 		if vault.AccountType == "vault" && vault.BalancePence < 0 {
 			return "growth deferred while any regional vault is negative; existing fleet may continue earning", nil
@@ -395,7 +395,7 @@ func (r *Runner) growthFunding(ctx context.Context, evidence *growthEvidence) (s
 		return "", err
 	}
 	for region, working := range evidence.workingByRegion {
-		required[region] = max(required[region], r.opts.ReservePence) + working
+		required[region] = growthCashTotal(max(required[region], r.opts.ReservePence), working)
 	}
 	balances := r.planningInput(ShipState{}).Balances
 	for region, protected := range required {
@@ -408,6 +408,19 @@ func (r *Runner) growthFunding(ctx context.Context, evidence *growthEvidence) (s
 		return "growth requires the authoritative home billing region", nil
 	}
 	evidence.asOf = time.Now().UTC()
+	evidence.required = required
+	evidence.balances = balances
+	evidence.home = home
+	evidence.lanes = make(map[string]store.GrowthHistory)
+	evidence.markets = withoutOwnOrders(r.stateCache.Markets, r.ownedOrders())
+	evidence.available = 0
+	for region, balance := range balances {
+		evidence.available = growthCashTotal(evidence.available, max(0, balance-required[region]))
+	}
+	return "", nil
+}
+
+func (r *Runner) growthLaneProof(ctx context.Context, evidence *growthEvidence) (string, error) {
 	history, err := r.db.GrowthHistory(ctx, r.account.ID, "", evidence.asOf)
 	if err != nil {
 		return "", err
@@ -421,16 +434,15 @@ func (r *Runner) growthFunding(ctx context.Context, evidence *growthEvidence) (s
 	if history.UnknownCosts || history.UnmeasuredDuration || history.NetPence <= 0 {
 		return "growth requires positive recorded 12-real-hour realized net after every in-cohort loss and probe, with no unknown costs or cycle duration", nil
 	}
-	evidence.required = required
-	evidence.balances = balances
-	evidence.home = home
 	evidence.history = history
-	evidence.lanes = make(map[string]store.GrowthHistory)
-	evidence.markets = withoutOwnOrders(r.stateCache.Markets, r.ownedOrders())
-	for region, balance := range balances {
-		evidence.available += max(0, balance-required[region])
-	}
 	return "", nil
+}
+
+func (r *Runner) growthFunding(ctx context.Context, evidence *growthEvidence) (string, error) {
+	if reason, err := r.growthCashFunding(ctx, evidence); err != nil || reason != "" {
+		return reason, err
+	}
+	return r.growthLaneProof(ctx, evidence)
 }
 
 func growthCandidate(port Port, hull Hull) ShipState {
@@ -447,8 +459,12 @@ func growthCandidate(port Port, hull Hull) ShipState {
 
 func (r *Runner) growthQuote(port Port, hull Hull) (YardQuote, error) {
 	key := port.ID + "|" + hull.ID
+	if until := decode[map[string]time.Time](r.snapshot, "_growth_build_backoffs")[port.ID+"|"+hull.ID]; time.Now().Before(until) {
+		r.wakeBy(until)
+		return YardQuote{}, fmt.Errorf("growth build for this yard and hull backs off until %s after a definitive refusal", until.UTC().Format(time.RFC3339))
+	}
 	quote := r.stateCache.Quotes[key]
-	if !port.HasShipyard || port.Phase > r.stateCache.Clock.UnlockedPhase || hull.Phase > r.stateCache.Clock.UnlockedPhase ||
+	if !port.HasShipyard || hull.CanSealDispatches || port.Phase > r.stateCache.Clock.UnlockedPhase || hull.Phase > r.stateCache.Clock.UnlockedPhase ||
 		!r.fresh("books/"+port.ID) || r.stateCache.Markets[port.ID].Visibility != "quay" || !r.fresh("yard_quotes/"+key) ||
 		quote.PortID != port.ID || quote.ShipClass != hull.ID || quote.BuildMode != "turnkey_cash" ||
 		!quote.Available || quote.TotalCostPence == nil || *quote.TotalCostPence <= 0 {
@@ -891,7 +907,25 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 	if pending, err := r.db.GetMission(ctx, r.account.ID, "__growth"); err != nil || pending != nil {
 		return false, err
 	}
-	evidence := growthEvidence{workingByRegion: make(map[string]int64)}
+	pending, err := r.db.PendingActions(ctx, r.account.ID)
+	if err != nil {
+		return false, err
+	}
+	if len(pending) > 0 {
+		return r.holdCapacityGrowth(ctx, "capacity growth waits for every unresolved account action")
+	}
+	for _, id := range []string{"__treasury", "__underwriting", "__marque"} {
+		mission, data, err := r.loadMission(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if mission != nil && data.Action != nil {
+			return r.holdCapacityGrowth(ctx, "capacity growth waits for every unresolved control action")
+		}
+	}
+	evidence := growthEvidence{}
+	workingByRegion := make(map[string]int64)
+	laneEligible := true
 	for _, ship := range r.stateCache.Ships {
 		if ship.Ship.Status == "sunk" {
 			continue
@@ -901,8 +935,12 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 			return false, err
 		}
 		if mission != nil {
+			if data.Action != nil {
+				return r.holdCapacityGrowth(ctx, "capacity growth waits for every unresolved mission action")
+			}
+			r.reserveMissionCash(workingByRegion, mission, &data, ship)
 			if !r.reserveGrowthMission(&evidence, mission, &data) {
-				return false, nil
+				laneEligible = false
 			}
 			continue
 		}
@@ -911,8 +949,10 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 		}
 		// Direct assignment precedes ordinary ship processing, so use its
 		// maintenance-first rule before sizing and buying any cargo.
-		if changed, err := r.maintain(ctx, ship, nil, nil); changed || err != nil {
-			return changed, err
+		if r.opts.Execute {
+			if changed, err := r.maintain(ctx, ship, nil, nil); changed || err != nil {
+				return changed, err
+			}
 		}
 		input, err := r.committedPlanningInput(ctx, ship)
 		if err != nil {
@@ -920,13 +960,25 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 		}
 		plans := PlanVoyages(input)
 		if len(plans) > 0 && plans[0].Accepted {
+			if !r.opts.Execute {
+				return r.holdCapacityGrowth(ctx, "capacity growth must reuse an idle ship's currently executable profitable lane first")
+			}
 			return r.startVoyage(ctx, ship, plans[0])
 		}
 	}
-	if reason, err := r.growthFunding(ctx, &evidence); err != nil {
+	evidence.workingByRegion = workingByRegion
+	if reason, err := r.growthCashFunding(ctx, &evidence); err != nil {
 		return false, err
 	} else if reason != "" {
-		return false, r.hold(ctx, "", reason)
+		return r.holdCapacityGrowth(ctx, reason)
+	}
+	if !laneEligible {
+		return r.considerCapacityGrowth(ctx, &evidence)
+	}
+	if reason, err := r.growthLaneProof(ctx, &evidence); err != nil {
+		return false, err
+	} else if reason != "" {
+		return r.considerCapacityGrowth(ctx, &evidence)
 	}
 	oldUpkeep := DailyUpkeep(r.stateCache.Ships, r.stateCache.Catalog, len(r.stateCache.Factors))
 	grownFleet := make([]ShipState, len(r.stateCache.Ships)+1)
@@ -955,11 +1007,14 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 		}
 	}
 	if !found {
-		return false, nil
+		return r.considerCapacityGrowth(ctx, &evidence)
 	}
 	key := "growth:" + best.port.ID + "|" + best.hull.ID + ":" + laneKey(best.plan)
 	if err := r.decision(ctx, "", key, best.decision.Reason, best.decision); err != nil {
 		return false, err
+	}
+	if !r.opts.Execute {
+		return false, r.hold(ctx, "", "observe mode: admitted lane-growth package is not executed")
 	}
 	if changed, err := r.fundTreasury(ctx, evidence.balances, best.required); changed || err != nil {
 		return changed, err
@@ -1011,7 +1066,8 @@ func (r *Runner) driveGrowth(ctx context.Context, mission *store.Mission, data *
 	if !r.opts.Execute {
 		return false, r.hold(ctx, "", "observe mode: persisted growth intent retained")
 	}
-	if time.Now().Before(data.CooldownUntil) {
+	capacityRefitFinished := data.Capacity != nil && (data.Capacity.RefitRefused || data.Capacity.RefitAttempts >= 3)
+	if time.Now().Before(data.CooldownUntil) && !capacityRefitFinished {
 		return false, r.hold(ctx, "", "commissioning waits for persisted retry cooldown")
 	}
 	if data.Action != nil {
@@ -1030,6 +1086,9 @@ func (r *Runner) driveGrowth(ctx context.Context, mission *store.Mission, data *
 	}
 	if ship.Ship.Status == "sunk" {
 		return r.finishGrowthControl(ctx, mission, data)
+	}
+	if data.Capacity != nil {
+		return r.driveCapacityGrowth(ctx, ship, mission, data)
 	}
 	if data.GrowthLane == nil || data.GrowthLane.AdmissionID != mission.Generation {
 		return false, r.hold(ctx, ship.Ship.ID, "commissioning lacks its durable admitted cargo allocation")

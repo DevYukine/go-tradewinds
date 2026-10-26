@@ -13,7 +13,10 @@ Run commands from the project directory so `.env` is found. Existing environment
 | `API_INTERNAL_URL` | Next.js proxy target; default `http://127.0.0.1:8585` |
 | `LOG_LEVEL` | Console logging threshold: `debug`, `info` (default), `warn`, or `error` |
 | `RESERVE_PENCE` | Operating cash reserve, default 100,000 pence |
-| `MAX_PAYBACK_GAME_DAYS` | Maximum ship-investment payback horizon, default 30 game days |
+| `MAX_PAYBACK_GAME_DAYS` | Maximum lane-forecast ship-investment payback horizon, default 30 game days |
+| `CAPACITY_PAYBACK_GAME_DAYS` | Maximum payback for capacity growth priced from recorded fleet earnings, default 180 game days |
+| `SMALL_FLEET_TARGET` | Fleet size below which capacity growth buys the cheapest capable hull, default 5 ships |
+| `MARQUES_ENABLED` | Issue letters of marque automatically; default `false` because the game charges the live price with no price cap |
 | `COMPOSE_PROJECT_NAME` | Stable local Compose project and volume identity; default `tradewinds` |
 | `POSTGRES_PASSWORD` | Local Compose PostgreSQL password |
 | `POSTGRES_PORT` | Local Compose port; default 55432 |
@@ -136,7 +139,25 @@ Growth needs loss-inclusive, known-cost account and lane proof from the last 12 
 
 Growth also needs a current available quote, two cycles of spare source depth and, for spot trades, two cycles of executable destination bids. Reserve competing throughput separately for shared source/commodity, destination/commodity and contract, including ships already committed to sailing returns. Finite charters must cover payback plus a cycle and remain open for that full horizon; future reposts are not demand.
 
-Any negative vault or underfunded active/obligated region defers construction, not safe income voyages. Protect incumbent working capital, the reusable new trading float, full initial stores, guns, the quote cushion, destination arrival bills and three days of incremental upkeep in the home billing region. Treasury transfers must first fund those regions at observed fees. Compare supported hulls and feasible quantities using their complete incremental capital commitment. Empty unused regions need no artificial reserve; escrow and hoped-for proceeds are not spendable cash. The published API has no voluntary hull-sale operation.
+Any negative vault or underfunded active/obligated region defers construction, not safe income voyages. Protect incumbent working capital, the reusable new trading float, full initial stores, guns, the quote cushion, destination arrival bills and three days of incremental upkeep in the home billing region. Treasury transfers must first fund those regions at observed fees. Compare supported hulls and feasible quantities using their complete incremental capital commitment. Empty unused regions need no artificial reserve; escrow and hoped-for proceeds are not spendable cash. The game now lets players list and buy ships in port, but the engine neither sells nor buys listed hulls yet: a bought ship keeps its seller's name, which conflicts with the Pokemon naming rule until the owner decides.
+
+#### Capacity growth
+
+When the lane-proof path above refuses or finds no package, capacity growth decides from recorded fleet earnings instead of a frozen first lane. Idle cash is meant to become ships, not sit in the vault. A hull is bought only when all of these hold:
+
+- the candidate hull has an accepted voyage at the yard after incumbent ships' commitments are removed, priced from observed destination depth or live contract terms (gossip-priced lots do not count);
+- the newest hull has completed a positive delivery (one ship counts as proven), and no ship joined the fleet in the last 90 real minutes;
+- all-time known-cost realized net plus recorded losses from unknown-cost settlements is positive; unknown gains never offset those losses;
+- the last 24 real hours of realized net is positive with no future completion. Settlements with unknown commercial or relocation costs do not pause growth: like the all-time figure, their recorded losses are charged and any unknown gain is ignored. Aborted zero-ton build/refit closeouts with zero acquisition and proceeds are accepted only for an unbuilt or still-surviving hull; their recorded fees, stores and expenses still reduce window net;
+- no hull was lost in that window. Sunk hulls without a reliable loss timestamp block growth; a mission hull missing from a fresh complete fleet list is timed as a loss at that observation. First observed loss times persist across restart;
+- that window net per active ship game day, minus the hull's incremental daily upkeep, repays hull price, a 10% quote cushion, guns to `min(4, max_cannons)` and initial stores within `CAPACITY_PAYBACK_GAME_DAYS`;
+- surplus cash above protected reserves covers that capital plus a buffer of `max(RESERVE_PENCE, 15% of hull price)` and one median recent known-cost lot of cargo cash per ship including the new one. Only the capital and the yard region's own reserve must be in the yard's region; the buffer is checked fleet-wide and is not remitted.
+
+Candidates are ranked by net earnings per game day over capital. Below `SMALL_FLEET_TARGET` the earnings rate is not scaled by hold size, so equal rates make the cheaper hull rank first. From the target onward, a larger hold scales the rate (by hold over fleet average hold, clamped to 0.5x to 2x) only when recorded deliveries fill at least 80% of effective hold. Packets are never bought for cargo. Growth does not run while a sourcing handoff is active.
+
+The durable `__growth` intent builds the hull turnkey, arms it at the yard, records the commissioning settlement and deletes itself. The hull then joins normal planning; idle maintenance buys its stores. If the yard evicts the hull to the roadstead before it is armed, the intent docks it again. If the yard region can no longer pay for the guns, the hull holds unarmed in port instead of trading. A definitive refit refusal or three refit attempts releases the hull to normal operations, where maintenance arms it later. Growth decisions record the chosen candidate's capital, buffer, rate and payback, or the blocking reason.
+
+Immediately before the first send, the runner fetches a live turnkey quote, checks the admitted ceiling and uses the reserved quote cushion before requiring extra yard-region funds. The player-sourced material share must fit within the remaining price headroom. A live quote that fails any of these checks backs off that yard/class for 6 real hours, so the same build is not readmitted every pass. The game has no atomic maximum-price field: another company can still change asks between the quote and the build. A receipt above the admitted ceiling records both prices, warns once on fresh dispatch with scrubbed outcome fields, backs off that yard/class for 6 real hours and pauses all capacity growth for 24 real hours. A domain build refusal also backs off the yard/class for 6 real hours; throttling and authorization errors (401, 403, 429) only wait for their normal cooldown.
 
 ### Idle work and regional funding
 
@@ -150,7 +171,23 @@ The idle allowance is the larger of the normal sourcing allowance and `max(0, 20
 
 Money shows owned underwriting exposure and settled outcomes above financial history; public policy listings remain in Trade, under Exchange and Insurance. An active premium is an entitlement, not settled earnings; returned collateral is principal. The engine may take a 500-basis-point hull-only slice only when its directional closed-policy model has positive net after modeled claims and shipping opportunity cost, and the full possible loss fits both current protected cash and the permanent pilot allowance. See `docs/strategy.md` for model assumptions and limits.
 
+When an open policy carries Lloyd's expected-loss estimate (`lloyds_expected_loss_bps`), that estimate replaces the closed-policy model: the slice's premium share minus collateral times the estimate, minus the same opportunity cost, must be positive and `premium_margin_bps` must be at least 50. The estimate is an upper bound on the expected claim, so this is conservative. Without closed-policy history, collateral lock time comes from the route's sailing days, else the 15 game day policy lapse. Cargo-inclusive policies stay excluded because partial claims are not yet accounted per position. Lloyd's fields are kept out of the policy terms hash, so they never mark a stored policy as changed.
+
 `underwriting_selected` records the estimate. Confirmed `game action committed` records the exact owned slice, collateral and premium entitlement; `underwriting settled` records earned premium, claims, returned principal and net separately. Missing receipt, changed terms or unexplained ownership remains unresolved. After an accepted slice, further underwriting waits for a unique identity-linked debit to an owned vault. This hold does not disable unrelated safe fleet work. Do not replace an ambiguous idempotency key or infer payment from policy coverage.
+
+### Royal monopolies and gossiped player bids
+
+Each refresh reads the public monopoly list. While another company's monopoly is in force for a commodity in a banking region, Crown asks for it in that region are dropped from planning books; player asks remain. If the list cannot be fetched, the last good list is kept and entries past `expires_at` are dropped. A purchase refused with a monopoly `409` therefore points to a monopoly granted after the last refresh.
+
+Spot plans may sell a whole lot into a gossiped player bid at a remote port where we have no live book. The usable tons exclude our resting bids, our sales there since the observation and other ships' undelivered cargo to that buyer. Gossip's best bid is the whole book's best bid, so a non-player floor is known only when it is above the player bid; the lot is admitted only then, and only if it stays positive with every ton valued at that best bid less 25%. When the player bid is the top of the book, gossip still prices one ton. The player order is anonymous and can be filled or withdrawn before arrival; on arrival the ship sells into whatever bids are live. Where a live book exists, it always wins over gossip.
+
+### Letters of marque
+
+Issuance is off by default (`MARQUES_ENABLED=false`): the game charges the live price with no price cap, and the owner chose not to accept that risk for marques yet. With the switch off, zone quotes and the route lookups used only for marque exposure are not fetched, and a persisted intent that was never sent is dropped before sending; marques already in force, if any, are still avoided by planning. With the switch on, the rules below apply.
+
+The runner quotes every sea zone at 500 bps for 60 game hours, at most every 30 real minutes, and issues at most one marque per evaluation through the `__marque` control mission, only in execute mode and only when no `__growth` intent is pending. Admission rules and budget are in `docs/strategy.md` (game update audit). The cost is paid from the home vault and must leave its protected reserves and pending cargo, stores and collateral commitments intact; a pending issue reserves that cost without blocking unrelated ship work. Right before sending, the zone is quoted again and the issue is dropped if the fresh quote fails admission or costs more than 10% above the admitted price; the game has no maximum-price field. Finished marques' cost and prize are kept in the working snapshot so the realized stop survives list limits. A domain refusal backs off that zone for 6 real hours.
+
+Exposure covers our ships' current legs, persisted mission routes including return and recovery legs, the ports where our ships lie, the home port and routes of policies we underwrite. While our marque is in force or pending, new voyage plans and sourcing relocations avoid its zone; loaded voyages already planned are not held, to avoid stranding cargo. Prize payments arrive as `marque_prize_paid` events and in `fleet/marques` as `prize_earned_pence`.
 
 ### Ships with voyage insurance
 

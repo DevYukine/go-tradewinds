@@ -159,9 +159,12 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 				client := gameapi.New(cfg.APIURL, credentials.APIKey, accountLog.Named("api"))
 				engineLog := accountLog.Named("engine")
 				runner := engine.New(client, db, account, engineLog, engine.Options{
-					Execute:        execute,
-					ReservePence:   cfg.ReservePence,
-					MaxPaybackDays: cfg.MaxPaybackDays,
+					Execute:             execute,
+					ReservePence:        cfg.ReservePence,
+					MaxPaybackDays:      cfg.MaxPaybackDays,
+					CapacityPaybackDays: cfg.CapacityPaybackDays,
+					SmallFleetTarget:    cfg.SmallFleetTarget,
+					MarquesEnabled:      cfg.MarquesEnabled,
 				})
 				runners = append(runners, accountRunner{runner: runner, log: engineLog})
 			}

@@ -182,6 +182,7 @@ func sailingShipRow(id, name, currentPort, destination string) map[string]any {
 			"turnaround_unlocks_at": nil,
 			"dock_queued_at":        nil,
 			"berthed_at":            nil,
+			"updated_at":            time.Now().UTC().Format(time.RFC3339Nano),
 		},
 		"hold_capacity_tons":           60,
 		"effective_hold_capacity_tons": 56,
@@ -214,6 +215,7 @@ func sunkShipRow(id, name string) map[string]any {
 			"turnaround_unlocks_at": nil,
 			"dock_queued_at":        nil,
 			"berthed_at":            nil,
+			"updated_at":            time.Now().UTC().Format(time.RFC3339Nano),
 		},
 		"hold_capacity_tons":           60,
 		"effective_hold_capacity_tons": 60,
@@ -790,6 +792,8 @@ type recoveryHarness struct {
 	api     *fakeGameAPI
 	dsn     string
 	schema  string
+	// marques enables MARQUES_ENABLED for runners built by this harness.
+	marques bool
 }
 
 func newRecoveryHarness(t *testing.T) *recoveryHarness {
@@ -817,7 +821,7 @@ func newRecoveryHarness(t *testing.T) *recoveryHarness {
 func (h *recoveryHarness) runner(apiKey string) *Runner {
 	h.t.Helper()
 	client := gameapi.New(h.api.server.URL, apiKey, zap.NewNop())
-	instance := New(client, h.db, h.account, zap.NewNop(), Options{Execute: true})
+	instance := New(client, h.db, h.account, zap.NewNop(), Options{Execute: true, MarquesEnabled: h.marques})
 	snapshot, err := h.db.Snapshot(h.ctx, h.account.ID)
 	if err != nil {
 		h.t.Fatalf("load persisted snapshot: %v", err)
@@ -1283,10 +1287,8 @@ func TestRecoveryLegacyActionlessTreasuryIntentRecovers(t *testing.T) {
 	}
 }
 
-// Growth build 429 and 403 are definite outcomes: the persisted mission is
-// restored with its cooldown, nothing is sent during the cooldown, and the
-// intent is only ever retried through fresh planning (fresh action identity),
-// so considerGrowth can run again and no permanent growth_build hold remains.
+// Authorization and throttling retain their outcome and cooldown, then release
+// the control intent for fresh planning with a new action identity.
 func TestRecoveryGrowthBuildRejectionReplansThroughFreshPlanning(t *testing.T) {
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)

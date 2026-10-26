@@ -25,10 +25,19 @@ func growthWindowRunner(t *testing.T, h *recoveryHarness) *Runner {
 	return runner
 }
 
-func persistGrowthWindowSettlement(t *testing.T, h *recoveryHarness, row store.Settlement) {
+type growthSettlementAction struct {
+	Path   string
+	ShipID string
+}
+
+func persistGrowthWindowSettlement(t *testing.T, h *recoveryHarness, row store.Settlement, overrides ...growthSettlementAction) {
 	t.Helper()
 	row.AccountID = h.account.ID
-	row.ShipID = recoveryShipBlastoise
+	source := growthSettlementAction{Path: "/v1/market/place-order", ShipID: recoveryShipBlastoise}
+	if len(overrides) > 0 {
+		source = overrides[0]
+	}
+	row.ShipID = source.ShipID
 	row.MissionID = row.ID + "-mission"
 	row.ActionID = row.ID + "-action"
 	row.Origin = recoveryHomePort
@@ -37,7 +46,7 @@ func persistGrowthWindowSettlement(t *testing.T, h *recoveryHarness, row store.S
 	row.Lane = laneKey(Plan{Kind: "spot", Origin: row.Origin, Destination: row.Destination, Commodity: row.Commodity})
 	if _, err := h.db.BeginAction(h.ctx, &store.Action{
 		ID: row.ActionID, AccountID: h.account.ID, Method: http.MethodPost,
-		Path: "/v1/market/place-order",
+		Path: source.Path,
 		Body: encode(map[string]any{"ship_id": row.ShipID, "commodity_id": row.Commodity, "side": "ask", "quantity": row.QuantityTons}),
 	}); err != nil {
 		t.Fatalf("begin terminal evidence: %v", err)

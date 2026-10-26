@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DevYukine/go-tradewinds/internal/store"
 	"go.uber.org/zap"
 )
 
@@ -43,6 +44,26 @@ func (r *Runner) applyCapture(ctx context.Context, key string, result fetchResul
 	if result.err == nil && (key == "insurance" || key == "insurance_owned") {
 		var policies []InsurancePolicy
 		if err := json.Unmarshal(result.data, &policies); err != nil {
+			result.err = err
+		}
+	}
+	if result.err == nil && key == "monopolies" {
+		var monopolies []Monopoly
+		if err := json.Unmarshal(result.data, &monopolies); err != nil {
+			result.err = err
+		}
+	}
+	if result.err == nil && strings.HasPrefix(key, "marque_quotes/") {
+		var quote MarqueQuote
+		if err := json.Unmarshal(result.data, &quote); err != nil {
+			result.err = err
+		} else if quote.SeaZoneID != strings.TrimPrefix(key, "marque_quotes/") {
+			result.err = errors.New("marque quote names a different sea zone")
+		}
+	}
+	if result.err == nil && key == "marques" {
+		var marques []letterOfMarque
+		if err := json.Unmarshal(result.data, &marques); err != nil {
 			result.err = err
 		}
 	}
@@ -195,6 +216,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 		{"expansion", "/v1/world/expansion", fetchJSON},
 		{"leaderboard", "/v1/world/leaderboard", fetchJSON},
 		{"world_events", "/v1/world/events?include_expired=true", fetchPages},
+		{"monopolies", "/v1/world/monopolies", fetchPages},
 		{"vaults", "/v1/treasury/vaults", fetchJSON},
 		{"rates", "/v1/treasury/rates", fetchJSON},
 		{"ships", "/v1/fleet/ships", fetchPages},
@@ -214,6 +236,11 @@ func (r *Runner) refresh(ctx context.Context) error {
 		return err
 	}
 	state := r.state()
+	if r.opts.MarquesEnabled && r.fresh("catalog") {
+		if err := r.refreshMarqueQuotes(ctx, state.Catalog); err != nil {
+			return err
+		}
+	}
 	var childTasks []fetchTask
 	details := decode[map[string]json.RawMessage](r.snapshot, "ship_details")
 	if details == nil {
@@ -324,6 +351,24 @@ func (r *Runner) refresh(ctx context.Context) error {
 	}
 	sort.Strings(classIDs)
 	seenRoutes := make(map[string]bool)
+	for _, position := range decode[[]store.UnderwritingPosition](r.snapshot, "underwriting_positions") {
+		if position.ClosedAt != nil {
+			continue
+		}
+		var policy InsurancePolicy
+		if json.Unmarshal(position.FrozenPolicy, &policy) != nil || policy.OriginPortID == "" || policy.DestPortID == "" {
+			continue
+		}
+		// Route geometry is public and independent of the insured ship's
+		// private hull class. The API permits omitting ship_class.
+		key := routeKey(policy.OriginPortID, policy.DestPortID, "")
+		if !seenRoutes[key] {
+			seenRoutes[key] = true
+			routeKeys = append(routeKeys, key)
+			path := "/v1/world/route?from=" + url.QueryEscape(policy.OriginPortID) + "&to=" + url.QueryEscape(policy.DestPortID)
+			childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
+		}
+	}
 	for _, origin := range origins {
 		for _, destination := range state.Catalog.Ports {
 			if origin == destination.ID || destination.Phase > state.Clock.UnlockedPhase {
@@ -357,6 +402,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 	state.Ports = decode[map[string]PortDetail](map[string]json.RawMessage{"ports": encode(ports)}, "ports")
 	state.Routes = decode[map[string]Route](map[string]json.RawMessage{"routes": encode(routes)}, "routes")
 	state.Markets = withoutOwnOrders(decode[map[string]Market](map[string]json.RawMessage{"books": encode(markets)}, "books"), r.ownedOrders())
+	state.Markets = r.monopolyMarketView(state.Markets, state.Catalog, state.Clock)
 	r.stateCache = state
 	r.recordShipIdle(state, previousIdle)
 	captureSourcePair := func(pair [2]string, class string) error {
@@ -458,10 +504,29 @@ func (r *Runner) refresh(ctx context.Context) error {
 			}
 		}
 	}
-	// Imported/recovered holds can have several sealed destinations. Fetch
-	// their actual inter-stop routes without pretending to have quay access.
+	// Observe every persisted continuation, including sailing arrivals and
+	// sealed inter-stop legs, without pretending to have private quay access.
 	childTasks = nil
 	for _, ship := range state.Ships {
+		mission, data, err := r.loadMission(ctx, ship.Ship.ID)
+		if err != nil {
+			return err
+		}
+		if r.opts.MarquesEnabled && mission != nil && ship.Ship.Status != "sunk" {
+			for _, plan := range marqueMissionPlans(state, ship, mission, &data) {
+				if plan.Origin == "" || plan.Destination == "" || plan.Origin == plan.Destination {
+					continue
+				}
+				key := routeKey(plan.Origin, plan.Destination, ship.Ship.ShipClass)
+				if seenRoutes[key] {
+					continue
+				}
+				seenRoutes[key] = true
+				routeKeys = append(routeKeys, key)
+				path := "/v1/world/route?from=" + url.QueryEscape(plan.Origin) + "&to=" + url.QueryEscape(plan.Destination) + "&ship_class=" + url.QueryEscape(ship.Ship.ShipClass)
+				childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
+			}
+		}
 		destinations := make(map[string]bool)
 		for _, contract := range state.Contracts {
 			if contract.ContractType == "freight" && contract.Status == "active" &&
@@ -471,10 +536,6 @@ func (r *Runner) refresh(ctx context.Context) error {
 		}
 		if len(destinations) == 0 {
 			continue
-		}
-		mission, _, err := r.loadMission(ctx, ship.Ship.ID)
-		if err != nil {
-			return err
 		}
 		if mission != nil && mission.Destination != "" {
 			destinations[mission.Destination] = true
@@ -509,6 +570,9 @@ func (r *Runner) refresh(ctx context.Context) error {
 	}
 	r.stateCache = r.state()
 	if err := r.recordUnderwriting(ctx); err != nil {
+		return err
+	}
+	if err := r.recordMarques(ctx); err != nil {
 		return err
 	}
 	r.snapshot["_meta"] = encode(r.meta)
@@ -546,6 +610,7 @@ func (r *Runner) state() accountState {
 	}
 	_ = json.Unmarshal(r.snapshot["profile"], &profile)
 	state.HomePortID = profile.Company.HomePortID
+	state.Markets = r.monopolyMarketView(state.Markets, state.Catalog, state.Clock)
 	return state
 }
 

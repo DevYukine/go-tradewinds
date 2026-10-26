@@ -162,12 +162,45 @@ func (s *Store) SettlementHistory(ctx context.Context, accountID, lane string, l
 	return rows, nil
 }
 
+func (s *Store) SettlementsByID(ctx context.Context, accountID string, ids []string) ([]Settlement, error) {
+	if !validID(accountID) {
+		return nil, fmt.Errorf("settlement identity query: %w", ErrInvalidInput)
+	}
+	for _, id := range ids {
+		if !validID(id) {
+			return nil, fmt.Errorf("settlement identity query: %w", ErrInvalidInput)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	db, cancel := s.query(ctx)
+	defer cancel()
+	var privateRows []settlementRow
+	if err := db.Where("account_id = ? AND id IN ?", accountID, ids).Find(&privateRows).Error; err != nil {
+		return nil, err
+	}
+	if len(privateRows) != len(ids) {
+		return nil, ErrNotFound
+	}
+	rows := make([]Settlement, 0, len(privateRows))
+	for _, stored := range privateRows {
+		value, err := s.decodeSettlement(stored)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, value)
+	}
+	return rows, nil
+}
+
 // EconomicHistory is permanent execution evidence, not a page of display
 // history. Commercial losses include zero-ton failed procurements. Probes are
 // charged separately so exploration cannot replenish its budget by restarting.
 type EconomicHistory struct {
 	CommercialNetPence   int64
 	NetPence             int64
+	UnknownLossPence     int64
 	PositiveCycles       int64
 	PositiveQuantityTons int64
 	PositiveNetPence     int64
@@ -182,11 +215,20 @@ type EconomicHistory struct {
 }
 
 func (s *Store) EconomicHistory(ctx context.Context, accountID, lane string) (EconomicHistory, error) {
-	result, err := s.economicHistory(ctx, accountID, lane, time.Time{})
+	result, err := s.economicHistory(ctx, accountID, lane, time.Time{}, 0, false)
 	return result.EconomicHistory, err
 }
 
-func (s *Store) economicHistory(ctx context.Context, accountID, lane string, asOf time.Time) (GrowthHistory, error) {
+// EconomicHistoryWindow measures whole settlements completed inside a real-time
+// window. Only cargo-free shipyard control closeouts can lack trading costs.
+func (s *Store) EconomicHistoryWindow(ctx context.Context, accountID, lane string, asOf time.Time, window time.Duration) (GrowthHistory, error) {
+	if asOf.IsZero() || window <= 0 {
+		return GrowthHistory{}, fmt.Errorf("economic history window: %w", ErrInvalidInput)
+	}
+	return s.economicHistory(ctx, accountID, lane, asOf.UTC(), window, true)
+}
+
+func (s *Store) economicHistory(ctx context.Context, accountID, lane string, asOf time.Time, window time.Duration, excludeControlCloseoutUnknowns bool) (GrowthHistory, error) {
 	var result GrowthHistory
 	if !validID(accountID) || len(lane) > 1024 {
 		return result, fmt.Errorf("economic history query: %w", ErrInvalidInput)
@@ -199,7 +241,7 @@ func (s *Store) economicHistory(ctx context.Context, accountID, lane string, asO
 	}
 	if !asOf.IsZero() {
 		scope = scope.Select("*, completed_at <= ? AS in_window", asOf).
-			Where("completed_at >= ?", asOf.Add(-12*time.Hour))
+			Where("completed_at >= ?", asOf.Add(-window))
 	}
 	// PostgreSQL numeric keeps both each row's arithmetic and the cumulative
 	// sums exact. Scanning an out-of-range aggregate into int64 returns an
@@ -209,18 +251,22 @@ func (s *Store) economicHistory(ctx context.Context, accountID, lane string, asO
 			SELECT *,
 				proceeds_pence::numeric - acquisition_pence - fees_pence - provisions_pence - expenses_pence AS net,
 				kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery', 'aborted', 'unknown') AS commercial,
-				kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery') AS delivery
+				kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery') AS delivery,
+				(? AND kind = 'aborted' AND quantity_tons = 0 AND acquisition_pence = 0 AND proceeds_pence = 0
+					AND EXISTS (SELECT 1 FROM actions a WHERE a.id = scoped.action_id AND a.account_id = scoped.account_id
+						AND a.path IN ('/v1/shipyard/build-ship', '/v1/shipyard/modify-ship'))) AS control_closeout
 			FROM (?) AS scoped
 		)
 		SELECT
 			COALESCE(SUM(net) FILTER (WHERE in_window AND commercial AND costs_known), 0) AS commercial_net_pence,
-			COALESCE(SUM(net) FILTER (WHERE in_window AND (commercial OR kind = 'relocation') AND costs_known), 0) AS net_pence,
+			COALESCE(SUM(net) FILTER (WHERE in_window AND (commercial OR kind = 'relocation') AND (costs_known AND kind <> 'unknown' OR control_closeout)), 0) AS net_pence,
+			COALESCE(SUM(LEAST(net, 0)) FILTER (WHERE in_window AND (commercial OR kind = 'relocation') AND (NOT costs_known OR kind = 'unknown') AND NOT control_closeout), 0) AS unknown_loss_pence,
 			COUNT(*) FILTER (WHERE in_window AND delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0) AS positive_cycles,
 			COALESCE(SUM(quantity_tons::numeric) FILTER (WHERE in_window AND delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_quantity_tons,
 			COALESCE(SUM(net) FILTER (WHERE in_window AND delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_net_pence,
 			COALESCE(SUM(game_seconds::numeric) FILTER (WHERE in_window AND (commercial OR kind = 'relocation')), 0) AS game_seconds,
 			COALESCE(SUM(game_seconds::numeric) FILTER (WHERE in_window AND delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_game_seconds,
-			COALESCE(BOOL_OR(NOT costs_known OR kind = 'unknown') FILTER (WHERE in_window AND (commercial OR kind = 'relocation')), false) AS unknown_costs,
+			COALESCE(BOOL_OR(NOT costs_known OR kind = 'unknown') FILTER (WHERE in_window AND (commercial OR kind = 'relocation') AND NOT control_closeout), false) AS unknown_costs,
 			COALESCE(BOOL_OR(game_seconds <= 0) FILTER (WHERE in_window AND (commercial OR kind = 'relocation')), false) AS unmeasured_duration,
 			COALESCE(SUM(COALESCE(exploration_expense_pence::numeric,
 				acquisition_pence::numeric + fees_pence + provisions_pence + expenses_pence))
@@ -228,9 +274,77 @@ func (s *Store) economicHistory(ctx context.Context, accountID, lane string, asO
 			COALESCE(BOOL_OR(NOT costs_known) FILTER (WHERE in_window AND kind = 'relocation'), false) AS unknown_probe_costs,
 			MAX(completed_at) FILTER (WHERE in_window AND (commercial OR kind = 'relocation')) AS last_completion,
 			MAX(completed_at) FILTER (WHERE in_window AND kind = 'relocation') AS last_probe_completion,
-			COALESCE(BOOL_OR(NOT in_window) FILTER (WHERE commercial OR kind = 'relocation'), false) AS future_completion
-		FROM evidence`, scope).Scan(&result).Error
+			COALESCE(BOOL_OR(NOT in_window) FILTER (WHERE commercial OR kind = 'relocation'), false) AS future_completion,
+			COALESCE(JSONB_AGG(id) FILTER (WHERE in_window AND NOT costs_known AND control_closeout), '[]'::jsonb) AS control_closeout_ids
+		FROM evidence`, excludeControlCloseoutUnknowns, scope).Scan(&result).Error
 	return result, err
+}
+
+// CapacityDeliveryHistory retains every window delivery, the latest ten known
+// lots, and positive proof since the newest ship's creation. Encrypted ship
+// identities require decoding proof, but its time bound prevents a lifetime scan.
+func (s *Store) CapacityDeliveryHistory(ctx context.Context, accountID string, windowStart, asOf time.Time, newestShipID string, newestCreatedAt time.Time) ([]Settlement, error) {
+	if !validID(accountID) || windowStart.IsZero() || asOf.Before(windowStart) || newestShipID != "" && newestCreatedAt.IsZero() {
+		return nil, fmt.Errorf("capacity delivery history: %w", ErrInvalidInput)
+	}
+	db, cancel := s.query(ctx)
+	defer cancel()
+	deliveryKinds := []string{"spot", "charter", "freight", "spot+freight", "charter+freight", "recovery"}
+	latestLots := db.Model(&settlementRow{}).Select("id").
+		Where("account_id = ? AND completed_at <= ? AND quantity_tons > 0 AND costs_known", accountID, asOf).
+		Where("kind IN ?", deliveryKinds).Order("completed_at DESC, id").Limit(10)
+	proofStart := windowStart
+	if newestShipID != "" && newestCreatedAt.Before(proofStart) {
+		proofStart = newestCreatedAt
+	}
+	rows, err := db.Model(&settlementRow{}).
+		Where("account_id = ? AND completed_at <= ? AND quantity_tons > 0", accountID, asOf).
+		Where("kind IN ?", deliveryKinds).
+		Where("completed_at >= ? OR id IN (?)", proofStart, latestLots).
+		Order("completed_at DESC, id").Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	deliveries := make([]Settlement, 0, 10)
+	proven := newestShipID == ""
+	knownLots := 0
+	for rows.Next() {
+		var stored settlementRow
+		if err := db.ScanRows(rows, &stored); err != nil {
+			return nil, err
+		}
+		withinWindow := !stored.CompletedAt.Before(windowStart)
+		if !withinWindow && knownLots >= 10 && (proven || stored.CompletedAt.Before(newestCreatedAt)) {
+			break
+		}
+		value, err := s.decodeSettlement(stored)
+		if err != nil {
+			return nil, err
+		}
+		var costs int64
+		costsKnown := value.CostsKnown
+		for _, cost := range []int64{value.AcquisitionPence, value.FeesPence, value.ProvisionsPence, value.ExpensesPence} {
+			if cost < 0 || cost > math.MaxInt64-costs {
+				costsKnown = false
+				break
+			}
+			costs += cost
+		}
+		provesNewest := !proven && !value.CompletedAt.Before(newestCreatedAt) && value.ShipID == newestShipID && costsKnown && value.ProceedsPence > costs
+		recentLot := value.CostsKnown && knownLots < 10
+		if recentLot {
+			knownLots++
+		}
+		if withinWindow || recentLot || provesNewest {
+			deliveries = append(deliveries, value)
+		}
+		proven = proven || provesNewest
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return deliveries, nil
 }
 
 // RelocationProbes looks up only the caller's bounded evidence shortlist.

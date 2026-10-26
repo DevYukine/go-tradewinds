@@ -45,7 +45,9 @@ type missionData struct {
 	Relocation                *relocationIntent       `json:"relocation,omitempty"`
 	SourcingHandoff           *relocationIntent       `json:"sourcing_handoff,omitempty"`
 	GrowthLane                *growthLaneIntent       `json:"growth_lane,omitempty"`
+	Capacity                  *capacityIntent         `json:"capacity,omitempty"`
 	Underwriting              *underwritingIntent     `json:"underwriting,omitempty"`
+	Marque                    *marqueIntent           `json:"marque,omitempty"`
 	SourcingSpentPence        int64                   `json:"sourcing_spent_pence"`
 	SourcingGameDays          float64                 `json:"sourcing_game_days"`
 	ClosingObservedAt         time.Time               `json:"closing_observed_at"`
@@ -110,11 +112,11 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	// pending request blocks all new account mutations rather than being guessed.
 	missions := make(map[string]*store.Mission)
 	dataByShip := make(map[string]missionData)
-	ids := make([]string, 0, len(r.stateCache.Ships)+3)
+	ids := make([]string, 0, len(r.stateCache.Ships)+4)
 	for _, ship := range r.stateCache.Ships {
 		ids = append(ids, ship.Ship.ID)
 	}
-	ids = append(ids, "__treasury", "__growth", "__underwriting")
+	ids = append(ids, "__treasury", "__growth", "__underwriting", "__marque")
 	attached := make(map[string]bool)
 	for _, id := range ids {
 		mission, data, err := r.loadMission(ctx, id)
@@ -172,7 +174,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	for _, id := range ids {
 		data := dataByShip[id]
 		if data.Action != nil {
-			unresolved = unresolved || id != "__underwriting"
+			unresolved = unresolved || id != "__underwriting" && id != "__marque"
 			r.assessShip(id)
 			if changed, err := r.dispatch(ctx, missions[id], &data); changed || err != nil {
 				return changed, err
@@ -193,6 +195,12 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	if mission := missions["__underwriting"]; mission != nil && dataByShip["__underwriting"].Action == nil {
 		data := dataByShip["__underwriting"]
 		if changed, err := r.driveUnderwriting(ctx, mission, &data); changed || err != nil {
+			return changed, err
+		}
+	}
+	if mission := missions["__marque"]; mission != nil && dataByShip["__marque"].Action == nil {
+		data := dataByShip["__marque"]
+		if changed, err := r.driveMarque(ctx, mission, &data); changed || err != nil {
 			return changed, err
 		}
 	}
@@ -227,7 +235,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return changed, err
 		}
 	}
-	if r.opts.Execute && missions["__growth"] == nil && missions["__treasury"] == nil && !sourcingActive {
+	if missions["__growth"] == nil && missions["__treasury"] == nil && !sourcingActive {
 		changed, err := r.considerGrowth(ctx)
 		if changed || err != nil {
 			return changed, err
@@ -330,7 +338,12 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return changed, err
 		}
 	}
-	return false, r.decision(ctx, "", "excluded_liabilities", "futures, marques, patrols and extra companies rejected: no measured positive incremental return with modeled liabilities; no speculative side effects", nil)
+	if r.opts.Execute && r.opts.MarquesEnabled && missions["__marque"] == nil && missions["__growth"] == nil && missions["__treasury"] == nil {
+		if changed, err := r.considerMarque(ctx); changed || err != nil {
+			return changed, err
+		}
+	}
+	return false, r.decision(ctx, "", "excluded_liabilities", "futures, patrols and extra companies rejected: no measured positive incremental return with modeled liabilities; no speculative side effects", nil)
 }
 
 func unlocked(ship ShipState, now time.Time) bool {

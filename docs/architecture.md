@@ -124,6 +124,8 @@ Underwriting has its own `__underwriting` control mission, restored before orpha
 
 Permanent changed-term or contradictory policy evidence vetoes both candidate admission and first send, even if the public board later reverts. A disputed prior settlement cannot release the pilot's risk capacity. Shipping commitments protect regional deficits and measured remittance fees before underwriting receives discretionary cash. Exact receipt identity, ownership and monetary bounds are validated independently of public coverage.
 
+Letters of marque use a `__marque` control mission on the same immutable journal. An unresolved issue reserves its home-vault cost but does not block unrelated ship work; it does veto a concurrent hull build. Finished marque outcomes are merged into the working snapshot for the realized stop. Capacity growth reuses the `__growth` control with a `Capacity` intent instead of a frozen lane: build, arm, settle and delete, leaving the hull to ordinary planning.
+
 ## Dashboard contract
 
 The browser reads `/api/dashboard` and bounded `/api/history` views through Next.js rewrites to the loopback Go API. TanStack Query owns fetched state; Zustand owns local controls such as account selection and map filters. The map uses explicit geographical port coordinates because the game catalog does not provide latitude and longitude.

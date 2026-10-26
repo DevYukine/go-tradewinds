@@ -83,6 +83,16 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 	}
 	stage := data.Action.Stage
 	switch stage {
+	case "marque":
+		var marque letterOfMarque
+		if status != http.StatusCreated || json.Unmarshal(response, &marque) != nil || !validMarque(marque) ||
+			data.Marque == nil || marque.SeaZoneID != data.Marque.Quote.SeaZoneID || marque.AddedPiracyBPS != 500 ||
+			marque.SponsorCompanyID != "" && marque.SponsorCompanyID != r.account.CompanyID {
+			return r.reconcileCommitted(ctx, mission, data)
+		}
+		data.Marque.IssuedID = marque.ID
+		data.Marque.ExpiresAt = marque.ExpiresAt
+		mission.Phase = "done"
 	case "underwrite":
 		if status != http.StatusOK {
 			return false, r.hold(ctx, mission.ShipID, "underwriting requires its documented HTTP 200 receipt")
@@ -283,7 +293,24 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 		data.BuiltShipID = result.ShipID
 		data.BuildCostPence = *result.Cost
 		mission.Phase = "growth_refit"
+		if data.Capacity != nil && *result.Cost > data.Capacity.QuoteLimitPence {
+			reason := "capacity build receipt exceeded the admitted turnkey quote ceiling"
+			if err := r.decision(ctx, result.ShipID, "capacity_build_price_overrun", reason, map[string]int64{
+				"quote_limit_pence": data.Capacity.QuoteLimitPence,
+				"actual_cost_pence": *result.Cost,
+			}); err != nil {
+				return false, err
+			}
+			until := time.Now().UTC().Add(capacityHistoryWindow)
+			r.snapshot["_capacity_growth_paused_until"] = encode(maxTime(decode[time.Time](r.snapshot, "_capacity_growth_paused_until"), until))
+			if err := r.recordGrowthBuildRefusal(ctx, data); err != nil {
+				return false, err
+			}
+		}
 	case "refit":
+		if data.Capacity != nil {
+			data.Capacity.RefitAttempts++
+		}
 		if data.Plan.Kind == "maintenance" {
 			mission.Phase = "maintenance"
 		} else if mission.ShipID == "__growth" {
@@ -307,6 +334,21 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 	stage := data.Action.Stage
 	if err := r.decision(ctx, mission.ShipID, "action_rejected", fmt.Sprintf("%s received definitive HTTP %d %s: %s", stage, status, problem.Code, problem.Detail), map[string]any{"action_id": data.Action.ID, "stage": stage}); err != nil {
 		return false, err
+	}
+	domainRefusal := status >= 400 && status < 500 && status != 401 && status != 403 && status != 429
+	if stage == "build" && domainRefusal {
+		if err := r.recordGrowthBuildRefusal(ctx, data); err != nil {
+			return false, err
+		}
+	}
+	if stage == "marque" && domainRefusal {
+		if err := r.recordMarqueRefusal(ctx, data); err != nil {
+			return false, err
+		}
+	}
+	if stage == "refit" && data.Capacity != nil {
+		data.Capacity.RefitAttempts++
+		data.Capacity.RefitRefused = domainRefusal
 	}
 	// A domain refusal already has a durable, offer-specific latch. It must
 	// not delay selling other cargo or accepting a newly changed offer.
@@ -352,7 +394,7 @@ func applyRejectedResult(mission *store.Mission, data *missionData, status int, 
 	// This is not evidence that cargo, a charter or a quote is unavailable.
 	if stage == "build" {
 		mission.Phase = "growth_rejected"
-	} else if stage == "settings" || stage == "remit" && mission.ShipID == "__treasury" {
+	} else if stage == "marque" || stage == "settings" || stage == "remit" && mission.ShipID == "__treasury" {
 		mission.Phase = "done"
 	} else if data.Plan.Kind == "maintenance" {
 		mission.Phase = "maintenance"

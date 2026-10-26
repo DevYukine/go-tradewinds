@@ -18,9 +18,12 @@ import (
 )
 
 type Options struct {
-	Execute        bool
-	ReservePence   int64
-	MaxPaybackDays float64
+	Execute             bool
+	ReservePence        int64
+	MaxPaybackDays      float64
+	CapacityPaybackDays float64
+	SmallFleetTarget    int
+	MarquesEnabled      bool
 }
 
 type decisionFingerprint struct {
@@ -71,6 +74,12 @@ func New(api *gameapi.Client, db *store.Store, account store.Account, log *zap.L
 	if opts.MaxPaybackDays <= 0 {
 		opts.MaxPaybackDays = 12
 	}
+	if opts.CapacityPaybackDays <= 0 || opts.CapacityPaybackDays > 720 {
+		opts.CapacityPaybackDays = 180
+	}
+	if opts.SmallFleetTarget < 1 {
+		opts.SmallFleetTarget = 5
+	}
 	return &Runner{
 		api:              api,
 		db:               db,
@@ -110,6 +119,7 @@ var financialEvents = map[string]bool{
 	"insurance_cover_reduced":         true,
 	"insurance_claim_paid":            true,
 	"insurance_policy_closed":         true,
+	"marque_prize_paid":               true,
 }
 
 // Run owns the account's one mutation loop. SSE only invalidates REST state;
@@ -538,7 +548,7 @@ func (r *Runner) rememberDecision(key string, fingerprint [sha256.Size]byte, now
 func (r *Runner) hold(ctx context.Context, shipID, reason string) error {
 	holdShipID := shipID
 	switch shipID {
-	case "__treasury", "__growth", "__underwriting":
+	case "__treasury", "__growth", "__underwriting", "__marque":
 		holdShipID = ""
 	}
 	r.holding = append(r.holding, currentHold{ShipID: holdShipID, Reason: reason})
@@ -558,6 +568,17 @@ func (r *Runner) planningInputFrom(ship ShipState, state accountState) PlanningI
 		}
 	}
 	upkeep := DailyUpkeep(state.Ships, state.Catalog, len(state.Factors))
+	marqueZones := make(map[string]bool)
+	lower, _, validClock := serverBounds(time.Now(), state.Clock, r.meta["clock"], r.generation)
+	for _, marque := range decode[[]letterOfMarque](r.snapshot, "marques") {
+		if !validClock || lower.Before(marque.ExpiresAt) {
+			marqueZones[marque.SeaZoneID] = true
+		}
+	}
+	if pending := decode[marquePending](r.snapshot, "_marque_pending"); pending.SeaZoneID != "" &&
+		(pending.ExpiresAt.IsZero() || !validClock || lower.Before(pending.ExpiresAt)) {
+		marqueZones[pending.SeaZoneID] = true
+	}
 	return PlanningInput{
 		Now:                   time.Now(),
 		CompanyID:             r.account.CompanyID,
@@ -565,6 +586,7 @@ func (r *Runner) planningInputFrom(ship ShipState, state accountState) PlanningI
 		Catalog:               state.Catalog,
 		Clock:                 state.Clock,
 		Zones:                 decode[[]ZoneObservation](r.snapshot, "zones"),
+		MarqueZones:           marqueZones,
 		Markets:               state.Markets,
 		Ports:                 state.Ports,
 		Routes:                state.Routes,
@@ -576,5 +598,7 @@ func (r *Runner) planningInputFrom(ship ShipState, state accountState) PlanningI
 		Generation:            r.generation,
 		FleetDailyUpkeepPence: upkeep,
 		Rates:                 state.Rates,
+		ReservedPlayerBidTons: r.restingBidReservations(),
+		PlayerBidSellFills:    decode[[]PlayerBidSellFill](r.snapshot, "fills"),
 	}
 }
