@@ -184,5 +184,4 @@ func TestRunRefreshesFinancialEventsAfterVaultCaptureBeforeNewSpending(t *testin
 			t.Fatal("the next authoritative capture did not retain the post-event yard balance")
 		})
 	}
-
 }

@@ -135,7 +135,6 @@ func TestIncomeMaintenanceDockReviewInsuredPendingIncomeAllowsIndependentArmamen
 			}
 		})
 	}
-
 }
 
 func TestIncomeMaintenanceDockReviewExpiredVoyageStillCannotOpenDiscretionaryBerth(t *testing.T) {
@@ -156,5 +155,4 @@ func TestIncomeMaintenanceDockReviewExpiredVoyageStillCannotOpenDiscretionaryBer
 		t.Fatal("live, already-armed voyage did not reach the limiter boundary")
 	}
 	incomeReviewRequireNoSend(t, h, action)
-
 }

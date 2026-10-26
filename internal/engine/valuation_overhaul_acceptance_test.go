@@ -196,7 +196,6 @@ func TestValuationDeliveryBoundaryIgnoresUnneededReturnLeg(t *testing.T) {
 		t.Fatalf("empty return distance re-ranked destination deliveries: rank before %d after %d",
 			valuationRank(basePlans, "dunkirk"), valuationRank(stretched, "dunkirk"))
 	}
-
 }
 
 // One-way duration and cost must compare the two destinations at their
@@ -224,7 +223,6 @@ func TestValuationRanksDestinationsByOneWayDeliveryEconomics(t *testing.T) {
 		t.Fatalf("per-day contribution contradicts one-way delivery economics: near %+v far %+v",
 			near.Economics, far.Economics)
 	}
-
 }
 
 // A profitable legal outbound must sail without any return route evidence:
@@ -271,7 +269,6 @@ func TestValuationLegalOutboundDoesNotRequireReturnRoute(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // A whole-ton store top-up is cash that must be funded, but only the share
@@ -313,7 +310,6 @@ func TestValuationFundsWholeTonStoresWithoutChargingUnusedStoresAsExpense(t *tes
 			t.Fatalf("voyage was accepted without cash for the whole-ton store top-up: %+v", candidate)
 		}
 	}
-
 }
 
 // Cargo and sealed freight to one shared destination are sized jointly before
@@ -369,7 +365,6 @@ func TestValuationSizesSharedDestinationCargoAndFreightJointly(t *testing.T) {
 	if !standaloneCargo || !standaloneFreight {
 		t.Fatalf("standalone shared-cost losers vanished as evidence: cargo %t freight %t", standaloneCargo, standaloneFreight)
 	}
-
 }
 
 // Partial measured depth and the shared hold stay hard bounds while sizing:
@@ -422,5 +417,4 @@ func TestValuationKeepsPartialDepthAndSharedHoldSafe(t *testing.T) {
 			}
 		}
 	})
-
 }

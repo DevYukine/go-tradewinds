@@ -71,5 +71,4 @@ func TestLloydsSliceNet(t *testing.T) {
 			}
 		})
 	}
-
 }

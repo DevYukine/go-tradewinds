@@ -90,7 +90,6 @@ func TestMarqueExposureProtectsFleetPlansAndUnderwriting(t *testing.T) {
 	if _, err := marqueExposure(state, nil, positions); err == nil {
 		t.Fatal("missing underwriting route was treated as no exposure")
 	}
-
 }
 
 func TestMarqueExposureAllowsSailingMissionWithoutSyntheticOrigin(t *testing.T) {
@@ -125,7 +124,6 @@ func TestMarqueExposureAllowsSailingMissionWithoutSyntheticOrigin(t *testing.T) 
 	if err != nil || !exposed["future"] {
 		t.Fatalf("retained departed port replaced the sailing arrival's known future route: %v %v", exposed, err)
 	}
-
 }
 
 func TestMarqueMissionPlansRequireEverySailingContinuation(t *testing.T) {
@@ -180,7 +178,6 @@ func TestMarqueMissionPlansRequireEverySailingContinuation(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestMarqueSourcingRouteRejectsOwnActiveOrPendingZone(t *testing.T) {
@@ -194,7 +191,6 @@ func TestMarqueSourcingRouteRejectsOwnActiveOrPendingZone(t *testing.T) {
 	if _, err := sourcingRouteReady(input, "le_havre", "amsterdam", hull); err == nil || !strings.Contains(err.Error(), "letter of marque") {
 		t.Fatalf("sourcing failed to reject our active/pending marque in plain language: %v", err)
 	}
-
 }
 
 func TestMarqueQuoteRefreshRetainsLastGoodAndUsesRealTimeTTL(t *testing.T) {
@@ -254,7 +250,6 @@ func TestMarqueQuoteRefreshRetainsLastGoodAndUsesRealTimeTTL(t *testing.T) {
 	if requests.Load() != 4 {
 		t.Fatal("failed quote retried before thirty real minutes elapsed")
 	}
-
 }
 
 func TestMarqueOutcomesMergeSurvivesOmittedHistory(t *testing.T) {
@@ -275,7 +270,6 @@ func TestMarqueOutcomesMergeSurvivesOmittedHistory(t *testing.T) {
 	if len(restored) != 2 || restored["old"].PrizePence != 7_000 || restored["new"].PrizePence != 19_000 {
 		t.Fatalf("expired outcomes were duplicated, lost or not updated: %+v", restored)
 	}
-
 }
 
 func TestMarquePendingProtectsOnlyItsHomeFundsAndZone(t *testing.T) {
@@ -319,7 +313,6 @@ func TestMarquePendingProtectsOnlyItsHomeFundsAndZone(t *testing.T) {
 			t.Fatalf("HTTP %d left the marque control intent active: %+v %+v", status, mission, data)
 		}
 	}
-
 }
 
 func TestMarqueDecodeRejectsMissingPricingAndPrizeEvidence(t *testing.T) {
@@ -355,5 +348,4 @@ func TestMarqueDecodeRejectsMissingPricingAndPrizeEvidence(t *testing.T) {
 			t.Fatalf("missing %s was treated as observed zero money", field)
 		}
 	}
-
 }

@@ -117,5 +117,4 @@ func TestWithoutMonopolizedNPCAsks(t *testing.T) {
 			}
 		})
 	}
-
 }

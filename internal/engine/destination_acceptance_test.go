@@ -161,7 +161,6 @@ func TestNewEconomicMissionsCarryFinishAtDestination(t *testing.T) {
 	if h.api.mutationCount("/v1/fleet/depart") != 0 {
 		t.Fatal("planning a new voyage sent a departure")
 	}
-
 }
 
 func TestDestinationCompletionSettlesOnceAndNeverReturnsEmpty(t *testing.T) {
@@ -225,7 +224,6 @@ func TestDestinationCompletionSettlesOnceAndNeverReturnsEmpty(t *testing.T) {
 	if h.api.mutationCount("/v1/fleet/depart") != 0 {
 		t.Fatal("a completed economic mission returned home empty")
 	}
-
 }
 
 func destinationOnlySettlement(t *testing.T, h *recoveryHarness) store.Settlement {
@@ -285,7 +283,6 @@ func TestDestinationCompletionHonorsTurnaroundUnlock(t *testing.T) {
 	if h.api.mutationCount("/v1/fleet/depart") != 0 {
 		t.Fatal("destination completion staged an empty return departure")
 	}
-
 }
 
 func TestLegacyMissionWithoutFinishFlagReturnsHome(t *testing.T) {
@@ -325,7 +322,6 @@ func TestLegacyMissionWithoutFinishFlagReturnsHome(t *testing.T) {
 	if rows := destinationSettlements(t, h, ""); len(rows) != 0 {
 		t.Fatalf("legacy return invented a destination settlement: %+v", rows)
 	}
-
 }
 
 func TestRelocationProbeClosesAtSourceWithoutPurchaseOrReturn(t *testing.T) {
@@ -366,7 +362,6 @@ func TestRelocationProbeClosesAtSourceWithoutPurchaseOrReturn(t *testing.T) {
 	if h.api.mutationCount("/v1/fleet/depart") != 0 {
 		t.Fatal("closed probe sailed home empty instead of replanning where it stands")
 	}
-
 }
 
 func TestDestinationClosingWaitsForCargoSealsAndResolvedActions(t *testing.T) {
@@ -450,5 +445,4 @@ func TestDestinationClosingWaitsForCargoSealsAndResolvedActions(t *testing.T) {
 			t.Fatalf("unresolved request destroyed the durable mission: row %v err %v", row, err)
 		}
 	})
-
 }

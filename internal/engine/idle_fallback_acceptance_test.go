@@ -216,7 +216,6 @@ func TestIdleFallbackEarnsSixObservedHoursAcrossRestartAndMaintenance(t *testing
 	if pairs != 3 {
 		t.Fatalf("idle refresh inspected %d source/charter pairs, want exactly the bounded three", pairs)
 	}
-
 }
 
 func TestIdleFallbackRequiresTwentyFourRealMinutesAndLatestMatchingCompletion(t *testing.T) {
@@ -269,7 +268,6 @@ func TestIdleFallbackRequiresTwentyFourRealMinutesAndLatestMatchingCompletion(t 
 			idleFallbackExpect(t, in, tc.want)
 		})
 	}
-
 }
 
 func TestIdleFallbackInvalidClockObservationsRebaseWithoutCredit(t *testing.T) {
@@ -304,7 +302,6 @@ func TestIdleFallbackInvalidClockObservationsRebaseWithoutCredit(t *testing.T) {
 			idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), true)
 		})
 	}
-
 }
 
 func TestIdleFallbackPhysicalWorkResetsEarnedHours(t *testing.T) {
@@ -341,7 +338,6 @@ func TestIdleFallbackPhysicalWorkResetsEarnedHours(t *testing.T) {
 			idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), true)
 		})
 	}
-
 }
 
 func TestIdleFallbackBudgetUsesOneLiquiditySeedAndEveryPermanentProbeExpense(t *testing.T) {
@@ -411,7 +407,6 @@ func TestIdleFallbackBudgetUsesOneLiquiditySeedAndEveryPermanentProbeExpense(t *
 			}
 		})
 	}
-
 }
 
 func TestIdleFallbackDoesNotBorrowAnotherShipOrAccountsIdleHours(t *testing.T) {
@@ -489,7 +484,6 @@ func TestIdleFallbackDoesNotBorrowAnotherShipOrAccountsIdleHours(t *testing.T) {
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipCharizard), false)
 	w.observe(t, runner, 112)
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipCharizard), true)
-
 }
 
 func TestIdleFallbackDoesNotOverrideIncomeOrSafetyGuards(t *testing.T) {
@@ -538,7 +532,6 @@ func TestIdleFallbackDoesNotOverrideIncomeOrSafetyGuards(t *testing.T) {
 			idleFallbackExpect(t, in, false)
 		})
 	}
-
 }
 
 func TestIdleFallbackKeepsActiveAndAmbiguousExplorationExclusive(t *testing.T) {
@@ -575,5 +568,4 @@ func TestIdleFallbackKeepsActiveAndAmbiguousExplorationExclusive(t *testing.T) {
 			}
 		})
 	}
-
 }

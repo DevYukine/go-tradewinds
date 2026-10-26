@@ -98,7 +98,6 @@ func TestDepthWalkUsesEveryFillAndPreservesInput(t *testing.T) {
 	if _, err := engine.WalkDepth([]engine.Level{{PricePence: 1_000_000_000_000, RemainingQuantity: math.MaxInt64}}, math.MaxInt64, true); err == nil {
 		t.Fatal("overflowing monetary value was accepted")
 	}
-
 }
 
 func TestPublicCharterUsesMeasuredLocalDepthWithoutRemoteBook(t *testing.T) {
@@ -118,7 +117,6 @@ func TestPublicCharterUsesMeasuredLocalDepthWithoutRemoteBook(t *testing.T) {
 	if plan.Economics.ProbabilityEstimate != nil || plan.Economics.StressHaircutPence <= 0 {
 		t.Fatal("diagnostic stress was missing or presented as measured hazard probability")
 	}
-
 }
 
 func narrowMarginFixture(t *testing.T) engine.PlanningInput {
@@ -170,7 +168,6 @@ func TestMeasuredPositiveCashMarginIsNotRejectedByNegativeStress(t *testing.T) {
 	if plan.StoresToBuy != 0 || plan.TargetStoresTons > in.Ship.Stores.ProvisionsTons {
 		t.Fatalf("existing safe stores were ignored: %+v", plan)
 	}
-
 }
 
 func TestPlannerCashNetIdentityDoesNotChargeStressOrRefundableCollateral(t *testing.T) {
@@ -228,7 +225,6 @@ func TestPlannerCashNetIdentityDoesNotChargeStressOrRefundableCollateral(t *test
 			}
 		})
 	}
-
 }
 
 func TestDeliveryTurnaroundMatchesBerthLocks(t *testing.T) {
@@ -249,7 +245,6 @@ func TestDeliveryTurnaroundMatchesBerthLocks(t *testing.T) {
 	if math.Abs(plan.Economics.GameDays-want) > 1e-9 {
 		t.Fatalf("delivery duration %.9f days, want %.9f (sailing %.9f + two 30min berth locks %.9f + handling %.9f + queue %.9f)", plan.Economics.GameDays, want, sailingDays, berthLockDays, handlingDays, queueDays)
 	}
-
 }
 
 func TestCandidateDestinationPreservesReserveWithoutRecordedObligation(t *testing.T) {
@@ -280,7 +275,6 @@ func TestCandidateDestinationPreservesReserveWithoutRecordedObligation(t *testin
 			}
 		})
 	}
-
 }
 
 func TestDestinationContributionProtectsFleetBillsWithoutChargingThem(t *testing.T) {
@@ -302,7 +296,6 @@ func TestDestinationContributionProtectsFleetBillsWithoutChargingThem(t *testing
 			t.Fatalf("fixed fleet bills were omitted from protected cash: %+v", plan)
 		}
 	}
-
 }
 
 func TestBallastRepeatIsSeparateAndRequiresFreshSafeReturn(t *testing.T) {
@@ -351,7 +344,6 @@ func TestBallastRepeatIsSeparateAndRequiresFreshSafeReturn(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestBallastRepeatCrossRegionRestoresRecurringOriginCash(t *testing.T) {
@@ -419,7 +411,6 @@ func TestBallastRepeatCrossRegionRestoresRecurringOriginCash(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestDestinationStoreCashDoesNotExpenseUnconsumedInventory(t *testing.T) {
@@ -442,7 +433,6 @@ func TestDestinationStoreCashDoesNotExpenseUnconsumedInventory(t *testing.T) {
 		plan.Economics.ProvisionsPence <= 0 || plan.Economics.ProvisionsPence >= wantCash {
 		t.Fatalf("cash for whole tons was confused with consumed provisions: %+v", plan)
 	}
-
 }
 
 func TestCashLossPrecedesUnpricedPurchasesInEmptyHoldExplanation(t *testing.T) {
@@ -473,7 +463,6 @@ func TestCashLossPrecedesUnpricedPurchasesInEmptyHoldExplanation(t *testing.T) {
 	if !foundUnpriced {
 		t.Fatal("unpriced public charter was omitted from the hold explanation")
 	}
-
 }
 
 func TestPlannerEqualContributionTiesAreDeterministic(t *testing.T) {
@@ -491,7 +480,6 @@ func TestPlannerEqualContributionTiesAreDeterministic(t *testing.T) {
 		ordered.Quantity != reversed.Quantity {
 		t.Fatalf("equal delivery contributions depend on listing order: reversed %+v ordered %+v", reversed, ordered)
 	}
-
 }
 
 func TestPlannerChoosesProfitableDepthBoundaryNotFullHold(t *testing.T) {
@@ -504,7 +492,6 @@ func TestPlannerChoosesProfitableDepthBoundaryNotFullHold(t *testing.T) {
 	if !plans[0].Accepted || plans[0].Quantity != 10 || plans[0].BuyLimitPence != 1000 {
 		t.Fatalf("profitable ladder boundary missed: %+v", plans[0])
 	}
-
 }
 
 func TestPlannerRejectsUnsafeOrUnfundedVoyages(t *testing.T) {
@@ -568,7 +555,6 @@ func TestPlannerRejectsUnsafeOrUnfundedVoyages(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestFreightCompetesAndCompatibleMixedHoldKeepsSealSeparate(t *testing.T) {
@@ -584,7 +570,6 @@ func TestFreightCompetesAndCompatibleMixedHoldKeepsSealSeparate(t *testing.T) {
 	if plans[0].Economics.RevenuePence != 50_000 {
 		t.Fatal("collateral principal was counted as income")
 	}
-
 }
 
 func TestMixedManifestSizesDemandHoldDepthAndCashIndependently(t *testing.T) {
@@ -643,7 +628,6 @@ func TestMixedManifestSizesDemandHoldDepthAndCashIndependently(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestOwnRestingOrdersCannotCreateProfit(t *testing.T) {
@@ -655,7 +639,6 @@ func TestOwnRestingOrdersCannotCreateProfit(t *testing.T) {
 			t.Fatalf("own-player liquidity was counted as executable: %+v", plan)
 		}
 	}
-
 }
 
 func TestRemittanceGrossCoversActualFeeAndRejectsInvalidRates(t *testing.T) {
@@ -673,7 +656,6 @@ func TestRemittanceGrossCoversActualFeeAndRejectsInvalidRates(t *testing.T) {
 	if _, err := engine.GrossRemittance(100, 10_000); err == nil {
 		t.Fatal("non-remittable fee accepted")
 	}
-
 }
 
 func TestUpkeepChargesMarginalFleetAndHalfOceanicTons(t *testing.T) {
@@ -693,7 +675,6 @@ func TestUpkeepChargesMarginalFleetAndHalfOceanicTons(t *testing.T) {
 	if got := engine.DailyUpkeep([]engine.ShipState{in.Ship, ship}, in.Catalog, 0); got != 22_000+5_167 {
 		t.Fatalf("half the oceanic tonnage did not enter sprawl: %d", got)
 	}
-
 }
 
 func TestGrowthRequiresActualSettlementsSpareDepthAndFundedPayback(t *testing.T) {
@@ -765,5 +746,4 @@ func TestGrowthRequiresActualSettlementsSpareDepthAndFundedPayback(t *testing.T)
 	if engine.EvaluateGrowth(unknownLoss).Accepted {
 		t.Fatal("growth treated an unresolved capital loss as zero cost")
 	}
-
 }

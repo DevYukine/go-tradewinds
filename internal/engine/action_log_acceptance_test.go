@@ -132,7 +132,6 @@ func TestActionLogDockAndOffshoreOutcomesAreInfoOnceWithSilentReplay(t *testing.
 			}
 		})
 	}
-
 }
 
 func TestActionLogAuthoritativeRecoveryIsLabelledOnceWithoutInventingMoney(t *testing.T) {
@@ -202,7 +201,6 @@ func TestActionLogAuthoritativeRecoveryIsLabelledOnceWithoutInventingMoney(t *te
 	if logs.FilterMessage("action committed").Len() != 0 {
 		t.Fatal("a reconciled recovery must not masquerade as a fresh commit")
 	}
-
 }
 
 func TestActionLogRecoveryFailsClosedAtActorContextBoundary(t *testing.T) {
@@ -294,5 +292,4 @@ func TestActionLogRecoveryFailsClosedAtActorContextBoundary(t *testing.T) {
 			}
 		}
 	}
-
 }

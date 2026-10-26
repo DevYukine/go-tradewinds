@@ -697,7 +697,6 @@ func TestUnderwritingExecutionStagesExactlyOneMinimumSlice(t *testing.T) {
 	uwExecRequirePosition(t, h, id, uwExecCollateralCeiling, uwExecPremiumFloor+1, "restart after accepted position")
 	uwExecRequireReleasedMission(t, h, "restart after accepted position")
 	uwExecRequireNoOrphanDecision(t, h)
-
 }
 
 // A crash between storing the accepted 200 and consuming it must consume the
@@ -722,7 +721,6 @@ func TestUnderwritingExecutionConsumesStoredSuccessWithoutResend(t *testing.T) {
 	uwExecRequirePosition(t, h, id, uwExecCollateralCeiling, uwExecPremiumFloor+1, "replayed stored success")
 	uwExecRequireReleasedMission(t, h, "replayed stored success")
 	uwExecRequireNoOrphanDecision(t, h)
-
 }
 
 // Every way a typed 200 can fail to name exactly one admissible owned slice
@@ -803,7 +801,6 @@ func TestUnderwritingExecutionHoldsInvalidTypedSuccessResponses(t *testing.T) {
 			uwExecRequireHold(t, h, test.name)
 		})
 	}
-
 }
 
 // A lost response leaves the exposure unresolved: only the original key may
@@ -856,7 +853,6 @@ func TestUnderwritingExecutionLostResponseNeverMintsReplacementKey(t *testing.T)
 	}
 	uwExecRequireNoPositions(t, h, "lost response with public membership")
 	uwExecRequireNoOrphanDecision(t, h)
-
 }
 
 // A pending __underwriting request is a restored control mission, not an
@@ -895,7 +891,6 @@ func TestUnderwritingExecutionPendingMissionIsControlAndFleetWorkContinues(t *te
 	uwExecRequireRetainedAction(t, h, id, body, "unresolved underwriting beside fleet work")
 	uwExecRequireNoPositions(t, h, "unresolved underwriting beside fleet work")
 	uwExecRequireNoOrphanDecision(t, h)
-
 }
 
 // c0orc11: after one accepted owned receipt, a fresh different otherwise
@@ -1014,5 +1009,4 @@ func TestUnderwritingExecutionFundingEvidenceGatesNextSlice(t *testing.T) {
 		t.Fatalf("position state wrong after the gate opened: funded=%v second=%v (%+v)", funded, second, positions)
 	}
 	uwExecRequireNoOrphanDecision(t, h)
-
 }

@@ -196,7 +196,6 @@ func TestSourcingReviewDiagnosticsStayBoundedAcrossEquivalentPasses(t *testing.T
 	if len(runner.decisionHashes) > 2048 {
 		t.Fatalf("decision fingerprint cache holds %d entries; the cache must stay bounded", len(runner.decisionHashes))
 	}
-
 }
 
 func TestDecisionCacheEvictsBeyondCapacity(t *testing.T) {
@@ -216,7 +215,6 @@ func TestDecisionCacheEvictsBeyondCapacity(t *testing.T) {
 	if len(runner.decisionHashes) > 2048 {
 		t.Fatalf("decision fingerprint cache grew to %d entries; the cap must evict", len(runner.decisionHashes))
 	}
-
 }
 
 // sourcingDepartureSeed persists a relocation mission already staged at its
@@ -378,5 +376,4 @@ func TestRelocationDepartureWaitsForFreshlyRequiredStores(t *testing.T) {
 			t.Fatalf("relocation with stores above the freshly required target never departed; decisions: %s", sourcingReviewDecisionReasons(t, h))
 		}
 	})
-
 }

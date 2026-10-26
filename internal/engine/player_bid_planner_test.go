@@ -107,7 +107,6 @@ func TestPlayerBidGossipPricesWholeLotWithNPCStress(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestRestingPlayerBidReservationsUseUnfilledBidTons(t *testing.T) {
@@ -123,5 +122,4 @@ func TestRestingPlayerBidReservationsUseUnfilledBidTons(t *testing.T) {
 	if reserved["portsmouth"]["coarse_cloth"] != 23 || reserved["amsterdam"]["coarse_cloth"] != 7 {
 		t.Fatalf("wrong resting bid reservations: %+v", reserved)
 	}
-
 }

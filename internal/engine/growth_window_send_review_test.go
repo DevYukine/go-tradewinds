@@ -151,7 +151,6 @@ func TestGrowthWindowSendReviewUnchangedProofSendsOriginalBuild(t *testing.T) {
 	if built.BuiltShipID != recoveryBuiltShipID || built.Action != nil {
 		t.Fatalf("real build result did not advance commissioning: %+v", built)
 	}
-
 }
 
 func TestGrowthWindowSendReviewNewEvidenceBeforeDispatch(t *testing.T) {
@@ -167,7 +166,6 @@ func TestGrowthWindowSendReviewNewEvidenceBeforeDispatch(t *testing.T) {
 			growthWindowSendReviewAssertVeto(t, h, mission, original, false)
 		})
 	}
-
 }
 
 func TestGrowthWindowSendReviewNewEvidenceAcrossLimiterWait(t *testing.T) {
@@ -189,7 +187,6 @@ func TestGrowthWindowSendReviewNewEvidenceAcrossLimiterWait(t *testing.T) {
 			growthWindowSendReviewAssertVeto(t, h, mission, original, true)
 		})
 	}
-
 }
 
 func TestGrowthWindowSendReviewProofExpiresAcrossLimiterWait(t *testing.T) {
@@ -225,7 +222,6 @@ func TestGrowthWindowSendReviewProofExpiresAcrossLimiterWait(t *testing.T) {
 		t.Fatalf("proof did not genuinely expire during the bounded limiter wait: %+v error %v", after, err)
 	}
 	growthWindowSendReviewAssertVeto(t, h, mission, original, true)
-
 }
 
 func TestGrowthWindowSendReviewAttemptedBuildReplaysDespiteNewUncertainty(t *testing.T) {
@@ -282,7 +278,6 @@ func TestGrowthWindowSendReviewAttemptedBuildReplaysDespiteNewUncertainty(t *tes
 	if len(h.pending()) != 0 || built.BuiltShipID != recoveryBuiltShipID || built.Action != nil {
 		t.Fatalf("attempted build did not settle into owned-hull commissioning: %+v", built)
 	}
-
 }
 
 func TestGrowthWindowSendReviewOwnedHullStillCommissions(t *testing.T) {
@@ -328,5 +323,4 @@ func TestGrowthWindowSendReviewOwnedHullStillCommissions(t *testing.T) {
 	if w.h.api.mutationCount("/v1/shipyard/build-ship") != 1 {
 		t.Fatal("commissioning bought another hull after build proof became blocked")
 	}
-
 }

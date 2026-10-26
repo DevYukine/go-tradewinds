@@ -133,7 +133,6 @@ func TestOperationStatusStartupSnapshotIsSingleAcrossRefreshObservations(t *test
 	if infos := logs.FilterLevelExact(zap.InfoLevel); infos.Len() != 1 {
 		t.Fatalf("quiet refreshes must not log anything at INFO: %+v", infos.All())
 	}
-
 }
 
 func TestOperationStatusIncoherentFirstFleetDoesNotConsumeStartupSnapshot(t *testing.T) {
@@ -193,7 +192,6 @@ func TestOperationStatusIncoherentFirstFleetDoesNotConsumeStartupSnapshot(t *tes
 	if statuses := acceptanceFleetStatus(t, logs); len(statuses) != 1 {
 		t.Fatalf("refreshes after the coherent snapshot must stay silent: %+v", statuses)
 	}
-
 }
 
 func TestOperationStatusSailingToPortArrivalLogsOnceWithContext(t *testing.T) {
@@ -244,7 +242,6 @@ func TestOperationStatusSailingToPortArrivalLogsOnceWithContext(t *testing.T) {
 	if arrivals := acceptanceEvents(t, logs, "ship arrived"); len(arrivals) != 1 {
 		t.Fatalf("the same arrival must never be announced twice: %+v", arrivals)
 	}
-
 }
 
 func TestOperationStatusNeverInventsArrivalsFromStaleMissingOrStartupStates(t *testing.T) {
@@ -345,7 +342,6 @@ func TestOperationStatusNeverInventsArrivalsFromStaleMissingOrStartupStates(t *t
 			t.Fatalf("a passed ETA must never announce an arrival while the ship still sails: %+v", arrivals)
 		}
 	})
-
 }
 
 func TestOperationStatusSunkTransitionLogsOnceWithContext(t *testing.T) {
@@ -390,5 +386,4 @@ func TestOperationStatusSunkTransitionLogsOnceWithContext(t *testing.T) {
 	if losses := acceptanceLossEvents(t, logs); len(losses) != 1 {
 		t.Fatalf("the same loss must never be announced twice: %+v", losses)
 	}
-
 }

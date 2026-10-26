@@ -56,7 +56,6 @@ func TestDispatchLogsFreshCommitOnceButNotCompletedActionReplay(t *testing.T) {
 	if len(h.api.mutationsFor("/v1/company/settings")) != calls || logs.FilterMessage("action committed").Len() != 1 {
 		t.Fatal("completed-action recovery resent a mutation or duplicated its success announcement")
 	}
-
 }
 
 func TestDispatchUninterpretableSuccessWarnsWithoutClaimingSuccess(t *testing.T) {
@@ -94,7 +93,6 @@ func TestDispatchUninterpretableSuccessWarnsWithoutClaimingSuccess(t *testing.T)
 	if len(warnings) != 1 || warnings[0].Level != zap.WarnLevel || warnings[0].ContextMap()["action_id"] != actionID {
 		t.Fatalf("missing action-specific reconciliation warning: %+v", warnings)
 	}
-
 }
 
 func TestDispatchUnresolvedWarningDeduplicatesByActionIdentity(t *testing.T) {
@@ -143,7 +141,6 @@ func TestDispatchUnresolvedWarningDeduplicatesByActionIdentity(t *testing.T) {
 	if logs.FilterMessage("action committed").Len() != 0 {
 		t.Fatal("unresolved actions emitted a success announcement")
 	}
-
 }
 
 func TestDispatchCommittedInfoRedactsCredentialEchoFromSuccessfulResponse(t *testing.T) {
@@ -190,7 +187,6 @@ func TestDispatchCommittedInfoRedactsCredentialEchoFromSuccessfulResponse(t *tes
 			}
 		}
 	}
-
 }
 
 func TestDispatchCommittedInfoFailsClosedWhenCredentialsBecomeUnreadable(t *testing.T) {
@@ -268,7 +264,6 @@ func TestDispatchCommittedInfoFailsClosedWhenCredentialsBecomeUnreadable(t *test
 			}
 		}
 	}
-
 }
 
 // Check is the boundary immediately before outcome strings are scrubbed.
@@ -534,7 +529,6 @@ func TestDispatchLogsTypedMutationFamiliesWithActualOutcomesAndSilentReplay(t *t
 			}
 		})
 	}
-
 }
 
 func TestNamedBuildRecoveryLogsEverySupportedJournalPathWithoutInventingCost(t *testing.T) {
@@ -604,7 +598,6 @@ func TestNamedBuildRecoveryLogsEverySupportedJournalPathWithoutInventingCost(t *
 			}
 		})
 	}
-
 }
 
 func TestRejectedActionPolicyRedactsBeforeBoundingAndKeepsReplaySilent(t *testing.T) {
@@ -689,5 +682,4 @@ func TestRejectedActionPolicyRedactsBeforeBoundingAndKeepsReplaySilent(t *testin
 			}
 		})
 	}
-
 }

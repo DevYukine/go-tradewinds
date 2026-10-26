@@ -443,7 +443,6 @@ func TestPrivateDatasetsRequireCurrentStationaryPresence(t *testing.T) {
 			t.Fatal("legitimate roadstead presence lost its yard quote capture")
 		}
 	})
-
 }
 
 // A sealed obligation's full accepted quantity is the precondition for a new
@@ -553,7 +552,6 @@ func TestShortSealedFreightHoldsNewTendersAndKeepsMaintenance(t *testing.T) {
 			t.Fatalf("shortfall hold settled %s without delivery", obligation.ContractID)
 		}
 	}
-
 }
 
 // Only an explicit fresh REST record naming the persisted contract settles an
@@ -764,7 +762,6 @@ func TestFreightTerminalReconciliationRequiresExplicitFreshRESTState(t *testing.
 			t.Fatalf("liveness flow changed the tender traffic: %+v", h.api.mutationsFor("/v1/contract/deliver-freight"))
 		}
 	})
-
 }
 
 // Delivery accounting is bound to the immutable journaled request. A stored
@@ -980,7 +977,6 @@ func TestDeliveryOutcomeAccountingBindsToImmutableRequest(t *testing.T) {
 			}
 		}
 	})
-
 }
 
 // expireTenderRetry clears the durable bounded tender retry deadline from the
@@ -1168,7 +1164,6 @@ func TestRefusedTenderRetriesBoundedAndRearmsOnFreshState(t *testing.T) {
 	if data.Action != nil || data.Freight[0].Settled || data.ExpensesPence != 0 {
 		t.Fatalf("second capacity refusal was not bounded and consumed: %+v", data)
 	}
-
 }
 
 // A charter that was definitively refused must not stay latched forever: the
@@ -1254,7 +1249,6 @@ func TestCharterRefusalLatchRefreshesOnAuthoritativeChange(t *testing.T) {
 	if data.Action.ID == charterAttempt {
 		t.Fatal("re-opened charter reused the refused action identity")
 	}
-
 }
 
 // An ambiguous action quarantines new spending account-wide, but it must not
@@ -1382,5 +1376,4 @@ func TestAmbiguousQuarantineBlocksSpendingButLetsOtherShipsDeliver(t *testing.T)
 	if len(h.pending()) != 1 {
 		t.Fatalf("quarantine left unexpected journal rows: %+v", h.pending())
 	}
-
 }

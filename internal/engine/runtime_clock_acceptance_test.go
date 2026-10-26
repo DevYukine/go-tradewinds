@@ -180,7 +180,6 @@ func TestServerBoundsProjectConservativeServerInterval(t *testing.T) {
 			})
 		}
 	})
-
 }
 
 // The turnaround lock timestamp is a server instant. A host clock ahead of the
@@ -273,7 +272,6 @@ func TestDepartureUnlockFollowsConservativeServerTime(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // Freight admission compares a server delivery deadline against the projected
@@ -362,5 +360,4 @@ func TestFreightDeadlineAdmissionUsesConservativeServerUpper(t *testing.T) {
 			}
 		})
 	}
-
 }

@@ -63,5 +63,4 @@ func TestObligationReservesFundObservedArrivalNotSailingOrigin(t *testing.T) {
 	if required["north"] != wantNorth {
 		t.Fatalf("stationary presence, incoming arrival and factor-inclusive home bills need %dp, got %v", wantNorth, required)
 	}
-
 }

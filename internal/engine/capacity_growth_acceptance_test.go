@@ -50,7 +50,6 @@ func TestEvaluateCapacityGrowthLiveShaped(t *testing.T) {
 	if math.Abs(got.PaybackGameDays-float64(wantCapital)/wantNet) > 0.01 {
 		t.Fatalf("payback %v does not use hull, slippage, cannons and stores capital %d", got.PaybackGameDays, wantCapital)
 	}
-
 }
 
 func TestEvaluateCapacityGrowthRejectRules(t *testing.T) {
@@ -93,7 +92,6 @@ func TestEvaluateCapacityGrowthRejectRules(t *testing.T) {
 			reasonRules[got.Reason] = tc.rule
 		})
 	}
-
 }
 
 func TestEvaluateCapacityGrowthCapacityScaling(t *testing.T) {
@@ -130,7 +128,6 @@ func TestEvaluateCapacityGrowthCapacityScaling(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestEvaluateCapacityGrowthFillsFleetBelowTarget(t *testing.T) {
@@ -185,7 +182,6 @@ func TestEvaluateCapacityGrowthFillsFleetBelowTarget(t *testing.T) {
 	if full := EvaluateCapacityGrowth(in); full.Accepted {
 		t.Fatalf("earnings gates did not return at the fleet target: %+v", full)
 	}
-
 }
 
 func TestBetterCapacityCandidateOrdering(t *testing.T) {
@@ -231,5 +227,4 @@ func TestBetterCapacityCandidateOrdering(t *testing.T) {
 			}
 		})
 	}
-
 }

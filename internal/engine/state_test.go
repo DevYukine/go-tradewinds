@@ -33,7 +33,6 @@ func TestActionDispositionDistinguishesAmbiguousFromDefinite(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestMissionStageKeysAreStableButNeverTradeAndDepartTogether(t *testing.T) {
@@ -52,7 +51,6 @@ func TestMissionStageKeysAreStableButNeverTradeAndDepartTogether(t *testing.T) {
 			t.Fatal("account, generation, stage or definite-outcome attempt collided")
 		}
 	}
-
 }
 
 func TestArrivalProvenanceNeverIncludesLocalOrSealedCargo(t *testing.T) {
@@ -71,7 +69,6 @@ func TestArrivalProvenanceNeverIncludesLocalOrSealedCargo(t *testing.T) {
 	if loss["provisions"] != 0 {
 		t.Fatal("unknown post-loss allocation released sealed cargo")
 	}
-
 }
 
 func TestAllSealedManifestReservationsAggregateBeforeSale(t *testing.T) {
@@ -86,7 +83,6 @@ func TestAllSealedManifestReservationsAggregateBeforeSale(t *testing.T) {
 	if reserved["provisions"] != 13 || reserved["sawn_planks"] != 7 {
 		t.Fatalf("multiple contracts or consequential tender lost reservations: %+v", reserved)
 	}
-
 }
 
 func TestExpiredDepartureRequiresActualDestinationEvidence(t *testing.T) {
@@ -113,7 +109,6 @@ func TestExpiredDepartureRequiresActualDestinationEvidence(t *testing.T) {
 	if departureObserved(before, actual, "portsmouth") {
 		t.Fatal("different ship satisfied a durable mission")
 	}
-
 }
 
 func TestPaginationUnderstandsConsumerResultWrappers(t *testing.T) {
@@ -126,7 +121,6 @@ func TestPaginationUnderstandsConsumerResultWrappers(t *testing.T) {
 	if _, err := pageID(json.RawMessage(`{"quantity":5}`)); err == nil {
 		t.Fatal("pagination silently accepted an unpageable row")
 	}
-
 }
 
 func TestMissingTradeQuantitiesCannotAdvanceProcurement(t *testing.T) {
@@ -145,7 +139,6 @@ func TestMissingTradeQuantitiesCannotAdvanceProcurement(t *testing.T) {
 	if !validTrade(zeroFill) {
 		t.Fatal("explicit zero IOC fill must remain a definite result, not a timeout")
 	}
-
 }
 
 func TestActualOverheadIsClaimedOnceAcrossOverlappingMissions(t *testing.T) {
@@ -176,7 +169,6 @@ func TestActualOverheadIsClaimedOnceAcrossOverlappingMissions(t *testing.T) {
 	if restarted != 0 {
 		t.Fatalf("durable claim was lost on restart: %d", restarted)
 	}
-
 }
 
 func TestFreightStopsKeepAllSealsAndUseActualDeadlines(t *testing.T) {
@@ -200,7 +192,6 @@ func TestFreightStopsKeepAllSealsAndUseActualDeadlines(t *testing.T) {
 	if freightStops(obligations)[0].Deadline != nil {
 		t.Fatal("unknown acceptance deadline was replaced by a guessed deadline")
 	}
-
 }
 
 func TestAcquiredCashMarginUsesActualFillNotStress(t *testing.T) {
@@ -277,7 +268,6 @@ func TestAcquiredCashMarginUsesActualFillNotStress(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestProvisionCustomsArePaidOnceAndKnownTollsStillReduceNet(t *testing.T) {
@@ -319,7 +309,6 @@ func TestProvisionCustomsArePaidOnceAndKnownTollsStillReduceNet(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestGossipAcquiredRevenueDoesNotConvertPriceStressIntoExpense(t *testing.T) {
@@ -357,7 +346,6 @@ func TestGossipAcquiredRevenueDoesNotConvertPriceStressIntoExpense(t *testing.T)
 	if revenue, reason := acquiredRevenue(in, plan, 2, nil); revenue != 0 || reason == "" {
 		t.Fatalf("gossip fabricated remote bid quantity: %d, %s", revenue, reason)
 	}
-
 }
 
 func TestAuthAndThrottleRefusalsPreserveCarriedInCharterOpportunity(t *testing.T) {
@@ -402,7 +390,6 @@ func TestAuthAndThrottleRefusalsPreserveCarriedInCharterOpportunity(t *testing.T
 			}
 		})
 	}
-
 }
 
 func TestActualCharterDomainRefusalStillRejectsOnlyThatCharter(t *testing.T) {
@@ -421,7 +408,6 @@ func TestActualCharterDomainRefusalStillRejectsOnlyThatCharter(t *testing.T) {
 		mission.Phase != "arrival" || data.Action != nil {
 		t.Fatalf("actual refusal either remained retryable or invalidated all cargo: %+v", data)
 	}
-
 }
 
 func TestFreightDepartureChecksDetourBeforeImmutableStop(t *testing.T) {
@@ -498,5 +484,4 @@ func TestFreightDepartureChecksDetourBeforeImmutableStop(t *testing.T) {
 			}
 		})
 	}
-
 }

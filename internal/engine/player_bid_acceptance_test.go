@@ -42,5 +42,4 @@ func TestPlayerBidCapacity(t *testing.T) {
 			}
 		})
 	}
-
 }

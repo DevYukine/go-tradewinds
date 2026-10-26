@@ -66,7 +66,6 @@ func TestUpdateDecodeGossipPlayerDepth(t *testing.T) {
 			t.Fatalf("unobserved gossip prices/quantities became values: %+v", missing)
 		}
 	}
-
 }
 
 func TestUpdateDecodeShipHullAndNPCLevel(t *testing.T) {
@@ -116,7 +115,6 @@ func TestUpdateDecodeShipHullAndNPCLevel(t *testing.T) {
 			t.Fatalf("null=%t manufactured ship/hull/NPC facts: ship=%+v hull=%+v level=%+v", missing, absentShip.Ship, absentHull, absentLevel)
 		}
 	}
-
 }
 
 func TestUpdateDecodeLloydsEstimate(t *testing.T) {
@@ -140,7 +138,6 @@ func TestUpdateDecodeLloydsEstimate(t *testing.T) {
 			t.Fatalf("missing Lloyd's estimates became observations: %+v", missing)
 		}
 	}
-
 }
 
 func TestUpdateTermsHashIgnoresLloydsFields(t *testing.T) {
@@ -170,5 +167,4 @@ func TestUpdateTermsHashIgnoresLloydsFields(t *testing.T) {
 	if insuranceTermsHash(updated) == insuranceTermsHash(original) {
 		t.Fatal("terms hash ignored a contractual premium change")
 	}
-
 }

@@ -226,7 +226,6 @@ func TestPiracyInsuranceLoadingStagingAndFirstSend(t *testing.T) {
 			}
 		}
 	}
-
 }
 
 func TestPiracyInsuranceRetainsObservedPolicyUntilFreshTerminalRelease(t *testing.T) {
@@ -285,7 +284,6 @@ func TestPiracyInsuranceRetainsObservedPolicyUntilFreshTerminalRelease(t *testin
 			}
 		})
 	}
-
 }
 
 func TestPiracyInsuranceDeparturePolicySet(t *testing.T) {
@@ -379,7 +377,6 @@ func TestPiracyInsuranceDeparturePolicySet(t *testing.T) {
 			})
 		}
 	}
-
 }
 
 func TestPiracyInsuranceMixedCaseOwnerAndShip(t *testing.T) {
@@ -408,7 +405,6 @@ func TestPiracyInsuranceMixedCaseOwnerAndShip(t *testing.T) {
 		t.Fatal(err)
 	}
 	piracyInsuranceRequireNoSend(t, h, shipID)
-
 }
 
 func TestPiracyInsuranceCompletedLoadingPhasesAdvance(t *testing.T) {
@@ -439,7 +435,6 @@ func TestPiracyInsuranceCompletedLoadingPhasesAdvance(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestPiracyInsuranceStoresAndDeliveryRemainAllowed(t *testing.T) {
@@ -514,7 +509,6 @@ func TestPiracyInsuranceStoresAndDeliveryRemainAllowed(t *testing.T) {
 			t.Fatalf("insurance blocked legitimate cargo sale: calls %+v data %+v", calls, retained)
 		}
 	})
-
 }
 
 func TestPiracyInsuranceHeldHullDoesNotStarveSecondHull(t *testing.T) {
@@ -568,7 +562,6 @@ func TestPiracyInsuranceHeldHullDoesNotStarveSecondHull(t *testing.T) {
 			t.Fatalf("insured first hull retained a blocked cargo reservation: %+v", retained)
 		}
 	}
-
 }
 
 func TestPiracyInsuranceGrowthReuseDoesNotCommitOrBuyReplacement(t *testing.T) {
@@ -598,7 +591,6 @@ func TestPiracyInsuranceGrowthReuseDoesNotCommitOrBuyReplacement(t *testing.T) {
 	if !bytes.Equal(encode(before), encode(after)) || h.api.mutationCount("/v1/shipyard/build-ship") != 0 || len(h.pending()) != 0 {
 		t.Fatalf("insurance-held reusable hull reserved capital or bought replacement: reserves %v -> %v pending %+v", before, after, h.pending())
 	}
-
 }
 
 func TestPiracyInsuranceSourcingAdmissionAndFunding(t *testing.T) {
@@ -671,7 +663,6 @@ func TestPiracyInsuranceSourcingAdmissionAndFunding(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestPiracyInsurancePostWaitExpiryHasDurableNoSendProof(t *testing.T) {
@@ -746,7 +737,6 @@ func TestPiracyInsurancePostWaitExpiryHasDurableNoSendProof(t *testing.T) {
 	if retained.Action != nil || h.api.mutationCount("/v1/fleet/depart") != 0 || len(h.pending()) != 0 {
 		t.Fatalf("restart replayed a proven never-sent insured departure: %+v", retained)
 	}
-
 }
 
 func TestPiracyInsuranceImmutableLoadingRecovery(t *testing.T) {
@@ -834,7 +824,6 @@ func TestPiracyInsuranceImmutableLoadingRecovery(t *testing.T) {
 			})
 		}
 	}
-
 }
 
 func TestPiracyInsuranceOwnPolicyOnLaterGeneralBoardPage(t *testing.T) {
@@ -869,7 +858,6 @@ func TestPiracyInsuranceOwnPolicyOnLaterGeneralBoardPage(t *testing.T) {
 		t.Fatal(err)
 	}
 	piracyInsuranceRequireNoSend(t, h, ship.Ship.ID)
-
 }
 
 func TestPiracyInsuranceUnrelatedPoliciesDoNotBlockLoading(t *testing.T) {
@@ -920,7 +908,6 @@ func TestPiracyInsuranceUnrelatedPoliciesDoNotBlockLoading(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestPiracyInsuranceEmptySourcingDeparture(t *testing.T) {
@@ -998,7 +985,6 @@ func TestPiracyInsuranceEmptySourcingDeparture(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestPiracyInsuranceImmutableDepartureRecovery(t *testing.T) {
@@ -1085,7 +1071,6 @@ func TestPiracyInsuranceImmutableDepartureRecovery(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestPiracyInsuranceSourcingFundingFirstSend(t *testing.T) {
@@ -1122,7 +1107,6 @@ func TestPiracyInsuranceSourcingFundingFirstSend(t *testing.T) {
 	if h.api.mutationCount("/v1/treasury/remit") != 0 || retained.Action != nil || len(h.pending()) != 0 {
 		t.Fatalf("first-send sourcing funding ignored conflicting insurance: %+v calls %+v", retained, h.api.mutationsFor("/v1/treasury/remit"))
 	}
-
 }
 
 func TestPiracyInsuranceCompletedBuyPrunesUnavailableOptionalFreight(t *testing.T) {
@@ -1177,7 +1161,6 @@ func TestPiracyInsuranceCompletedBuyPrunesUnavailableOptionalFreight(t *testing.
 			}
 		})
 	}
-
 }
 
 func TestPiracyInsuranceBlockedCargoFallsBackToMatchingEmptySourcing(t *testing.T) {
@@ -1224,7 +1207,6 @@ func TestPiracyInsuranceBlockedCargoFallsBackToMatchingEmptySourcing(t *testing.
 			}
 		})
 	}
-
 }
 
 func piracyInsuranceCharterRow(id string, quantity, reward int64) map[string]any {
@@ -1371,7 +1353,6 @@ func TestPiracyInsuranceInspectionDoesNotFundOrHandoffBlockedLoading(t *testing.
 			}
 		})
 	}
-
 }
 
 // Serve finite source depth while retaining the shared fake's real purchase
@@ -1581,7 +1562,6 @@ func TestPiracyInsuranceOnlyHypotheticalLoadingReservationsSuspend(t *testing.T)
 			}
 		})
 	}
-
 }
 
 func TestPiracyInsuranceSuspendedReservationLetsOtherHullTradeBeforeRelease(t *testing.T) {
@@ -1703,7 +1683,6 @@ func TestPiracyInsuranceSuspendedReservationLetsOtherHullTradeBeforeRelease(t *t
 	if cash < baseline.ReserveByRegion["north"] || cash != initialCash-4_080 {
 		t.Fatalf("released mission lost exact purchase/customs cash or spent protected operating funds: initial %dp final %dp reserve %dp", initialCash, cash, baseline.ReserveByRegion["north"])
 	}
-
 }
 
 func TestPiracyInsuranceHeldFutureDestinationDoesNotCreateTreasuryObligation(t *testing.T) {
@@ -1732,7 +1711,6 @@ func TestPiracyInsuranceHeldFutureDestinationDoesNotCreateTreasuryObligation(t *
 	if !bytes.Equal(encode(before), encode(after)) {
 		t.Fatalf("unattempted insurance-held destination created hypothetical treasury bills: %v -> %v", before, after)
 	}
-
 }
 
 func TestPiracyInsuranceHeldGrowthCargoDoesNotStageReplacementFunding(t *testing.T) {
@@ -1782,7 +1760,6 @@ func TestPiracyInsuranceHeldGrowthCargoDoesNotStageReplacementFunding(t *testing
 			t.Fatalf("held growth cargo reached market transport: %+v", call)
 		}
 	}
-
 }
 
 func TestPiracyInsuranceCommissioningKeepsAdmittedCapitalReserved(t *testing.T) {
@@ -1821,7 +1798,6 @@ func TestPiracyInsuranceCommissioningKeepsAdmittedCapitalReserved(t *testing.T) 
 			t.Fatalf("insurance observation released commissioning's finite market commitment at %s: before %+v after %+v", port, beforeBook, afterBook)
 		}
 	}
-
 }
 
 func TestPiracyInsuranceSourcingSelectsHighestRankedPolicyCompatibleSource(t *testing.T) {
@@ -1988,5 +1964,4 @@ func TestPiracyInsuranceSourcingSelectsHighestRankedPolicyCompatibleSource(t *te
 			}
 		})
 	}
-
 }

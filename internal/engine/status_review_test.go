@@ -119,7 +119,6 @@ func TestControllerCoverageStopsAtTheActualShipOrCompanyAction(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestAssessmentCoverageRequiresActualFleetMembership(t *testing.T) {
@@ -137,7 +136,6 @@ func TestAssessmentCoverageRequiresActualFleetMembership(t *testing.T) {
 	if !slices.Equal(runner.assessedShipIDs, []string{recoveryShipLapras}) {
 		t.Fatalf("real ship assessment was missing or duplicated: %v", runner.assessedShipIDs)
 	}
-
 }
 
 func TestConcurrentRequestJournalFailuresAreBoundedByCauseAndRecover(t *testing.T) {
@@ -215,7 +213,6 @@ func TestConcurrentRequestJournalFailuresAreBoundedByCauseAndRecover(t *testing.
 		t.Fatalf("a new outage after recovery must receive its own warning: %+v", warnings)
 	}
 	exec("ALTER TABLE requests DROP CONSTRAINT status_review_journal_rejected")
-
 }
 
 func TestRequestJournalOutageDoesNotSampleDistinctCommittedActions(t *testing.T) {
@@ -253,5 +250,4 @@ func TestRequestJournalOutageDoesNotSampleDistinctCommittedActions(t *testing.T)
 	if warnings := logs.FilterMessage("record request").All(); len(warnings) != 1 {
 		t.Fatalf("business action callbacks restarted the same diagnostic warning: %+v", warnings)
 	}
-
 }

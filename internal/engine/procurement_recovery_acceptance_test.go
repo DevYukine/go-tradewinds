@@ -249,7 +249,6 @@ func TestProcurementRecoveryDeliversBetterRecoveryAndSettlesLoss(t *testing.T) {
 		return
 	}
 	t.Fatal("delivered recovery never published its loss-inclusive settlement")
-
 }
 
 func TestProcurementRecoveryFirstSendDoesNotReintroduceSunkCostGate(t *testing.T) {
@@ -263,7 +262,6 @@ func TestProcurementRecoveryFirstSendDoesNotReintroduceSunkCostGate(t *testing.T
 		t.Fatal(err)
 	}
 	procurementRecoveryRequireDeparture(t, h, runner, mission, &data)
-
 }
 
 func TestProcurementRecoveryPreservesAcceptedSealWithoutSunkCostIdle(t *testing.T) {
@@ -280,7 +278,6 @@ func TestProcurementRecoveryPreservesAcceptedSealWithoutSunkCostIdle(t *testing.
 	if orders := h.api.mutationsFor("/v1/market/place-order"); len(orders) != 0 {
 		t.Fatalf("accepted seals were offered for liquidation: %+v", orders)
 	}
-
 }
 
 func TestProcurementRecoveryChoosesExecutableLocalRecoveryWhenBetter(t *testing.T) {
@@ -326,7 +323,6 @@ func TestProcurementRecoveryChoosesExecutableLocalRecoveryWhenBetter(t *testing.
 			}
 		})
 	}
-
 }
 
 func TestProcurementRecoveryStillRequiresEvidenceAndSafeDeparture(t *testing.T) {
@@ -406,5 +402,4 @@ func TestProcurementRecoveryStillRequiresEvidenceAndSafeDeparture(t *testing.T) 
 			})
 		}
 	}
-
 }

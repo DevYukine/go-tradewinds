@@ -28,7 +28,6 @@ func TestSourcingValidatesTargetBeforePruningThreePairs(t *testing.T) {
 	if accepted[0].Economics.RevenuePence != 0 {
 		t.Fatalf("a route inspection invented source revenue: %+v", accepted[0])
 	}
-
 }
 
 func TestSourcingLifetimeAllowanceUsesLossInclusiveCommercialProfit(t *testing.T) {
@@ -52,7 +51,6 @@ func TestSourcingLifetimeAllowanceUsesLossInclusiveCommercialProfit(t *testing.T
 			}
 		})
 	}
-
 }
 
 func TestRelocationConsumedStoreRiskPreservesActualPurchaseCash(t *testing.T) {
@@ -101,7 +99,6 @@ func TestRelocationConsumedStoreRiskPreservesActualPurchaseCash(t *testing.T) {
 	if _, known := relocationSpentExpense(&restarted, ship); known {
 		t.Fatal("unknown actual costs funded more discretionary risk")
 	}
-
 }
 
 func putSourcingBudgetSettlement(t *testing.T, h *recoveryHarness, row store.Settlement) {
@@ -162,7 +159,6 @@ func TestSourcingExhaustedPermanentExpenseSurvivesRestartAndOnlyNetProfitRepleni
 	if len(acceptedRelocations(planSourcingRelocation(in))) == 0 {
 		t.Fatal("new known loss-inclusive commercial profit could not fund a different legal inspection")
 	}
-
 }
 
 func TestSourcingFailedEvidenceDoesNotRepeatOnRestartOrNewTimestamps(t *testing.T) {
@@ -193,7 +189,6 @@ func TestSourcingFailedEvidenceDoesNotRepeatOnRestartOrNewTimestamps(t *testing.
 	if len(acceptedRelocations(planSourcingRelocation(in))) == 0 {
 		t.Fatal("materially changed public supply price was not reconsidered within the remaining permanent allowance")
 	}
-
 }
 
 func TestRelocationExecutionBudgetFundsFullStoresWithoutCallingThemConsumed(t *testing.T) {
@@ -243,7 +238,6 @@ func TestRelocationExecutionBudgetFundsFullStoresWithoutCallingThemConsumed(t *t
 	if runner.relocationBudget(&data, 0) {
 		t.Fatal("an unknown result funded more discretionary exploration")
 	}
-
 }
 
 func TestSourcingFundsActualCharterContinuationStoreTarget(t *testing.T) {
@@ -279,5 +273,4 @@ func TestSourcingFundsActualCharterContinuationStoreTarget(t *testing.T) {
 	if accepted := acceptedRelocations(planSourcingRelocation(in)); len(accepted) != 0 {
 		t.Fatalf("the smaller retreat store bill authorized an unfunded actual continuation target: %+v", accepted)
 	}
-
 }

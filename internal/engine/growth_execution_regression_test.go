@@ -497,7 +497,6 @@ func TestGrowthAllocationSurvivesCommissioningAndTwoProductionSpotCycles(t *test
 	if purchases != 2 || returns != 1 || w.h.api.mutationCount("/v1/shipyard/build-ship") != 1 {
 		t.Fatalf("real journal transitions were not two bounded buys and one return: buys %d returns %d", purchases, returns)
 	}
-
 }
 
 func TestGrowthOptionalReturnYieldsToCurrentAlternativesAndAuthority(t *testing.T) {
@@ -539,7 +538,6 @@ func TestGrowthOptionalReturnYieldsToCurrentAlternativesAndAuthority(t *testing.
 			}
 		})
 	}
-
 }
 
 func TestGrowthSuccessfulPartialAndZeroIOCStayCompletedAcrossRestart(t *testing.T) {
@@ -572,7 +570,6 @@ func TestGrowthSuccessfulPartialAndZeroIOCStayCompletedAcrossRestart(t *testing.
 			}
 		})
 	}
-
 }
 
 func TestGrowthNeverSentCargoRevalidatesCurrentCashCustomsAndDepth(t *testing.T) {
@@ -614,7 +611,6 @@ func TestGrowthNeverSentCargoRevalidatesCurrentCashCustomsAndDepth(t *testing.T)
 			}
 		})
 	}
-
 }
 
 func TestGrowthAmbiguousReturnKeepsAttemptAndActualCostAfterMarketLoss(t *testing.T) {
@@ -651,7 +647,6 @@ func TestGrowthAmbiguousReturnKeepsAttemptAndActualCostAfterMarketLoss(t *testin
 	if len(keys) != 1 || !lostOnce {
 		t.Fatal("ambiguous return was abandoned or replaced by another attempted identity")
 	}
-
 }
 
 func TestGrowthSelectedNextLotReservesOnceAndExcludesItsOwner(t *testing.T) {
@@ -684,7 +679,6 @@ func TestGrowthSelectedNextLotReservesOnceAndExcludesItsOwner(t *testing.T) {
 	if math.IsNaN(data.GrowthLane.NextPlan.Economics.NetPencePerGameDay) {
 		t.Fatal("selected executable operating quote had no finite rate")
 	}
-
 }
 
 func TestGrowthContinuationFundsMeasuredRemitAndChargesFeeOnce(t *testing.T) {
@@ -720,7 +714,6 @@ func TestGrowthContinuationFundsMeasuredRemitAndChargesFeeOnce(t *testing.T) {
 	if len(rows) != 1 || rows[0].FeesPence != initialFees+fee || rows[0].ExpensesPence != 17 {
 		t.Fatalf("return/remittance cash was lost or duplicated after restart: %+v", rows)
 	}
-
 }
 
 func TestGrowthReturnRepricesNeverSentItineraryButKeepsPaidReturnSunk(t *testing.T) {
@@ -772,7 +765,6 @@ func TestGrowthReturnRepricesNeverSentItineraryButKeepsPaidReturnSunk(t *testing
 			t.Fatalf("repricing the next purchase erased the real return expense: %+v", rows)
 		}
 	})
-
 }
 
 func TestGrowthContinuationCharterDeadlineIncludesRepositioning(t *testing.T) {
@@ -815,7 +807,6 @@ func TestGrowthContinuationCharterDeadlineIncludesRepositioning(t *testing.T) {
 	if repositioned := quoteGrowthDelivery(input, base, data.GrowthLane, false, &back); repositioned.plan.Accepted {
 		t.Fatal("charter expiry ignored the real empty repositioning leg")
 	}
-
 }
 
 func TestGrowthResidualOperatingQuoteReservesOtherUnboughtAndOutstandingLotsOnce(t *testing.T) {
@@ -855,7 +846,6 @@ func TestGrowthResidualOperatingQuoteReservesOtherUnboughtAndOutstandingLotsOnce
 	if input.ReserveByRegion["north"]-base.ReserveByRegion["north"] != incumbentCash {
 		t.Fatal("paid outstanding cargo was reserved as another purchase, or the unbought lot was not protected once")
 	}
-
 }
 
 func TestGrowthInitialIOCExactFundingBoundary(t *testing.T) {
@@ -890,7 +880,6 @@ func TestGrowthInitialIOCExactFundingBoundary(t *testing.T) {
 	if err := runner.growthAllocationReady(w.h.ctx, ship, &data, data.Action); err == nil {
 		t.Fatal("initial immutable IOC was admitted one pence short")
 	}
-
 }
 
 func TestGrowthFreshlyDisprovedCommissioningReleasesThroughAtomicHandoff(t *testing.T) {
@@ -919,7 +908,6 @@ func TestGrowthFreshlyDisprovedCommissioningReleasesThroughAtomicHandoff(t *test
 	if w.h.api.mutationCount("/v1/market/place-order") != 0 || w.h.api.mutationCount("/v1/shipyard/modify-ship") != 0 {
 		t.Fatal("freshly disproved commissioning spent on the old procurement or hardware package")
 	}
-
 }
 
 func TestGrowthReturnedContinuationRetainsBoundedIntentWhileSourceIsStale(t *testing.T) {
@@ -953,7 +941,6 @@ func TestGrowthReturnedContinuationRetainsBoundedIntentWhileSourceIsStale(t *tes
 	if next.BoughtQuantity <= 0 || next.BoughtQuantity > quantityLimit {
 		t.Fatal("fresh source recovery bypassed the retained quantity ceiling")
 	}
-
 }
 
 func TestGrowthPaidReturnInspectsSourceBerthBeforeRequotingCargo(t *testing.T) {
@@ -1028,7 +1015,6 @@ func TestGrowthPaidReturnInspectsSourceBerthBeforeRequotingCargo(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestGrowthSourceInspectionDockPreservesExactRegionalFunding(t *testing.T) {
@@ -1072,5 +1058,4 @@ func TestGrowthSourceInspectionDockPreservesExactRegionalFunding(t *testing.T) {
 	if len(rows) != 1 || rows[0].MissionID != first.Generation || rows[0].ExpensesPence != 17 {
 		t.Fatal("inspection funding changed the immutable first return cost")
 	}
-
 }

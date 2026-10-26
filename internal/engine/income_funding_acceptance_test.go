@@ -94,7 +94,6 @@ func TestIncomeFundingOrdinaryCharterAndFreightUseDonorSurplus(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestIncomeFundingFeesCanEraseOtherwisePositiveIncome(t *testing.T) {
@@ -118,7 +117,6 @@ func TestIncomeFundingFeesCanEraseOtherwisePositiveIncome(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestIncomeFundingRanksFreightAfterCollateralFundingFees(t *testing.T) {
@@ -139,7 +137,6 @@ func TestIncomeFundingRanksFreightAfterCollateralFundingFees(t *testing.T) {
 		plans[0].Economics.ExpectedNetPence <= plans[1].Economics.ExpectedNetPence {
 		t.Fatalf("gross reward displaced the better fee-net ordinary freight: %+v", plans)
 	}
-
 }
 
 func TestIncomeFundingCombinesDonorsWithPerTransferRounding(t *testing.T) {
@@ -166,7 +163,6 @@ func TestIncomeFundingCombinesDonorsWithPerTransferRounding(t *testing.T) {
 	if fees := incomeFundingFees(t, e); fees != wantFees {
 		t.Fatalf("funding did not charge each observed transfer once: got=%d want=%d plan=%+v", fees, wantFees, plan)
 	}
-
 }
 
 func TestIncomeFundingProtectsRegionalCashAndRateAuthority(t *testing.T) {
@@ -204,7 +200,6 @@ func TestIncomeFundingProtectsRegionalCashAndRateAuthority(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func incomeFundingRunner(t *testing.T) (*recoveryHarness, *Runner) {
@@ -271,7 +266,6 @@ func TestIncomeFundingIncumbentMissionCashCannotBecomeDonorSurplus(t *testing.T)
 			t.Fatalf("ordinary income borrowed incumbent procurement cash: %+v", plan)
 		}
 	}
-
 }
 
 func TestIncomeFundingShipOwnsDurableRemittanceAndRejectsChangedOpportunity(t *testing.T) {
@@ -394,5 +388,4 @@ func TestIncomeFundingShipOwnsDurableRemittanceAndRejectsChangedOpportunity(t *t
 		rows[0].FeesPence != actualFee || !rows[0].CostsKnown {
 		t.Fatalf("paid pre-buy funding fee must close exactly once as an actual zero-cargo loss: %+v fee=%d", rows, actualFee)
 	}
-
 }

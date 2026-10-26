@@ -63,7 +63,6 @@ func TestUnderwritingReviewCandidateCannotEscapeItsRetainedEvidence(t *testing.T
 			}
 		})
 	}
-
 }
 
 func TestUnderwritingReviewPermanentCensorshipSurvivesRestart(t *testing.T) {
@@ -119,7 +118,6 @@ func TestUnderwritingReviewPermanentCensorshipSurvivesRestart(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestUnderwritingReviewPostWaitPreflightRejectsNewPermanentContradiction(t *testing.T) {
@@ -174,7 +172,6 @@ func TestUnderwritingReviewPostWaitPreflightRejectsNewPermanentContradiction(t *
 	if data.Action != nil || data.LastActionID != "" {
 		t.Fatalf("never-sent policy veto was treated as a receipt: %+v", data)
 	}
-
 }
 
 func TestUnderwritingReviewDisputedOwnedClosureVetoesFurtherRisk(t *testing.T) {
@@ -263,7 +260,6 @@ func TestUnderwritingReviewDisputedOwnedClosureVetoesFurtherRisk(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestUnderwritingReviewReservesEveryRegionalDeficitAndMeasuredFee(t *testing.T) {
@@ -344,7 +340,6 @@ func TestUnderwritingReviewReservesEveryRegionalDeficitAndMeasuredFee(t *testing
 			}
 		})
 	}
-
 }
 
 func TestUnderwritingReviewUnfundableCommitmentDoesNotBlockSafeShipping(t *testing.T) {
@@ -381,7 +376,6 @@ func TestUnderwritingReviewUnfundableCommitmentDoesNotBlockSafeShipping(t *testi
 	if len(data.Freight) != 1 || !data.Freight[0].Settled || data.ProceedsPence != 9_000 {
 		t.Fatalf("safe shipping did not retain its authoritative delivery: %+v", data)
 	}
-
 }
 
 func TestUnderwritingReviewInvalidReceiptIdentityRetainsCommittedAmbiguity(t *testing.T) {
@@ -438,5 +432,4 @@ func TestUnderwritingReviewInvalidReceiptIdentityRetainsCommittedAmbiguity(t *te
 			}
 		})
 	}
-
 }

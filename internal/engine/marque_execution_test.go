@@ -263,7 +263,6 @@ func TestMarqueExecutionLifecycle(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestMarqueFirstSendRefreshRejectsChangedPriceOrAdmission(t *testing.T) {
@@ -295,7 +294,6 @@ func TestMarqueFirstSendRefreshRejectsChangedPriceOrAdmission(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestMarqueFirstSendAcceptsTenPercentPriceIncrease(t *testing.T) {
@@ -313,7 +311,6 @@ func TestMarqueFirstSendAcceptsTenPercentPriceIncrease(t *testing.T) {
 	if h.api.mutationCount("/v1/fleet/issue-marque") != 1 {
 		t.Fatal("admitted ten percent price increase was not issued")
 	}
-
 }
 
 func TestMarqueDisabledAfterStagingNeverSends(t *testing.T) {
@@ -339,7 +336,6 @@ func TestMarqueDisabledAfterStagingNeverSends(t *testing.T) {
 		t.Fatal("persisted marque intent spent after MARQUES_ENABLED was turned off")
 	}
 	h.missingMission("__marque")
-
 }
 
 func TestMarqueSwitchControlsWorkAdmission(t *testing.T) {
@@ -387,7 +383,6 @@ func TestMarqueSwitchControlsWorkAdmission(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestMarquePendingActionDoesNotBlockUnrelatedShipMutation(t *testing.T) {
@@ -426,7 +421,6 @@ func TestMarquePendingActionDoesNotBlockUnrelatedShipMutation(t *testing.T) {
 	if pending.Action == nil || pending.Action.ID != key || len(h.pending()) != 1 {
 		t.Fatal("unrelated ship work lost or replaced the unresolved marque action")
 	}
-
 }
 
 func TestMarqueHomeFundsProtectsCommittedLoadingCash(t *testing.T) {
@@ -464,7 +458,6 @@ func TestMarqueHomeFundsProtectsCommittedLoadingCash(t *testing.T) {
 	if changed, err := runner.considerMarque(h.ctx); err != nil || changed {
 		t.Fatalf("marque spent cash already committed to loading: changed=%v err=%v", changed, err)
 	}
-
 }
 
 func TestMarqueUnfundableRegionalBudgetSkipsOptionalSpending(t *testing.T) {
@@ -495,7 +488,6 @@ func TestMarqueUnfundableRegionalBudgetSkipsOptionalSpending(t *testing.T) {
 			h.missingMission("__marque")
 		})
 	}
-
 }
 
 func TestMarqueExposureIncludesPersistedReturnAndRecoveryLegs(t *testing.T) {
@@ -532,7 +524,6 @@ func TestMarqueExposureIncludesPersistedReturnAndRecoveryLegs(t *testing.T) {
 			t.Fatalf("persisted itinerary did not protect %s: %v", zone, exposed)
 		}
 	}
-
 }
 
 func TestMarqueReconciledJournalRestoresIssuedZoneAfterRestart(t *testing.T) {
@@ -578,7 +569,6 @@ func TestMarqueReconciledJournalRestoresIssuedZoneAfterRestart(t *testing.T) {
 	if pending := decode[marquePending](runner.snapshot, "_marque_pending"); pending.SeaZoneID != "" {
 		t.Fatalf("matching issued identity did not retire its pending guard: %+v", pending)
 	}
-
 }
 
 func TestMarqueUnknownSailingContinuationHoldsAdmissionAndPreflight(t *testing.T) {
@@ -628,7 +618,6 @@ func TestMarqueUnknownSailingContinuationHoldsAdmissionAndPreflight(t *testing.T
 	if h.api.mutationCount("/v1/fleet/issue-marque") != 0 {
 		t.Fatal("unknown continuation allowed an issue mutation")
 	}
-
 }
 
 func TestMarqueOnlyDomainRefusalPersistsSixHourZoneBackoff(t *testing.T) {
@@ -663,5 +652,4 @@ func TestMarqueOnlyDomainRefusalPersistsSixHourZoneBackoff(t *testing.T) {
 			}
 		})
 	}
-
 }

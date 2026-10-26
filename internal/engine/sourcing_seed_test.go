@@ -25,5 +25,4 @@ func TestSourcingUnknownCommercialHistoryCannotEraseOrReplenishSeed(t *testing.T
 	if allowance := sourcingLifetimeAllowance(history); allowance != 0 {
 		t.Fatalf("unmeasured prior discovery spending allowed the seed to reset: %dp", allowance)
 	}
-
 }

@@ -79,7 +79,6 @@ func TestPlanningInputSkipsUnusedZeroBalanceRegionFunding(t *testing.T) {
 	if accepted[0].Destination != "amsterdam" {
 		t.Fatalf("sourcing probe drifted from the evidenced source: %+v", accepted[0])
 	}
-
 }
 
 // sourcingStorePurchaseFixture forces the probe to buy its whole both-way safe
@@ -150,5 +149,4 @@ func TestSourcingInspectCapsConsumedExpenseNotStorePurchaseCash(t *testing.T) {
 			t.Fatalf("source inspection accepted against an impossible charter deadline: %+v", accepted)
 		}
 	})
-
 }

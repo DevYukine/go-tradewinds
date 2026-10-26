@@ -189,5 +189,4 @@ func TestGrowthCycle5ActionlessPostSettlementCancellationReleasesDespiteCompanyU
 	if northAfter != northBefore-upkeepPence-freshCash {
 		t.Errorf("post-settlement cash identity lost or duplicated an expense: got %d want %d", northAfter, northBefore-upkeepPence-freshCash)
 	}
-
 }

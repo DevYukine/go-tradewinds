@@ -71,7 +71,6 @@ func TestFinishGroupPrunesHistoricalKeysAndMetadataOrphans(t *testing.T) {
 	if !runner.fresh("books") {
 		t.Fatal("a pruned group whose only current child is fresh must stay fresh")
 	}
-
 }
 
 func TestFailedCurrentCaptureKeepsLastGoodDataAndVisibleFailure(t *testing.T) {
@@ -120,7 +119,6 @@ func TestFailedCurrentCaptureKeepsLastGoodDataAndVisibleFailure(t *testing.T) {
 	if count := requests.Load(); count != 1 {
 		t.Fatalf("capture attempted %d requests, want exactly one", count)
 	}
-
 }
 
 func TestTravelCyclesReplaceBooksInsteadOfAccumulatingHistory(t *testing.T) {
@@ -172,7 +170,6 @@ func TestTravelCyclesReplaceBooksInsteadOfAccumulatingHistory(t *testing.T) {
 	if !runner.fresh("books") {
 		t.Fatal("the group must stay fresh when its only current child is fresh")
 	}
-
 }
 
 func TestHistoricalBloatPrunesBelowStoreSnapshotBudget(t *testing.T) {
@@ -206,7 +203,6 @@ func TestHistoricalBloatPrunesBelowStoreSnapshotBudget(t *testing.T) {
 	if kept >= storeSnapshotBudgetBytes {
 		t.Fatalf("pruned snapshot is %d bytes, want below the store's %d byte budget", kept, storeSnapshotBudgetBytes)
 	}
-
 }
 
 func TestFinishGroupRequiresCompleteCurrentGenerationChildren(t *testing.T) {
@@ -249,5 +245,4 @@ func TestFinishGroupRequiresCompleteCurrentGenerationChildren(t *testing.T) {
 			}
 		})
 	}
-
 }

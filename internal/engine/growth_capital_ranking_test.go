@@ -23,5 +23,4 @@ func TestGrowthRankingIncludesNewRegionalCashFloors(t *testing.T) {
 	if !betterGrowthPackage(remote, established) {
 		t.Fatal("already-protected regional cash was charged again to the marginal ship")
 	}
-
 }

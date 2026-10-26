@@ -359,7 +359,6 @@ func TestRunDispatchesStagedSettingsDespiteSustainedOrdinaryEvents(t *testing.T)
 	if h.api.mutationCount("/v1/company/settings") != 1 {
 		t.Fatal("extra settings attempts appeared after the dispatched capture")
 	}
-
 }
 
 // Hard-control safety: an auth_revoked frame delivered during the first
@@ -406,7 +405,6 @@ func TestRunStopsTerminalOnStreamAuthRevokedWithoutMutations(t *testing.T) {
 	if mission.Phase != "settings" || data.Action == nil {
 		t.Fatalf("auth stop did not retain the staged intent: phase %s action %+v", mission.Phase, data.Action)
 	}
-
 }
 
 func TestRunQueuedGapAndClosureRequireAuthoritativeResyncBeforeDispatch(t *testing.T) {
@@ -516,5 +514,4 @@ func TestRunQueuedGapAndClosureRequireAuthoritativeResyncBeforeDispatch(t *testi
 	if err := running.wait(t, 15*time.Second); err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatalf("stop resynchronized runner: %v", err)
 	}
-
 }

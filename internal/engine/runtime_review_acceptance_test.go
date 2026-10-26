@@ -344,7 +344,6 @@ func TestBuildFirstSendRevalidatesQuoteAndFunding(t *testing.T) {
 			t.Fatalf("attempted build lost its immutable replay: %+v", calls)
 		}
 	})
-
 }
 
 // Escalated c0-sec-sec-5: the dispatch path validated the financial epoch only
@@ -482,7 +481,6 @@ func TestGrowthPreflightInvalidatesEpochPublishedDuringWork(t *testing.T) {
 	if evidence.Kind != neverSentFinancialEvent {
 		t.Fatalf("reconciliation kind = %q, want %q", evidence.Kind, neverSentFinancialEvent)
 	}
-
 }
 
 // reviewSettlementsBarrier takes an ACCESS EXCLUSIVE lock on the harness
@@ -674,7 +672,6 @@ func TestSpendingFirstSendRequiresFreshVaultAuthority(t *testing.T) {
 			t.Fatalf("replay changed the immutable request: %+v", replayed)
 		}
 	})
-
 }
 
 // A3: the quarantine credit-only pass must never tender a recovered
@@ -787,7 +784,6 @@ func TestQuarantineCreditSkipsDepartPhaseMission(t *testing.T) {
 	if len(pending) != 1 || pending[0].ID != ambiguousID {
 		t.Fatalf("quarantined request was not durably retained: %+v", pending)
 	}
-
 }
 
 // A6: a sunk ship must reconcile authoritative terminal freight before the
@@ -894,5 +890,4 @@ func TestSunkShipReconcilesTerminalFreightBeforeFinish(t *testing.T) {
 			}
 		})
 	}
-
 }

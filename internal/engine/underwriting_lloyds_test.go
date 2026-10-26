@@ -111,7 +111,6 @@ func TestPricedLloydsUnderwriting(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestLloydsSliceNetRoundingAndBounds(t *testing.T) {
@@ -136,7 +135,6 @@ func TestLloydsSliceNetRoundingAndBounds(t *testing.T) {
 			t.Fatalf("invalid expected loss %d accepted with net %d", invalidLoss, net)
 		}
 	}
-
 }
 
 func TestPricedLloydsRejectsMalformedEstimates(t *testing.T) {
@@ -175,5 +173,4 @@ func TestPricedLloydsRejectsMalformedEstimates(t *testing.T) {
 			})
 		}
 	}
-
 }

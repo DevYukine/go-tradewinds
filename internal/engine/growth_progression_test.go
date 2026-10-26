@@ -79,7 +79,6 @@ func TestGrowthRollingSourceDepthReplacesWholePaybackStock(t *testing.T) {
 	if decision := EvaluateGrowth(scarce); decision.Accepted {
 		t.Fatal("79t of source depth funded two 40t cycle lots")
 	}
-
 }
 
 // TestGrowthSpotBidsNeedRollingDeliverableDepth covers G2: a spot lane needs
@@ -99,7 +98,6 @@ func TestGrowthSpotBidsNeedRollingDeliverableDepth(t *testing.T) {
 	if decision := EvaluateGrowth(scarce); decision.Accepted {
 		t.Fatal("79t of spot bids funded two 40t cycle lots")
 	}
-
 }
 
 // TestGrowthOtherSourceOverlapConsumesOnlySourceAsks covers G2 allocation: a
@@ -119,7 +117,6 @@ func TestGrowthOtherSourceOverlapConsumesOnlySourceAsks(t *testing.T) {
 	if decision := EvaluateGrowth(short); decision.Accepted {
 		t.Fatal("119t of source depth covered three 40t cycle lots")
 	}
-
 }
 
 // TestGrowthOtherDestinationOverlapConsumesOnlySpotBids covers G2 allocation:
@@ -141,7 +138,6 @@ func TestGrowthOtherDestinationOverlapConsumesOnlySpotBids(t *testing.T) {
 	if decision := EvaluateGrowth(short); decision.Accepted {
 		t.Fatal("119t of spot bids covered three 40t cycle lots")
 	}
-
 }
 
 // TestGrowthOtherContractOverlapConsumesOnlyCharterCapacity covers G2
@@ -161,7 +157,6 @@ func TestGrowthOtherContractOverlapConsumesOnlyCharterCapacity(t *testing.T) {
 	if decision := EvaluateGrowth(short); decision.Accepted {
 		t.Fatal("179t of contract capacity covered the 180t payback demand")
 	}
-
 }
 
 // TestGrowthCharterCapacityCoversPaybackAndExpiry pins the finite-charter
@@ -194,7 +189,6 @@ func TestGrowthCharterCapacityCoversPaybackAndExpiry(t *testing.T) {
 	if decision := EvaluateGrowth(earlyExpiry); decision.Accepted {
 		t.Fatal("charter expiring before payback plus one delivery cycle was accepted")
 	}
-
 }
 
 // TestGrowthFundingBoundaryIsExact covers G3: the single-region fixture
@@ -212,7 +206,6 @@ func TestGrowthFundingBoundaryIsExact(t *testing.T) {
 	if decision := EvaluateGrowth(short); decision.Accepted {
 		t.Fatal("growth was authorized one pence short of protected working capital, upkeep horizon and reserve")
 	}
-
 }
 
 // TestGrowthProofRequiresPositiveLossInclusiveNet covers PROOF: cumulative
@@ -240,7 +233,6 @@ func TestGrowthProofRequiresPositiveLossInclusiveNet(t *testing.T) {
 	if decision.PaybackGameDays <= positive.MaxPaybackDays {
 		t.Fatalf("rejection did not reach the payback gate, so the positive-proof clearance was not isolated: %+v", decision)
 	}
-
 }
 
 // TestGrowthStagesBuildForThirteenShipFleetWithoutCeiling drives G1 through
@@ -283,7 +275,6 @@ func TestGrowthStagesBuildForThirteenShipFleetWithoutCeiling(t *testing.T) {
 	if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		t.Fatal("staging must not send the build request")
 	}
-
 }
 
 // growthMissionWithHoldDiagnostics loads the durable growth intent and, when
@@ -351,5 +342,4 @@ func TestGrowthBlockedWhileAnyVaultIsNegative(t *testing.T) {
 	if blocked.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		blocked.t.Fatal("a build request was sent while a vault was negative")
 	}
-
 }

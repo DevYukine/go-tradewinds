@@ -258,7 +258,6 @@ func TestEvaluateUnderwritingAcceptsMinimumFiveHundredBPSPilotFromDirectionMatch
 	if math.IsNaN(decision.EstimatedLockGameDays) || math.IsInf(decision.EstimatedLockGameDays, 0) || decision.EstimatedLockGameDays < 0 {
 		t.Fatalf("estimated lock duration must be a finite non-negative game-day estimate, got %f", decision.EstimatedLockGameDays)
 	}
-
 }
 
 func TestEvaluateUnderwritingCollateralCeilAndPremiumFloorRounding(t *testing.T) {
@@ -314,7 +313,6 @@ func TestEvaluateUnderwritingCollateralCeilAndPremiumFloorRounding(t *testing.T)
 
 		uwAccRequireRejected(t, "unrounded premium and claims shares favor the underwriter by 0.045p but floor 6172p minus ceiling claims 6173p is a 1p conservative loss", decision)
 	})
-
 }
 
 func TestEvaluateUnderwritingFullCollateralMustFitEachBudget(t *testing.T) {
@@ -357,7 +355,6 @@ func TestEvaluateUnderwritingFullCollateralMustFitEachBudget(t *testing.T) {
 			t.Fatalf("budgets that exactly cover the 128950p full loss must admit: %+v", decision)
 		}
 	})
-
 }
 
 func TestEvaluateUnderwritingRequiresStrictlyPositiveNetAfterOpportunityCost(t *testing.T) {
@@ -389,7 +386,6 @@ func TestEvaluateUnderwritingRequiresStrictlyPositiveNetAfterOpportunityCost(t *
 			}
 		})
 	}
-
 }
 
 func TestEvaluateUnderwritingPooledLookSafeCohortStillRejectsOnTrueDirectionLosses(t *testing.T) {
@@ -433,7 +429,6 @@ func TestEvaluateUnderwritingPooledLookSafeCohortStillRejectsOnTrueDirectionLoss
 	if decision.ExpectedClaimsPence != 48_357 {
 		t.Fatalf("modeled claims are ceil(128950p * 3/8) = 48357p, got %d", decision.ExpectedClaimsPence)
 	}
-
 }
 
 func TestEvaluateUnderwritingCountsOnlyDirectionMatchedHullOnlyClosedCohort(t *testing.T) {
@@ -474,7 +469,6 @@ func TestEvaluateUnderwritingCountsOnlyDirectionMatchedHullOnlyClosedCohort(t *t
 	if decision.ConservativeLossBPS < decision.EstimatedLossBPS {
 		t.Fatalf("nominal 95%% upper sensitivity %d must not sit below the posterior mean %d", decision.ConservativeLossBPS, decision.EstimatedLossBPS)
 	}
-
 }
 
 func TestEvaluateUnderwritingRejectsInadmissibleCandidatePolicies(t *testing.T) {
@@ -543,7 +537,6 @@ func TestEvaluateUnderwritingRejectsInadmissibleCandidatePolicies(t *testing.T) 
 
 		uwAccRequireRejected(t, "unbounded terms must be rejected with overflow-checked integer money", EvaluateUnderwriting(candidate, uwAccSafeHistory(8), uwAccBudget()))
 	})
-
 }
 
 func TestEvaluateUnderwritingOwnershipIdentityHandling(t *testing.T) {
@@ -568,7 +561,6 @@ func TestEvaluateUnderwritingOwnershipIdentityHandling(t *testing.T) {
 
 		uwAccRequireRejected(t, "an unattributable insured company cannot be verified foreign", EvaluateUnderwriting(candidate, uwAccSafeHistory(8), uwAccBudget()))
 	})
-
 }
 
 func TestEvaluateUnderwritingCensorsContradictoryTerminalObservationsAcrossPermutations(t *testing.T) {
@@ -615,7 +607,6 @@ func TestEvaluateUnderwritingCensorsContradictoryTerminalObservationsAcrossPermu
 			}
 		})
 	}
-
 }
 
 func TestEvaluateUnderwritingRejectsWhenHistoryCohortInsufficientOrAmbiguous(t *testing.T) {
@@ -709,5 +700,4 @@ func TestEvaluateUnderwritingRejectsWhenHistoryCohortInsufficientOrAmbiguous(t *
 			t.Fatalf("economic rejection must retain cohort sensitivity (estimated %dbps, conservative %dbps)", decision.EstimatedLossBPS, decision.ConservativeLossBPS)
 		}
 	})
-
 }

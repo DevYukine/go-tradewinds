@@ -62,5 +62,4 @@ func TestJournaledBodySurvivesMissionCooldownAndRestart(t *testing.T) {
 		calls[0].IdempotencyKey != original.ID || !bytes.Equal(calls[0].Body, original.Body) || len(h.pending()) != 0 {
 		t.Fatalf("restart did not complete the exact journaled request: %+v", calls)
 	}
-
 }

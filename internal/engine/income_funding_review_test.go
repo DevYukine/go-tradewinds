@@ -201,7 +201,6 @@ func TestIncomeFundingReviewExpiredFreightCannotFundPlanning(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestIncomeFundingReviewExpiredFreightCannotStageRemittance(t *testing.T) {
@@ -223,7 +222,6 @@ func TestIncomeFundingReviewExpiredFreightCannotStageRemittance(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestIncomeFundingReviewFreightExpiryDuringLimiterWaitStopsFundingAndSubsidizedBuy(t *testing.T) {
@@ -250,7 +248,6 @@ func TestIncomeFundingReviewFreightExpiryDuringLimiterWaitStopsFundingAndSubsidi
 			incomeReviewRequireNoSend(t, h, action)
 		})
 	}
-
 }
 
 func TestIncomeFundingReviewStaleVoyageCannotProvisionOrDock(t *testing.T) {
@@ -297,7 +294,6 @@ func TestIncomeFundingReviewStaleVoyageCannotProvisionOrDock(t *testing.T) {
 			})
 		}
 	}
-
 }
 
 func TestIncomeFundingReviewIndependentSafetyMaintenanceRemainsAvailable(t *testing.T) {
@@ -331,7 +327,6 @@ func TestIncomeFundingReviewIndependentSafetyMaintenanceRemainsAvailable(t *test
 			}
 		})
 	}
-
 }
 
 func TestIncomeFundingReviewAccruedBerthDuesAllowReserveSafePartialFundingProgress(t *testing.T) {
@@ -393,7 +388,6 @@ func TestIncomeFundingReviewAccruedBerthDuesAllowReserveSafePartialFundingProgre
 			t.Fatalf("partial funding spent protected %s cash: balance=%d reserve=%d", region, input.Balances[region], reserve)
 		}
 	}
-
 }
 
 func TestIncomeFundingReviewAttemptedFundingRetainsImmutableReplay(t *testing.T) {
@@ -414,5 +408,4 @@ func TestIncomeFundingReviewAttemptedFundingRetainsImmutableReplay(t *testing.T)
 	if len(calls) != 1 || calls[0].IdempotencyKey != action.ID || !bytes.Equal(calls[0].Body, action.Body) {
 		t.Fatalf("expired opportunity rewrote or suppressed an already-attempted immutable remittance: %+v", calls)
 	}
-
 }

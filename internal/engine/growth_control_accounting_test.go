@@ -112,7 +112,6 @@ func TestGrowthSunkCommissioningPermanentlyRetainsOperatingCash(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestGrowthUnbuiltTerminalControlSettlesPreviouslyPaidTransferFee(t *testing.T) {
@@ -191,7 +190,6 @@ func TestGrowthUnbuiltTerminalControlSettlesPreviouslyPaidTransferFee(t *testing
 			}
 		})
 	}
-
 }
 
 func TestGrowthCommissioningBuildsActualArmamentBeforeStoresAndDeparture(t *testing.T) {
@@ -239,7 +237,6 @@ func TestGrowthCommissioningBuildsActualArmamentBeforeStoresAndDeparture(t *test
 			refit, stores, buy, departure, armed, status)
 	}
 	w.h.missingMission("__growth")
-
 }
 
 func TestGrowthCapitalOnlyHullLossRetainsNewCommissioningBillsOnce(t *testing.T) {
@@ -282,7 +279,6 @@ func TestGrowthCapitalOnlyHullLossRetainsNewCommissioningBillsOnce(t *testing.T)
 	if replayed := growthControlRows(t, w, control.Generation); len(replayed) != 1 || replayed[0].ExpensesPence != 37 {
 		t.Fatalf("commissioning bill duplicated after the control disappeared: %+v", replayed)
 	}
-
 }
 
 func TestGrowthMissingCommissioningTimeRetainsUnknownSettlement(t *testing.T) {
@@ -347,7 +343,6 @@ func TestGrowthMissingCommissioningTimeRetainsUnknownSettlement(t *testing.T) {
 	if err != nil || !history.UnknownCosts {
 		t.Fatalf("missing-time uncertainty disappeared from consumer history: %+v error %v", history, err)
 	}
-
 }
 
 func TestGrowthWithdrawnRoadsteadSuccessorWithoutAnchorRetainsUnknownBasis(t *testing.T) {
@@ -416,7 +411,6 @@ func TestGrowthWithdrawnRoadsteadSuccessorWithoutAnchorRetainsUnknownBasis(t *te
 	if afterMutations != beforeMutations || len(w.settlementRows()) != 0 {
 		t.Fatal("unknown roadstead closeout issued an incidental action or fabricated a settlement")
 	}
-
 }
 
 func TestGrowthAnchorlessCapitalIndicationsCannotBecomeNoEffectCancellation(t *testing.T) {
@@ -463,5 +457,4 @@ func TestGrowthAnchorlessCapitalIndicationsCannotBecomeNoEffectCancellation(t *t
 			}
 		})
 	}
-
 }

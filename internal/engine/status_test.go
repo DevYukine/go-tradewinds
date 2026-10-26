@@ -81,7 +81,6 @@ func TestStartupStatusRetainsFleetCountsHoldsAndConfiguredMode(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestStatusRedactsBeforeCappingHoldingReasons(t *testing.T) {
@@ -126,7 +125,6 @@ func TestStatusRedactsBeforeCappingHoldingReasons(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestStatusFailsClosedWhenCredentialsUnreadable(t *testing.T) {
@@ -145,7 +143,6 @@ func TestStatusFailsClosedWhenCredentialsUnreadable(t *testing.T) {
 	if reason := entries[0].ContextMap()["holding_reason"]; reason != "[REDACTED]" {
 		t.Fatalf("holding_reason = %v, want fail-closed redaction", reason)
 	}
-
 }
 
 func TestShipTransitionRedactsActorContext(t *testing.T) {
@@ -166,7 +163,6 @@ func TestShipTransitionRedactsActorContext(t *testing.T) {
 	if len(entries) != 1 || entries[0].ContextMap()["ship"] != "[REDACTED]" {
 		t.Fatalf("arrival actor context was not redacted: %+v", entries)
 	}
-
 }
 
 func TestCompanyControlHoldDoesNotInventAMissingShip(t *testing.T) {
@@ -186,7 +182,6 @@ func TestCompanyControlHoldDoesNotInventAMissingShip(t *testing.T) {
 	if len(runner.holding) != 2 || runner.holding[1].ShipID != recoveryShipLapras {
 		t.Fatalf("a real unobserved ship must retain its own hold: %+v", runner.holding)
 	}
-
 }
 
 func joinedHoldReasons(holds []currentHold) string {

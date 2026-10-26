@@ -58,7 +58,6 @@ func TestGrowthScalesSupportedThroughputBeyondIncumbentRate(t *testing.T) {
 	if decision := EvaluateGrowth(lossMaking); decision.Accepted {
 		t.Fatalf("marginal upkeep above the scaled contribution eliminated the profit but still funded construction: %+v", decision)
 	}
-
 }
 
 func TestGrowthFundedPartialLotBelowProvenLotStillPaysBack(t *testing.T) {
@@ -75,7 +74,6 @@ func TestGrowthFundedPartialLotBelowProvenLotStillPaysBack(t *testing.T) {
 	if decision := EvaluateGrowth(unsized); decision.Accepted {
 		t.Fatalf("a partial lot whose marginal upkeep consumes its scaled contribution funded construction: %+v", decision)
 	}
-
 }
 
 // persistGrowthOverhaulSettlement writes one durable cost-known settlement
@@ -156,7 +154,6 @@ func TestGrowthRemembersOldestLossBeyondBoundedHistory(t *testing.T) {
 	if remembered.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		remembered.t.Fatal("a build request was sent although the loss-inclusive lane net is not positive")
 	}
-
 }
 
 func TestGrowthOldLossRemainsInPermanentHistory(t *testing.T) {
@@ -183,5 +180,4 @@ func TestGrowthOldLossRemainsInPermanentHistory(t *testing.T) {
 	if err != nil || len(rows) != 3 || rows[2].ID != "growth-permanent-loss" {
 		t.Fatalf("growth cohort changed retained settlement evidence: %+v, %v", rows, err)
 	}
-
 }

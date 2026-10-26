@@ -89,7 +89,6 @@ func TestEvaluateMarqueAcceptance(t *testing.T) {
 			reasons[reason] = tc.name
 		})
 	}
-
 }
 
 func TestMarqueQuoteDecodeOpenAPIFields(t *testing.T) {
@@ -121,5 +120,4 @@ func TestMarqueQuoteDecodeOpenAPIFields(t *testing.T) {
 	if quote != want {
 		t.Fatalf("decoded marque quote = %+v, want %+v", quote, want)
 	}
-
 }

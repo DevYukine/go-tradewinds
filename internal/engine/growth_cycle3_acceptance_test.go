@@ -173,7 +173,6 @@ func TestGrowthCycle3LegacyHullLossRetainsUnknownAnchoredHistory(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestGrowthCycle3TerminalAnchorlessUncertaintyHoldsButKnownNoEffectReleases(t *testing.T) {
@@ -250,7 +249,6 @@ func TestGrowthCycle3TerminalAnchorlessUncertaintyHoldsButKnownNoEffectReleases(
 			t.Error("actual paid stores without terminal evidence were deleted or settled against an invented anchor")
 		}
 	})
-
 }
 
 func TestGrowthCycle3OrdinaryDepthLossConvergesWithoutChangingAttemptedRequests(t *testing.T) {
@@ -404,7 +402,6 @@ func TestGrowthCycle3OrdinaryDepthLossConvergesWithoutChangingAttemptedRequests(
 			}
 		})
 	}
-
 }
 
 func TestGrowthCycle3ReservedCoastalWorkDoesNotVetoOceanicBuild(t *testing.T) {
@@ -558,5 +555,4 @@ func TestGrowthCycle3ReservedCoastalWorkDoesNotVetoOceanicBuild(t *testing.T) {
 	if completed.Generation != control.Generation || outcome.BuiltShipID != recoveryBuiltShipID || outcome.Action != nil || outcome.BuildCostPence != 20_000 {
 		t.Fatalf("oceanic build did not retain its accounted authoritative result: %+v", outcome)
 	}
-
 }

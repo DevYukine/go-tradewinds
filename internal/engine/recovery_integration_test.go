@@ -1230,7 +1230,6 @@ func TestRecoveryTreasuryThrottlePersistsCooldownThenReplans(t *testing.T) {
 	if rejections < 2 {
 		t.Fatalf("expected recorded rejections for both definite 429s, got %d", rejections)
 	}
-
 }
 
 // A legacy actionless treasury intent restored from an older build must wait
@@ -1295,7 +1294,6 @@ func TestRecoveryLegacyActionlessTreasuryIntentRecovers(t *testing.T) {
 	if mission.Phase != "done" {
 		t.Fatalf("replanned intent phase after 429: %s", mission.Phase)
 	}
-
 }
 
 // Authorization and throttling retain their outcome and cooldown, then release
@@ -1451,7 +1449,6 @@ func TestRecoveryGrowthBuildRejectionReplansThroughFreshPlanning(t *testing.T) {
 	if mission.Phase != "growth_refit" || data.BuiltShipID != recoveryBuiltShipID {
 		t.Fatalf("successful build did not advance the mission: phase %s built %s", mission.Phase, data.BuiltShipID)
 	}
-
 }
 
 // A restored legacy growth_build intent without an action and without a built
@@ -1667,7 +1664,6 @@ func TestRecoveryLegacyGrowthIntentRecoversAndKeepsAttachedActions(t *testing.T)
 			t.Fatalf("original completed journal outcome changed: %+v, %v", original, err)
 		}
 	})
-
 }
 
 // An ambiguous (transport-lost) request must be replayed across a restart with
@@ -1805,7 +1801,6 @@ func TestRecoveryRestartReplaysImmutableRequestThenFreshAfterAuthStop(t *testing
 	if repairedCall.Authorization != "Bearer "+repairedTestKey {
 		t.Fatalf("repaired dispatch did not use the repaired credential: %s", repairedCall.Authorization)
 	}
-
 }
 
 // refresh() records every fleet name, including sunk hulls, in the persisted
@@ -1889,5 +1884,4 @@ func TestRecoverySunkShipNameSurvivesRestartAndIsNeverReused(t *testing.T) {
 	if mission.Phase != "growth_refit" {
 		t.Fatalf("build outcome phase: %s", mission.Phase)
 	}
-
 }

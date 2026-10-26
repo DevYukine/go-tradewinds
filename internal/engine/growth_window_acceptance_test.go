@@ -129,7 +129,6 @@ func TestGrowthWindowOldTerminalEvidenceAllowsFundedBuild(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestGrowthWindowRecentAndFutureEvidenceVetoesBuild(t *testing.T) {
@@ -174,7 +173,6 @@ func TestGrowthWindowRecentAndFutureEvidenceVetoesBuild(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestGrowthWindowNeedsTwoRecentDeliveredCycles(t *testing.T) {
@@ -202,7 +200,6 @@ func TestGrowthWindowNeedsTwoRecentDeliveredCycles(t *testing.T) {
 			h.missingMission("__growth")
 		})
 	}
-
 }
 
 func TestGrowthWindowUsesHostUTCRegardlessOfServerSkew(t *testing.T) {
@@ -232,7 +229,6 @@ func TestGrowthWindowUsesHostUTCRegardlessOfServerSkew(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // BeginAction assigns host UTC at creation and request timestamps are immutable.
@@ -265,7 +261,6 @@ func TestGrowthWindowOutstandingJournalStillBlocks(t *testing.T) {
 	if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		t.Fatal("an unresolved journal action permitted construction")
 	}
-
 }
 
 func TestGrowthWindowOldActiveMissionStillReservesCapital(t *testing.T) {
@@ -291,7 +286,6 @@ func TestGrowthWindowOldActiveMissionStillReservesCapital(t *testing.T) {
 	if !reflect.DeepEqual(retained.Plan, plan) || retained.BuyDone {
 		t.Fatalf("growth rewrote an old but active mission: %+v", retained)
 	}
-
 }
 
 func TestGrowthWindowExpiredButActiveFreightStillProtectsDestination(t *testing.T) {
@@ -330,7 +324,6 @@ func TestGrowthWindowExpiredButActiveFreightStillProtectsDestination(t *testing.
 	if actual, exists := runner.contract(contract.ID); !exists || !reflect.DeepEqual(actual, contract) {
 		t.Fatalf("active freight was discarded or relabelled: %+v", actual)
 	}
-
 }
 
 func TestGrowthWindowFreshProofDoesNotBypassEconomicGuards(t *testing.T) {
@@ -364,5 +357,4 @@ func TestGrowthWindowFreshProofDoesNotBypassEconomicGuards(t *testing.T) {
 			}
 		})
 	}
-
 }

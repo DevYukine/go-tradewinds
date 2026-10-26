@@ -65,7 +65,6 @@ func TestFinancialStageRejectsEventPublishedWhilePreparingIntent(t *testing.T) {
 		t.Fatalf("authoritative post-event planning: %v", err)
 	}
 	h.missingMission("__growth")
-
 }
 
 func TestRunReplansNeverSentGrowthAfterEventBetweenStageAndDispatch(t *testing.T) {
@@ -139,7 +138,6 @@ func TestRunReplansNeverSentGrowthAfterEventBetweenStageAndDispatch(t *testing.T
 			}
 		})
 	}
-
 }
 
 func TestFinancialRestartReplansNeverSentGrowthFromFreshFunds(t *testing.T) {
@@ -185,7 +183,6 @@ func TestFinancialRestartReplansNeverSentGrowthFromFreshFunds(t *testing.T) {
 	if len(calls) != 1 || calls[0].Status != http.StatusOK || calls[0].IdempotencyKey != replanned.Action.ID {
 		t.Fatalf("freshly replanned build did not resume: %+v", calls)
 	}
-
 }
 
 func TestFinancialEventAndRestartPreserveUnresolvedGrowthRequest(t *testing.T) {
@@ -257,7 +254,6 @@ func TestFinancialEventAndRestartPreserveUnresolvedGrowthRequest(t *testing.T) {
 	if completed.Action != nil || completed.LastActionID != id || len(h.pending()) != 0 {
 		t.Fatalf("stable replay did not consume its original outcome: %+v", completed)
 	}
-
 }
 
 func waitPublishedFinancial(t *testing.T, runner *Runner, want uint64) {
@@ -340,7 +336,6 @@ func TestRunAbandonsOnlyNewJournalRequestVetoedBeforeFirstSend(t *testing.T) {
 		h.api.mutationCount("/v1/shipyard/build-ship") != 0 || len(h.pending()) != 0 {
 		t.Fatalf("no-send recovery was treated as a committed build: %+v", recovered)
 	}
-
 }
 
 func TestFinancialReplanningRechecksUnsentBuyAndFreightCollateral(t *testing.T) {
@@ -462,7 +457,6 @@ func TestFinancialReplanningRechecksUnsentBuyAndFreightCollateral(t *testing.T) 
 			}
 		})
 	}
-
 }
 
 func TestFinancialEventDuringWorkCannotStagePreEventGrowth(t *testing.T) {
@@ -487,5 +481,4 @@ func TestFinancialEventDuringWorkCannotStagePreEventGrowth(t *testing.T) {
 	if len(h.pending()) != 0 || h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		t.Fatal("work staged or sent growth from the pre-event vault capture")
 	}
-
 }

@@ -42,5 +42,4 @@ func TestInvalidatedStandaloneMaintenanceReleasesShip(t *testing.T) {
 			}
 		})
 	}
-
 }

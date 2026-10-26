@@ -203,7 +203,6 @@ func TestGrowthCycle2CommissioningCashSurvivesPermanentCloseout(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // Store migration acceptance owns the v4-to-v5 transformation. This test starts
@@ -347,7 +346,6 @@ func TestGrowthCycle2MigratedPaidBuildClosesWithoutInventingAllocation(t *testin
 			}
 		})
 	}
-
 }
 
 func TestGrowthCycle2AccruingBerthDuesDoNotStarveProcurement(t *testing.T) {
@@ -415,7 +413,6 @@ func TestGrowthCycle2AccruingBerthDuesDoNotStarveProcurement(t *testing.T) {
 	if purchases != 1 || w.h.api.mutationCount("/v1/fleet/depart") != 1 {
 		t.Fatalf("changing dues caused a quote-only loop instead of one funded purchase/departure: purchases %d departures %d; holds %v", purchases, w.h.api.mutationCount("/v1/fleet/depart"), runner.holding)
 	}
-
 }
 
 func TestGrowthCycle2ReturningLotProtectsOrdinaryPlanningAndFirstSend(t *testing.T) {
@@ -570,5 +567,4 @@ func TestGrowthCycle2ReturningLotProtectsOrdinaryPlanningAndFirstSend(t *testing
 			}
 		})
 	}
-
 }

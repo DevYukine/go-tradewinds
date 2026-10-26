@@ -48,7 +48,6 @@ func TestUnderwritingFundingRequiresUniqueOwnedDebitIdentity(t *testing.T) {
 	if proof := underwritingFundingEvidence(position, []json.RawMessage{encode(entry), encode(duplicate)}, vaults); proof != nil {
 		t.Fatal("ambiguous matching debits were treated as unique funding evidence")
 	}
-
 }
 
 func TestInsuranceCaptureRejectsMissingCoverageWithoutReplacingLastGood(t *testing.T) {
@@ -77,7 +76,6 @@ func TestInsuranceCaptureRejectsMissingCoverageWithoutReplacingLastGood(t *testi
 			t.Fatal("explicit zero coverage was rejected as absent")
 		}
 	}
-
 }
 
 func TestUnderwritingProtectsCapableFallbackVaults(t *testing.T) {
@@ -114,7 +112,6 @@ func TestUnderwritingProtectsCapableFallbackVaults(t *testing.T) {
 			t.Errorf("ineligible funding account %s unnecessarily blocks a pilot", region)
 		}
 	}
-
 }
 
 func TestUnderwritingAdmissionUsesObservedServerTime(t *testing.T) {
@@ -147,5 +144,4 @@ func TestUnderwritingAdmissionUsesObservedServerTime(t *testing.T) {
 	if decision := EvaluateUnderwriting(policy, history, budget); !decision.Accepted {
 		t.Fatalf("server-valid funded policy was rejected: %s", decision.Reason)
 	}
-
 }

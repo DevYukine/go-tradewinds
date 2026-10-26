@@ -73,7 +73,6 @@ func TestIdleExecutionReviewCachedClockAfterGapCannotCreditDowntime(t *testing.T
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), false)
 	idleExecutionReviewRecordClock(t, w, runner, 112, serverUTC.Add(2*time.Hour), false)
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), true)
-
 }
 
 func TestIdleExecutionReviewBackwardUTCRecoversFromCoherentNewBaseline(t *testing.T) {
@@ -91,7 +90,6 @@ func TestIdleExecutionReviewBackwardUTCRecoversFromCoherentNewBaseline(t *testin
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), false)
 	idleExecutionReviewRecordClock(t, w, runner, 97, oldUTC.Add(-53*time.Minute), false)
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), true)
-
 }
 
 func idleExecutionReviewSetFree(t *testing.T, w *idleFallbackWorld, runner *Runner, free int64) {
@@ -246,7 +244,6 @@ func TestIdleExecutionReviewOriginFirstSendHonorsClockRebase(t *testing.T) {
 		t.Fatal("regressed observation unexpectedly remains eligible")
 	}
 	idleExecutionReviewNoSend(t, w, runner, mission, &data, action)
-
 }
 
 func idleExecutionReviewIncome(t *testing.T, w *idleFallbackWorld, runner *Runner) {
@@ -271,7 +268,6 @@ func TestIdleExecutionReviewNewOrdinaryIncomeWinsBeforeFirstSend(t *testing.T) {
 	action := idleExecutionReviewStageStores(t, w, runner, mission, &data)
 	idleExecutionReviewIncome(t, w, runner)
 	idleExecutionReviewNoSend(t, w, runner, mission, &data, action)
-
 }
 
 func TestIdleExecutionReviewPostLimiterRechecksCashAndPermanentCosts(t *testing.T) {
@@ -315,7 +311,6 @@ func TestIdleExecutionReviewPostLimiterRechecksCashAndPermanentCosts(t *testing.
 			}
 		})
 	}
-
 }
 
 func TestIdleExecutionReviewTieredStoreIOCUsesCurrentReducedCap(t *testing.T) {
@@ -347,7 +342,6 @@ func TestIdleExecutionReviewTieredStoreIOCUsesCurrentReducedCap(t *testing.T) {
 	data.Plan = plan
 	action := idleExecutionReviewStageStores(t, w, runner, mission, &data)
 	idleExecutionReviewNoSend(t, w, runner, mission, &data, action)
-
 }
 
 func TestIdleExecutionReviewActiveCostsAndBillsCountOnceWithoutGrowingCap(t *testing.T) {
@@ -391,7 +385,6 @@ func TestIdleExecutionReviewActiveCostsAndBillsCountOnceWithoutGrowingCap(t *tes
 	if data.Relocation.ExpenseCapPence != cap {
 		t.Fatal("risk revalidation mutated the immutable cap")
 	}
-
 }
 
 func TestIdleExecutionReviewAttemptedIdentityAndSafetyRemainRecoverable(t *testing.T) {
@@ -428,5 +421,4 @@ func TestIdleExecutionReviewAttemptedIdentityAndSafetyRemainRecoverable(t *testi
 			}
 		})
 	}
-
 }

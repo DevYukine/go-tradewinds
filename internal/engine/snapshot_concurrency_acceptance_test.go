@@ -461,7 +461,6 @@ func TestCaptureWaveOverlapsIndependentDatasetsWithinWorkerCap(t *testing.T) {
 			t.Fatalf("overlapped wave left dataset %s unfresh: %+v", dataset, runner.meta[dataset])
 		}
 	}
-
 }
 
 // TestDefinitiveDatasetFailureRetainsLastGoodWhileSiblingsUpdate fails the
@@ -526,7 +525,6 @@ func TestDefinitiveDatasetFailureRetainsLastGoodWhileSiblingsUpdate(t *testing.T
 	if !runner.fresh("catalog") {
 		t.Fatal("a successful sibling must stay fresh in the new generation")
 	}
-
 }
 
 // TestOwnerCancellationJoinsFetchWorkersWithoutPublishingGeneration gates the
@@ -586,7 +584,6 @@ func TestOwnerCancellationJoinsFetchWorkersWithoutPublishingGeneration(t *testin
 			}
 		}
 	}
-
 }
 
 // Five blocked siblings leave only the clock worker able to accept the seventh
@@ -660,5 +657,4 @@ func TestClockEnvelopeSurvivesWaveJoinWithoutRestamping(t *testing.T) {
 	if count := fake.arrivedCount("/v1/world/clock"); count != 1 {
 		t.Fatalf("clock dataset fetched %d times, want a single early fetch that the join must not repeat", count)
 	}
-
 }

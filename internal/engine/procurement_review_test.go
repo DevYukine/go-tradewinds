@@ -138,7 +138,6 @@ func TestProcurementReviewUsesCurrentDifferentialBills(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestProcurementReviewUnknownBerthTimingUsesOnlyDecisiveBounds(t *testing.T) {
@@ -166,7 +165,6 @@ func TestProcurementReviewUnknownBerthTimingUsesOnlyDecisiveBounds(t *testing.T)
 			}
 		})
 	}
-
 }
 
 func TestProcurementReviewKeepsMeasuredPartialLiquidity(t *testing.T) {
@@ -196,7 +194,6 @@ func TestProcurementReviewKeepsMeasuredPartialLiquidity(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestProcurementReviewMissingOrInvalidEvidenceStillHolds(t *testing.T) {
@@ -244,7 +241,6 @@ func TestProcurementReviewMissingOrInvalidEvidenceStillHolds(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 type procurementReviewGossipAPI struct {
@@ -365,7 +361,6 @@ func TestProcurementReviewFreshGossipCompletesPurchaseToDeparture(t *testing.T) 
 	if data.BoughtQuantity != 1 || data.AcquisitionPence != 100 || data.FeesPence != 2 || data.Plan.PriceSource != plan.PriceSource || data.DepartedCargo[recoveryGrain] != 1 {
 		t.Fatalf("departure overstated gossip quantity or lost actual cost/estimate provenance: %+v", data)
 	}
-
 }
 
 func TestProcurementReviewStaleGossipBlocksSpendingAndContinuation(t *testing.T) {
@@ -453,7 +448,6 @@ func TestProcurementReviewStaleGossipBlocksSpendingAndContinuation(t *testing.T)
 			}
 		})
 	}
-
 }
 
 func TestProcurementReviewGossipNeverSuppliesMultiTonDepth(t *testing.T) {
@@ -467,7 +461,6 @@ func TestProcurementReviewGossipNeverSuppliesMultiTonDepth(t *testing.T) {
 	if h.api.mutationCount("/v1/market/place-order") != 0 {
 		t.Fatal("evidence inspection spent funds")
 	}
-
 }
 
 func procurementReviewSettlement(t *testing.T, data missionData, ledger []map[string]any) store.Settlement {
@@ -520,7 +513,6 @@ func TestProcurementReviewBetterRecoveryStillSettlesActualLoss(t *testing.T) {
 		settled.ExpensesPence != 1_000 || settled.QuantityTons != 20 || net != -1_500 {
 		t.Fatalf("8500p recovery erased the actual 1500p procurement loss: %+v net %d", settled, net)
 	}
-
 }
 
 func TestProcurementReviewActualUnwindFeedsPermanentEconomicHistory(t *testing.T) {
@@ -608,7 +600,6 @@ func TestProcurementReviewActualUnwindFeedsPermanentEconomicHistory(t *testing.T
 			}
 		})
 	}
-
 }
 
 func TestProcurementReviewStaleGossipAllowsFreshDestinationDepth(t *testing.T) {
@@ -643,5 +634,4 @@ func TestProcurementReviewStaleGossipAllowsFreshDestinationDepth(t *testing.T) {
 		data.BoughtQuantity != 1 || data.AcquisitionPence != 100 || data.Plan.PriceSource != plan.PriceSource {
 		t.Fatalf("fresh executable fallback resized, repeated or stranded the original probe: orders %+v departures %+v phase %s data %+v", orders, departures, mission.Phase, data)
 	}
-
 }

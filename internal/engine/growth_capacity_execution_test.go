@@ -161,7 +161,6 @@ func TestCapacityGrowthProductionBuildArmsAndReleasesHull(t *testing.T) {
 	if err != nil || len(settlements) != 3 || settlements[0].ShipID != recoveryBuiltShipID || settlements[0].QuantityTons != 0 {
 		t.Fatalf("capacity control closeout settlement missing: %+v, %v", settlements, err)
 	}
-
 }
 
 func TestCapacityGrowthFreshPreflightRechecksQuoteAndEarnings(t *testing.T) {
@@ -207,7 +206,6 @@ func TestCapacityGrowthFreshPreflightRechecksQuoteAndEarnings(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestCapacityGrowthBuildRefusalBackoffSurvivesIntentDeletion(t *testing.T) {
@@ -245,7 +243,6 @@ func TestCapacityGrowthBuildRefusalBackoffSurvivesIntentDeletion(t *testing.T) {
 	if h.api.mutationCount("/v1/shipyard/build-ship") != 1 {
 		t.Fatal("definitively refused capacity hull was rebuilt during backoff")
 	}
-
 }
 
 func TestCapacityGrowthInputsUseWholeWindowAndNewestDelivery(t *testing.T) {
@@ -289,7 +286,6 @@ func TestCapacityGrowthInputsUseWholeWindowAndNewestDelivery(t *testing.T) {
 	if err != nil || reason != "" || !input.NewestShipProven || math.Abs(input.ActiveShipGameDays-2) > 1e-9 {
 		t.Fatalf("the actual newest ship's positive delivery was not recognized: %+v, %s, %v", input, reason, err)
 	}
-
 }
 
 func TestCapacityGrowthPreservesSourceGatesAndMaintenanceCash(t *testing.T) {
@@ -357,7 +353,6 @@ func TestCapacityGrowthPreservesSourceGatesAndMaintenanceCash(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestCapacityGrowthCannotSpendRelocationCash(t *testing.T) {
@@ -377,7 +372,6 @@ func TestCapacityGrowthCannotSpendRelocationCash(t *testing.T) {
 	if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 		t.Fatal("capacity admission sent a build with underfunded incumbent working capital")
 	}
-
 }
 
 func TestCapacityGrowthCannotProveNewestShipWithPreCreationDelivery(t *testing.T) {
@@ -398,7 +392,6 @@ func TestCapacityGrowthCannotProveNewestShipWithPreCreationDelivery(t *testing.T
 	if err != nil || reason == "" || input.NewestShipProven {
 		t.Fatalf("delivery predating the newest hull proved that hull: %+v, %s, %v", input, reason, err)
 	}
-
 }
 
 func TestCapacityGrowthKeepsFleetCashBufferGlobal(t *testing.T) {
@@ -429,7 +422,6 @@ func TestCapacityGrowthKeepsFleetCashBufferGlobal(t *testing.T) {
 	if err != nil || !decision.Accepted || decision.FundingFeesPence != 0 {
 		t.Fatalf("yard remitted an already-funded global buffer: %+v, %v", decision, err)
 	}
-
 }
 
 func TestCapacityGrowthCountsGossipOnlyWhenFillingFleet(t *testing.T) {
@@ -490,7 +482,6 @@ func TestCapacityGrowthCountsGossipOnlyWhenFillingFleet(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestCapacityGrowthFillsSmallFleetFromIdleCash(t *testing.T) {
@@ -515,7 +506,6 @@ func TestCapacityGrowthFillsSmallFleetFromIdleCash(t *testing.T) {
 	if data.Capacity == nil || data.Action == nil || data.Action.Stage != "build" {
 		t.Fatalf("fleet fill did not stage a capacity build: %+v", data)
 	}
-
 }
 
 func TestCapacityGrowthReleasesHullAfterRefitRefusalOrThreeAttempts(t *testing.T) {
@@ -583,7 +573,6 @@ func TestCapacityGrowthReleasesHullAfterRefitRefusalOrThreeAttempts(t *testing.T
 			}
 		})
 	}
-
 }
 
 func TestCapacityGrowthKeepsBuiltHullUntilArmed(t *testing.T) {
@@ -642,7 +631,6 @@ func TestCapacityGrowthKeepsBuiltHullUntilArmed(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestCapacityGrowthChargesUnknownNonControlCostsWithoutPausing(t *testing.T) {
@@ -684,7 +672,6 @@ func TestCapacityGrowthChargesUnknownNonControlCostsWithoutPausing(t *testing.T)
 			}
 		})
 	}
-
 }
 
 func TestCapacityGrowthChecksExemptCloseoutHullAndRecordedCosts(t *testing.T) {
@@ -738,7 +725,6 @@ func TestCapacityGrowthChecksExemptCloseoutHullAndRecordedCosts(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestCapacityGrowthShipLossWindowAndFirstObservationSurviveRestart(t *testing.T) {
@@ -785,7 +771,6 @@ func TestCapacityGrowthShipLossWindowAndFirstObservationSurviveRestart(t *testin
 			}
 		})
 	}
-
 }
 
 func TestCapacityGrowthTreatsMissingMissionHullsAsLosses(t *testing.T) {
@@ -804,7 +789,6 @@ func TestCapacityGrowthTreatsMissingMissionHullsAsLosses(t *testing.T) {
 	if loss := decode[map[string]time.Time](runner.snapshot, "_ship_losses")[recoveryShipCharizard]; !loss.Equal(runner.meta["ships"].UpdatedAt) {
 		t.Fatalf("missing hull was not timed by the authoritative fleet observation: %s", loss)
 	}
-
 }
 
 func TestCapacityGrowthPreflightUsesLiveQuoteAndPlayerMaterialHeadroom(t *testing.T) {
@@ -901,7 +885,6 @@ func TestCapacityGrowthPreflightUsesLiveQuoteAndPlayerMaterialHeadroom(t *testin
 			h.missingMission("__growth")
 		})
 	}
-
 }
 
 func TestCapacityGrowthPriceOverrunPersistsPauseAndYardBackoff(t *testing.T) {
@@ -990,7 +973,6 @@ func TestCapacityGrowthPriceOverrunPersistsPauseAndYardBackoff(t *testing.T) {
 	if _, reason, err := restarted.capacityFleetInput(h.ctx, &evidence); err != nil || !strings.Contains(reason, "price overrun") {
 		t.Fatalf("restart ignored the capacity-wide price-overrun pause: %s, %v", reason, err)
 	}
-
 }
 
 func TestCapacityAuthorityDecode(t *testing.T) {
@@ -1010,5 +992,4 @@ func TestCapacityAuthorityDecode(t *testing.T) {
 	if quote.MaterialsPence != 1_234 || quote.NPCMaterialsPence != 1_000 {
 		t.Fatalf("turnkey material provenance did not decode: %+v", quote)
 	}
-
 }

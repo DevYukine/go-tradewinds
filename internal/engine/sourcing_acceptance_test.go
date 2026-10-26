@@ -262,7 +262,6 @@ func TestSourcingProbeEligibilityRejectsUnsafeOrUnprovenSources(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // sourcingStripProduction removes amsterdam's catalog manufacture evidence and
@@ -312,7 +311,6 @@ func TestUnstockedLocalManufactureDoesNotSuppressRemoteSourcing(t *testing.T) {
 	if accepted[0].Destination != "amsterdam" || accepted[0].Economics.RevenuePence != 0 {
 		t.Fatalf("unexpected probe under unstocked local manufacture: %+v", accepted[0])
 	}
-
 }
 
 func TestSourcingProbePlansBoundedCostOnlyRelocation(t *testing.T) {
@@ -348,7 +346,6 @@ func TestSourcingProbePlansBoundedCostOnlyRelocation(t *testing.T) {
 	if accepted := acceptedRelocations(planSourcingRelocation(roadstead)); len(accepted) == 0 {
 		t.Fatalf("stationary roadstead ship was denied the bounded probe: %+v", plans)
 	}
-
 }
 
 func TestSourcingProbeUsesPublicEvidenceWithoutPrivateBooksOrRemoteRevenue(t *testing.T) {
@@ -390,7 +387,6 @@ func TestSourcingProbeUsesPublicEvidenceWithoutPrivateBooksOrRemoteRevenue(t *te
 	if accepted := acceptedRelocations(planSourcingRelocation(staleGossipWithProduction)); len(accepted) == 0 {
 		t.Fatalf("stale gossip wrongly revoked manufacture-based eligibility: %+v", planSourcingRelocation(staleGossipWithProduction))
 	}
-
 }
 
 func TestSourcingProbeShortlistsAtMostThreePairsCheapestExposureFirst(t *testing.T) {
@@ -417,7 +413,6 @@ func TestSourcingProbeShortlistsAtMostThreePairsCheapestExposureFirst(t *testing
 	if accepted := acceptedRelocations(planSourcingRelocation(four)); len(accepted) > 3 {
 		t.Fatalf("candidate shortlist grew past three pairs: %+v", accepted)
 	}
-
 }
 
 func TestSourcingProbeAllowanceIsMinOfTwoHundredCrownsAndTwoPercent(t *testing.T) {
@@ -453,7 +448,6 @@ func TestSourcingProbeAllowanceIsMinOfTwoHundredCrownsAndTwoPercent(t *testing.T
 	if accepted := acceptedRelocations(planSourcingRelocation(expensive)); len(accepted) != 0 {
 		t.Fatalf("probe accepted beyond the absolute 200 Crown allowance: %+v", accepted)
 	}
-
 }
 
 func sourcingArrivalFixture(t *testing.T, asks []Level, rewardPerTon, spentPence int64) (PlanningInput, Plan, Contract) {
@@ -538,7 +532,6 @@ func TestRelocationArrivalSelectsWholeTonsOnAllCosts(t *testing.T) {
 			t.Fatalf("lot was not bounded by observed ask depth: %+v", plan)
 		}
 	})
-
 }
 
 func TestRelocationArrivalRefusesUnpricedLateOrStaleEvidence(t *testing.T) {
@@ -587,7 +580,6 @@ func TestRelocationArrivalRefusesUnpricedLateOrStaleEvidence(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // TestGrowthEvidenceCountsRelocationLossesButNeverZeroTonProbes pins plan E14:
@@ -622,5 +614,4 @@ func TestGrowthEvidenceCountsRelocationLossesButNeverZeroTonProbes(t *testing.T)
 	if decision := EvaluateGrowth(unknown); decision.Accepted {
 		t.Fatal("unknown probe cost basis funded fleet growth")
 	}
-
 }

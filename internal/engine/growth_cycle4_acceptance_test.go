@@ -219,7 +219,6 @@ func TestGrowthCycle4UnanchoredWithdrawnExposureSurvivesActualHullHandoff(t *tes
 			}
 		})
 	}
-
 }
 
 func TestGrowthCycle4UnsentBuildCancellationIgnoresUnrelatedUpkeepLedgerDebit(t *testing.T) {
@@ -342,5 +341,4 @@ func TestGrowthCycle4UnsentBuildCancellationIgnoresUnrelatedUpkeepLedgerDebit(t 
 	if actualNorth != initialNorth-upkeepPence-20_000 {
 		t.Errorf("actual cash did not pay exactly the company debit and one replacement hull: got %d want %d", actualNorth, initialNorth-upkeepPence-20_000)
 	}
-
 }

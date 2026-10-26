@@ -53,5 +53,4 @@ func TestMarquePlannerRejectsOwnZonesForEveryVoyageKind(t *testing.T) {
 			}
 		})
 	}
-
 }
