@@ -2,18 +2,49 @@ package engine
 
 import (
 	"context"
+	"regexp"
 	"time"
 
 	"go.uber.org/zap"
 )
 
+var blockingReasonNumbers = regexp.MustCompile(`[0-9.,]+`)
+
+type blockingStatus struct {
+	reason        string
+	reasonClass   string
+	classSince    time.Time
+	classLogged   bool
+	logged        bool
+	blockedSince  time.Time
+	lastLogged    time.Time
+	currentReason string
+	observed      bool
+}
+
+// assessHold also identifies the owner of legacy account-wide hold calls.
+// Dashboard ship assessment remains restricted to actual fleet members.
+func (r *Runner) assessHold(subjectID string) {
+	if r.assessedHoldIDs == nil {
+		r.assessedHoldIDs = make(map[string]bool)
+	}
+	r.assessedHoldIDs[subjectID] = true
+	r.holdScope = subjectID
+}
+
 func (r *Runner) assessShip(shipID string) {
 	if shipID == "" {
+		return
+	}
+	switch shipID {
+	case "__treasury", "__growth", "__underwriting", "__marque":
+		r.assessHold(shipID)
 		return
 	}
 	if _, exists := r.ship(shipID); !exists {
 		return
 	}
+	r.assessHold(shipID)
 	for _, assessed := range r.assessedShipIDs {
 		if assessed == shipID {
 			return
@@ -26,7 +57,9 @@ func (r *Runner) assessShip(shipID string) {
 // observations can establish the startup baseline or a later ship transition.
 func (r *Runner) logStatus(ctx context.Context, now time.Time) {
 	observation := PlanningInput{Now: now, Clock: r.stateCache.Clock, Metadata: r.meta, Generation: r.generation}
-	if !observation.fresh("ships") {
+	fleetFresh := observation.fresh("ships")
+	r.logBlockingStatus(ctx, now, fleetFresh)
+	if !fleetFresh {
 		return
 	}
 	if r.lastShipStatus == nil {
@@ -66,6 +99,99 @@ func (r *Runner) logStatus(ctx context.Context, now time.Time) {
 		)
 	}
 	// Missing rows do not prove loss and must not erase a known sailing state.
+}
+
+// logBlockingStatus compares completed work passes, not individual hold calls:
+// several alternatives can reject the same ship in one reconciliation.
+func (r *Runner) logBlockingStatus(ctx context.Context, now time.Time, fleetFresh bool) {
+	const (
+		transitionDelay = 5 * time.Minute
+		heartbeat       = 30 * time.Minute
+	)
+	if r.blockingStatuses == nil {
+		r.blockingStatuses = make(map[string]blockingStatus)
+	}
+	for id, status := range r.blockingStatuses {
+		status.observed = false
+		r.blockingStatuses[id] = status
+	}
+	for _, hold := range r.holding {
+		id := hold.subjectID
+		if id == "" {
+			id = hold.ShipID
+		}
+		status := r.blockingStatuses[id]
+		status.currentReason = hold.Reason
+		status.observed = true
+		r.blockingStatuses[id] = status
+	}
+	for id, status := range r.blockingStatuses {
+		switch id {
+		case "", "__growth", "__treasury", "__underwriting", "__marque":
+		default:
+			if _, exists := r.ship(id); fleetFresh && !exists {
+				delete(r.blockingStatuses, id)
+				continue
+			}
+		}
+		message := ""
+		switch {
+		case status.observed:
+			if status.blockedSince.IsZero() {
+				status.blockedSince = now
+			}
+			if status.reason != status.currentReason {
+				class := blockingReasonNumbers.ReplaceAllString(status.currentReason, "#")
+				if status.reasonClass != class {
+					status.reasonClass = class
+					status.classSince = now
+					status.classLogged = false
+				}
+				status.reason = status.currentReason
+			}
+			if !status.classLogged && now.Sub(status.classSince) >= transitionDelay {
+				message = "work blocked"
+				status.classLogged = true
+				status.logged = true
+			}
+		case r.assessedHoldIDs[id]:
+			if status.logged {
+				r.logBlockingReason(ctx, "work unblocked", id, status, now)
+			}
+			delete(r.blockingStatuses, id)
+			continue
+		}
+		if message == "" && status.classLogged && now.Sub(status.lastLogged) >= heartbeat {
+			message = "work still blocked"
+		}
+		if message != "" {
+			r.logBlockingReason(ctx, message, id, status, now)
+			status.lastLogged = now
+		}
+		// Unassessed subjects retain their last blocker: work may have
+		// returned after another ship or control made progress.
+		r.blockingStatuses[id] = status
+	}
+}
+
+func (r *Runner) logBlockingReason(ctx context.Context, message, id string, status blockingStatus, now time.Time) {
+	entry := r.log.Check(zap.InfoLevel, message)
+	if entry == nil {
+		return
+	}
+	name, port := id, ""
+	if ship, exists := r.ship(id); exists {
+		name, port = ship.Ship.Name, ship.Ship.CurrentPortID
+	}
+	texts := r.db.ScrubOutcomeTexts(ctx, r.account.ID, []string{id, name, port, status.reason})
+	entry.Write(
+		zap.String("ship_id", texts[0]),
+		zap.String("ship", texts[1]),
+		zap.String("port_id", texts[2]),
+		zap.String("reason", texts[3]),
+		zap.Time("blocked_since", status.blockedSince.UTC()),
+		zap.Duration("blocked_for", now.Sub(status.blockedSince)),
+	)
 }
 
 func (r *Runner) logStartupFleet(ctx context.Context, now time.Time) {

@@ -7,10 +7,13 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 )
 
 const maximumPence int64 = 1_000_000_000_000
+
+const routeGeometryTTL = 24 * time.Hour
 
 // DepthFill is executable at LimitPence or better, before buyer-only customs.
 type DepthFill struct {
@@ -223,8 +226,15 @@ type PlanningInput struct {
 func (in PlanningInput) fresh(dataset string) bool {
 	meta, exists := in.Metadata[dataset]
 	if !exists || !meta.Complete || meta.Stale || meta.Error != "" || meta.UpdatedAt.IsZero() ||
-		(in.Generation != "" && meta.Generation != in.Generation) ||
-		meta.UpdatedAt.After(in.Now.Add(time.Second)) || in.Now.Sub(meta.UpdatedAt) > 2*time.Minute {
+		meta.UpdatedAt.After(in.Now.Add(time.Second)) {
+		return false
+	}
+	// Public geometry and hull-derived provisions do not change with each
+	// observation. Refresh invalidates them when the unlocked phase changes.
+	if strings.HasPrefix(dataset, "routes/") {
+		return in.Now.Sub(meta.UpdatedAt) <= routeGeometryTTL
+	}
+	if (in.Generation != "" && meta.Generation != in.Generation) || in.Now.Sub(meta.UpdatedAt) > 2*time.Minute {
 		return false
 	}
 	if dataset == "clock" {

@@ -31,8 +31,9 @@ type decisionFingerprint struct {
 }
 
 type currentHold struct {
-	ShipID string `json:"ship_id"`
-	Reason string `json:"reason"`
+	ShipID    string `json:"ship_id"`
+	Reason    string `json:"reason"`
+	subjectID string
 }
 
 type Runner struct {
@@ -47,6 +48,9 @@ type Runner struct {
 	generation             string
 	holding                []currentHold
 	assessedShipIDs        []string
+	assessedHoldIDs        map[string]bool
+	holdScope              string
+	blockingStatuses       map[string]blockingStatus
 	fleetObserved          bool
 	lastShipStatus         map[string]string
 	decisionHashes         map[string]decisionFingerprint
@@ -326,6 +330,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		financialStale := captureFinancial != handledFinancial || handledFinancial != publishedFinancial.Load()
 		r.holding = r.holding[:0]
 		r.assessedShipIDs = r.assessedShipIDs[:0]
+		clear(r.assessedHoldIDs)
+		r.assessHold("")
 		changed := false
 		identityReady := r.fresh("whoami") && r.fresh("profile") && r.fresh("player")
 		if financialStale {
@@ -550,7 +556,11 @@ func (r *Runner) hold(ctx context.Context, shipID, reason string) error {
 	case "__treasury", "__growth", "__underwriting", "__marque":
 		holdShipID = ""
 	}
-	r.holding = append(r.holding, currentHold{ShipID: holdShipID, Reason: reason})
+	subjectID := shipID
+	if subjectID == "" {
+		subjectID = r.holdScope
+	}
+	r.holding = append(r.holding, currentHold{ShipID: holdShipID, Reason: reason, subjectID: subjectID})
 	return r.decision(ctx, shipID, "hold", reason, nil)
 }
 

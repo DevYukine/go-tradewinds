@@ -190,7 +190,11 @@ func (r *Runner) finishGroup(group string, values map[string]json.RawMessage, ke
 	}
 	for _, key := range keys {
 		child := r.meta[group+"/"+key]
-		if child.Error != "" || child.Stale || !child.Complete || child.Generation != r.generation || child.UpdatedAt.IsZero() || len(values[key]) == 0 {
+		current := child.Generation == r.generation
+		if group == "routes" {
+			current = r.fresh(group + "/" + key)
+		}
+		if child.Error != "" || child.Stale || !child.Complete || !current || child.UpdatedAt.IsZero() || len(values[key]) == 0 {
 			meta.Stale = true
 			meta.Complete = false
 			meta.Error = "one or more entries failed; see per-entry metadata"
@@ -236,6 +240,17 @@ func (r *Runner) refresh(ctx context.Context) error {
 		return err
 	}
 	state := r.state()
+	// The route API's default max_phase follows the world unlock. Discard
+	// cached paths, including known hull rejections, when that boundary moves.
+	if _, known := r.snapshot["_route_phase"]; !known || decode[int](r.snapshot, "_route_phase") != state.Clock.UnlockedPhase {
+		delete(r.snapshot, "routes")
+		for key := range r.meta {
+			if key == "routes" || strings.HasPrefix(key, "routes/") {
+				delete(r.meta, key)
+			}
+		}
+	}
+	r.snapshot["_route_phase"] = encode(state.Clock.UnlockedPhase)
 	if r.opts.MarquesEnabled && r.fresh("catalog") {
 		if err := r.refreshMarqueQuotes(ctx, state.Catalog); err != nil {
 			return err
@@ -365,8 +380,10 @@ func (r *Runner) refresh(ctx context.Context) error {
 		if !seenRoutes[key] {
 			seenRoutes[key] = true
 			routeKeys = append(routeKeys, key)
-			path := "/v1/world/route?from=" + url.QueryEscape(policy.OriginPortID) + "&to=" + url.QueryEscape(policy.DestPortID)
-			childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
+			if len(routes[key]) == 0 || !r.fresh("routes/"+key) {
+				path := "/v1/world/route?from=" + url.QueryEscape(policy.OriginPortID) + "&to=" + url.QueryEscape(policy.DestPortID)
+				childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
+			}
 		}
 	}
 	for _, origin := range origins {
@@ -382,8 +399,10 @@ func (r *Runner) refresh(ctx context.Context) error {
 					}
 					seenRoutes[key] = true
 					routeKeys = append(routeKeys, key)
-					path := "/v1/world/route?from=" + url.QueryEscape(pair[0]) + "&to=" + url.QueryEscape(pair[1]) + "&ship_class=" + url.QueryEscape(class)
-					childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
+					if len(routes[key]) == 0 || !r.fresh("routes/"+key) {
+						path := "/v1/world/route?from=" + url.QueryEscape(pair[0]) + "&to=" + url.QueryEscape(pair[1]) + "&ship_class=" + url.QueryEscape(class)
+						childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
+					}
 				}
 			}
 		}
@@ -391,6 +410,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 	if err := r.captureWave(ctx, childTasks, groups); err != nil {
 		return err
 	}
+	childTasks = nil
 	r.finishGroup("ship_details", details, shipKeys)
 	r.finishGroup("inventory", inventories, inventoryKeys)
 	r.finishGroup("ports", ports, portKeys)
@@ -417,8 +437,10 @@ func (r *Runner) refresh(ctx context.Context) error {
 			}
 			seenRoutes[key] = true
 			routeKeys = append(routeKeys, key)
-			path := "/v1/world/route?from=" + url.QueryEscape(endpoints[0]) + "&to=" + url.QueryEscape(endpoints[1]) + "&ship_class=" + url.QueryEscape(class)
-			tasks = append(tasks, fetchTask{key: "routes/" + key, path: path})
+			if len(routes[key]) == 0 || !r.fresh("routes/"+key) {
+				path := "/v1/world/route?from=" + url.QueryEscape(endpoints[0]) + "&to=" + url.QueryEscape(endpoints[1]) + "&ship_class=" + url.QueryEscape(class)
+				tasks = append(tasks, fetchTask{key: "routes/" + key, path: path})
+			}
 		}
 		if err := r.captureWave(ctx, tasks, groups); err != nil {
 			return err
@@ -460,9 +482,6 @@ func (r *Runner) refresh(ctx context.Context) error {
 				continue
 			}
 			for _, plan := range sourcingCandidates(sourcingInput) {
-				if !plan.Accepted || shortlisted >= sourcingPairLimit {
-					continue
-				}
 				var target string
 				for _, contract := range state.Contracts {
 					if contract.ID == plan.ContractID {
@@ -480,16 +499,18 @@ func (r *Runner) refresh(ctx context.Context) error {
 					key := routeKey(endpoints[0], endpoints[1], hull.ID)
 					if route, retained := sourcingInput.Routes[key]; retained && ValidateRoute(route, hull, state.Catalog.SeaZones) != nil {
 						illegal = true
-						// Retain the rejection while this public pair is relevant.
-						// It cannot authorize a departure or private book read.
 						if !seenRoutes[key] {
 							seenRoutes[key] = true
 							routeKeys = append(routeKeys, key)
+							if !r.fresh("routes/" + key) {
+								path := "/v1/world/route?from=" + url.QueryEscape(endpoints[0]) + "&to=" + url.QueryEscape(endpoints[1]) + "&ship_class=" + url.QueryEscape(hull.ID)
+								childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
+							}
 						}
 					}
 					missing = missing || !seenRoutes[key]
 				}
-				if illegal || missing && inspections >= sourcingPairLimit {
+				if illegal || !plan.Accepted || shortlisted >= sourcingPairLimit || missing && inspections >= sourcingPairLimit {
 					continue
 				}
 				if missing {
@@ -506,7 +527,6 @@ func (r *Runner) refresh(ctx context.Context) error {
 	}
 	// Observe every persisted continuation, including sailing arrivals and
 	// sealed inter-stop legs, without pretending to have private quay access.
-	childTasks = nil
 	for _, ship := range state.Ships {
 		mission, data, err := r.loadMission(ctx, ship.Ship.ID)
 		if err != nil {
@@ -523,8 +543,10 @@ func (r *Runner) refresh(ctx context.Context) error {
 				}
 				seenRoutes[key] = true
 				routeKeys = append(routeKeys, key)
-				path := "/v1/world/route?from=" + url.QueryEscape(plan.Origin) + "&to=" + url.QueryEscape(plan.Destination) + "&ship_class=" + url.QueryEscape(ship.Ship.ShipClass)
-				childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
+				if len(routes[key]) == 0 || !r.fresh("routes/"+key) {
+					path := "/v1/world/route?from=" + url.QueryEscape(plan.Origin) + "&to=" + url.QueryEscape(plan.Destination) + "&ship_class=" + url.QueryEscape(ship.Ship.ShipClass)
+					childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
+				}
 			}
 		}
 		destinations := make(map[string]bool)
@@ -556,8 +578,10 @@ func (r *Runner) refresh(ctx context.Context) error {
 				}
 				seenRoutes[key] = true
 				routeKeys = append(routeKeys, key)
-				path := "/v1/world/route?from=" + url.QueryEscape(from) + "&to=" + url.QueryEscape(to) + "&ship_class=" + url.QueryEscape(ship.Ship.ShipClass)
-				childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
+				if len(routes[key]) == 0 || !r.fresh("routes/"+key) {
+					path := "/v1/world/route?from=" + url.QueryEscape(from) + "&to=" + url.QueryEscape(to) + "&ship_class=" + url.QueryEscape(ship.Ship.ShipClass)
+					childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
+				}
 			}
 		}
 	}

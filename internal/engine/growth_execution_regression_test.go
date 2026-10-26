@@ -521,6 +521,12 @@ func TestGrowthOptionalReturnYieldsToCurrentAlternativesAndAuthority(t *testing.
 				w.bids = nil
 			case "unsafe_return":
 				w.unsafeReturn = true
+				// Static geometry is reused until expiry or invalidation. Withdraw
+				// this cached route so the changed edge is observed before return.
+				key := "routes/" + routeKey(recoveryFarPort, recoveryHomePort, recoveryHull)
+				meta := runner.meta[key]
+				meta.Stale = true
+				runner.meta[key] = meta
 			case "short_stores":
 				w.builtRow()["stores"] = map[string]any{"provisions_tons": float64(0)}
 				w.provisions[recoveryFarPort] = nil

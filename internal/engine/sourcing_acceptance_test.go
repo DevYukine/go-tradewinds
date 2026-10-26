@@ -337,7 +337,7 @@ func TestSourcingProbePlansBoundedCostOnlyRelocation(t *testing.T) {
 	if probe.TargetStoresTons < wantStores {
 		t.Fatalf("probe stores %.2ft omit the safe relocation and laden provisions (%.2ft)", probe.TargetStoresTons, wantStores)
 	}
-	if exposure := sourcingExposure(probe); exposure > 20_000 || exposure > (1_000_000-75_000)/50 {
+	if exposure := sourcingExposure(probe); exposure > (1_000_000-75_000)/50 {
 		t.Fatalf("modeled probe exposure %dp exceeds the policy allowance", exposure)
 	}
 	// A ship waiting at the roadstead is equally stationary and eligible.
@@ -415,7 +415,7 @@ func TestSourcingProbeShortlistsAtMostThreePairsCheapestExposureFirst(t *testing
 	}
 }
 
-func TestSourcingProbeAllowanceIsMinOfTwoHundredCrownsAndTwoPercent(t *testing.T) {
+func TestSourcingProbeAllowanceIsTwoPercentOfFreeCash(t *testing.T) {
 	t.Parallel()
 	// Base fixture: floor((1_000_000-75_000)/50) = 18_500p. Every variant
 	// rebuilds the fixture because Balances and ReserveByRegion are shared
@@ -434,8 +434,8 @@ func TestSourcingProbeAllowanceIsMinOfTwoHundredCrownsAndTwoPercent(t *testing.T
 	if len(accepted) == 0 {
 		t.Fatalf("probe disappeared for a wealthy account: %+v", planSourcingRelocation(rich))
 	}
-	if exposure := sourcingExposure(accepted[0]); exposure > 20_000 {
-		t.Fatalf("probe exposure %dp exceeds the absolute 200 Crown ceiling", exposure)
+	if exposure := sourcingExposure(accepted[0]); exposure > (50_000_000+1_000_000-75_000)/50 {
+		t.Fatalf("probe exposure %dp exceeds two percent of uncommitted cash", exposure)
 	}
 	starved := sourcingInputFixture(t)
 	starved.Balances["channel"] = 200_000
@@ -446,7 +446,7 @@ func TestSourcingProbeAllowanceIsMinOfTwoHundredCrownsAndTwoPercent(t *testing.T
 	expensive := sourcingInputFixture(t)
 	expensive.FleetDailyUpkeepPence = 500_000
 	if accepted := acceptedRelocations(planSourcingRelocation(expensive)); len(accepted) != 0 {
-		t.Fatalf("probe accepted beyond the absolute 200 Crown allowance: %+v", accepted)
+		t.Fatalf("probe accepted beyond floor(uncommitted cash/50) = 18500p: %+v", accepted)
 	}
 }
 

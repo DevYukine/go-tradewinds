@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,12 +22,92 @@ func TestSourcingValidatesTargetBeforePruningThreePairs(t *testing.T) {
 		route.Legs[0].EdgeClass = "oceanic"
 		in.Routes[key] = route
 	}
+	candidates := acceptedRelocations(sourcingCandidates(in))
+	if len(candidates) != 1 || candidates[0].Destination != "d-legal" {
+		t.Fatalf("known illegal charter legs consumed the discovery shortlist: %+v", candidates)
+	}
 	accepted := acceptedRelocations(planSourcingRelocation(in))
 	if len(accepted) != 1 || accepted[0].Destination != "d-legal" {
 		t.Fatalf("the first three invalid target legs hid the later funded legal source: %+v", accepted)
 	}
 	if accepted[0].Economics.RevenuePence != 0 {
 		t.Fatalf("a route inspection invented source revenue: %+v", accepted[0])
+	}
+}
+
+func TestSourcingSkipsUnreachableChartersBeforePublicRouteInspection(t *testing.T) {
+	t.Parallel()
+	in := sourcingInputFixture(t)
+	legal := in.Contracts[0]
+	in.Contracts = nil
+	for _, target := range []string{"havana", "cape_verde", "cadiz"} {
+		in.Catalog.Ports = append(in.Catalog.Ports, Port{
+			ID: target, BankingRegion: "channel", SeaZoneID: "english_channel", Phase: 1,
+		})
+		in.Ports[target] = PortDetail{ID: target, EffectiveBerths: 4}
+		in.Metadata["ports/"+target] = sourcingFreshMeta(in.Now)
+		contract := legal
+		contract.ID = "charter-" + target
+		contract.OriginPortID = target
+		in.Contracts = append(in.Contracts, contract)
+		key := routeKey("amsterdam", target, "hoy")
+		route := sourcingRoute("amsterdam", target, 1000)
+		route.Legs[0].EdgeClass = "oceanic"
+		in.Routes[key] = route
+		// Successful geometry remains a definitive hull rejection even when
+		// it did not come from the current observation generation.
+		in.Metadata["routes/"+key] = DatasetMeta{UpdatedAt: in.Now.Add(-time.Hour), Complete: true}
+	}
+	in.Contracts = append(in.Contracts, legal)
+	candidates := sourcingCandidates(in)
+	accepted := acceptedRelocations(candidates)
+	if len(accepted) != 1 || accepted[0].ContractID != legal.ID {
+		t.Fatalf("unreachable oceanic charters hid the legal regional source: %+v", candidates)
+	}
+	rejected := 0
+	for _, plan := range candidates {
+		if plan.Destination != "amsterdam" || plan.ContractID == legal.ID {
+			continue
+		}
+		if !strings.Contains(plan.Reason, "below route edge") {
+			t.Fatalf("unreachable charter did not retain its permanent hull rejection: %+v", plan)
+		}
+		rejected++
+	}
+	if rejected != 3 {
+		t.Fatalf("oceanic source-to-charter rejections = %d, want 3", rejected)
+	}
+}
+
+func TestSourcingUsesLegalSourceDetourInsteadOfUnusedDirectRoute(t *testing.T) {
+	t.Parallel()
+	in := sourcingInputFixture(t)
+	key := routeKey("le_havre", "portsmouth", "hoy")
+	route := in.Routes[key]
+	route.Legs[0].EdgeClass = "oceanic"
+	in.Routes[key] = route
+	// The relocation sails le_havre -> amsterdam -> portsmouth, not the
+	// hull-agnostic shortest path directly from le_havre to portsmouth.
+	accepted := acceptedRelocations(planSourcingRelocation(in))
+	if len(accepted) != 1 || accepted[0].Destination != "amsterdam" {
+		t.Fatalf("an unused direct route hid the legal coastal sourcing legs: %+v", planSourcingRelocation(in))
+	}
+}
+
+func TestSourcingKnownIllegalRouteRejectsBeforeFreshness(t *testing.T) {
+	t.Parallel()
+	in := sourcingInputFixture(t)
+	key := routeKey("amsterdam", "portsmouth", "hoy")
+	route := in.Routes[key]
+	route.Legs[0].EdgeClass = "oceanic"
+	in.Routes[key] = route
+	meta := in.Metadata["routes/"+key]
+	meta.Stale = true
+	in.Metadata["routes/"+key] = meta
+	hull, _ := findHull(in.Catalog, "hoy")
+	_, err := sourcingRouteReady(in, "amsterdam", "portsmouth", hull)
+	if err == nil || !strings.Contains(err.Error(), "below route edge") || strings.Contains(err.Error(), "fresh public route") {
+		t.Fatalf("known oceanic route became a renewable freshness hold: %v", err)
 	}
 }
 

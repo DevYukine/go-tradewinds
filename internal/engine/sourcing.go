@@ -44,8 +44,10 @@ func sourcingFreeCash(in PlanningInput) int64 {
 	return max(0, cash-reserves)
 }
 
+// Exploration risk capital scales with free cash (2%) rather than a fixed
+// ceiling, so a larger treasury can afford proportionally larger probes.
 func sourcingNormalAllowance(in PlanningInput) int64 {
-	allowance := min(int64(20_000), sourcingFreeCash(in)/50)
+	allowance := sourcingFreeCash(in) / 50
 	if in.SourcingAllowancePence != nil {
 		allowance = min(allowance, max(0, *in.SourcingAllowancePence))
 	}
@@ -59,7 +61,7 @@ func sourcingAllowance(in PlanningInput) int64 {
 	}
 	free := sourcingFreeCash(in)
 	remaining := max(0, 20_000+free/20-in.SourcingProbeExpensePence)
-	pilot := min(int64(20_000), free/50, remaining)
+	pilot := min(free/50, remaining)
 	// The liquidity-backed pilot is risk capital, not measured profit and not
 	// a second seed to add to the ordinary permanent allowance.
 	return max(normal, pilot)
@@ -140,6 +142,7 @@ func publicSourceEvidence(in PlanningInput, source Port, contract Contract) (boo
 func sourcingCandidates(in PlanningInput) []Plan {
 	var pairs []Plan
 	origin, _ := findPort(in.Catalog, in.Ship.Ship.CurrentPortID)
+	hull, _ := findHull(in.Catalog, in.Ship.Ship.ShipClass)
 	for _, contract := range in.Contracts {
 		if contract.ContractType != "charter" {
 			continue
@@ -163,6 +166,16 @@ func sourcingCandidates(in PlanningInput) []Plan {
 			plan.PriceSource = reason
 			plan.Accepted = ok
 			plan.Reason = reason
+			if plan.Accepted {
+				for _, endpoints := range [][2]string{{source.ID, contract.OriginPortID}, {contract.OriginPortID, source.ID}} {
+					if route, known := in.Routes[routeKey(endpoints[0], endpoints[1], hull.ID)]; known {
+						if err := ValidateRoute(route, hull, in.Catalog.SeaZones); err != nil {
+							plan = reject(plan, err.Error())
+							break
+						}
+					}
+				}
+			}
 			if plan.Accepted {
 				plan = relocationExposure(in, plan)
 				if plan.Accepted {
@@ -342,11 +355,13 @@ func planSourcingRelocation(in PlanningInput) []Plan {
 func sourcingRouteReady(in PlanningInput, from, to string, hull Hull) (Route, error) {
 	key := routeKey(from, to, hull.ID)
 	route, exists := in.Routes[key]
+	if exists {
+		if err := ValidateRoute(route, hull, in.Catalog.SeaZones); err != nil {
+			return Route{}, err
+		}
+	}
 	if !exists || !in.fresh("routes/"+key) {
 		return Route{}, fmt.Errorf("sourcing needs fresh public route %s", key)
-	}
-	if err := ValidateRoute(route, hull, in.Catalog.SeaZones); err != nil {
-		return Route{}, err
 	}
 	for _, leg := range route.Legs {
 		for _, node := range []string{leg.FromNode, leg.ToNode} {

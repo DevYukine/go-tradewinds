@@ -355,7 +355,7 @@ func TestIdleFallbackBudgetUsesOneLiquiditySeedAndEveryPermanentProbeExpense(t *
 		{"remaining lifetime below per probe", 1_000_000, 69_999, 0, false, 1},
 		{"all liquidity allowance spent", 1_000_000, 70_000, 0, false, 0},
 		{"never add normal and pilot", 1_000_000, 60_000, 2_050_000, false, 10_000},
-		{"twenty thousand per probe ceiling", 2_000_000, 20_000, 0, false, 20_000},
+		{"two percent of a large treasury", 2_000_000, 20_000, 0, false, 40_000},
 		{"unknown probe costs", 1_000_000, 20_000, 0, true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

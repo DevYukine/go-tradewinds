@@ -108,6 +108,7 @@ func (r *Runner) loadMission(ctx context.Context, shipID string) (*store.Mission
 
 func (r *Runner) work(ctx context.Context) (bool, error) {
 	r.nextDeadline = time.Time{}
+	r.assessHold("")
 	// Restore every durable plan before replaying even one request. An orphaned
 	// pending request blocks all new account mutations rather than being guessed.
 	missions := make(map[string]*store.Mission)
@@ -181,6 +182,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			}
 		}
 	}
+	r.assessHold("")
 	for _, key := range []string{"ships", "contracts", "vaults", "clock", "catalog", "factors", "warehouses", "orders", "fills", "ledger", "rates", "settings"} {
 		if !r.fresh(key) {
 			return false, r.hold(ctx, "", "mutation gate: missing, incomplete or stale "+key)
@@ -193,12 +195,14 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		return r.creditOnlyWork(ctx, missions, dataByShip)
 	}
 	if mission := missions["__underwriting"]; mission != nil && dataByShip["__underwriting"].Action == nil {
+		r.assessHold("__underwriting")
 		data := dataByShip["__underwriting"]
 		if changed, err := r.driveUnderwriting(ctx, mission, &data); changed || err != nil {
 			return changed, err
 		}
 	}
 	if mission := missions["__marque"]; mission != nil && dataByShip["__marque"].Action == nil {
+		r.assessHold("__marque")
 		data := dataByShip["__marque"]
 		if changed, err := r.driveMarque(ctx, mission, &data); changed || err != nil {
 			return changed, err
@@ -207,12 +211,14 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	if mission := missions["__growth"]; mission != nil {
 		data := dataByShip["__growth"]
 		r.assessShip(data.BuiltShipID)
+		r.assessHold("__growth")
 		changed, err := r.driveGrowth(ctx, mission, &data)
 		if changed || err != nil {
 			return changed, err
 		}
 	}
 	if mission := missions["__treasury"]; mission != nil {
+		r.assessHold("__treasury")
 		data := dataByShip["__treasury"]
 		if time.Now().Before(data.CooldownUntil) {
 			if err := r.hold(ctx, "", "treasury waits for persisted retry-after/replanning cooldown"); err != nil {
@@ -230,18 +236,21 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		sourcingActive = sourcingActive || data.Relocation != nil || data.SourcingHandoff != nil
 	}
 	if r.opts.Execute && missions["__treasury"] == nil && !sourcingActive {
+		r.assessHold("__treasury")
 		changed, err := r.manageTreasury(ctx)
 		if changed || err != nil {
 			return changed, err
 		}
 	}
 	if r.opts.Execute && missions["__treasury"] == nil {
+		r.assessHold("__growth")
 		changed, err := r.manageExpansionAgents(ctx)
 		if changed || err != nil {
 			return changed, err
 		}
 	}
 	if missions["__growth"] == nil && missions["__treasury"] == nil {
+		r.assessHold("__growth")
 		changed, err := r.considerGrowth(ctx)
 		if changed || err != nil {
 			return changed, err
@@ -340,11 +349,13 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		}
 	}
 	if r.opts.Execute && missions["__underwriting"] == nil && missions["__growth"] == nil && missions["__treasury"] == nil {
+		r.assessHold("__underwriting")
 		if changed, err := r.considerUnderwriting(ctx); changed || err != nil {
 			return changed, err
 		}
 	}
 	if r.opts.Execute && r.opts.MarquesEnabled && missions["__marque"] == nil && missions["__growth"] == nil && missions["__treasury"] == nil {
+		r.assessHold("__marque")
 		if changed, err := r.considerMarque(ctx); changed || err != nil {
 			return changed, err
 		}

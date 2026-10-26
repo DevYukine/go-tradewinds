@@ -225,23 +225,23 @@ func TestFinishGroupRequiresCompleteCurrentGenerationChildren(t *testing.T) {
 				UpdatedAt: now, AttemptedAt: now,
 				Generation: test.generation, Complete: test.complete,
 			}
-			runner.meta["routes/source|target|coaster"] = child
+			runner.meta["books/source"] = child
 			values := make(map[string]json.RawMessage)
 			if test.keepValue {
-				values["source|target|coaster"] = json.RawMessage(`{"total_distance_nm":12}`)
+				values["source"] = json.RawMessage(`{"visibility":"quay"}`)
 			}
-			runner.finishGroup("routes", values, []string{"source|target|coaster"})
+			runner.finishGroup("books", values, []string{"source"})
 
-			group := runner.meta["routes"]
-			if group.Complete || !group.Stale || group.Error == "" || runner.fresh("routes") {
+			group := runner.meta["books"]
+			if group.Complete || !group.Stale || group.Error == "" || runner.fresh("books") {
 				t.Fatalf("group advertised an unusable child as complete: %+v", group)
 			}
-			if retained := runner.meta["routes/source|target|coaster"]; retained != child {
+			if retained := runner.meta["books/source"]; retained != child {
 				t.Fatalf("group reduction changed retained child metadata: got %+v want %+v", retained, child)
 			}
-			retained := decode[map[string]json.RawMessage](runner.snapshot, "routes")
-			if test.keepValue && string(retained["source|target|coaster"]) != `{"total_distance_nm":12}` {
-				t.Fatalf("incomplete group discarded last-good requested route: %s", runner.snapshot["routes"])
+			retained := decode[map[string]json.RawMessage](runner.snapshot, "books")
+			if test.keepValue && string(retained["source"]) != `{"visibility":"quay"}` {
+				t.Fatalf("incomplete group discarded last-good requested book: %s", runner.snapshot["books"])
 			}
 		})
 	}
