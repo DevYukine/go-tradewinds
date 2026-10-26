@@ -1,5 +1,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import {
+  DEFAULT_MONEY_PREFERENCES,
+  restoreMoneyPreferences,
+  type MoneyPreferences,
+} from "./money-history";
 
 export type View =
   | "chart"
@@ -25,6 +30,8 @@ interface UIState {
   selectedShipAccountID: string;
   selectedPortID: string;
   navigationOpen: boolean;
+  moneyHistory: MoneyPreferences;
+  setMoneyHistory: (preferences: Partial<MoneyPreferences>) => void;
   setAccount: (id: string) => void;
   setView: (view: View) => void;
   toggleTheme: () => void;
@@ -43,6 +50,11 @@ export const useUI = create<UIState>()(
       selectedShipAccountID: "",
       selectedPortID: "",
       navigationOpen: false,
+      moneyHistory: DEFAULT_MONEY_PREFERENCES,
+      setMoneyHistory: (preferences) =>
+        set((state) => ({
+          moneyHistory: { ...state.moneyHistory, ...preferences },
+        })),
       setAccount: (id) =>
         set({
           accountID: id,
@@ -65,6 +77,17 @@ export const useUI = create<UIState>()(
       name: "tradewinds-operations",
       skipHydration: true,
       version: 1,
+      merge: (persisted, current) => {
+        const state =
+          persisted !== null && typeof persisted === "object"
+            ? (persisted as Partial<UIState>)
+            : {};
+        return {
+          ...current,
+          ...state,
+          moneyHistory: restoreMoneyPreferences(state.moneyHistory),
+        };
+      },
       migrate: (persisted) => {
         const state = persisted as {
           accountID: string;
@@ -80,6 +103,7 @@ export const useUI = create<UIState>()(
         accountID: state.accountID,
         theme: state.theme,
         view: state.view,
+        moneyHistory: state.moneyHistory,
       }),
     },
   ),

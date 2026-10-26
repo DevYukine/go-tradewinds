@@ -4,9 +4,10 @@ import type {
   DashboardData,
   DatasetMeta,
   JsonRecord,
-  Metric,
+  MoneyHistory,
   ShipDetail,
 } from "./types";
+import { customMoneyRange, type MoneyPreferences } from "./money-history";
 
 async function fetchJSON<T>(path: string, signal: AbortSignal): Promise<T> {
   const response = await fetch(path, {
@@ -49,6 +50,41 @@ export function useHistory<T>(accountID: string | undefined, kind: string) {
     enabled: Boolean(accountID),
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
+    staleTime: 20_000,
+    retry: 1,
+  });
+}
+
+export function useMoneyHistory(
+  accountID: string,
+  preferences: MoneyPreferences,
+) {
+  const custom =
+    preferences.range === "custom"
+      ? customMoneyRange(preferences.from, preferences.to)
+      : undefined;
+  return useQuery({
+    queryKey: [
+      "money-history",
+      accountID,
+      preferences.range,
+      custom?.from,
+      custom?.to,
+    ],
+    queryFn: ({ signal }) => {
+      const query = new URLSearchParams({
+        account_id: accountID,
+        range: preferences.range,
+        ...(custom ?? {}),
+      });
+      return fetchJSON<MoneyHistory>(`/api/money-history?${query}`, signal);
+    },
+    enabled:
+      Boolean(accountID) && (preferences.range !== "custom" || Boolean(custom)),
+    refetchInterval: () =>
+      custom && Date.parse(custom.to) < Date.now() ? false : 30_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
     staleTime: 20_000,
     retry: 1,
   });
@@ -124,21 +160,4 @@ export function shipSource(
     (!Number.isFinite(listUpdated) || childUpdated > listUpdated)
     ? childKey
     : "ships";
-}
-
-export function combineMetrics(
-  current: Metric[],
-  history: Metric[] | undefined,
-  accountID: string,
-): Metric[] {
-  const unique = new Map<string, Metric>();
-  for (const metric of [...current, ...(history ?? [])]) {
-    if (metric.account_id === accountID && Number.isFinite(metric.value)) {
-      unique.set(`${metric.account_id}:${metric.id}`, metric);
-    }
-  }
-  return [...unique.values()].sort(
-    (left, right) =>
-      Date.parse(left.recorded_at) - Date.parse(right.recorded_at),
-  );
 }

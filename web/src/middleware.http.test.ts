@@ -9,7 +9,7 @@ import { describe, expect, it, type TestContext } from "vitest";
 
 const webRoot = fileURLToPath(new URL("../", import.meta.url));
 const nextCLI = createRequire(import.meta.url).resolve("next/dist/bin/next");
-const paths = ["/api/dashboard", "/api/history"];
+const paths = ["/api/dashboard", "/api/history", "/api/money-history"];
 
 type Response = {
   status: number;

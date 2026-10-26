@@ -25,6 +25,8 @@
   --warning: #9a6b1f;
   --crown: #c9a227;
   --danger: var(--attention);
+  --money-gain: #24734f;
+  --money-loss: #b42335;
   --foreground: var(--ink);
   --background: var(--canvas);
   --accent: var(--route);
@@ -48,6 +50,8 @@
   --border: #313130;
   --success: #7fc9a4;
   --warning: #e2be7c;
+  --money-gain: var(--success);
+  --money-loss: #ff9ba5;
   color-scheme: dark;
 }
 

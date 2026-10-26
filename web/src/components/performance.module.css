@@ -1,0 +1,288 @@
+.section {
+  min-width: 0;
+}
+
+.controls {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px 24px;
+  margin-bottom: 14px;
+}
+
+.metric,
+.custom label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.metric select {
+  width: 250px;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.presets button {
+  min-width: 44px;
+  min-height: 36px;
+  padding: 6px 11px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--muted);
+  background: transparent;
+}
+
+.presets button[aria-pressed="true"] {
+  border-color: var(--border);
+  color: var(--ink);
+  background: var(--water);
+  font-weight: 600;
+}
+
+.presets button:hover {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+
+.custom {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  margin-block: 12px;
+}
+
+.custom label {
+  flex: 0 1 240px;
+}
+
+.custom input {
+  width: 100%;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.description,
+.coverage {
+  max-width: 80ch;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.description {
+  margin-block: 10px 16px;
+}
+
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 36px;
+  margin-block: 12px;
+}
+
+.summary dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.summary dd {
+  margin: 3px 0 0;
+  font-size: 21px;
+  font-weight: 600;
+}
+
+.status {
+  max-width: 80ch;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status:empty {
+  display: none;
+}
+
+.warning {
+  padding: 10px 12px;
+  border-inline-start: 3px solid var(--money-loss);
+  color: var(--money-loss);
+}
+
+.gain {
+  color: var(--money-gain);
+}
+
+.loss {
+  color: var(--money-loss);
+}
+
+.legend,
+.legend > span:last-child {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.legend {
+  margin-top: 18px;
+}
+
+.chart {
+  min-width: 0;
+  margin-block: 4px;
+}
+
+.chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.gridline {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.axis {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.zeroLine {
+  stroke: var(--muted);
+  stroke-width: 1;
+}
+
+.inspectionLine {
+  stroke: var(--muted);
+  stroke-dasharray: 3 5;
+}
+
+.line {
+  fill: none;
+  stroke: var(--route);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.gainLine {
+  stroke: var(--money-gain);
+}
+
+.lossLine {
+  stroke: var(--money-loss);
+}
+
+.dot,
+.bar {
+  fill: var(--route);
+}
+
+.gainBar {
+  fill: var(--money-gain);
+}
+
+.lossBar {
+  fill: var(--money-loss);
+}
+
+.selectedBar {
+  stroke: var(--ink);
+  stroke-width: 1;
+}
+
+.inspector,
+.inspector > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.inspector {
+  padding-block: 10px;
+  border-block: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.inspector strong {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.inspector strong.gain {
+  color: var(--money-gain);
+}
+
+.inspector strong.loss {
+  color: var(--money-loss);
+}
+
+.sampleControls {
+  display: flex;
+  align-items: center;
+  flex: 1 1 180px;
+  gap: 6px;
+  max-width: 280px;
+  min-width: 0;
+}
+
+.sampleControls label {
+  flex: 1;
+  min-width: 0;
+}
+
+.sampleControls input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding-inline: 0;
+  accent-color: var(--route);
+}
+
+@media (max-width: 40rem) {
+  .metric {
+    flex: 1 1 200px;
+  }
+
+  .metric select {
+    width: 100%;
+  }
+
+  .custom label {
+    flex: 1 1 200px;
+  }
+
+  .summary {
+    gap: 12px 24px;
+  }
+
+  .summary dd {
+    font-size: 18px;
+  }
+
+  .sampleControls {
+    max-width: none;
+  }
+}

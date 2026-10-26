@@ -25,13 +25,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useNow } from "@/app/providers";
-import {
-  combineMetrics,
-  dataset,
-  fleet,
-  useDashboard,
-  useHistory,
-} from "@/lib/data";
+import { dataset, fleet, useDashboard } from "@/lib/data";
 import { age, count } from "@/lib/format";
 import { datasetObservation } from "@/lib/operations";
 import type {
@@ -40,7 +34,6 @@ import type {
   Clock,
   CompanyProfile,
   DashboardData,
-  Metric,
 } from "@/lib/types";
 import { useUI, type View } from "@/lib/ui-store";
 import { ContractsView } from "./contracts";
@@ -380,10 +373,6 @@ function AccountWorkspace({
   view: View;
   showIdentity: boolean;
 }) {
-  const history = useHistory<Metric>(
-    view === "performance" ? account.id : undefined,
-    "metrics",
-  );
   const profile = dataset<CompanyProfile>(account, "profile");
   let content;
   switch (view) {
@@ -417,16 +406,8 @@ function AccountWorkspace({
     case "performance":
       content = (
         <>
+          <Performance key={account.id} accountID={account.id} />
           <UnderwritingLedger account={account} />
-          <Performance
-            metrics={combineMetrics(
-              dashboard.metrics,
-              history.data,
-              account.id,
-            )}
-            error={history.error?.message}
-            fetching={history.isFetching}
-          />
         </>
       );
       break;

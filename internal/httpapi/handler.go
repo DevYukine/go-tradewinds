@@ -84,6 +84,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.dashboard(ctx, w)
 	case "/api/history":
 		h.history(ctx, w, r)
+	case "/api/money-history":
+		h.moneyHistory(ctx, w, r)
 	case "/metrics":
 		h.metrics(ctx, w)
 	default:
@@ -134,6 +136,55 @@ func (h *handler) history(ctx context.Context, w http.ResponseWriter, r *http.Re
 	data, err := h.store.History(ctx, accountID, kind, limit)
 	if err != nil {
 		h.readError(w, "history", err)
+		return
+	}
+	h.json(w, http.StatusOK, data)
+}
+
+func (h *handler) moneyHistory(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	accountID := query.Get("account_id")
+	if len(accountID) > 255 || strings.TrimSpace(accountID) == "" {
+		h.failure(w, http.StatusBadRequest, "invalid_account", "money history requires an account_id.")
+		return
+	}
+	to := time.Now().UTC()
+	var from time.Time
+	switch query.Get("range") {
+	case "24h":
+		from = to.Add(-24 * time.Hour)
+	case "7d":
+		from = to.Add(-7 * 24 * time.Hour)
+	case "30d":
+		from = to.Add(-30 * 24 * time.Hour)
+	case "all":
+	case "custom":
+		var err error
+		from, err = time.Parse(time.RFC3339Nano, query.Get("from"))
+		if err != nil || from.IsZero() {
+			h.failure(w, http.StatusBadRequest, "invalid_range", "from must be a nonzero RFC3339 date and time with a timezone.")
+			return
+		}
+		to, err = time.Parse(time.RFC3339Nano, query.Get("to"))
+		if err != nil || !from.Before(to) {
+			h.failure(w, http.StatusBadRequest, "invalid_range", "to must be an RFC3339 date and time after from.")
+			return
+		}
+	default:
+		h.failure(w, http.StatusBadRequest, "invalid_range", "range must be 24h, 7d, 30d, all, or custom.")
+		return
+	}
+	if query.Get("range") != "custom" && (query.Has("from") || query.Has("to")) {
+		h.failure(w, http.StatusBadRequest, "invalid_range", "from and to require range=custom.")
+		return
+	}
+	if h.store == nil {
+		h.failure(w, http.StatusServiceUnavailable, "database_unavailable", "PostgreSQL is not ready.")
+		return
+	}
+	data, err := h.store.MoneyHistory(ctx, accountID, from, to)
+	if err != nil {
+		h.readError(w, "money history", err)
 		return
 	}
 	h.json(w, http.StatusOK, data)

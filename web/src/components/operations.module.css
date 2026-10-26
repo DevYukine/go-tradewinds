@@ -334,44 +334,6 @@
   margin-block: 0.5rem;
 }
 
-.chart {
-  min-width: 0;
-  margin-block: 0.75rem;
-  overflow: hidden;
-  background: color-mix(in srgb, var(--color-canvas) 65%, var(--surface));
-}
-
-.chart svg {
-  display: block;
-  width: 100%;
-  height: auto;
-  min-height: 10rem;
-}
-
-.gridline {
-  stroke: var(--border);
-  stroke-width: 1;
-}
-
-.axis {
-  fill: var(--muted);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.chartLine {
-  fill: none;
-  stroke: var(--color-route);
-  stroke-width: 2;
-  stroke-linejoin: round;
-  stroke-linecap: round;
-}
-
-.chartDot,
-.chartBar {
-  fill: var(--color-route);
-}
-
 .sample {
   display: flex;
   align-items: center;

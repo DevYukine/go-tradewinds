@@ -42,6 +42,26 @@ export interface Metric {
   recorded_at: string;
 }
 
+export interface MoneyPeriod {
+  at: string;
+  to: string;
+  count: number;
+  known_count: number;
+  gross_pence: number;
+  costs_pence: number | null;
+  net_pence: number | null;
+}
+
+export interface MoneyHistory {
+  account_id: string;
+  generated_at: string;
+  from: string;
+  to: string;
+  bucket_seconds: number;
+  metrics: Metric[];
+  settlements: MoneyPeriod[];
+}
+
 // Pence and game days retain the units recorded by the planner. Historical
 // decisions can omit fields, including the destination valuation basis.
 export interface Economics {
