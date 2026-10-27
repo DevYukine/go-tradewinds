@@ -85,7 +85,7 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 			return r.reconcileCommitted(ctx, mission, data)
 		}
 		if data.Capacity != nil && data.Capacity.Financing != nil && data.Capacity.Financing.Cancel {
-			if err := r.recordGrowthBuildRefusal(ctx, data); err != nil {
+			if err := r.recordCapacityFinancingRefusal(ctx, data); err != nil {
 				return false, err
 			}
 		}
@@ -318,6 +318,9 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 		data.BuiltShipID = result.ShipID
 		data.BuildCostPence = *result.Cost
 		mission.Phase = "growth_refit"
+		if err := r.clearCapacitySavingsAfterBuild(ctx); err != nil {
+			return false, err
+		}
 		if data.Capacity != nil && *result.Cost > data.Capacity.QuoteLimitPence {
 			reason := "capacity build receipt exceeded the admitted turnkey quote ceiling"
 			if err := r.decision(ctx, result.ShipID, "capacity_build_price_overrun", reason, map[string]int64{
@@ -368,7 +371,12 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 			return false, err
 		}
 	}
-	if (stage == "build" || stage == "loan-accept" && data.Capacity != nil) && domainRefusal {
+	if stage == "loan-accept" && data.Capacity != nil && domainRefusal {
+		if err := r.recordCapacityFinancingRefusal(ctx, data); err != nil {
+			return false, err
+		}
+	}
+	if stage == "build" && domainRefusal {
 		if err := r.recordGrowthBuildRefusal(ctx, data); err != nil {
 			return false, err
 		}

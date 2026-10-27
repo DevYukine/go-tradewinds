@@ -491,6 +491,13 @@ func (r *Runner) marqueHomeFunds(ctx context.Context, self bool) (string, int64,
 }
 
 func (r *Runner) considerMarque(ctx context.Context) (bool, error) {
+	target, err := r.liveCapacitySavingsTarget(ctx)
+	if err != nil {
+		return false, err
+	}
+	if target.PortID != "" {
+		return false, r.hold(ctx, "__marque", capacitySavingsReason)
+	}
 	growth, _, err := r.loadMission(ctx, "__growth")
 	if err != nil || growth != nil {
 		return false, err
@@ -570,6 +577,13 @@ func (r *Runner) driveMarque(ctx context.Context, mission *store.Mission, data *
 }
 
 func (r *Runner) marquePreflight(ctx context.Context, data *missionData, requestExists bool) error {
+	target, err := r.liveCapacitySavingsTarget(ctx)
+	if err != nil {
+		return err
+	}
+	if target.PortID != "" {
+		return errors.New(capacitySavingsReason)
+	}
 	// A persisted intent may predate the switch being turned off; never spend on it.
 	if !r.opts.MarquesEnabled {
 		return errors.New("marque issuance is disabled (MARQUES_ENABLED=false)")

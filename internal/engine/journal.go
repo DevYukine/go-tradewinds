@@ -830,6 +830,9 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 		}
 	case "build":
 		mission.Phase = "growth_refit"
+		if err := r.clearCapacitySavingsAfterBuild(ctx); err != nil {
+			return false, err
+		}
 	case "offshore":
 		if mission.Phase == "closing" {
 			data.ClosingObservedAt = time.Now()
@@ -904,6 +907,15 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		return errors.New("new action requires current successful server clock authority")
 	}
 	action := data.Action
+	if action.Stage == "hire-factor" {
+		target, err := r.liveCapacitySavingsTarget(ctx)
+		if err != nil {
+			return err
+		}
+		if target.PortID != "" {
+			return errors.New(capacitySavingsReason)
+		}
+	}
 	if action.Stage == "loan-accept" || action.Stage == "loan-repay" {
 		return r.loanActionReady(ctx, mission, data)
 	}

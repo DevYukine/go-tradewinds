@@ -119,6 +119,29 @@ func estimatedCapacityPrincipal(shortfall, ships int64) (int64, int64) {
 	return principal, 0
 }
 
+func capacitySavingsFinancingWorthwhile(buy, save GrowthDecision, savingsRate float64, fleetSize int) bool {
+	if savingsRate <= 0 || save.CashShortfallPence <= 0 || fleetSize <= 0 {
+		return false
+	}
+	principal, installment := estimatedCapacityPrincipal(save.CashShortfallPence, int64(fleetSize))
+	if installment <= 0 || principal < goldsmithsMinimumPence {
+		return false
+	}
+	wait := float64(save.CashShortfallPence) / savingsRate
+	interest := 36*float64(installment) - float64(principal)
+	return (save.DepthNetPencePerGameDay+buy.IncrementalNetPencePerGameDay)*wait > interest
+}
+
+func (r *Runner) considerCapacitySavingsFinancing(ctx context.Context, buy GrowthDecision, save *capacityCandidate, savingsRate float64, fleetSize int, evidence *growthEvidence) (bool, error) {
+	if !capacitySavingsFinancingWorthwhile(buy, save.decision, savingsRate, fleetSize) {
+		return false, r.recordCapacityLoan(ctx, save.port, save.hull, capacityLoanDecision{
+			ShortfallPence: save.decision.CashShortfallPence,
+			Reason:         "no borrowing: savings financing requires available liens and avoided-wait earnings above estimated total interest",
+		})
+	}
+	return r.considerCapacityFinancing(ctx, save.port, save.hull, save.decision, save.required, evidence)
+}
+
 func capacityLoanFunding(decision GrowthDecision, evidence *growthEvidence, region string, principal, reserve int64, rates []Rate) (map[string]int64, map[string]int64, map[string]int64, bool) {
 	required := clonePence(evidence.required)
 	capital := growthCashTotal(decision.QuotedHullPence, decision.SlippageReservePence, decision.CannonsPence, decision.InitialStoresPence)
@@ -167,6 +190,10 @@ func (r *Runner) recordCapacityLoan(ctx context.Context, port Port, hull Hull, d
 	return r.decision(ctx, "", "capacity_financing:"+port.ID+"|"+hull.ID, decision.Reason, decision)
 }
 
+func (r *Runner) recordCapacityFinancingRefusal(ctx context.Context, data *missionData) error {
+	return r.recordGrowthBackoff(ctx, "_capacity_financing_backoffs", data)
+}
+
 func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull Hull, decision GrowthDecision, required map[string]int64, evidence *growthEvidence) (bool, error) {
 	result := capacityLoanDecision{ShortfallPence: decision.CashShortfallPence}
 	quoted := false
@@ -174,7 +201,7 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 		result.Borrow = false
 		result.Reason = reason
 		if quoted {
-			if err := r.recordGrowthBuildRefusal(ctx, &missionData{BuildPort: port.ID, BuildClass: hull.ID}); err != nil {
+			if err := r.recordCapacityFinancingRefusal(ctx, &missionData{BuildPort: port.ID, BuildClass: hull.ID}); err != nil {
 				return false, err
 			}
 		}
@@ -183,7 +210,8 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 	if !decision.EconomicallyViable || decision.Accepted || required == nil || decision.CashShortfallPence <= 0 {
 		return refuse("no borrowing: this is not a positive total cash-only capacity shortfall")
 	}
-	if until := decode[map[string]time.Time](r.snapshot, "_growth_build_backoffs")[port.ID+"|"+hull.ID]; time.Now().Before(until) {
+	if until := decode[map[string]time.Time](r.snapshot, "_capacity_financing_backoffs")[port.ID+"|"+hull.ID]; time.Now().Before(until) {
+		r.wakeBy(until)
 		return false, nil
 	}
 	if !r.loanAuthority() || !r.opts.Execute {
@@ -485,7 +513,7 @@ func (r *Runner) driveCapacityFinancing(ctx context.Context, mission *store.Miss
 	}
 	if err != nil {
 		if financing.Cancel {
-			if saveErr := r.recordGrowthBuildRefusal(ctx, data); saveErr != nil {
+			if saveErr := r.recordCapacityFinancingRefusal(ctx, data); saveErr != nil {
 				return false, saveErr
 			}
 			return r.repayCapacityFinancing(ctx, mission, data)
@@ -655,7 +683,7 @@ func (r *Runner) reconcileLoanAction(ctx context.Context, mission *store.Mission
 		quote := data.Capacity.Financing.Quotes[len(data.Capacity.Financing.Loans)]
 		r.recordAcceptedCapacityLoan(data, *found, quote)
 		if data.Capacity.Financing.Cancel {
-			if err := r.recordGrowthBuildRefusal(ctx, data); err != nil {
+			if err := r.recordCapacityFinancingRefusal(ctx, data); err != nil {
 				return false, err
 			}
 		}

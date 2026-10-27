@@ -1021,6 +1021,34 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 	if !found {
 		return r.considerCapacityGrowth(ctx, &evidence)
 	}
+	savingsTarget, err := r.liveCapacitySavingsTarget(ctx)
+	if err != nil {
+		return false, err
+	}
+	if savingsTarget.PortID != "" {
+		lotPence, err := r.capacityLotCash(ctx, evidence.asOf)
+		if err != nil {
+			return false, err
+		}
+		savingsRate, err := r.capacitySavingsRate(ctx, evidence.asOf)
+		if err != nil {
+			return false, err
+		}
+		wait, err := r.capacitySavingsWait(ctx, savingsTarget, best.decision, evidence.available, savingsRate, lotPence)
+		if err != nil {
+			return false, err
+		}
+		if wait {
+			r.snapshot["_capacity_growth_port"] = encode("")
+			if savingsTarget.RequiredPence <= evidence.available {
+				return r.considerCapacityGrowthAt(ctx, &evidence, savingsTarget.PortID, savingsTarget.HullID)
+			}
+			return r.holdCapacitySavings(ctx, savingsTarget, best.decision, evidence.available, savingsRate)
+		}
+		if err := r.setCapacitySavingsTarget(ctx, capacitySavingsTarget{}); err != nil {
+			return false, err
+		}
+	}
 	key := "growth:" + best.port.ID + "|" + best.hull.ID + ":" + laneKey(best.plan)
 	if err := r.decision(ctx, "", key, best.decision.Reason, best.decision); err != nil {
 		return false, err

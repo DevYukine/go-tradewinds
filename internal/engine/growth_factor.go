@@ -113,6 +113,13 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 	if !r.opts.Execute {
 		return false, nil
 	}
+	target, err := r.liveCapacitySavingsTarget(ctx)
+	if err != nil {
+		return false, err
+	}
+	if target.PortID != "" {
+		return false, r.hold(ctx, "", capacitySavingsReason)
+	}
 	for _, dataset := range []string{"catalog", "clock", "ships", "factors", "contracts", "vaults", "rates", "profile"} {
 		if !r.fresh(dataset) {
 			return false, r.hold(ctx, "", "expansion agent requires current successful "+dataset+" authority")
@@ -250,6 +257,10 @@ func (r *Runner) manageExpansionAgents(ctx context.Context) (bool, error) {
 	if err != nil || mission != nil {
 		return false, err
 	}
+	savingsTarget, err := r.liveCapacitySavingsTarget(ctx)
+	if err != nil {
+		return false, err
+	}
 	missions, err := r.db.Missions(ctx, r.account.ID)
 	if err != nil {
 		return false, err
@@ -264,7 +275,7 @@ func (r *Runner) manageExpansionAgents(ctx context.Context) (bool, error) {
 			r.wakeBy(dismissAt)
 			continue
 		}
-		if decode[string](r.snapshot, "_capacity_growth_port") == agent.PortID {
+		if decode[string](r.snapshot, "_capacity_growth_port") == agent.PortID || savingsTarget.PortID == agent.PortID {
 			continue
 		}
 		needed := false

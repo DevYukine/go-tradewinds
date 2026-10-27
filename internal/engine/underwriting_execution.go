@@ -386,6 +386,13 @@ func (r *Runner) pricedUnderwriting(policy InsurancePolicy, history []InsuranceP
 }
 
 func (r *Runner) considerUnderwriting(ctx context.Context) (bool, error) {
+	target, err := r.liveCapacitySavingsTarget(ctx)
+	if err != nil {
+		return false, err
+	}
+	if target.PortID != "" {
+		return false, r.hold(ctx, "__underwriting", capacitySavingsReason)
+	}
 	history, owned, err := r.underwritingEvidence(ctx)
 	if err != nil {
 		return false, r.hold(ctx, "__underwriting", err.Error())
@@ -438,6 +445,13 @@ func (r *Runner) driveUnderwriting(ctx context.Context, mission *store.Mission, 
 }
 
 func (r *Runner) underwritingPreflight(ctx context.Context, data *missionData, requestExists bool) error {
+	target, err := r.liveCapacitySavingsTarget(ctx)
+	if err != nil {
+		return err
+	}
+	if target.PortID != "" {
+		return errors.New(capacitySavingsReason)
+	}
 	if data.Underwriting == nil || !data.Underwriting.Decision.Accepted {
 		return errors.New("underwriting has no frozen admitted policy")
 	}

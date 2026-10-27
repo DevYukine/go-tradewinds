@@ -23,6 +23,8 @@ const capacityHistoryWindow = 24 * time.Hour
 
 const capacityNoSpareWorkReason = "capacity growth needs an executable profitable voyage after incumbent commitments"
 
+const capacitySavingsReason = "capacity growth saves for a better hull"
+
 var capacityShipLossReason = fmt.Sprintf("capacity growth waits %.0f real hours after a ship loss", capacityHistoryWindow.Hours())
 
 type CapacityGrowthInput struct {
@@ -130,6 +132,184 @@ func betterCapacityFinancingCandidate(candidate, other GrowthDecision) bool {
 	candidate.Competition = candidate.DepthCompetition
 	other.Competition = other.DepthCompetition
 	return betterCapacityCandidate(candidate, other)
+}
+
+func capacitySavingsMargin(buy, save GrowthDecision, savingsRate float64, lotPence int64) (waitGameDays, margin float64, ok bool) {
+	capital := growthCashTotal(buy.QuotedHullPence, buy.SlippageReservePence, buy.CannonsPence, buy.InitialStoresPence)
+	followupCapital := growthCashTotal(capital, lotPence)
+	buyNet, saveNet := buy.IncrementalNetPencePerGameDay, save.DepthNetPencePerGameDay
+	if savingsRate <= 0 || saveNet <= 0 || save.CashShortfallPence <= 0 || capital <= 0 ||
+		followupCapital == math.MaxInt64 || math.IsNaN(savingsRate) || math.IsInf(savingsRate, 0) ||
+		math.IsNaN(buyNet) || math.IsInf(buyNet, 0) || math.IsNaN(saveNet) || math.IsInf(saveNet, 0) ||
+		savingsRate+buyNet <= 0 || math.IsInf(savingsRate+buyNet, 0) || math.IsInf(savingsRate+saveNet, 0) {
+		return 0, 0, false
+	}
+	waitGameDays = float64(save.CashShortfallPence) / savingsRate
+	buyThenSave := (float64(save.CashShortfallPence) + float64(followupCapital)) / (savingsRate + buyNet)
+	saveThenBuy := waitGameDays + float64(followupCapital)/(savingsRate+saveNet)
+	margin = saveNet*(buyThenSave-waitGameDays) - buyNet*saveThenBuy
+	if math.IsNaN(waitGameDays) || math.IsInf(waitGameDays, 0) || math.IsNaN(margin) || math.IsInf(margin, 0) {
+		return waitGameDays, margin, false
+	}
+	save.IncrementalNetPencePerGameDay = saveNet
+	save.Competition = save.DepthCompetition
+	bestReturn := max(capacityReturn(buy, false), capacityReturn(save, false))
+	buy.competitionComparable = economicallyComparable(capacityReturn(buy, false), bestReturn)
+	save.competitionComparable = economicallyComparable(capacityReturn(save, false), bestReturn)
+	return waitGameDays, margin, margin > 0 && betterCapacityCandidate(save, buy)
+}
+
+type capacitySavingsTarget struct {
+	PortID                  string    `json:"port_id"`
+	HullID                  string    `json:"hull_id"`
+	RequiredPence           int64     `json:"required_pence"`
+	CapitalPence            int64     `json:"capital_pence"`
+	DepthNetPencePerGameDay float64   `json:"depth_net_pence_per_game_day"`
+	DepthPreferenceShips    float64   `json:"depth_preference_ships"`
+	ExpiresAt               time.Time `json:"expires_at"`
+}
+
+func (r *Runner) setCapacitySavingsTarget(ctx context.Context, target capacitySavingsTarget) error {
+	previous := decode[capacitySavingsTarget](r.snapshot, "_capacity_savings_target")
+	if target.PortID == "" {
+		delete(r.snapshot, "_capacity_savings_target")
+	} else {
+		if previous.PortID == target.PortID && previous.HullID == target.HullID &&
+			!previous.ExpiresAt.IsZero() && previous.ExpiresAt.Before(target.ExpiresAt) {
+			target.ExpiresAt = previous.ExpiresAt
+		}
+		r.snapshot["_capacity_savings_target"] = encode(target)
+		r.wakeBy(target.ExpiresAt)
+	}
+	if previous.PortID != target.PortID || previous.HullID != target.HullID {
+		return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	}
+	return nil
+}
+
+func (r *Runner) clearCapacitySavingsAfterBuild(ctx context.Context) error {
+	_, hasTarget := r.snapshot["_capacity_savings_target"]
+	_, hasExpired := r.snapshot["_capacity_savings_expired"]
+	if !hasTarget && !hasExpired {
+		return nil
+	}
+	delete(r.snapshot, "_capacity_savings_target")
+	delete(r.snapshot, "_capacity_savings_expired")
+	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+}
+
+func (r *Runner) liveCapacitySavingsTarget(ctx context.Context) (capacitySavingsTarget, error) {
+	target := decode[capacitySavingsTarget](r.snapshot, "_capacity_savings_target")
+	now := time.Now().UTC()
+	if target.PortID != "" && target.HullID != "" && !target.ExpiresAt.IsZero() && !now.Before(target.ExpiresAt) {
+		expired := decode[map[string]time.Time](r.snapshot, "_capacity_savings_expired")
+		if expired == nil {
+			expired = make(map[string]time.Time)
+		}
+		for key, until := range expired {
+			if !now.Before(until) {
+				delete(expired, key)
+			}
+		}
+		expired[target.PortID+"|"+target.HullID] = target.ExpiresAt.Add(capacityHistoryWindow)
+		r.snapshot["_capacity_savings_expired"] = encode(expired)
+	}
+	if target.PortID == "" || target.HullID == "" || target.CapitalPence <= 0 || target.RequiredPence <= 0 ||
+		target.DepthNetPencePerGameDay <= 0 || math.IsNaN(target.DepthNetPencePerGameDay) ||
+		math.IsInf(target.DepthNetPencePerGameDay, 0) || !now.Before(target.ExpiresAt) {
+		return capacitySavingsTarget{}, r.setCapacitySavingsTarget(ctx, capacitySavingsTarget{})
+	}
+	key := target.PortID + "|" + target.HullID
+	quote, observed := r.stateCache.Quotes[key]
+	if now.Before(decode[map[string]time.Time](r.snapshot, "_growth_build_backoffs")[key]) ||
+		observed && r.fresh("yard_quotes/"+key) && (quote.PortID != target.PortID || quote.ShipClass != target.HullID ||
+			quote.BuildMode != "turnkey_cash" || !quote.Available || quote.TotalCostPence == nil || *quote.TotalCostPence <= 0) {
+		return capacitySavingsTarget{}, r.setCapacitySavingsTarget(ctx, capacitySavingsTarget{})
+	}
+	r.wakeBy(target.ExpiresAt)
+	return target, nil
+}
+
+func (r *Runner) capacitySavingsRate(ctx context.Context, asOf time.Time) (float64, error) {
+	window, err := r.db.EconomicHistoryWindow(ctx, r.account.ID, "", asOf, capacityHistoryWindow)
+	if err != nil {
+		return 0, err
+	}
+	gameDays := capacityHistoryWindow.Seconds() * float64(r.stateCache.Clock.Calendar.TimeScale) / 86_400
+	if gameDays <= 0 || r.stateCache.Clock.Paused {
+		return 0, nil
+	}
+	rate := (float64(window.NetPence) + float64(window.UnknownLossPence)) / gameDays
+	for _, loan := range r.stateCache.Loans {
+		if loan.Status == "active" && loan.Repayment == "amortised" &&
+			loan.BorrowerCompanyID == r.account.CompanyID && loan.InstallmentPence != nil {
+			rate -= float64(*loan.InstallmentPence) / 10
+		}
+	}
+	return rate, nil
+}
+
+func (r *Runner) capacitySavingsWait(ctx context.Context, target capacitySavingsTarget, buy GrowthDecision, available int64, savingsRate float64, lotPence int64) (bool, error) {
+	shortfall := target.RequiredPence - available
+	if shortfall <= 0 {
+		for _, ship := range r.stateCache.Ships {
+			if ship.Ship.Status == "sunk" {
+				continue
+			}
+			if ship.Voyage == nil && (ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") &&
+				ship.Ship.CurrentPortID == target.PortID {
+				return true, nil
+			}
+			if (ship.Voyage != nil || ship.Ship.Status == "sailing") && len(ship.RouteLegs) > 0 &&
+				ship.RouteLegs[len(ship.RouteLegs)-1].ToNode == target.PortID {
+				return true, nil
+			}
+			mission, data, err := r.loadMission(ctx, ship.Ship.ID)
+			if err != nil {
+				return false, err
+			}
+			if mission != nil && mission.Destination == target.PortID && data.Plan.Kind != "maintenance" &&
+				mission.Phase != "done" && mission.Phase != "settled" {
+				return true, nil
+			}
+		}
+		return slices.Contains(r.stateCache.Factors, target.PortID), nil
+	}
+	maxWait := capacityHistoryWindow.Seconds() * float64(r.stateCache.Clock.Calendar.TimeScale) / 86_400
+	if savingsRate <= 0 || math.IsNaN(savingsRate) || math.IsInf(savingsRate, 0) ||
+		float64(shortfall)/savingsRate > maxWait {
+		return false, nil
+	}
+	if !buy.Accepted {
+		return true, nil
+	}
+	save := GrowthDecision{
+		QuotedHullPence: target.CapitalPence, CashShortfallPence: shortfall,
+		DepthNetPencePerGameDay: target.DepthNetPencePerGameDay,
+		DepthCompetition:        CompetitionEvidence{PreferenceShips: target.DepthPreferenceShips},
+	}
+	_, _, wait := capacitySavingsMargin(buy, save, savingsRate, lotPence)
+	return wait, nil
+}
+
+func (r *Runner) holdCapacitySavings(ctx context.Context, target capacitySavingsTarget, buy GrowthDecision, available int64, savingsRate float64) (bool, error) {
+	wait := float64(0)
+	if savingsRate > 0 {
+		wait = float64(max(0, target.RequiredPence-available)) / savingsRate
+	}
+	if err := r.decision(ctx, "", "capacity_savings:"+target.PortID+"|"+target.HullID, capacitySavingsReason, map[string]any{
+		"port_id":                 target.PortID,
+		"hull_id":                 target.HullID,
+		"wait_game_days":          math.Round(wait),
+		"savings_crowns_per_day":  math.Round(savingsRate / 100),
+		"buy_net_crowns_per_day":  math.Round(buy.IncrementalNetPencePerGameDay / 100),
+		"save_net_crowns_per_day": math.Round(target.DepthNetPencePerGameDay / 100),
+		"buy_capital_crowns":      growthCashTotal(buy.QuotedHullPence, buy.SlippageReservePence, buy.CannonsPence, buy.InitialStoresPence) / 100,
+		"save_capital_crowns":     target.CapitalPence / 100,
+	}); err != nil {
+		return false, err
+	}
+	return false, r.hold(ctx, "", capacitySavingsReason)
 }
 
 type capacityIntent struct {
@@ -276,9 +456,14 @@ func (r *Runner) capacityFleetInput(ctx context.Context, evidence *growthEvidenc
 			return input, "capacity growth requires a surviving hull for an unknown-cost shipyard closeout", nil
 		}
 	}
-	deliveries, err := r.db.CapacityDeliveryHistory(ctx, r.account.ID, evidence.asOf)
+	input.LotCashPence, err = r.capacityLotCash(ctx, evidence.asOf)
+	return input, "", err
+}
+
+func (r *Runner) capacityLotCash(ctx context.Context, asOf time.Time) (int64, error) {
+	deliveries, err := r.db.CapacityDeliveryHistory(ctx, r.account.ID, asOf)
 	if err != nil {
-		return input, "", err
+		return 0, err
 	}
 	lots := make([]int64, 0, min(10, len(deliveries)))
 	for _, delivery := range deliveries {
@@ -286,16 +471,16 @@ func (r *Runner) capacityFleetInput(ctx context.Context, evidence *growthEvidenc
 			lots = append(lots, growthCashTotal(delivery.AcquisitionPence, delivery.FeesPence, delivery.ProvisionsPence))
 		}
 	}
-	if len(lots) > 0 {
-		sort.Slice(lots, func(i, j int) bool { return lots[i] < lots[j] })
-		middle := len(lots) / 2
-		input.LotCashPence = lots[middle]
-		if len(lots)%2 == 0 {
-			// Round a half-penny median upward without overflowing the sum.
-			input.LotCashPence = lots[middle-1] + (lots[middle]-lots[middle-1])/2 + (lots[middle]-lots[middle-1])%2
-		}
+	if len(lots) == 0 {
+		return 0, nil
 	}
-	return input, "", nil
+	sort.Slice(lots, func(i, j int) bool { return lots[i] < lots[j] })
+	middle := len(lots) / 2
+	if len(lots)%2 == 0 {
+		// Round a half-penny median upward without overflowing the sum.
+		return lots[middle-1] + (lots[middle]-lots[middle-1])/2 + (lots[middle]-lots[middle-1])%2, nil
+	}
+	return lots[middle], nil
 }
 
 // capacityVoyageRate prices a hull from the planner's expected net. The stress
@@ -413,6 +598,14 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 }
 
 func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvidence) (bool, error) {
+	return r.considerCapacityGrowthAt(ctx, evidence, "", "")
+}
+
+func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthEvidence, portID, hullID string) (bool, error) {
+	savingsTarget, err := r.liveCapacitySavingsTarget(ctx)
+	if err != nil {
+		return false, err
+	}
 	for _, dataset := range []string{"vaults", "ships", "catalog", "clock", "zones", "rates", "factors", "profile", "warehouses", "contracts", "orders", "fills"} {
 		if !r.fresh(dataset) {
 			return r.holdCapacityGrowth(ctx, "capacity growth requires current successful "+dataset+" authority")
@@ -434,9 +627,12 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 	grownFleet := make([]ShipState, len(r.stateCache.Ships)+1)
 	copy(grownFleet, r.stateCache.Ships)
 	buildBackoffs := decode[map[string]time.Time](r.snapshot, "_growth_build_backoffs")
+	expansionAgents := decode[[]expansionAgent](r.snapshot, "_expansion_agents")
+	expiredSavings := decode[map[string]time.Time](r.snapshot, "_capacity_savings_expired")
+	savingsIndex := -1
 	var candidates []capacityCandidate
 	for _, port := range r.stateCache.Catalog.Ports {
-		if !port.HasShipyard || port.Phase > r.stateCache.Clock.UnlockedPhase {
+		if portID != "" && port.ID != portID {
 			continue
 		}
 		present := slices.Contains(r.stateCache.Factors, port.ID)
@@ -444,10 +640,13 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 			present = present || ship.Ship.CurrentPortID == port.ID && ship.Voyage == nil &&
 				(ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead")
 		}
-		if !present {
+		if !present || !port.HasShipyard || port.Phase > r.stateCache.Clock.UnlockedPhase {
 			continue
 		}
 		for _, hull := range r.stateCache.Catalog.ShipClasses {
+			if hullID != "" && hull.ID != hullID {
+				continue
+			}
 			if hull.CanSealDispatches || hull.Phase > r.stateCache.Clock.UnlockedPhase {
 				continue
 			}
@@ -482,6 +681,9 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 				}
 			}
 			candidates = append(candidates, capacityCandidate{port: port, hull: hull, decision: decision, required: required})
+			if savingsTarget.PortID == port.ID && savingsTarget.HullID == hull.ID {
+				savingsIndex = len(candidates) - 1
+			}
 		}
 	}
 	markCapacityCompetition(candidates)
@@ -499,15 +701,150 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 		found = found || decision.Accepted
 		evaluated = true
 	}
-	key := "capacity_growth"
-	if evaluated {
-		key += ":" + bestPort.ID + "|" + bestHull.ID
+	savingsRate := float64(0)
+	if found || savingsTarget.PortID != "" {
+		savingsRate, err = r.capacitySavingsRate(ctx, evidence.asOf)
+		if err != nil {
+			return false, err
+		}
 	}
-	if err := r.decision(ctx, "", key, bestDecision.Reason, bestDecision); err != nil {
-		return false, err
+	if found && savingsIndex >= 0 && candidates[savingsIndex].decision.Accepted {
+		saved := candidates[savingsIndex]
+		// With no remaining wait, A wins when its earning net is at least
+		// B's and it also wins the existing build-time ranking.
+		if bestDecision.IncrementalNetPencePerGameDay < saved.decision.IncrementalNetPencePerGameDay ||
+			!betterCapacityCandidate(bestDecision, saved.decision) {
+			bestPort, bestHull, bestDecision, bestRequired = saved.port, saved.hull, saved.decision, saved.required
+		}
+	}
+	if evaluated || portID == "" {
+		key := "capacity_growth"
+		if evaluated {
+			key += ":" + bestPort.ID + "|" + bestHull.ID
+		}
+		if err := r.decision(ctx, "", key, bestDecision.Reason, bestDecision); err != nil {
+			return false, err
+		}
+	}
+	saveIndex := -1
+	bestMargin, saveWait := float64(0), float64(0)
+	maxWait := capacityHistoryWindow.Seconds() * float64(r.stateCache.Clock.Calendar.TimeScale) / 86_400
+	if found {
+		bestCashReturn := float64(0)
+		for _, candidate := range candidates {
+			if candidate.decision.Accepted {
+				bestCashReturn = max(bestCashReturn, capacityReturn(candidate.decision, false))
+			}
+		}
+		for i := range candidates {
+			candidate := &candidates[i]
+			if candidate.decision.Accepted || !candidate.decision.EconomicallyViable {
+				continue
+			}
+			if until := expiredSavings[candidate.port.ID+"|"+candidate.hull.ID]; time.Now().Before(until) {
+				r.wakeBy(until)
+				continue
+			}
+			agentOnly := slices.ContainsFunc(expansionAgents, func(agent expansionAgent) bool {
+				return agent.PortID == candidate.port.ID
+			})
+			for _, ship := range r.stateCache.Ships {
+				if ship.Voyage == nil && ship.Ship.CurrentPortID == candidate.port.ID &&
+					(ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") {
+					agentOnly = false
+					break
+				}
+			}
+			if agentOnly {
+				continue
+			}
+			buy, save := bestDecision, candidate.decision
+			earningBenchmark := max(bestCashReturn, capacityReturn(save, false))
+			buy.competitionComparable = economicallyComparable(capacityReturn(buy, false), earningBenchmark)
+			save.competitionComparable = economicallyComparable(capacityReturn(save, false), earningBenchmark)
+			if !betterCapacityCandidate(save, buy) {
+				continue
+			}
+			save.IncrementalNetPencePerGameDay = save.DepthNetPencePerGameDay
+			save.Competition = save.DepthCompetition
+			// Keep the band anchored to the economic best, not only the
+			// lower-competition affordable hull selected within that band.
+			benchmark := max(bestCashReturn, capacityReturn(save, false))
+			buy.competitionComparable = economicallyComparable(capacityReturn(buy, false), benchmark)
+			save.competitionComparable = economicallyComparable(capacityReturn(save, false), benchmark)
+			if !betterCapacityCandidate(save, buy) {
+				continue
+			}
+			wait, margin, shouldSave := capacitySavingsMargin(bestDecision, candidate.decision, savingsRate, input.LotCashPence)
+			if shouldSave && wait <= maxWait && margin > bestMargin {
+				saveIndex, bestMargin, saveWait = i, margin, wait
+			}
+		}
+	}
+	if saveIndex >= 0 {
+		save := candidates[saveIndex]
+		capital := growthCashTotal(save.decision.QuotedHullPence, save.decision.SlippageReservePence, save.decision.CannonsPence, save.decision.InitialStoresPence)
+		savingsTarget = capacitySavingsTarget{
+			PortID: save.port.ID, HullID: save.hull.ID,
+			RequiredPence: growthCashTotal(evidence.available, save.decision.CashShortfallPence),
+			CapitalPence:  capital, DepthNetPencePerGameDay: save.decision.DepthNetPencePerGameDay,
+			DepthPreferenceShips: save.decision.DepthCompetition.PreferenceShips,
+			ExpiresAt:            evidence.asOf.Add(time.Duration(min(maxWait, 1.25*saveWait) * 86_400 / float64(r.stateCache.Clock.Calendar.TimeScale) * float64(time.Second))),
+		}
+		r.snapshot["_capacity_growth_port"] = encode("")
+		if err := r.setCapacitySavingsTarget(ctx, savingsTarget); err != nil {
+			return false, err
+		}
+		if changed, err := r.considerCapacitySavingsFinancing(ctx, bestDecision, &save, savingsRate, input.FleetSize, evidence); changed || err != nil {
+			return changed, err
+		}
+		return r.holdCapacitySavings(ctx, savingsTarget, bestDecision, evidence.available, savingsRate)
+	}
+	savingsHold := false
+	selectedSavingsHull := found && bestPort.ID == savingsTarget.PortID && bestHull.ID == savingsTarget.HullID
+	if savingsTarget.PortID != "" {
+		if savingsIndex < 0 {
+			savingsHold, err = r.capacitySavingsWait(ctx, savingsTarget, bestDecision, evidence.available, savingsRate, input.LotCashPence)
+			if err != nil {
+				return false, err
+			}
+		} else if !found {
+			save := candidates[savingsIndex]
+			agentOnly := slices.ContainsFunc(expansionAgents, func(agent expansionAgent) bool {
+				return agent.PortID == save.port.ID
+			})
+			for _, ship := range r.stateCache.Ships {
+				if ship.Voyage == nil && ship.Ship.CurrentPortID == save.port.ID &&
+					(ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") {
+					agentOnly = false
+					break
+				}
+			}
+			if !agentOnly && save.decision.EconomicallyViable && save.decision.CashShortfallPence > 0 &&
+				save.decision.DepthNetPencePerGameDay > 0 && savingsRate > 0 &&
+				!math.IsNaN(savingsRate) && !math.IsInf(savingsRate, 0) {
+				wait := float64(save.decision.CashShortfallPence) / savingsRate
+				if wait <= maxWait {
+					savingsTarget.RequiredPence = growthCashTotal(evidence.available, save.decision.CashShortfallPence)
+					savingsTarget.CapitalPence = growthCashTotal(save.decision.QuotedHullPence, save.decision.SlippageReservePence, save.decision.CannonsPence, save.decision.InitialStoresPence)
+					savingsTarget.DepthNetPencePerGameDay = save.decision.DepthNetPencePerGameDay
+					savingsTarget.DepthPreferenceShips = save.decision.DepthCompetition.PreferenceShips
+					savingsTarget.ExpiresAt = evidence.asOf.Add(time.Duration(min(maxWait, 1.25*wait) * 86_400 / float64(r.stateCache.Clock.Calendar.TimeScale) * float64(time.Second)))
+					if err := r.setCapacitySavingsTarget(ctx, savingsTarget); err != nil {
+						return false, err
+					}
+					savingsHold = true
+				}
+			}
+		}
+		if !savingsHold && !selectedSavingsHull {
+			if err := r.setCapacitySavingsTarget(ctx, capacitySavingsTarget{}); err != nil {
+				return false, err
+			}
+		}
 	}
 	target := ""
-	if found {
+	if found && !savingsHold && !selectedSavingsHull {
 		target = bestPort.ID
 	}
 	if decode[string](r.snapshot, "_capacity_growth_port") != target {
@@ -516,17 +853,26 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 			return false, err
 		}
 	}
-	if !found && evaluated && bestDecision.EconomicallyViable {
-		changed, err := r.considerCapacityFinancing(ctx, bestPort, bestHull, bestDecision, bestRequired, evidence)
-		if changed || err != nil {
-			return changed, err
+	if !found && portID == "" {
+		if savingsHold && savingsIndex >= 0 {
+			save := &candidates[savingsIndex]
+			if changed, err := r.considerCapacitySavingsFinancing(ctx, GrowthDecision{}, save, savingsRate, input.FleetSize, evidence); changed || err != nil {
+				return changed, err
+			}
+		} else if !savingsHold && evaluated && bestDecision.EconomicallyViable {
+			if changed, err := r.considerCapacityFinancing(ctx, bestPort, bestHull, bestDecision, bestRequired, evidence); changed || err != nil {
+				return changed, err
+			}
 		}
+	}
+	if savingsHold {
+		return r.holdCapacitySavings(ctx, savingsTarget, bestDecision, evidence.available, savingsRate)
 	}
 	if !found {
 		if err := r.hold(ctx, "", bestDecision.Reason); err != nil {
 			return false, err
 		}
-		if r.opts.Execute && canExpand {
+		if r.opts.Execute && canExpand && portID == "" {
 			return r.considerExpansionAgent(ctx)
 		}
 		return false, nil
@@ -542,7 +888,12 @@ func (r *Runner) considerCapacityGrowth(ctx context.Context, evidence *growthEvi
 			return false, r.hold(ctx, "", "capacity growth waits for completed regional yard funding")
 		}
 	}
-	return r.startCapacityGrowth(ctx, bestPort, bestHull, bestDecision, nil)
+	changed, err := r.startCapacityGrowth(ctx, bestPort, bestHull, bestDecision, nil)
+	if changed && err == nil && selectedSavingsHull {
+		r.snapshot["_capacity_growth_port"] = encode(bestPort.ID)
+		err = r.setCapacitySavingsTarget(ctx, capacitySavingsTarget{})
+	}
+	return changed, err
 }
 
 func (r *Runner) startCapacityGrowth(ctx context.Context, port Port, hull Hull, decision GrowthDecision, financing *capacityFinancing) (bool, error) {
@@ -572,9 +923,12 @@ func (r *Runner) startCapacityGrowth(ctx context.Context, port Port, hull Hull, 
 		mission.Phase = "growth_finance"
 		return true, r.saveMission(ctx, mission, &data)
 	}
-	return true, r.stage(ctx, mission, &data, ShipState{}, "build", "/v1/shipyard/build-ship", map[string]any{
+	if err := r.stage(ctx, mission, &data, ShipState{}, "build", "/v1/shipyard/build-ship", map[string]any{
 		"port_id": port.ID, "name": name, "ship_class": hull.ID, "build_mode": "turnkey_cash",
-	})
+	}); err != nil {
+		return false, err
+	}
+	return data.Action != nil, nil
 }
 
 func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) error {
@@ -777,7 +1131,15 @@ func (r *Runner) driveCapacityGrowth(ctx context.Context, ship ShipState, missio
 }
 
 func (r *Runner) recordGrowthBuildRefusal(ctx context.Context, data *missionData) error {
-	backoffs := decode[map[string]time.Time](r.snapshot, "_growth_build_backoffs")
+	target := decode[capacitySavingsTarget](r.snapshot, "_capacity_savings_target")
+	if target.PortID == data.BuildPort && target.HullID == data.BuildClass {
+		delete(r.snapshot, "_capacity_savings_target")
+	}
+	return r.recordGrowthBackoff(ctx, "_growth_build_backoffs", data)
+}
+
+func (r *Runner) recordGrowthBackoff(ctx context.Context, snapshotKey string, data *missionData) error {
+	backoffs := decode[map[string]time.Time](r.snapshot, snapshotKey)
 	if backoffs == nil {
 		backoffs = make(map[string]time.Time)
 	}
@@ -789,6 +1151,6 @@ func (r *Runner) recordGrowthBuildRefusal(ctx context.Context, data *missionData
 	}
 	key := data.BuildPort + "|" + data.BuildClass
 	backoffs[key] = maxTime(backoffs[key], now.Add(6*time.Hour))
-	r.snapshot["_growth_build_backoffs"] = encode(backoffs)
+	r.snapshot[snapshotKey] = encode(backoffs)
 	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
 }

@@ -504,8 +504,11 @@ func TestLoanCapacityTooSmallLienCreatesNoBorrowingIntent(t *testing.T) {
 	if changed, err := runner.considerCapacityFinancing(h.ctx, port, hull, decision, required, evidence); err != nil || changed {
 		t.Fatalf("refusal backoff created another borrowing intent: %t, %v", changed, err)
 	}
-	if h.api.mutationCount("/v1/loan/quote") != 1 || !time.Now().Before(decode[map[string]time.Time](runner.snapshot, "_growth_build_backoffs")[port.ID+"|"+hull.ID]) {
-		t.Fatal("refused lien was repeatedly quoted without the yard/hull backoff")
+	key := port.ID + "|" + hull.ID
+	if h.api.mutationCount("/v1/loan/quote") != 1 ||
+		!time.Now().Before(decode[map[string]time.Time](runner.snapshot, "_capacity_financing_backoffs")[key]) ||
+		time.Now().Before(decode[map[string]time.Time](runner.snapshot, "_growth_build_backoffs")[key]) {
+		t.Fatal("refused lien did not retain a financing-only yard/hull backoff")
 	}
 }
 
@@ -902,6 +905,7 @@ func TestLoanCapacityServerInstallmentRoundingRequotesOnceWithoutBackoff(t *test
 	needed := decision.CashShortfallPence + 2**quote.InstallmentPence
 	if quote.PrincipalPence == estimated || quote.PrincipalPence < needed || quote.PrincipalPence-needed > 2 ||
 		h.api.mutationCount("/v1/loan/quote") != 2 ||
+		time.Now().Before(decode[map[string]time.Time](runner.snapshot, "_capacity_financing_backoffs")[port.ID+"|"+hull.ID]) ||
 		time.Now().Before(decode[map[string]time.Time](runner.snapshot, "_growth_build_backoffs")[port.ID+"|"+hull.ID]) {
 		t.Fatalf("corrected principal, bounded requote or refusal backoff is wrong: quote %+v, estimated %d", quote, estimated)
 	}
