@@ -15,9 +15,12 @@ import (
 )
 
 const (
-	sourcingRouteRetentionLimit     = 256
-	sourcingRouteRetentionBytes     = 1 << 20
-	sourcingRouteRetentionScanLimit = 4 * sourcingRouteRetentionLimit
+	// SourcingRouteRetentionLimit caps optional route history in live and replay snapshots.
+	SourcingRouteRetentionLimit = 256
+	// SourcingRouteRetentionBytes includes escaped route and metadata map entries.
+	SourcingRouteRetentionBytes = 1 << 20
+	// SourcingRouteRetentionScanLimit bounds newest-first optional history scanning.
+	SourcingRouteRetentionScanLimit = 4 * SourcingRouteRetentionLimit
 	snapshotSafetyMargin            = 64 << 10
 )
 
@@ -231,6 +234,7 @@ func (r *Runner) finishGroup(group string, values map[string]json.RawMessage, ke
 }
 
 func (r *Runner) refresh(ctx context.Context) error {
+	r.passStart = time.Now().UTC()
 	previousIdle := PlanningInput{
 		Clock:    decode[Clock](r.snapshot, "clock"),
 		Metadata: decode[map[string]DatasetMeta](r.snapshot, "_meta"),
@@ -506,6 +510,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 	r.finishGroup("ship_details", details, shipKeys)
 	r.finishGroup("inventory", inventories, inventoryKeys)
 	r.finishGroup("ports", ports, portKeys)
+	r.replayPorts = ports
 	r.finishGroup("books", markets, bookKeys)
 	r.finishGroup("yard_quotes", quotes, quoteKeys)
 	// Exploratory captures, including expired illegal pairs, share the
@@ -810,7 +815,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 	var retainedRouteKeys []string
 	retainedBytes := 0
 	for checked, key := range historyKeys {
-		if checked >= sourcingRouteRetentionScanLimit || len(retainedRouteKeys) >= sourcingRouteRetentionLimit {
+		if checked >= SourcingRouteRetentionScanLimit || len(retainedRouteKeys) >= SourcingRouteRetentionLimit {
 			break
 		}
 		if err := ctx.Err(); err != nil {
@@ -854,7 +859,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 		// Include both route and metadata map entries, with JSON escaping.
 		size := len(encode(routes[key])) + len(encode(r.meta["routes/"+key])) +
 			len(encode(key)) + len(encode("routes/"+key)) + 4
-		if size > sourcingRouteRetentionBytes-retainedBytes {
+		if size > SourcingRouteRetentionBytes-retainedBytes {
 			continue
 		}
 		routeKeys = append(routeKeys, key)
@@ -871,6 +876,22 @@ func (r *Runner) refresh(ctx context.Context) error {
 	}
 	if err := r.recordMarques(ctx); err != nil {
 		return err
+	}
+	r.refreshCompetition(ctx)
+	if scale := r.stateCache.Clock.Calendar.TimeScale; scale > 0 {
+		window := time.Duration(charterTaperWindowGameDays*24*int64(time.Hour)) / time.Duration(scale)
+		proceeds, err := r.db.CharterProceedsSince(ctx, r.account.ID, time.Now().Add(-window))
+		if err != nil {
+			return err
+		}
+		r.charterProceedsPence = proceeds
+	}
+	delete(r.snapshot, "_competition")
+	delete(r.snapshot, "_charter_proceeds")
+	for _, keys := range [][]string{replayPassRunnerKeys, replaySweepRunnerKeys} {
+		for _, key := range keys {
+			delete(r.meta, key)
+		}
 	}
 	r.snapshot["_meta"] = encode(r.meta)
 	// Redaction can expand short sensitive values, so use the store's exact
@@ -912,17 +933,8 @@ func (r *Runner) refresh(ctx context.Context) error {
 	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
 		return err
 	}
-	r.refreshCompetition(ctx)
 	r.stateCache = r.state()
 	r.stateCache.Markets = withoutOwnOrders(r.stateCache.Markets, r.ownedOrders())
-	if scale := r.stateCache.Clock.Calendar.TimeScale; scale > 0 {
-		window := time.Duration(charterTaperWindowGameDays*24*int64(time.Hour)) / time.Duration(scale)
-		proceeds, err := r.db.CharterProceedsSince(ctx, r.account.ID, time.Now().Add(-window))
-		if err != nil {
-			return err
-		}
-		r.charterProceedsPence = proceeds
-	}
 	return r.recordBalances(ctx)
 }
 

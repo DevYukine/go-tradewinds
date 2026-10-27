@@ -165,6 +165,8 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 					MaxPaybackDays:      cfg.MaxPaybackDays,
 					CapacityPaybackDays: cfg.CapacityPaybackDays,
 					MarquesEnabled:      cfg.MarquesEnabled,
+					ReplayRetentionDays: cfg.ReplayRetentionDays,
+					ReplayMaxGiB:        cfg.ReplayMaxGiB,
 				})
 				runners = append(runners, accountRunner{runner: runner, log: engineLog})
 			}
@@ -192,7 +194,7 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
-				prunePeriodically(ctx, db, log.Named("store"))
+				prunePeriodically(ctx, db, log.Named("store"), cfg)
 			}()
 			workers.Add(1)
 			go func() {
@@ -226,12 +228,30 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 	})
 }
 
-func prunePeriodically(ctx context.Context, db *store.Store, log *zap.Logger) {
+func prunePeriodically(ctx context.Context, db *store.Store, log *zap.Logger, cfg config.Config) {
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	for {
 		if err := db.Prune(ctx); err != nil && ctx.Err() == nil {
 			log.Warn("retention failed", zap.Error(err))
+		}
+		if cfg.ReplayRetentionDays > 0 {
+			retention := time.Duration(cfg.ReplayRetentionDays) * 24 * time.Hour
+			cutoff, err := db.PruneReplay(ctx, retention, int64(cfg.ReplayMaxGiB*(1<<30)))
+			if err != nil && ctx.Err() == nil {
+				log.Warn("replay retention failed", zap.Error(err))
+			} else if err == nil {
+				if cutoff.After(time.Now().UTC().Add(-retention + time.Second)) {
+					log.Warn("replay byte cap forced a younger cutoff", zap.Time("cutoff", cutoff))
+				}
+				stored, daily, physical, err := db.ReplayBytes(ctx)
+				if err != nil && ctx.Err() == nil {
+					log.Warn("replay size measurement failed", zap.Error(err))
+				} else if err == nil {
+					log.Info("replay storage", zap.Int64("stored_bytes", stored),
+						zap.Int64("daily_replay_bytes", daily), zap.Int64("physical_bytes", physical))
+				}
+			}
 		}
 		select {
 		case <-ctx.Done():

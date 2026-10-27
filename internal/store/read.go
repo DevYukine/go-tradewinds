@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
@@ -264,5 +265,14 @@ func (s *Store) ServiceStats(ctx context.Context) (ServiceStats, error) {
 		}
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err == nil {
+		s.replayErrors.Range(func(key, value any) bool {
+			stats.Counters = append(stats.Counters, Metric{
+				AccountID: key.(string), Name: "replay_record_errors_total",
+				Value: float64(value.(*atomic.Int64).Load()), RecordedAt: time.Now().UTC(),
+			})
+			return true
+		})
+	}
 	return stats, err
 }

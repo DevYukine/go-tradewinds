@@ -22,6 +22,8 @@ type Config struct {
 	MaxPaybackDays      float64
 	CapacityPaybackDays float64
 	MarquesEnabled      bool
+	ReplayRetentionDays int
+	ReplayMaxGiB        float64
 }
 
 func Load() (Config, error) {
@@ -70,6 +72,14 @@ func Load() (Config, error) {
 	cfg.MarquesEnabled, err = strconv.ParseBool(env("MARQUES_ENABLED", "false"))
 	if err != nil {
 		return cfg, errors.New("MARQUES_ENABLED must be true or false")
+	}
+	cfg.ReplayRetentionDays, err = strconv.Atoi(env("REPLAY_RETENTION_DAYS", "90"))
+	if err != nil || cfg.ReplayRetentionDays < 0 || cfg.ReplayRetentionDays > 106751 {
+		return cfg, errors.New("REPLAY_RETENTION_DAYS must be an integer within [0, 106751]; 0 disables recording and pruning")
+	}
+	cfg.ReplayMaxGiB, err = strconv.ParseFloat(env("REPLAY_MAX_GIB", "20"), 64)
+	if err != nil || math.IsNaN(cfg.ReplayMaxGiB) || math.IsInf(cfg.ReplayMaxGiB, 0) || cfg.ReplayMaxGiB <= 0 || cfg.ReplayMaxGiB >= float64(math.MaxInt64)/(1<<30) {
+		return cfg, errors.New("REPLAY_MAX_GIB must be a positive finite number below 8589934592")
 	}
 	return cfg, nil
 }

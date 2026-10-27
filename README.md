@@ -59,9 +59,12 @@ Open **http://127.0.0.1:3400**. The Go API listens on **127.0.0.1:8585**. The da
 go run ./cmd/tradewinds help
 go run ./cmd/tradewinds accounts
 go run ./cmd/tradewinds register --handle AnotherHandle --company "Another company" --home london
+go run ./cmd/tw-sim backfill --account Yukine
 ```
 
 Additional account creation is explicit. `run` starts an independent worker for each enabled, fully registered database account. Company ownership locks prevent competing executors; the request limiter also coordinates the shared public IP within the process.
+
+Live passes also produce an encrypted, deduplicated replay tape. `REPLAY_RETENTION_DAYS` defaults to 90 real days (`0` disables recording and pruning); `REPLAY_MAX_GIB` defaults to 20 GiB. `tw-sim backfill` imports surviving diagnostics for one account without game requests. Rerunning it adds no duplicate frames or payloads. It does not implement a simulator, `run`, or `validate`. See [Replay recording](docs/runbook.md#replay-recording) for coverage, storage limits and backup/restore requirements.
 
 ## Checks
 

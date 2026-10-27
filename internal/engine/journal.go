@@ -126,7 +126,11 @@ func (r *Runner) stageAction(ctx context.Context, mission *store.Mission, data *
 	if stage == "depart" {
 		data.FirstArrivalETA = time.Time{}
 	}
-	return r.saveMission(ctx, mission, data)
+	if err := r.saveMission(ctx, mission, data); err != nil {
+		return err
+	}
+	r.replayLink(ctx, mission, data)
+	return nil
 }
 
 func (r *Runner) saveMission(ctx context.Context, mission *store.Mission, data *missionData) error {
@@ -138,7 +142,11 @@ func (r *Runner) saveMission(ctx context.Context, mission *store.Mission, data *
 		return err
 	}
 	mission.Data = payload
-	return r.db.PutMission(ctx, mission)
+	if err := r.db.PutMission(ctx, mission); err != nil {
+		return err
+	}
+	r.replayPlan(ctx, mission, data)
+	return nil
 }
 
 func (r *Runner) stagedFundsValid(action *durableAction) bool {

@@ -81,11 +81,11 @@ func TestRouteRetentionReviewBoundsMultiOriginHistory(t *testing.T) {
 			}
 			w.observe(t, runner, 101)
 			retained := decode[map[string]json.RawMessage](runner.snapshot, "routes")
-			if len(retained) == 0 || len(retained) > sourcingRouteRetentionLimit {
+			if len(retained) == 0 || len(retained) > SourcingRouteRetentionLimit {
 				t.Fatalf("retained route count is not bounded: %d", len(retained))
 			}
-			if padding == 0 && len(retained) != sourcingRouteRetentionLimit {
-				t.Fatalf("count cap retained %d routes, want %d", len(retained), sourcingRouteRetentionLimit)
+			if padding == 0 && len(retained) != SourcingRouteRetentionLimit {
+				t.Fatalf("count cap retained %d routes, want %d", len(retained), SourcingRouteRetentionLimit)
 			}
 			if _, exists := retained[unrelatedKey]; exists {
 				t.Fatal("retention kept ordinary geometry unrelated to a public source")
@@ -100,7 +100,7 @@ func TestRouteRetentionReviewBoundsMultiOriginHistory(t *testing.T) {
 				}
 				bytes += len(encode(value)) + len(encode(meta)) + len(encode(key)) + len(encode("routes/"+key)) + 4
 			}
-			if bytes > sourcingRouteRetentionBytes || len(encode(runner.snapshot)) >= storeSnapshotBudgetBytes {
+			if bytes > SourcingRouteRetentionBytes || len(encode(runner.snapshot)) >= storeSnapshotBudgetBytes {
 				t.Fatalf("retained history exceeded its byte or snapshot budget: retention=%d snapshot=%d", bytes, len(encode(runner.snapshot)))
 			}
 			sort.Strings(keys)
@@ -210,7 +210,7 @@ func TestRouteRetentionReviewExpiredIllegalPairsShareGETBudget(t *testing.T) {
 			route := sourcingRoute(pair[0], pair[1], 24)
 			route.Legs[0].EdgeClass = "oceanic"
 			routes[key] = encode(route)
-			runner.meta["routes/"+key] = DatasetMeta{UpdatedAt: time.Now().Add(-routeGeometryTTL - time.Minute), Complete: true}
+			runner.meta["routes/"+key] = DatasetMeta{UpdatedAt: time.Now().Add(-RouteGeometryTTL - time.Minute), Complete: true}
 		}
 	}
 	runner.snapshot["routes"] = encode(routes)
@@ -364,7 +364,7 @@ func TestRouteRetentionReviewRejectedLegalExplorationSharesHistoryCap(t *testing
 		bytes += len(encode(raw)) + len(encode(runner.meta["routes/"+key])) +
 			len(encode(key)) + len(encode("routes/"+key)) + 4
 	}
-	if optional == 0 || bytes > sourcingRouteRetentionBytes {
+	if optional == 0 || bytes > SourcingRouteRetentionBytes {
 		t.Fatalf("seen-but-rejected legal pairs bypassed optional history accounting: entries=%d bytes=%d", optional, bytes)
 	}
 }
@@ -395,7 +395,7 @@ func TestRouteRetentionReviewCommittedPairsPrecedeExplorationBudget(t *testing.T
 		for _, pair := range [][2]string{{candidate.Destination, recoveryFarPort}, {recoveryFarPort, candidate.Destination}} {
 			key := "routes/" + routeKey(pair[0], pair[1], recoveryHull)
 			meta := runner.meta[key]
-			meta.UpdatedAt = time.Now().Add(-routeGeometryTTL - time.Minute)
+			meta.UpdatedAt = time.Now().Add(-RouteGeometryTTL - time.Minute)
 			runner.meta[key] = meta
 		}
 	}

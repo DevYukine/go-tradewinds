@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,19 @@ import (
 )
 
 func TestPrivateGrowthMigrationExplicitlyClosesLegacyAllocationWithoutChangingRecovery(t *testing.T) {
+	entries, err := migrations.ReadDir("migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var currentVersion int64
+	for _, entry := range entries {
+		prefix, _, _ := strings.Cut(entry.Name(), "_")
+		version, err := strconv.ParseInt(prefix, 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		currentVersion = max(currentVersion, version)
+	}
 	for _, phase := range []string{"growth_build", "growth_refit"} {
 		for _, lane := range []string{"absent", "null", "existing"} {
 			t.Run(phase+"/"+lane, func(t *testing.T) {
@@ -101,7 +116,7 @@ func TestPrivateGrowthMigrationExplicitlyClosesLegacyAllocationWithoutChangingRe
 				}
 				defer database.Close()
 				var version int64
-				if err := database.db.Raw("SELECT MAX(version_id) FROM goose_db_version WHERE is_applied").Scan(&version).Error; err != nil || version != 8 {
+				if err := database.db.Raw("SELECT MAX(version_id) FROM goose_db_version WHERE is_applied").Scan(&version).Error; err != nil || version != currentVersion {
 					t.Fatalf("growth upgrade did not complete all current migrations: %d, %v", version, err)
 				}
 				loaded, err := database.GetMission(ctx, accountID, original.ShipID)

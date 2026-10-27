@@ -14,7 +14,8 @@ import (
 
 const maximumPence int64 = 1_000_000_000_000
 
-const routeGeometryTTL = 24 * time.Hour
+// RouteGeometryTTL is the retained lifetime for live and replay route geometry.
+const RouteGeometryTTL = 24 * time.Hour
 
 // DepthFill is executable at LimitPence or better, before buyer-only customs.
 type DepthFill struct {
@@ -238,7 +239,7 @@ func (in PlanningInput) fresh(dataset string) bool {
 	// Public geometry and hull-derived provisions do not change with each
 	// observation. Refresh invalidates them when the unlocked phase changes.
 	if strings.HasPrefix(dataset, "routes/") {
-		return in.Now.Sub(meta.UpdatedAt) <= routeGeometryTTL
+		return in.Now.Sub(meta.UpdatedAt) <= RouteGeometryTTL
 	}
 	if (in.Generation != "" && meta.Generation != in.Generation) || in.Now.Sub(meta.UpdatedAt) > 2*time.Minute {
 		return false

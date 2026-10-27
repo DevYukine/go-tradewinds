@@ -23,6 +23,8 @@ type Options struct {
 	MaxPaybackDays      float64
 	CapacityPaybackDays float64
 	MarquesEnabled      bool
+	ReplayRetentionDays int
+	ReplayMaxGiB        float64
 }
 
 type decisionFingerprint struct {
@@ -47,6 +49,9 @@ type Runner struct {
 	meta                   map[string]DatasetMeta
 	stateCache             accountState
 	generation             string
+	passStart              time.Time
+	replay                 *replayRecorder
+	replayPorts            map[string]json.RawMessage
 	holding                []currentHold
 	assessedShipIDs        []string
 	assessedHoldIDs        map[string]bool
@@ -150,6 +155,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	defer release()
 	ctx = owner
+	defer r.stopReplay(ctx)
 	r.api.SetObserver(func(method, path string, status int, duration time.Duration, request, response []byte, errText string) {
 		r.observeRequest(ctx, method, path, status, duration, request, response, errText)
 	})
@@ -167,6 +173,24 @@ func (r *Runner) Run(ctx context.Context) error {
 	r.expenseOwners = decode[map[string]string](r.snapshot, "_expense_allocations")
 	if r.expenseOwners == nil {
 		r.expenseOwners = make(map[string]string)
+	}
+	if recorder := r.startReplay(ctx); recorder != nil {
+		missions, err := r.db.Missions(ctx, r.account.ID)
+		if err != nil {
+			r.replayError(recorder, errors.New("persisted mission replay evidence is unavailable"))
+		} else {
+			recorder.importing = true
+			for i := range missions {
+				var data missionData
+				if err := json.Unmarshal(missions[i].Data, &data); err != nil {
+					r.replayError(recorder, errors.New("persisted mission replay data could not be decoded"))
+					continue
+				}
+				r.replayPlan(ctx, &missions[i], &data)
+				r.replayLink(ctx, &missions[i], &data)
+			}
+			recorder.importing = false
+		}
 	}
 	messages := make(chan streamMessage, 256)
 	publishedControl := &r.publishedControl
@@ -281,6 +305,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			if err := r.db.RecordEvent(ctx, r.account.ID, event.ID, event.Type, event.Data); err != nil {
 				return err
 			}
+			r.replayEvent(ctx, event.ID, event.Type, event.Data)
 			backoff = time.Second
 			if streamDegraded {
 				r.log.Info("event stream reconnected")
@@ -316,6 +341,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			reconnectAt = time.Time{}
 		}
 		r.generation = uuid.NewString()
+		r.passStart = time.Now().UTC()
 		captureControl := handledControl
 		captureFinancial := handledFinancial
 		r.capturedControl = captureControl
@@ -393,6 +419,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			Generation: r.generation, AttemptedAt: observedAt,
 			UpdatedAt: observedAt, Complete: true,
 		}
+		r.flushReplay(ctx, observedAt)
 		r.snapshot["_meta"] = encode(r.meta)
 		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
 			return err

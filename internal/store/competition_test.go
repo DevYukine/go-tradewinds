@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -153,7 +154,7 @@ func TestPostgresCompetitionIsAccountScopedAndUsesSourceTime(t *testing.T) {
 	if !result.OwnCompaniesComplete || *region.ForeignShips != 1 || region.TopCompetitors[0].Name != "Rival" || region.Ports[1].ForeignShips != nil {
 		t.Fatalf("account scope, own exclusion or upstream replay filter failed: %+v", result)
 	}
-	input, err := database.CompetitionActivityInput(ctx, "one", at)
+	input, err := database.CompetitionActivityInput(ctx, "one", at, json.RawMessage(`{"company":{"id":"company-one","name":"Our fleet"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,5 +227,33 @@ func TestPostgresCompetitionBoundsEventsAndScrubsDisplayText(t *testing.T) {
 	}
 	if strings.Contains(port.Ships[0].ShipName, credentials.APIKey) || !strings.Contains(port.Ships[0].ShipName, redacted) {
 		t.Fatalf("competition display did not scrub stored credentials")
+	}
+}
+
+func TestCompetitionActivityUsesCurrentProfileBeforeSnapshotSave(t *testing.T) {
+	database, _, _ := integrationStore(t)
+	ctx := context.Background()
+	saveTestAccount(t, database, "current")
+	saveTestAccount(t, database, "other")
+	profile := json.RawMessage(`{"company":{"id":"company-current","name":"Our current fleet"}}`)
+	other := json.RawMessage(`{"company":{"id":"company-other","name":"Our other fleet"}}`)
+	if err := database.SaveSnapshot(ctx, "other", map[string]json.RawMessage{"profile": other}); err != nil {
+		t.Fatal(err)
+	}
+	input, err := database.CompetitionActivityInput(ctx, "current", time.Now().UTC(), profile)
+	if err != nil || !input.OwnCompaniesComplete || !slices.Equal(input.OwnCompanies, []string{"Our current fleet", "Our other fleet"}) {
+		t.Fatalf("current in-memory identity was lost before snapshot save: %+v, %v", input, err)
+	}
+	wrong := json.RawMessage(`{"company":{"id":"company-other","name":"Wrong current fleet"}}`)
+	input, err = database.CompetitionActivityInput(ctx, "current", time.Now().UTC(), wrong)
+	if err != nil || input.OwnCompaniesComplete {
+		t.Fatalf("mismatched current company became complete evidence: %+v, %v", input, err)
+	}
+	if err := database.SaveSnapshot(ctx, "other", map[string]json.RawMessage{}); err != nil {
+		t.Fatal(err)
+	}
+	input, err = database.CompetitionActivityInput(ctx, "current", time.Now().UTC(), profile)
+	if err != nil || input.OwnCompaniesComplete {
+		t.Fatalf("current profile hid missing evidence for another configured account: %+v, %v", input, err)
 	}
 }

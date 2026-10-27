@@ -54,3 +54,47 @@ func TestCapacityGrowthConfiguration(t *testing.T) {
 		})
 	}
 }
+
+func TestReplayConfigurationLimits(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		days  string
+		gib   string
+		valid bool
+	}{
+		{name: "defaults", valid: true},
+		{name: "disabled", days: "0", valid: true},
+		{name: "fractional GiB", days: "30", gib: "0.5", valid: true},
+		{name: "negative days", days: "-1"},
+		{name: "fractional days", days: "0.5"},
+		{name: "duration overflow", days: "106752"},
+		{name: "zero cap", gib: "0"},
+		{name: "negative cap", gib: "-1"},
+		{name: "NaN cap", gib: "NaN"},
+		{name: "infinite cap", gib: "+Inf"},
+		{name: "cap overflow", gib: "8589934592"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://localhost/replay_config_test")
+			t.Setenv("CREDENTIAL_KEY", base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))))
+			t.Setenv("REPLAY_RETENTION_DAYS", test.days)
+			t.Setenv("REPLAY_MAX_GIB", test.gib)
+			cfg, err := Load()
+			if !test.valid {
+				if err == nil {
+					t.Fatal("invalid replay settings accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.name == "defaults" && (cfg.ReplayRetentionDays != 90 || cfg.ReplayMaxGiB != 20) {
+				t.Fatalf("replay defaults: %+v", cfg)
+			}
+			if test.name == "disabled" && cfg.ReplayRetentionDays != 0 {
+				t.Fatal("zero retention did not disable replay")
+			}
+		})
+	}
+}

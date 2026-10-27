@@ -26,7 +26,7 @@ func (s *Store) Competition(ctx context.Context, accountID string, at time.Time)
 	defer cancel()
 	var result CompetitionSummary
 	err := db.Transaction(func(tx *gorm.DB) error {
-		if err := competitionOwners(tx, &input); err != nil {
+		if err := competitionOwners(tx, &input, nil); err != nil {
 			return err
 		}
 		scrubber := displayScrubber{store: s, tx: tx}
@@ -68,23 +68,24 @@ func (s *Store) Competition(ctx context.Context, accountID string, at time.Time)
 }
 
 // CompetitionActivityInput loads bounded local activity and owner-name
-// projections only. Trading already has catalog, ports and metadata in memory;
-// it must not run the dashboard transaction or decrypt display credentials.
-func (s *Store) CompetitionActivityInput(ctx context.Context, accountID string, at time.Time) (CompetitionInput, error) {
+// projections only. Trading supplies its current profile before snapshot
+// persistence; other accounts still use their retained identity projections.
+// It must not run the dashboard transaction or decrypt display credentials.
+func (s *Store) CompetitionActivityInput(ctx context.Context, accountID string, at time.Time, profile json.RawMessage) (CompetitionInput, error) {
 	input := CompetitionInput{AccountID: accountID, At: at.UTC(), OwnCompaniesComplete: true}
 	if !validID(accountID) || at.IsZero() {
 		return input, fmt.Errorf("competition query: %w", ErrInvalidInput)
 	}
 	db, cancel := s.query(ctx)
 	defer cancel()
-	if err := competitionOwners(db, &input); err != nil {
+	if err := competitionOwners(db, &input, profile); err != nil {
 		return input, err
 	}
 	err := competitionSailings(db, &input)
 	return input, err
 }
 
-func competitionOwners(tx *gorm.DB, input *CompetitionInput) error {
+func competitionOwners(tx *gorm.DB, input *CompetitionInput, profile json.RawMessage) error {
 	var owners []struct {
 		ID              string
 		CompanyID       string
@@ -100,8 +101,22 @@ func competitionOwners(tx *gorm.DB, input *CompetitionInput) error {
 		return ErrResponseTooLarge
 	}
 	found := false
+	var current struct {
+		Company struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"company"`
+	}
+	if profile != nil {
+		if err := json.Unmarshal(profile, &current); err != nil {
+			return ErrInvalidInput
+		}
+	}
 	for _, owner := range owners {
 		found = found || owner.ID == input.AccountID
+		if owner.ID == input.AccountID && profile != nil {
+			owner.SnapshotCompany, owner.Name = current.Company.ID, current.Company.Name
+		}
 		if owner.CompanyID == "" {
 			continue
 		}

@@ -85,7 +85,7 @@ func TestRouteCacheRefreshFetchesOnlyMissingExpiredOrFailedPairs(t *testing.T) {
 	refresh(1)
 
 	expired := runner.meta["routes/"+key]
-	expired.UpdatedAt = time.Now().Add(-routeGeometryTTL - time.Minute)
+	expired.UpdatedAt = time.Now().Add(-RouteGeometryTTL - time.Minute)
 	runner.meta["routes/"+key] = expired
 	refresh(1)
 
@@ -122,7 +122,7 @@ func TestRouteCacheFreshnessDoesNotRestampPrivateEvidence(t *testing.T) {
 		}
 	}
 	for _, invalid := range []DatasetMeta{
-		{UpdatedAt: in.Now.Add(-routeGeometryTTL - time.Second), Complete: true},
+		{UpdatedAt: in.Now.Add(-RouteGeometryTTL - time.Second), Complete: true},
 		{UpdatedAt: in.Now.Add(time.Minute), Complete: true},
 		{UpdatedAt: in.Now, Complete: true, Stale: true},
 		{UpdatedAt: in.Now, Complete: true, Error: "route unavailable"},

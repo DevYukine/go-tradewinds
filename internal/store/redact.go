@@ -96,9 +96,18 @@ func scrubText(value string, secrets []string) string {
 	for _, secret := range secrets {
 		value = strings.ReplaceAll(value, secret, redacted)
 	}
-	value = bearerPattern.ReplaceAllString(value, "Bearer "+redacted)
-	value = apiKeyPattern.ReplaceAllString(value, redacted)
-	return assignmentPattern.ReplaceAllString(value, redacted)
+	// Each regexp requires these literal bytes. Native scans avoid running
+	// the regexp machine over large opaque strings that cannot match.
+	if strings.ContainsAny(value, " \t\n\f\r") {
+		value = bearerPattern.ReplaceAllString(value, "Bearer "+redacted)
+	}
+	if strings.Contains(value, "tw_") {
+		value = apiKeyPattern.ReplaceAllString(value, redacted)
+	}
+	if delimiter := strings.IndexAny(value, ":="); delimiter >= 0 && delimiter < len(value)-1 {
+		value = assignmentPattern.ReplaceAllString(value, redacted)
+	}
+	return value
 }
 
 func redactValue(value any, secrets []string) any {

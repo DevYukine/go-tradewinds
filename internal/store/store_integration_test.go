@@ -350,6 +350,61 @@ func TestPostgresEventDeduplicationAndCursorTransaction(t *testing.T) {
 	}
 }
 
+func TestPostgresEventIngestBoundsNumericTokensAndNesting(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	const account = "bounded-ingest-events"
+	saveTestAccount(t, db, account)
+	ctx := context.Background()
+	for _, test := range []struct {
+		name    string
+		payload string
+		reason  string
+	}{
+		{name: "zero-exponent", payload: `{"nested":[{"value":0e-16000}]}`, reason: "numeric token outside storage bounds"},
+		{name: "large-exponent", payload: `{"nested":[1e130000]}`, reason: "numeric token outside storage bounds"},
+		{name: "ordinary-exponents", payload: `{"value":1E3,"tons":2.5e-7}`},
+		{name: "exponent-past-bound", payload: `{"value":1e33}`, reason: "numeric token outside storage bounds"},
+		{name: "long-integer", payload: `{"value":` + strings.Repeat("9", 33) + `}`, reason: "numeric token outside storage bounds"},
+		{name: "long-decimal", payload: `{"value":0.` + strings.Repeat("1", 31) + `}`, reason: "numeric token outside storage bounds"},
+		{name: "max-number", payload: `{"value":` + strings.Repeat("9", 32) + `}`},
+		{name: "ordinary", payload: `{"nested":[0,-1.25,true,null],"value":"1e130000"}`},
+		{name: "max-depth", payload: strings.Repeat("[", 64) + "0" + strings.Repeat("]", 64)},
+		{name: "over-depth", payload: strings.Repeat("[", 65) + "0" + strings.Repeat("]", 65), reason: "JSON nesting outside storage bounds"},
+		{name: "deep", payload: strings.Repeat("[", 10000) + "0" + strings.Repeat("]", 10000), reason: "JSON nesting outside storage bounds"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			before := time.Now().UTC().Truncate(time.Microsecond)
+			if err := db.RecordEvent(ctx, account, test.name, "synthetic", json.RawMessage(test.payload)); err != nil {
+				t.Fatal(err)
+			}
+			var event Event
+			if err := db.db.Where("account_id = ? AND event_id = ?", account, test.name).Take(&event).Error; err != nil {
+				t.Fatal(err)
+			}
+			if event.EventID != test.name || event.EventType != "synthetic" || event.CreatedAt.Before(before) || event.CreatedAt.After(time.Now().UTC()) {
+				t.Fatalf("ingest gap lost its event envelope: %+v", event)
+			}
+			if test.reason != "" {
+				var gap struct {
+					Gap    bool   `json:"gap"`
+					Reason string `json:"reason"`
+				}
+				if err := json.Unmarshal(event.Payload, &gap); err != nil || !gap.Gap || gap.Reason != test.reason {
+					t.Fatalf("unsafe event did not become a reasoned gap: %s, %v", event.Payload, err)
+				}
+			} else {
+				var same bool
+				if err := db.db.Raw("SELECT payload = CAST(? AS jsonb) FROM events WHERE id = ?", test.payload, event.ID).Scan(&same).Error; err != nil || !same {
+					t.Fatalf("bounded event payload changed: %s, %v", event.Payload, err)
+				}
+			}
+			if cursor, err := db.Cursor(ctx, account); err != nil || cursor != test.name {
+				t.Fatalf("event gap did not advance the cursor: %q, %v", cursor, err)
+			}
+		})
+	}
+}
+
 func TestPostgresRetentionPreservesOperationalStateAndIntegerAccounting(t *testing.T) {
 	db, _, _ := integrationStore(t)
 	ctx := context.Background()

@@ -33,12 +33,14 @@ var migrationMu sync.Mutex
 const queryTimeout = 10 * time.Second
 
 type Store struct {
-	db        *gorm.DB
-	sqlDB     *sql.DB
-	dsn       string
-	aead      cipher.AEAD
-	lookupKey []byte
-	log       *zap.Logger
+	db             *gorm.DB
+	sqlDB          *sql.DB
+	dsn            string
+	aead           cipher.AEAD
+	lookupKey      []byte
+	log            *zap.Logger
+	replayErrors   sync.Map // account ID -> *atomic.Int64; never blocks the live loop
+	replayWarnings sync.Map // account ID and static demotion cause -> struct{}
 
 	leaseMu sync.Mutex
 	leases  map[*accountLease]struct{}

@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+func TestScrubTextLiteralGuardsPreservePatternResults(t *testing.T) {
+	values := []string{
+		"", "public", "public=", "public==", "password=", "password==",
+		"PASSWORD : \"private value\"", "token=\t", "secret=''",
+		"password=value=tail", "token:value", "public: value",
+		"Bearer private", "BEARER\tprivate", "bEaReR\nprivate",
+		"Bearer\fprivate", "Bearer\rprivate", "Bearer\vprivate",
+		"Bearer\u00a0private", "tw_live_private", "tw_test_private",
+		"tw_sk_private", "notw_live_private", "known-private-value",
+		strings.Repeat("opaque", 1000) + "=",
+	}
+	for _, value := range values {
+		want := strings.ReplaceAll(value, "known-private-value", redacted)
+		want = bearerPattern.ReplaceAllString(want, "Bearer "+redacted)
+		want = apiKeyPattern.ReplaceAllString(want, redacted)
+		want = assignmentPattern.ReplaceAllString(want, redacted)
+		if got := scrubText(value, []string{"known-private-value"}); got != want {
+			t.Errorf("scrubText(%q) = %q, want %q", value, got, want)
+		}
+	}
+}
+
 func TestRedactJSONRecursiveSecretsAndIntegerPrecision(t *testing.T) {
 	raw := []byte(`{"quantity":9007199254740993,"passphrase":"private phrase","nested":[{"API-Key":"unknown key","detail":"known-key appears here"}],"headers":{"X-Test":"never persist headers"}}`)
 	clean, err := redactJSON(raw, []string{"private phrase", "known-key"}, maxDiagnosticBytes)

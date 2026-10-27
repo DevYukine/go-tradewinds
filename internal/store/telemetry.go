@@ -1,11 +1,13 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,6 +83,50 @@ func (s *Store) RecordRequest(ctx context.Context, accountID, method, path strin
 	return nil
 }
 
+// BoundEventPayload replaces numeric tokens or nesting that can exhaust
+// PostgreSQL with a gap. Event identity, type and receipt time remain intact.
+func BoundEventPayload(payload json.RawMessage) json.RawMessage {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	depth := 0
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			// The caller's normal redaction still handles malformed JSON.
+			return payload
+		}
+		if number, ok := token.(json.Number); ok && !numberWithinStorageBounds(number) {
+			return json.RawMessage(`{"gap":true,"reason":"numeric token outside storage bounds"}`)
+		}
+		if delimiter, ok := token.(json.Delim); ok {
+			switch delimiter {
+			case '{', '[':
+				depth++
+				if depth > 64 {
+					return json.RawMessage(`{"gap":true,"reason":"JSON nesting outside storage bounds"}`)
+				}
+			case '}', ']':
+				depth--
+			}
+		}
+	}
+}
+
+// numberWithinStorageBounds keeps ordinary floats such as 2.5e-7 while
+// rejecting tokens like 1e130000 or 0e-16000, which PostgreSQL renders as
+// one digit per unit of exponent.
+func numberWithinStorageBounds(number json.Number) bool {
+	if len(number) > 32 {
+		return false
+	}
+	index := strings.IndexAny(string(number), "eE")
+	if index < 0 {
+		return true
+	}
+	exponent, err := strconv.Atoi(string(number[index+1:]))
+	return err == nil && exponent >= -32 && exponent <= 32
+}
+
 func (s *Store) RecordEvent(ctx context.Context, accountID, id, eventType string, payload json.RawMessage) error {
 	if !validID(accountID) || !validID(id) || eventType == "" || len(eventType) > 255 {
 		return fmt.Errorf("event metadata: %w", ErrInvalidInput)
@@ -89,7 +135,7 @@ func (s *Store) RecordEvent(ctx context.Context, accountID, id, eventType string
 	if err != nil {
 		return err
 	}
-	redactedPayload, err := redactJSON(payload, secrets, maxDiagnosticBytes)
+	redactedPayload, err := redactJSON(BoundEventPayload(payload), secrets, maxDiagnosticBytes)
 	if err != nil {
 		return err
 	}

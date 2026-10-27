@@ -170,7 +170,7 @@ func (r *Runner) refreshCompetition(ctx context.Context) {
 	}
 	r.competitionNextLoad = now.Add(competitionCacheTTL)
 	r.competition = nil
-	input, err := r.db.CompetitionActivityInput(ctx, r.account.ID, now)
+	input, err := r.db.CompetitionActivityInput(ctx, r.account.ID, now, r.snapshot["profile"])
 	if err == nil {
 		input.Ports, err = store.CompetitionPorts(r.snapshot["catalog"], r.snapshot["ports"], encode(r.meta), now)
 	}
