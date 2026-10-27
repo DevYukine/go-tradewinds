@@ -27,6 +27,7 @@ type pendingSourceProbe struct {
 	At        time.Time `json:"at"`
 	Outcome   string    `json:"outcome"`
 	Catalogue bool      `json:"catalogue"`
+	Scout     bool      `json:"scout,omitempty"`
 }
 
 type probeShipHistory struct {
@@ -37,13 +38,21 @@ type probeShipHistory struct {
 	IdleHours       int64               `json:"idle_hours"`
 }
 
+type scoutPortHistory struct {
+	CompletedAt     time.Time `json:"completed_at"`
+	LastDepartureAt time.Time `json:"last_departure_at"`
+}
+
 // Persist only bounded source/ship outcomes. A version change rebuilds the
 // summary from accounting and retained departure evidence, not old policy state.
 type sourcingProbeHistory struct {
-	Version int                           `json:"version"`
-	Cursor  store.ProbeHistoryCursor      `json:"cursor"`
-	Sources map[string]probeSourceHistory `json:"sources"`
-	Ships   map[string]probeShipHistory   `json:"ships"`
+	Version       int                           `json:"version"`
+	Cursor        store.ProbeHistoryCursor      `json:"cursor"`
+	Sources       map[string]probeSourceHistory `json:"sources"`
+	Ships         map[string]probeShipHistory   `json:"ships"`
+	ScoutFailures int                           `json:"scout_failures,omitempty"`
+	ScoutResetAt  time.Time                     `json:"scout_reset_at,omitempty"`
+	ScoutPorts    map[string]scoutPortHistory   `json:"scout_ports,omitempty"`
 }
 
 type sourcingHistoryCache struct {
@@ -78,6 +87,10 @@ func (h sourcingProbeHistory) sourceRank(now time.Time, source, commodity string
 }
 
 func (h *sourcingProbeHistory) failedProbe(ship *probeShipHistory, probe pendingSourceProbe, idle shipIdleState) {
+	if probe.Scout {
+		h.failedProbeStreak(ship, probe, idle)
+		return
+	}
 	key := probeSourceKey(probe.Source, probe.Commodity)
 	observed := h.Sources[key]
 	if probe.At.After(observed.FailedAt) {
@@ -111,8 +124,23 @@ func (h *sourcingProbeHistory) settlement(row store.Settlement, idle map[string]
 		return
 	}
 	probe := pendingSourceProbe{Source: row.Destination, Commodity: row.Commodity, At: row.CompletedAt, Outcome: row.ProbeOutcome,
-		Catalogue: strings.HasPrefix(lane[3], "probe:0:") || lane[3] == "charter"}
+		Catalogue: strings.HasPrefix(lane[3], "probe:0:") || lane[3] == "charter", Scout: lane[3] == "scout"}
 	ship.Pending = &probe
+	if probe.Scout {
+		if h.ScoutPorts == nil {
+			h.ScoutPorts = make(map[string]scoutPortHistory)
+		}
+		port := h.ScoutPorts[probe.Source]
+		if probe.At.After(port.CompletedAt) {
+			port.CompletedAt = probe.At
+		}
+		h.ScoutPorts[probe.Source] = port
+		// A completed scout is unconverted until an actual laden departure
+		// from a scouted port. Idle time cannot replenish this fleet cap.
+		if probe.At.After(h.ScoutResetAt) {
+			h.ScoutFailures = min(2, h.ScoutFailures+1)
+		}
+	}
 	if row.ProbeOutcome == store.ProbeOutcomeFailed {
 		h.failedProbe(&ship, probe, idle[row.ShipID])
 	}
@@ -125,14 +153,14 @@ func (h *sourcingProbeHistory) departure(shipID, source string, at time.Time, la
 		return
 	}
 	if probe := ship.Pending; probe != nil && source == probe.Source && at.After(probe.At) {
-		if laden {
+		if laden && !probe.Scout {
 			key := probeSourceKey(source, probe.Commodity)
 			observed := h.Sources[key]
 			observed.ConvertedAt = at
 			h.Sources[key] = observed
-		} else if probe.Outcome == store.ProbeOutcomeContinuation {
+		} else if !laden && probe.Outcome == store.ProbeOutcomeContinuation {
 			h.failedProbe(&ship, *probe, idle)
-		} else if probe.Outcome != store.ProbeOutcomeFailed {
+		} else if !laden && probe.Outcome != store.ProbeOutcomeFailed {
 			// Uninspected probes still count against this ship's empty-leg
 			// streak, but cannot establish a source-wide supply failure.
 			h.failedProbeStreak(&ship, *probe, idle)
@@ -141,6 +169,20 @@ func (h *sourcingProbeHistory) departure(shipID, source string, at time.Time, la
 	}
 	if laden {
 		ship.Failures = 0
+	}
+	if source != "" {
+		if h.ScoutPorts == nil {
+			h.ScoutPorts = make(map[string]scoutPortHistory)
+		}
+		port := h.ScoutPorts[source]
+		if laden && port.CompletedAt.After(h.ScoutResetAt) && at.After(port.CompletedAt) {
+			h.ScoutFailures = 0
+			h.ScoutResetAt = at
+		}
+		if at.After(port.LastDepartureAt) {
+			port.LastDepartureAt = at
+		}
+		h.ScoutPorts[source] = port
 	}
 	ship.LastDepartureAt = at
 	h.Ships[shipID] = ship
@@ -249,6 +291,13 @@ func (r *Runner) readProbeOutcomes(ctx context.Context, input PlanningInput) (so
 		for id := range history.Ships {
 			if ship, exists := r.ship(id); !exists || ship.Ship.Status == "sunk" {
 				delete(history.Ships, id)
+			}
+		}
+	}
+	if input.fresh("catalog") {
+		for port := range history.ScoutPorts {
+			if _, exists := findPort(input.Catalog, port); !exists {
+				delete(history.ScoutPorts, port)
 			}
 		}
 	}

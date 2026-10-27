@@ -355,3 +355,66 @@ func TestSourcingFundsActualCharterContinuationStoreTarget(t *testing.T) {
 		t.Fatalf("the smaller retreat store bill authorized an unfunded actual continuation target: %+v", accepted)
 	}
 }
+
+func TestCharterRelocationSpendingFailureAbortsFundingButHoldsDeparturePreparation(t *testing.T) {
+	for _, gate := range []string{"funding", "departure preparation"} {
+		t.Run(gate, func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			h.api.setFleet([]map[string]any{sourcingReviewShipRow()})
+			runner := refreshedRunner(t, h)
+			sourcingReviewInject(t, runner, []Contract{sourcingReviewCharter("charter-spending-gate")})
+			runner.stateCache.Ships[0].Ship.Status = "anchored_roadstead"
+			runner.stateCache.Ships[0].Ship.BerthedAt = nil
+			runner.snapshot["_ship_idle"] = encode(map[string]shipIdleState{
+				recoveryShipBlastoise: {
+					PortID: recoveryHomePort, EarnedGameHours: 6, Validated: true,
+					LastValidatedGameHour: runner.stateCache.Clock.Calendar.TotalGameHours,
+					LastClockUTC:          runner.stateCache.Clock.RealUTC,
+				},
+			})
+			runner.refreshSourcingHistory(h.ctx, runner.planningInput(ShipState{}))
+			runner.refreshSourcingBudget(h.ctx, runner.planningInput(ShipState{}))
+			ship := harnessShip(t, runner, recoveryShipBlastoise)
+			if changed, reason, err := runner.considerSourcing(h.ctx, ship); err != nil || !changed {
+				t.Fatalf("charter relocation was not admitted: changed=%v reason=%q err=%v", changed, reason, err)
+			}
+			mission, data := h.mission(ship.Ship.ID)
+			if data.Relocation == nil || data.Relocation.Scout || !data.Relocation.IdlePilot {
+				t.Fatalf("fixture must be a charter idle-pilot relocation: %+v", data)
+			}
+			meta := runner.meta["contracts"]
+			meta.Stale = true
+			runner.meta["contracts"] = meta
+			if gate == "funding" {
+				if _, err := runner.driveMission(h.ctx, ship, mission, &data); err != nil {
+					t.Fatal(err)
+				}
+				h.missingMission(ship.Ship.ID)
+			} else {
+				if changed, err := runner.prepareDeparture(h.ctx, ship, mission, &data); err != nil || changed {
+					t.Fatalf("charter departure preparation did not hold: changed=%v err=%v", changed, err)
+				}
+				retained, retainedData := h.mission(ship.Ship.ID)
+				if retained.Phase != "sourcing_fund" || retainedData.Action != nil || retained.Destination != mission.Destination {
+					t.Fatalf("departure preparation changed the held charter: mission=%+v data=%+v", retained, retainedData)
+				}
+			}
+			found := false
+			for _, hold := range runner.holding {
+				if strings.Contains(hold.Reason, "idle exploration risk capital requires fresh contracts") {
+					found = true
+					cancelled := strings.Contains(hold.Reason, "cancelled before further spending")
+					if cancelled != (gate == "funding") {
+						t.Fatalf("wrong charter spending failure disposition: %+v", hold)
+					}
+				}
+			}
+			if !found {
+				t.Fatalf("fixture did not reach the intended charter spending gate: %+v", runner.holding)
+			}
+			if h.api.mutationCount("/v1/treasury/remit")+h.api.mutationCount("/v1/fleet/depart") != 0 {
+				t.Fatal("failed charter spending authority authorized a mutation")
+			}
+		})
+	}
+}

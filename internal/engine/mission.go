@@ -37,6 +37,8 @@ type relocationIntent struct {
 	InspectUntilGameHour int64                 `json:"inspect_until_game_hour"`
 	StoreBasis           *relocationStoreBasis `json:"store_basis,omitempty"`
 	IdlePilot            bool                  `json:"idle_pilot,omitempty"`
+	Scout                bool                  `json:"scout,omitempty"`
+	TransientHoldSince   time.Time             `json:"transient_hold_since,omitempty"`
 	SourceInspected      bool                  `json:"source_inspected,omitempty"`
 }
 
@@ -353,6 +355,8 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 					if best.Economics.GameDays > 0 {
 						reason += fmt.Sprintf(" (expected cash net %dp; %.0fp per game day)", best.Economics.ExpectedNetPence, best.Economics.NetPencePerGameDay)
 					}
+				} else {
+					reason += fmt.Sprintf("; best evaluated alternative %s to %s: %s", best.Commodity, best.Destination, best.Reason)
 				}
 			}
 			if sourcingReason != "" {
@@ -827,8 +831,11 @@ func (r *Runner) dockForMission(ctx context.Context, ship ShipState, mission *st
 	}
 	if data.Relocation != nil && data.Relocation.IdlePilot && ship.Ship.CurrentPortID == data.Plan.Origin {
 		if err := r.relocationSpendingReady(ctx, ship, data, 0); err != nil {
-			return r.abortRelocation(ctx, ship, mission, data, err.Error())
+			return r.holdOrAbortRelocation(ctx, ship, mission, data, err)
 		}
+	}
+	if data.Relocation != nil {
+		data.Relocation.TransientHoldSince = time.Time{}
 	}
 	return true, r.stageAction(ctx, mission, data, ship, "dock", "/v1/fleet/dock", map[string]any{"ship_id": ship.Ship.ID}, maintenanceDock)
 }
@@ -909,10 +916,19 @@ func (r *Runner) provisionMission(ctx context.Context, ship ShipState, mission *
 		input, err = r.committedPlanningInput(ctx, ship)
 	}
 	if err != nil {
+		if data.Relocation != nil && data.Relocation.Scout {
+			return r.holdOrAbortRelocation(ctx, ship, mission, data, scoutTransientError(data, err))
+		}
 		return false, err
 	}
 	quote, err := quoteProvisions(input, target)
 	if err != nil {
+		if data.Relocation != nil && data.Relocation.Scout {
+			if !input.fresh("ships") || !input.fresh("books/"+port) {
+				err = scoutTransientError(data, err)
+			}
+			return r.holdOrAbortRelocation(ctx, ship, mission, data, err)
+		}
 		return false, r.hold(ctx, ship.Ship.ID, err.Error())
 	}
 	if quote.quantity == 0 {
@@ -920,7 +936,7 @@ func (r *Runner) provisionMission(ctx context.Context, ship ShipState, mission *
 	}
 	if data.Relocation != nil {
 		if err := r.relocationProvisionReady(ctx, ship, data, quote.quantity, quote.limit); err != nil {
-			return r.abortRelocation(ctx, ship, mission, data, err.Error())
+			return r.holdOrAbortRelocation(ctx, ship, mission, data, err)
 		}
 	}
 	if data.Relocation != nil && !r.relocationProvisionBudget(data, ship, input, quote.quantity, quote.limit) {
@@ -941,6 +957,9 @@ func (r *Runner) provisionMission(ctx context.Context, ship ShipState, mission *
 	}
 	if input.Balances[quote.region]-quote.cash < input.ReserveByRegion[quote.region] {
 		if data.Plan.Kind != "maintenance" {
+			if data.Relocation != nil && data.Relocation.Scout {
+				return r.holdOrAbortRelocation(ctx, ship, mission, data, errors.New("cannot replenish stores without spending protected regional bills reserve"))
+			}
 			return false, r.hold(ctx, ship.Ship.ID, "cannot replenish stores without spending protected regional bills reserve")
 		}
 		transfer, err := provisionFunding(input, quote)
@@ -951,6 +970,9 @@ func (r *Runner) provisionMission(ctx context.Context, ship ShipState, mission *
 			"from_region": transfer.Rate.FromRegion, "to_region": transfer.Rate.ToRegion,
 			"gross_amount_pence": transfer.Gross,
 		})
+	}
+	if data.Relocation != nil {
+		data.Relocation.TransientHoldSince = time.Time{}
 	}
 	return true, r.stage(ctx, mission, data, ship, "provision", "/v1/market/place-order", orderBody(ship, "provisions", "bid", quote.quantity, quote.limit, true))
 }
@@ -990,6 +1012,9 @@ func (r *Runner) prepareDeparture(ctx context.Context, ship ShipState, mission *
 	}
 	if data.Relocation != nil {
 		if err := r.relocationDepartureReady(ctx, ship, data); err != nil {
+			if data.Relocation.Scout {
+				return r.holdOrAbortRelocation(ctx, ship, mission, data, err)
+			}
 			return false, r.hold(ctx, ship.Ship.ID, err.Error())
 		}
 	}
@@ -1007,6 +1032,9 @@ func (r *Runner) prepareDeparture(ctx context.Context, ship ShipState, mission *
 	}
 	if data.Relocation == nil && data.Plan.Kind != "recovery" && !data.ReturnJourney && data.BoughtQuantity == 0 && len(data.Freight) == 0 {
 		return r.finishMission(ctx, ship, mission, data)
+	}
+	if data.Relocation != nil {
+		data.Relocation.TransientHoldSince = time.Time{}
 	}
 	return true, r.stage(ctx, mission, data, ship, "depart", "/v1/fleet/depart", map[string]any{"ship_id": ship.Ship.ID, "dest_port_id": mission.Destination})
 }

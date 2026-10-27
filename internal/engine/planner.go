@@ -218,6 +218,7 @@ type PlanningInput struct {
 	SourcingProbeCompletions  map[string]time.Time
 	SourcingProbeCostsUnknown bool
 	SourcingProbeHistory      sourcingProbeHistory
+	BookObservedAt            map[string]time.Time
 	SourcingHistoryError      string
 	Metadata                  map[string]DatasetMeta
 	Generation                string

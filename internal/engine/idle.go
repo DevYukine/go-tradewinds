@@ -6,6 +6,7 @@ import (
 )
 
 const sourcingIdleGameHours int64 = 6
+const scoutIdleGameHours int64 = 12
 const sourcingReinspectionCooldown = 24 * time.Minute
 
 // Only successive coherent REST observations earn game hours. A gap rebases the
@@ -116,13 +117,17 @@ func (r *Runner) recordShipIdle(state accountState, previous PlanningInput) {
 }
 
 func (r *Runner) shipIdleEligible(in PlanningInput) bool {
+	return r.shipIdleFor(in, sourcingIdleGameHours)
+}
+
+func (r *Runner) shipIdleFor(in PlanningInput, hours int64) bool {
 	if !idleClockReady(in) || in.Ship.Ship.ID == "" || in.Ship.Ship.Status == "sunk" ||
 		in.Ship.Voyage != nil || in.Ship.Ship.Status == "sailing" || !emptyCargo(in.Ship) ||
 		idleFreight(in.Ship.Ship.ID, in.Contracts) {
 		return false
 	}
 	observed := decode[map[string]shipIdleState](r.snapshot, "_ship_idle")[in.Ship.Ship.ID]
-	return observed.Validated && !observed.ClockRegressed && observed.EarnedGameHours >= sourcingIdleGameHours &&
+	return observed.Validated && !observed.ClockRegressed && observed.EarnedGameHours >= hours &&
 		observed.PortID != "" && observed.PortID == in.Ship.Ship.CurrentPortID &&
 		observed.LastValidatedGameHour == in.Clock.Calendar.TotalGameHours && observed.LastClockUTC.Equal(in.Clock.RealUTC)
 }

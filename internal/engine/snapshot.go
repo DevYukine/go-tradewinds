@@ -512,6 +512,29 @@ func (r *Runner) refresh(ctx context.Context) error {
 	r.finishGroup("ports", ports, portKeys)
 	r.replayPorts = ports
 	r.finishGroup("books", markets, bookKeys)
+	observedBooks := decode[map[string]time.Time](r.snapshot, "_book_observed")
+	if observedBooks == nil {
+		observedBooks = make(map[string]time.Time)
+	}
+	for _, port := range bookKeys {
+		var book struct {
+			Visibility string `json:"visibility"`
+		}
+		if err := json.Unmarshal(markets[port], &book); err != nil || book.Visibility != "quay" {
+			continue
+		}
+		meta := r.meta["books/"+port]
+		if meta.Generation == r.generation && meta.Complete && !meta.Stale && meta.Error == "" && meta.UpdatedAt.After(observedBooks[port]) {
+			observedBooks[port] = meta.UpdatedAt
+		}
+	}
+	bookRetention := max(24*time.Hour, time.Duration(scoutHintMaxGameHours)*time.Hour/time.Duration(max(1, state.Clock.Calendar.TimeScale)))
+	for port, observed := range observedBooks {
+		if _, exists := findPort(state.Catalog, port); !exists || time.Since(observed) > bookRetention {
+			delete(observedBooks, port)
+		}
+	}
+	r.snapshot["_book_observed"] = encode(observedBooks)
 	r.finishGroup("yard_quotes", quotes, quoteKeys)
 	// Exploratory captures, including expired illegal pairs, share the
 	// three-new-pair / six-GET budget. Committed legs were requested above.

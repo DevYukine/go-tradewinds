@@ -17,6 +17,7 @@ const sourcingAskEvidence = "recent public ask gossip; executable quantity and r
 const sourcingPairLimit = 3
 const failedCatalogueProbeReason = "failed catalogue-only source/commodity probe is cooling down for 24 real hours; new contract IDs and timestamps are not new supply evidence"
 const failedProbeStreakReason = "two consecutive probes did not convert to a laden departure; catalogue-only probing waits for a laden departure or six coherent idle game hours"
+const ordinarySourcingPriorityReason = "an ordinary measured opportunity takes priority over sourcing"
 
 // This basis values physically consumed stores for the exploration risk cap.
 // It is a replacement-cost estimate, never realized cash profit; purchase cash
@@ -351,7 +352,7 @@ func sourcingAdmissionRejection(in PlanningInput) string {
 	if !in.SourcingLoadingBlocked {
 		ordinary := PlanVoyages(in)
 		if len(ordinary) > 0 && ordinary[0].Accepted {
-			return "an ordinary measured opportunity takes priority over sourcing"
+			return ordinarySourcingPriorityReason
 		}
 	}
 	if in.SourcingHistoryError != "" {
@@ -407,10 +408,10 @@ func sourcingReserves(in PlanningInput, source Port) map[string]int64 {
 }
 
 func relocationExposure(in PlanningInput, plan Plan) Plan {
-	hull, exists := findHull(in.Catalog, in.Ship.Ship.ShipClass)
-	origin, originExists := findPort(in.Catalog, plan.Origin)
-	source, sourceExists := findPort(in.Catalog, plan.Destination)
-	if !exists || !originExists || !sourceExists || hull.BaseSpeedCentiknots <= 0 {
+	hull, hullExists := findHull(in.Catalog, in.Ship.Ship.ShipClass)
+	_, originExists := findPort(in.Catalog, plan.Origin)
+	_, sourceExists := findPort(in.Catalog, plan.Destination)
+	if !hullExists || !originExists || !sourceExists || hull.BaseSpeedCentiknots <= 0 {
 		return reject(plan, "sourcing hull or ports are missing from catalog")
 	}
 	var charter Contract
@@ -428,6 +429,16 @@ func relocationExposure(in PlanningInput, plan Plan) Plan {
 	if !exists || destination.Phase > in.Clock.UnlockedPhase {
 		return reject(plan, "charter destination is missing or phase locked")
 	}
+	return relocationCost(in, plan, destination, 6)
+}
+
+func relocationCost(in PlanningInput, plan Plan, continuation Port, inspectionGameHours int64) Plan {
+	hull, exists := findHull(in.Catalog, in.Ship.Ship.ShipClass)
+	origin, originExists := findPort(in.Catalog, plan.Origin)
+	source, sourceExists := findPort(in.Catalog, plan.Destination)
+	if !exists || !originExists || !sourceExists || hull.BaseSpeedCentiknots <= 0 {
+		return reject(plan, "sourcing hull or ports are missing from catalog")
+	}
 	outward, err := sourcingRouteReady(in, origin.ID, source.ID, hull)
 	if err != nil {
 		return reject(plan, err.Error())
@@ -436,7 +447,7 @@ func relocationExposure(in PlanningInput, plan Plan) Plan {
 	if err != nil {
 		return reject(plan, err.Error())
 	}
-	for _, port := range []Port{origin, source, destination} {
+	for _, port := range []Port{origin, source, continuation} {
 		if !in.fresh("ports/"+port.ID) || in.Ports[port.ID].EffectiveBerths <= 0 {
 			return reject(plan, "sourcing requires fresh harbour costs and berth capacity at "+port.ID)
 		}
@@ -446,7 +457,7 @@ func relocationExposure(in PlanningInput, plan Plan) Plan {
 	}
 	speed := float64(hull.BaseSpeedCentiknots) / 100 * 0.8
 	sailingDays := float64(outward.TotalDistanceNM+back.TotalDistanceNM) / speed / 24
-	portDays := 6.0/24 + 1.0/24 + float64(in.Ports[source.ID].QueuedShips+1)/float64(in.Ports[source.ID].EffectiveBerths)*0.25
+	portDays := float64(inspectionGameHours)/24 + 1.0/24 + float64(in.Ports[source.ID].QueuedShips+1)/float64(in.Ports[source.ID].EffectiveBerths)*0.25
 	gameDays := sailingDays + portDays
 	_, upper, ok := in.serverBounds()
 	if !ok {
@@ -513,6 +524,14 @@ func relocationExposure(in PlanningInput, plan Plan) Plan {
 
 func costRelocation(in PlanningInput, plan Plan) Plan {
 	return validateRelocationTarget(in, relocationExposure(in, plan))
+}
+
+func costCommittedRelocation(in PlanningInput, data *missionData) Plan {
+	if data.Relocation != nil && data.Relocation.Scout {
+		origin, _ := findPort(in.Catalog, data.Plan.Origin)
+		return relocationCost(in, data.Plan, origin, 0)
+	}
+	return costRelocation(in, data.Plan)
 }
 
 func validateRelocationTarget(in PlanningInput, plan Plan) Plan {
@@ -837,6 +856,26 @@ func (r *Runner) loadSourcingHistory(ctx context.Context, input *PlanningInput) 
 			}
 		}
 	}
+	origins := make(map[string]bool)
+	for _, ship := range r.stateCache.Ships {
+		if ship.Voyage == nil && (ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") && ship.Ship.CurrentPortID != "" {
+			origins[ship.Ship.CurrentPortID] = true
+		}
+	}
+	for target, hints := range scoutBidHints(*input) {
+		for commodity := range hints {
+			for origin := range origins {
+				if target == origin {
+					continue
+				}
+				lane := scoutLaneKey(target, origin, commodity)
+				if !seen[lane] {
+					seen[lane] = true
+					lanes = append(lanes, lane)
+				}
+			}
+		}
+	}
 	for len(lanes) > 0 {
 		size := min(len(lanes), 1024)
 		completions, err := r.db.RelocationProbeCompletions(ctx, r.account.ID, lanes[:size])
@@ -852,6 +891,19 @@ func (r *Runner) loadSourcingHistory(ctx context.Context, input *PlanningInput) 
 	return nil
 }
 
+func (r *Runner) insuredRelocationPlan(ship ShipState, plans []Plan) (int, error) {
+	err := r.insuranceActionReady(ship, "depart", plans[0].Destination)
+	if err == nil {
+		return 0, nil
+	}
+	for i := 1; i < len(plans); i++ {
+		if plans[i].Accepted && r.insuranceActionReady(ship, "depart", plans[i].Destination) == nil {
+			return i, nil
+		}
+	}
+	return 0, err
+}
+
 func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, string, error) {
 	for _, id := range []string{"__treasury", "__growth"} {
 		mission, err := r.db.GetMission(ctx, r.account.ID, id)
@@ -862,6 +914,7 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 			return false, "", nil
 		}
 	}
+	missions := make(map[string]*store.Mission, len(r.stateCache.Ships))
 	for _, other := range r.stateCache.Ships {
 		mission, data, err := r.loadMission(ctx, other.Ship.ID)
 		if err != nil {
@@ -870,12 +923,17 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 		if mission != nil && (data.Relocation != nil || data.SourcingHandoff != nil) {
 			return false, "", nil
 		}
+		missions[other.Ship.ID] = mission
 	}
 	input, err := r.sourcingInput(ctx, ship)
 	if err != nil {
 		return false, "", err
 	}
-	plans := planSourcingRelocation(input)
+	admissionReason := sourcingAdmissionRejection(input)
+	plans := []Plan{reject(Plan{Kind: "relocation", ShipID: ship.Ship.ID}, admissionReason)}
+	if admissionReason == "" {
+		plans = sourcingPairs(input)
+	}
 	accepted := 0
 	for _, plan := range plans {
 		if plan.Accepted {
@@ -911,26 +969,87 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 	if len(plans) == 0 {
 		return false, "", nil
 	}
+	scout := false
 	if !plans[0].Accepted {
-		return false, plans[0].Reason, nil
-	}
-	if !r.opts.Execute {
-		return false, "", r.hold(ctx, ship.Ship.ID, "observe mode: funded sourcing inspection is not executed")
-	}
-	planIndex := 0
-	insuranceErr := r.insuranceActionReady(ship, "depart", plans[0].Destination)
-	if insuranceErr != nil {
-		for i := 1; i < len(plans); i++ {
-			if !plans[i].Accepted {
-				continue
+		if admissionReason != "" {
+			return false, plans[0].Reason, nil
+		}
+		scoutReason := "scouting waits for twelve coherent idle game hours at this port"
+		var scouts []Plan
+		if r.shipIdleFor(input, scoutIdleGameHours) {
+			scouts = scoutCandidates(input, r.scoutBlockedPorts(input, missions))
+			designatedID := ""
+			var smallestHold int64
+			if scouts[0].Accepted {
+				if index, err := r.insuredRelocationPlan(ship, scouts); err != nil {
+					scouts[0] = reject(scouts[0], err.Error())
+				} else if missions[ship.Ship.ID] == nil {
+					scouts[0], scouts[index] = scouts[index], scouts[0]
+					designatedID = ship.Ship.ID
+					smallestHold = ship.EffectiveHoldCapacityTons - ship.CargoUsedTons
+				}
 			}
-			if r.insuranceActionReady(ship, "depart", plans[i].Destination) == nil {
-				planIndex = i
-				insuranceErr = nil
-				break
+			scoutReason = scouts[0].Reason
+			for _, other := range r.stateCache.Ships {
+				if other.Ship.ID == ship.Ship.ID || other.Ship.CurrentPortID != ship.Ship.CurrentPortID || missions[other.Ship.ID] != nil {
+					continue
+				}
+				hold := other.EffectiveHoldCapacityTons - other.CargoUsedTons
+				if designatedID != "" && (hold > smallestHold || hold == smallestHold && other.Ship.ID > designatedID) {
+					continue
+				}
+				candidate, err := r.sourcingInput(ctx, other)
+				if err != nil {
+					return false, "", err
+				}
+				if !r.shipIdleFor(candidate, scoutIdleGameHours) || sourcingAdmissionRejection(candidate) != "" {
+					continue
+				}
+				if pairs := sourcingPairs(candidate); len(pairs) == 0 || pairs[0].Accepted {
+					continue
+				}
+				candidates := scoutCandidates(candidate, r.scoutBlockedPorts(candidate, missions))
+				if !candidates[0].Accepted {
+					continue
+				}
+				if _, err := r.insuredRelocationPlan(other, candidates); err != nil {
+					continue
+				}
+				designatedID, smallestHold = other.Ship.ID, hold
+			}
+			if designatedID != "" && designatedID != ship.Ship.ID {
+				scouts = nil
+				scoutReason = "another co-located ship is the designated scout: " + designatedID
 			}
 		}
+		scoutAccepted := 0
+		for _, plan := range scouts {
+			if plan.Accepted {
+				scoutAccepted++
+			}
+		}
+		scoutShown := min(3, len(scouts))
+		scoutSummary := map[string]int{"candidates": len(scouts), "accepted": scoutAccepted, "shown": scoutShown}
+		if err := r.decision(ctx, ship.Ship.ID, "scouting", scoutReason, scoutSummary); err != nil {
+			return false, "", err
+		}
+		for _, plan := range scouts[:scoutShown] {
+			if err := r.decision(ctx, ship.Ship.ID, "scouting:"+plan.Destination, plan.Reason, plan); err != nil {
+				return false, "", err
+			}
+		}
+		if len(scouts) == 0 || !scouts[0].Accepted {
+			return false, plans[0].Reason + "; scouting: " + scoutReason, nil
+		}
+		plans, scout = scouts, true
 	}
+	if !r.opts.Execute {
+		if scout {
+			return false, "", r.hold(ctx, ship.Ship.ID, "observe mode: funded scouting relocation is not executed")
+		}
+		return false, "", r.hold(ctx, ship.Ship.ID, "observe mode: funded sourcing inspection is not executed")
+	}
+	planIndex, insuranceErr := r.insuredRelocationPlan(ship, plans)
 	if insuranceErr != nil {
 		return false, "", r.hold(ctx, ship.Ship.ID, insuranceErr.Error())
 	}
@@ -945,26 +1064,32 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 	if err != nil {
 		return false, "", r.hold(ctx, ship.Ship.ID, "sourcing store-risk basis: "+err.Error())
 	}
-	contract, exists := r.contract(plan.ContractID)
-	if !exists {
-		return false, "", r.hold(ctx, ship.Ship.ID, "sourcing target contract disappeared before durable intent")
-	}
 	mission, data := r.newVoyage(ship, plan)
 	mission.Phase = "sourcing_fund"
-	_, _, ask := publicSourceEvidence(input, source, contract)
 	data.Relocation = &relocationIntent{
-		TargetContractID:    contract.ID,
-		TargetCommodity:     contract.CommodityID,
-		TargetDestination:   contract.OriginPortID,
+		TargetCommodity:     plan.Commodity,
+		TargetDestination:   plan.Origin,
 		ExpenseCapPence:     sourcingAllowance(input),
 		ModeledExpensePence: -plan.Economics.ExpectedNetPence,
-		IdlePilot:           sourcingUsesPilot(input, source.ID, contract, ask),
+		IdlePilot:           scout,
+		Scout:               scout,
 		StoreBasis: &relocationStoreBasis{
 			InitialTons:            ship.Stores.ProvisionsTons,
 			ReplacementPencePerTon: fill.LimitPence + ceilBPS(fill.LimitPence, input.Markets[plan.Origin].CustomsBPS),
 		},
 	}
-	data.ProvenLane = sourcingEvidenceKey(source.ID, contract, ask)
+	data.ProvenLane = scoutLaneKey(source.ID, plan.Origin, plan.Commodity)
+	if !scout {
+		contract, exists := r.contract(plan.ContractID)
+		if !exists {
+			return false, "", r.hold(ctx, ship.Ship.ID, "sourcing target contract disappeared before durable intent")
+		}
+		_, _, ask := publicSourceEvidence(input, source, contract)
+		data.Relocation.TargetContractID = contract.ID
+		data.Relocation.TargetDestination = contract.OriginPortID
+		data.Relocation.IdlePilot = sourcingUsesPilot(input, source.ID, contract, ask)
+		data.ProvenLane = sourcingEvidenceKey(source.ID, contract, ask)
+	}
 	return true, "", r.saveMission(ctx, mission, &data)
 }
 
@@ -1085,20 +1210,29 @@ func (r *Runner) relocationSpendingReadyAtPrice(ctx context.Context, ship ShipSt
 	}
 	input, err := r.committedPlanningInput(ctx, ship)
 	if err != nil {
-		return err
+		return scoutTransientError(data, err)
 	}
 	for _, key := range []string{"ships", "contracts", "clock", "vaults", "ledger"} {
 		if !input.fresh(key) {
-			return fmt.Errorf("idle exploration risk capital requires fresh %s", key)
+			return scoutTransientError(data, fmt.Errorf("idle exploration risk capital requires fresh %s", key))
 		}
 	}
 	if input.Clock.Paused || input.Clock.Calendar.TimeScale <= 0 || input.Clock.Calendar.TotalGameHours < data.StartedGameHours {
-		return errors.New("idle exploration risk capital requires an unpaused nonregressed game clock")
+		return scoutTransientError(data, errors.New("idle exploration risk capital requires an unpaused nonregressed game clock"))
 	}
 	atOrigin := ship.Ship.CurrentPortID == data.Plan.Origin && ship.Voyage == nil
 	if atOrigin {
 		if !r.shipIdleEligible(input) {
-			return errors.New("unstarted idle inspection waits for a coherent six-observed-game-hour idle baseline")
+			return scoutTransientError(data, errors.New("unstarted idle inspection waits for a coherent six-observed-game-hour idle baseline"))
+		}
+		if data.Relocation.Scout && !r.shipIdleFor(input, scoutIdleGameHours) {
+			return scoutTransientError(data, errors.New("unstarted scouting relocation waits for twelve coherent idle game hours at this port"))
+		}
+		if data.Relocation.Scout {
+			r.applySourcingHistory(&input)
+			if err := r.scoutTargetReady(ctx, input, data.Plan.Destination); err != nil {
+				return err
+			}
 		}
 		input.SourcingLoadingBlocked = r.insuranceActionReady(ship, "buy", "") != nil
 		if reason := sourcingAdmissionRejection(input); reason != "" {
@@ -1107,7 +1241,7 @@ func (r *Runner) relocationSpendingReadyAtPrice(ctx context.Context, ship ShipSt
 	}
 	history, err := r.db.EconomicHistory(ctx, r.account.ID, "")
 	if err != nil {
-		return err
+		return scoutTransientError(data, err)
 	}
 	if history.UnknownProbeCosts {
 		return errors.New("unpriced permanent probe expense blocks further idle exploration spending")
@@ -1132,7 +1266,7 @@ func (r *Runner) relocationSpendingReadyAtPrice(ctx context.Context, ship ShipSt
 		return errors.New("current idle exploration risk capital cannot cover active expense, unclaimed bills and new spending within the immutable cap")
 	}
 	if atOrigin {
-		plan := costRelocation(input, data.Plan)
+		plan := costCommittedRelocation(input, data)
 		if !plan.Accepted {
 			return fmt.Errorf("fresh idle inspection is no longer admissible: %s", plan.Reason)
 		}
@@ -1195,27 +1329,37 @@ func (r *Runner) relocationProvisionBudget(data *missionData, ship ShipState, in
 		return false
 	}
 	unit := limit + ceilBPS(limit, in.Markets[ship.Ship.CurrentPortID].CustomsBPS)
-	plan := costRelocation(in, data.Plan)
+	plan := costCommittedRelocation(in, data)
 	return r.relocationProjectedBudget(data, ship, in, plan, unit)
 }
 
-func (r *Runner) stageSourcingFunding(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData, input PlanningInput, required map[string]int64) (bool, error) {
+func (r *Runner) stageSourcingFunding(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData, input PlanningInput, required map[string]int64) (changed, ready bool, err error) {
 	_, fees, transfers, ok := measuredFunding(input.Balances, required, input.Rates)
 	if !ok {
-		return false, r.hold(ctx, ship.Ship.ID, "sourcing funds cannot be placed with observed fees while preserving every donor reserve and incumbent commitment")
+		err = errors.New("sourcing funds cannot be placed with observed fees while preserving every donor reserve and incumbent commitment")
+	} else if !r.relocationBudget(data, fees) {
+		err = errors.New("sourcing remittance fees would exceed the durable exploration expense cap")
+	} else {
+		err = r.relocationSpendingReady(ctx, ship, data, fees)
 	}
-	if !r.relocationBudget(data, fees) {
-		return false, r.hold(ctx, ship.Ship.ID, "sourcing remittance fees would exceed the durable exploration expense cap")
-	}
-	if err := r.relocationSpendingReady(ctx, ship, data, fees); err != nil {
-		return false, r.hold(ctx, ship.Ship.ID, err.Error())
+	if err != nil {
+		if data.Relocation.Scout {
+			changed, err = r.holdOrAbortRelocation(ctx, ship, mission, data, err)
+			return changed, false, err
+		}
+		if mission.Phase == "sourcing_fund" {
+			changed, err = r.abortRelocation(ctx, ship, mission, data, err.Error())
+			return changed, false, err
+		}
+		return false, false, r.hold(ctx, ship.Ship.ID, err.Error())
 	}
 	if len(transfers) == 0 {
-		return false, nil
+		return false, true, nil
 	}
 	transfer := transfers[0]
+	data.Relocation.TransientHoldSince = time.Time{}
 	data.Relocation.FundingRequiredPence = required[transfer.Rate.ToRegion] - input.Balances[transfer.Rate.ToRegion]
-	return true, r.stage(ctx, mission, data, ship, "sourcing-remit", "/v1/treasury/remit", map[string]any{
+	return true, false, r.stage(ctx, mission, data, ship, "sourcing-remit", "/v1/treasury/remit", map[string]any{
 		"from_region":        transfer.Rate.FromRegion,
 		"to_region":          transfer.Rate.ToRegion,
 		"gross_amount_pence": transfer.Gross,
@@ -1237,11 +1381,16 @@ func (r *Runner) relocationDepartureReady(ctx context.Context, ship ShipState, d
 	}
 	input, err := r.sourcingInput(ctx, ship)
 	if err != nil {
-		return err
+		return scoutTransientError(data, err)
+	}
+	if data.Relocation.Scout {
+		if err := r.scoutTargetReady(ctx, input, data.Plan.Destination); err != nil {
+			return err
+		}
 	}
 	// Re-evaluate every legal leg and target deadline, but do not treat already
 	// paid provision purchases as a second prospective purchase.
-	plan := costRelocation(input, data.Plan)
+	plan := costCommittedRelocation(input, data)
 	if !plan.Accepted {
 		return fmt.Errorf("fresh relocation admission failed: %s", plan.Reason)
 	}
@@ -1263,14 +1412,31 @@ func (r *Runner) driveRelocation(ctx context.Context, ship ShipState, mission *s
 	if !emptyCargo(ship) || len(freightStops(data.Freight)) > 0 || len(r.activeFreight(ship.Ship.ID)) > 0 {
 		return false, r.hold(ctx, ship.Ship.ID, "relocation cannot proceed or settle with residual cargo or sealed obligations")
 	}
+	if data.Relocation.Scout && !data.Relocation.TransientHoldSince.IsZero() && time.Since(data.Relocation.TransientHoldSince) > 30*time.Minute {
+		return r.abortRelocation(ctx, ship, mission, data, "scouting evidence remained unavailable for more than 30 real minutes")
+	}
 	switch mission.Phase {
 	case "sourcing_fund":
 		if err := r.insuranceActionReady(ship, "depart", mission.Destination); err != nil {
+			if data.Relocation.Scout {
+				if !r.fresh("insurance") {
+					err = scoutTransientError(data, err)
+				}
+				return r.holdOrAbortRelocation(ctx, ship, mission, data, err)
+			}
 			return false, r.hold(ctx, ship.Ship.ID, err.Error())
 		}
 		input, err := r.sourcingInput(ctx, ship)
 		if err != nil {
+			if data.Relocation.Scout {
+				return r.holdOrAbortRelocation(ctx, ship, mission, data, scoutTransientError(data, err))
+			}
 			return false, err
+		}
+		if data.Relocation.Scout {
+			if err := r.scoutTargetReady(ctx, input, data.Plan.Destination); err != nil {
+				return r.holdOrAbortRelocation(ctx, ship, mission, data, err)
+			}
 		}
 		if !r.fresh("rates") {
 			return false, r.hold(ctx, ship.Ship.ID, "sourcing funding requires current observed regional rates")
@@ -1280,31 +1446,42 @@ func (r *Runner) driveRelocation(ctx context.Context, ship ShipState, mission *s
 		if !exists || !originExists {
 			return false, r.hold(ctx, ship.Ship.ID, "durable sourcing ports are absent from catalog")
 		}
-		plan := costRelocation(input, data.Plan)
+		plan := costCommittedRelocation(input, data)
 		if !r.relocationProjectedBudget(data, ship, input, plan, 0) {
-			return r.abortRelocation(ctx, ship, mission, data, "fresh sourcing costs exceed the durable exploration cap or lack a known expense basis")
+			return r.holdOrAbortRelocation(ctx, ship, mission, data, errors.New("fresh sourcing costs exceed the durable exploration cap or lack a known expense basis"))
 		}
 		required := sourcingReserves(input, source)
 		required[origin.BankingRegion] += plan.Economics.StoreCashPence + plan.Economics.BerthDuesPence + plan.Economics.UpkeepPence
-		if changed, err := r.stageSourcingFunding(ctx, ship, mission, data, input, required); changed || err != nil {
+		if changed, ready, err := r.stageSourcingFunding(ctx, ship, mission, data, input, required); !ready || changed || err != nil {
 			return changed, err
 		}
 		if _, fees, transfers, funded := measuredFunding(input.Balances, required, input.Rates); !funded || len(transfers) > 0 || !r.relocationBudget(data, fees) {
-			return r.abortRelocation(ctx, ship, mission, data, "fresh sourcing reserve funding or its expense allowance is no longer available")
+			return r.holdOrAbortRelocation(ctx, ship, mission, data, errors.New("fresh sourcing reserve funding or its expense allowance is no longer available"))
 		}
 		data.Relocation.FundingRequiredPence = 0
+		data.Relocation.TransientHoldSince = time.Time{}
 		data.Plan = plan
 		mission.Phase = "provision"
 		return true, r.saveMission(ctx, mission, data)
 	case "provision":
+		if data.Relocation.Scout {
+			input, err := r.sourcingInput(ctx, ship)
+			if err != nil {
+				return r.holdOrAbortRelocation(ctx, ship, mission, data, scoutTransientError(data, err))
+			}
+			if err := r.scoutTargetReady(ctx, input, data.Plan.Destination); err != nil {
+				return r.holdOrAbortRelocation(ctx, ship, mission, data, err)
+			}
+		}
 		if ship.Stores.ProvisionsTons+1e-9 < data.Plan.TargetStoresTons {
 			return r.provisionMission(ctx, ship, mission, data, data.Plan.TargetStoresTons)
 		}
+		data.Relocation.TransientHoldSince = time.Time{}
 		mission.Phase = "depart"
 		return true, r.saveMission(ctx, mission, data)
 	case "depart":
 		if err := r.relocationDepartureReady(ctx, ship, data); err != nil {
-			return r.abortRelocation(ctx, ship, mission, data, err.Error())
+			return r.holdOrAbortRelocation(ctx, ship, mission, data, err)
 		}
 		return r.prepareDeparture(ctx, ship, mission, data)
 	case "sailing":
@@ -1314,12 +1491,18 @@ func (r *Runner) driveRelocation(ctx context.Context, ship ShipState, mission *s
 		if ship.Voyage != nil || ship.Ship.CurrentPortID != data.Plan.Destination {
 			return false, r.hold(ctx, ship.Ship.ID, "sourcing arrival disagrees with the durable source port")
 		}
+		if data.Relocation.Scout {
+			return r.closeAtDestination(ctx, ship, mission, data)
+		}
 		data.Relocation.InspectUntilGameHour = r.stateCache.Clock.Calendar.TotalGameHours + 6
 		mission.Phase = "inspect"
 		return true, r.saveMission(ctx, mission, data)
 	case "arrival", "inspect":
 		if ship.Voyage != nil || ship.Ship.CurrentPortID != data.Plan.Destination || ship.Ship.Status != "berthed" && ship.Ship.Status != "anchored_roadstead" {
 			return false, r.hold(ctx, ship.Ship.ID, "sourcing inspection requires authoritative stationary source presence")
+		}
+		if data.Relocation.Scout {
+			return r.closeAtDestination(ctx, ship, mission, data)
 		}
 		if data.Relocation.InspectUntilGameHour == 0 {
 			data.Relocation.InspectUntilGameHour = r.stateCache.Clock.Calendar.TotalGameHours + 6
@@ -1349,7 +1532,7 @@ func (r *Runner) driveRelocation(ctx context.Context, ship ShipState, mission *s
 				return false, r.hold(ctx, ship.Ship.ID, err.Error())
 			}
 			required := cargoFundingRequired(input, plan)
-			if changed, err := r.stageSourcingFunding(ctx, ship, mission, data, input, required); changed || err != nil {
+			if changed, _, err := r.stageSourcingFunding(ctx, ship, mission, data, input, required); changed || err != nil {
 				return changed, err
 			}
 			_, fees, transfers, funded := measuredFunding(input.Balances, required, input.Rates)
@@ -1403,6 +1586,23 @@ func (r *Runner) continueSourcing(ctx context.Context, ship ShipState, mission *
 	return true, r.saveMission(ctx, next, &nextData)
 }
 
+func (r *Runner) holdOrAbortRelocation(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData, err error) (bool, error) {
+	if data.Relocation.Scout && errors.Is(err, errScoutTransient) {
+		now := time.Now().UTC()
+		if data.Relocation.TransientHoldSince.IsZero() {
+			data.Relocation.TransientHoldSince = now
+			if saveErr := r.saveMission(ctx, mission, data); saveErr != nil {
+				return false, saveErr
+			}
+		}
+		if now.Sub(data.Relocation.TransientHoldSince) <= 30*time.Minute {
+			return false, r.hold(ctx, ship.Ship.ID, err.Error())
+		}
+		err = fmt.Errorf("scouting evidence remained unavailable for more than 30 real minutes: %w", err)
+	}
+	return r.abortRelocation(ctx, ship, mission, data, err.Error())
+}
+
 func (r *Runner) abortRelocation(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData, reason string) (bool, error) {
 	if err := r.hold(ctx, ship.Ship.ID, "sourcing relocation cancelled before further spending: "+reason); err != nil {
 		return false, err
@@ -1413,5 +1613,11 @@ func (r *Runner) abortRelocation(ctx context.Context, ship ShipState, mission *s
 	data.SourcingHandoff = nil
 	data.Plan.Destination = ship.Ship.CurrentPortID
 	mission.Destination = ship.Ship.CurrentPortID
+	if data.Relocation.Scout {
+		mission.Phase = "closing"
+		if err := r.saveMission(ctx, mission, data); err != nil {
+			return false, err
+		}
+	}
 	return r.closeAtDestination(ctx, ship, mission, data)
 }

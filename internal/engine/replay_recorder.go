@@ -21,7 +21,7 @@ const (
 )
 
 var replayPassRunnerKeys = []string{
-	"_ship_idle", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase",
+	"_ship_idle", "_book_observed", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase",
 }
 
 var replaySweepRunnerKeys = []string{

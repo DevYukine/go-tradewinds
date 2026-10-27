@@ -661,6 +661,7 @@ func (r *Runner) planningInputFrom(ship ShipState, state accountState) PlanningI
 		MarqueZones:           marqueZones,
 		Markets:               state.Markets,
 		Ports:                 state.Ports,
+		BookObservedAt:        decode[map[string]time.Time](r.snapshot, "_book_observed"),
 		Routes:                state.Routes,
 		Contracts:             taperedContracts(state.Contracts, state.Catalog, r.charterProceedsPence, ship.EffectiveHoldCapacityTons),
 		Balances:              balances,
