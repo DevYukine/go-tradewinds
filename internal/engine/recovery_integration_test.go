@@ -305,6 +305,10 @@ func (f *fakeGameAPI) handleGet(writer http.ResponseWriter, request *http.Reques
 		})
 	case "/v1/company/settings":
 		f.writeJSON(writer, http.StatusOK, f.settingsDocument())
+	case "/v1/rnd/status":
+		f.writeJSON(writer, http.StatusOK, rndStatusFixture())
+	case "/v1/rnd/register":
+		f.writeJSON(writer, http.StatusOK, rndRegisterFixture())
 	case "/v1/world/catalog":
 		f.writeJSON(writer, http.StatusOK, f.catalogDocument())
 	case "/v1/world/clock":

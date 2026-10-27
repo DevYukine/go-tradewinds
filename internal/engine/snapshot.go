@@ -43,6 +43,10 @@ func encode(value any) json.RawMessage {
 }
 
 func (r *Runner) applyCapture(ctx context.Context, key string, result fetchResult) bool {
+	if result.err == nil && key == "rnd_status" {
+		var status gameapi.RndStatus
+		result.err = json.Unmarshal(result.data, &status)
+	}
 	if result.err == nil && key == "loans" {
 		result.err = validateBorrowerLoans(result.data, r.account.CompanyID)
 	}
@@ -218,7 +222,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := r.captureWave(ctx, []fetchTask{
+	tasks := []fetchTask{
 		{"whoami", "/v1/auth/whoami", fetchJSON},
 		{"player", "/v1/player/profile", fetchJSON},
 		{"profile", "/v1/company/profile", fetchJSON},
@@ -246,8 +250,29 @@ func (r *Runner) refresh(ctx context.Context) error {
 		{"patrols", "/v1/fleet/patrols", fetchPages},
 		{"ledger", "/v1/treasury/ledger", fetchPages},
 		{"contracts", "", fetchContracts},
-	}, nil); err != nil {
+	}
+	now := time.Now()
+	rndStatusRequested := false
+	for _, task := range []fetchTask{
+		{"rnd_status", "/v1/rnd/status", fetchJSON},
+		{"rnd_register", "/v1/rnd/register", fetchJSON},
+	} {
+		meta := r.meta[task.key]
+		if now.Sub(maxTime(meta.AttemptedAt, meta.UpdatedAt)) >= rndObservationInterval {
+			tasks = append(tasks, task)
+			if task.key == "rnd_status" {
+				rndStatusRequested = true
+			}
+		}
+	}
+	if err := r.captureWave(ctx, tasks, nil); err != nil {
 		return err
+	}
+	if meta := r.meta["rnd_status"]; rndStatusRequested && meta.Generation == r.generation && meta.Complete && !meta.Stale && meta.Error == "" {
+		reason, details := rndDecision(decode[gameapi.RndStatus](r.snapshot, "rnd_status"))
+		if err := r.decision(ctx, "", "rnd", reason, details); err != nil {
+			return err
+		}
 	}
 	state := r.state()
 	// The route API's default max_phase follows the world unlock. Discard

@@ -79,18 +79,20 @@ func (e *requestFailure) Unwrap() error {
 
 type observer func(method, path string, status int, duration time.Duration, request, response []byte, errText string)
 
-// Client is safe for concurrent use. Rate buckets and transport connections are
-// shared across clients; API credentials and observers remain account-local.
+// Client is safe for concurrent use. Transport and account rate buckets are
+// shared; credentials and observers remain local. Release feed rates are isolated.
 type Client struct {
-	base     *url.URL
-	apiKey   string
-	keyHash  [sha256.Size]byte
-	http     *http.Client
-	rates    *hostRates
-	log      *zap.Logger
-	initErr  error
-	mu       sync.RWMutex
-	observer observer
+	base          *url.URL
+	apiKey        string
+	keyHash       [sha256.Size]byte
+	http          *http.Client
+	rates         *hostRates
+	log           *zap.Logger
+	initErr       error
+	mu            sync.RWMutex
+	observer      observer
+	releaseOnce   sync.Once
+	releaseClient *Client
 }
 
 func New(baseURL, apiKey string, log *zap.Logger) *Client {

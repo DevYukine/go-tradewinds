@@ -52,9 +52,10 @@ type tokenBucket struct {
 }
 
 type hostRates struct {
-	mu   sync.Mutex
-	ip   [bucketCount]tokenBucket
-	keys map[[sha256.Size]byte]*[bucketCount]tokenBucket
+	mu         sync.Mutex
+	ip         [bucketCount]tokenBucket
+	keys       map[[sha256.Size]byte]*[bucketCount]tokenBucket
+	publicFeed bool
 }
 
 func ratesFor(origin string) *hostRates {
@@ -178,10 +179,12 @@ func (r *hostRates) update(id bucketID, key [sha256.Size]byte, authenticated boo
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	for candidate, limit := range bucketLimits {
-		if response.Header.Get("X-Ratelimit-Bucket") == limit.name {
-			id = bucketID(candidate)
-			break
+	if !r.publicFeed {
+		for candidate, limit := range bucketLimits {
+			if response.Header.Get("X-Ratelimit-Bucket") == limit.name {
+				id = bucketID(candidate)
+				break
+			}
 		}
 	}
 
@@ -210,6 +213,9 @@ func (r *hostRates) update(id bucketID, key [sha256.Size]byte, authenticated boo
 	}
 	if response.StatusCode == http.StatusTooManyRequests && !until.After(now) {
 		until = now.Add(time.Duration(math.Ceil(float64(time.Second) / bucketLimits[id].refill)))
+	}
+	if r.publicFeed && until.After(now.Add(time.Hour)) {
+		until = now.Add(time.Hour)
 	}
 	if until.After(ip.pauseUntil) {
 		ip.pauseUntil = until

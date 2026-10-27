@@ -57,6 +57,8 @@ var snapshotBaseDatasetPaths = []string{
 	"/v1/fleet/marques",
 	"/v1/fleet/patrols",
 	"/v1/treasury/ledger",
+	"/v1/rnd/status",
+	"/v1/rnd/register",
 }
 
 // snapshotConcurrencyAPI serves the full base dataset surface plus the child
@@ -239,6 +241,10 @@ func (f *snapshotConcurrencyAPI) response(request *http.Request) (int, []byte) {
 			"auto_remit_for_bills":         true,
 			"auto_remit_min_reserve_pence": 200_000,
 		})
+	case "/v1/rnd/status":
+		return http.StatusOK, f.mustJSON(rndStatusFixture())
+	case "/v1/rnd/register":
+		return http.StatusOK, f.mustJSON(rndRegisterFixture())
 	case "/v1/world/catalog":
 		return http.StatusOK, f.mustJSON(map[string]any{
 			"ports": []any{

@@ -16,6 +16,7 @@ import (
 	"github.com/DevYukine/go-tradewinds/internal/engine"
 	"github.com/DevYukine/go-tradewinds/internal/gameapi"
 	"github.com/DevYukine/go-tradewinds/internal/httpapi"
+	"github.com/DevYukine/go-tradewinds/internal/releases"
 	"github.com/DevYukine/go-tradewinds/internal/store"
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxevent"
@@ -181,6 +182,13 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 					}
 				}()
 			}
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				releaseLog := log.Named("releases")
+				client := gameapi.New(cfg.APIURL, "", releaseLog.Named("api"))
+				releases.Watch(ctx, client.ReleaseNotes, releaseLog, 15*time.Minute)
+			}()
 			workers.Add(1)
 			go func() {
 				defer workers.Done()

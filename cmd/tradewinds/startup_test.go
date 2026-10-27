@@ -35,6 +35,20 @@ func TestRuntimeStartsHealthyAccountAndDashboardWithUnreadableCredentials(t *tes
 
 	playerID := uuid.NewString()
 	game := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/update" {
+			if r.Method != http.MethodGet || r.Header.Get("Authorization") != "" {
+				t.Error("release watcher must use an unauthenticated GET")
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode([]map[string]string{{
+				"version": "0.4.0", "released_on": "2026-10-26", "markdown": "# R&D",
+			}}); err != nil {
+				t.Error(err)
+			}
+			return
+		}
 		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer "+healthyKey {
 			t.Error("runtime sent an unexpected mutation or credential")
 			w.WriteHeader(http.StatusUnauthorized)
@@ -66,6 +80,12 @@ func TestRuntimeStartsHealthyAccountAndDashboardWithUnreadableCredentials(t *tes
 			document = map[string]any{}
 		case "/v1/treasury/vaults":
 			document = map[string]any{"company_id": healthy.CompanyID, "vaults": []any{}}
+		case "/v1/rnd/status":
+			document = map[string]any{
+				"can_start": true, "player_net_worth_pence": 100_000_000,
+				"entry_net_worth_pence": 50_000_000, "start_fee_pence": 1_500_000,
+				"upkeep_per_game_day_pence": 30_000,
+			}
 		}
 		if err := json.NewEncoder(w).Encode(document); err != nil {
 			t.Error(err)
@@ -154,5 +174,68 @@ func TestRuntimeStartsHealthyAccountAndDashboardWithUnreadableCredentials(t *tes
 	}
 	if stopped := logs.FilterMessage("account runner stopped").Len(); stopped != 0 {
 		t.Fatalf("healthy runner stopped unexpectedly: %d errors", stopped)
+	}
+}
+
+func TestRuntimeWatchesReleasesWithoutAccounts(t *testing.T) {
+	db, _, _ := registrationStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	requested := make(chan struct{}, 1)
+	game := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/update" || r.Header.Get("Authorization") != "" {
+			t.Errorf("unexpected public watcher request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode([]map[string]string{{
+			"version": "0.4.0", "released_on": "2026-10-26", "markdown": "# R&D",
+		}}); err != nil {
+			t.Error(err)
+		}
+		requested <- struct{}{}
+	}))
+	defer game.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	core, logs := observer.New(zap.InfoLevel)
+	app := fx.New(
+		fx.NopLogger,
+		fx.Invoke(func(lifecycle fx.Lifecycle, shutdown fx.Shutdowner) {
+			startRuntime(lifecycle, shutdown, config.Config{APIURL: game.URL, HTTPAddr: address}, db, zap.New(core), false)
+		}),
+	)
+	if err := app.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stopCancel()
+		if err := app.Stop(stopCtx); err != nil {
+			t.Errorf("stop account-free runtime: %v", err)
+		}
+	}()
+	select {
+	case <-requested:
+	case <-ctx.Done():
+		t.Fatal("public releases were not fetched without accounts")
+	}
+	for logs.FilterMessage("game release notes").Len() == 0 {
+		select {
+		case <-ctx.Done():
+			t.Fatal("account-free watcher did not log the startup version")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	startup := logs.FilterMessage("game release notes").All()
+	if len(startup) != 1 || startup[0].Level != zap.InfoLevel || startup[0].ContextMap()["version"] != "0.4.0" {
+		t.Fatalf("account-free startup release log: %+v", startup)
 	}
 }

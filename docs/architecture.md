@@ -50,6 +50,10 @@ Publish a paginated dataset only after all pages succeed. Retain the last good v
 
 The `loans` dataset paginates borrower-owned active and defaulted loans; an open loan action or financing intent also requires closed-loan authority for reconciliation. Publish only a complete response with the fields needed for debt reserves and collateral checks validated. Failed authority retains the last-good debt reserve and blocks new borrowing, not reserve-safe safety stores, sales, deliveries or docking. Debt reserves join regional cash requirements before discretionary allocation; the normative rules are in [Capacity financing](strategy.md#capacity-financing).
 
+The low-frequency authenticated R&D datasets `rnd_status` and `rnd_register` read only `/v1/rnd/status` and `/v1/rnd/register`, at most once per account per 30 real minutes, including after failures. They retain last-good raw responses and dataset freshness/error metadata; owned patents, licences and component inventories are not fetched. The register is evidence for later rival analysis, not investment authority. The `rnd` decision records eligibility and estimated cost without authorizing research, patent, licence, manufacturing or fitting investment mutations. Identical details deduplicate, but changing player net worth normally produces about one decision per 30-minute poll.
+
+R&D diagnostics currently use the generic two-minute stale display, not a dataset-specific expected-cadence mechanism. No such mechanism has been identified. Between scheduled 30-minute polls, a stale display without an error is expected and does not by itself indicate a failed fetch.
+
 Each refresh runs independent GET jobs through at most six workers on the account's existing rate-limited client. Dependent waves still wait for their prerequisites; pagination and the explicit contract-status reads remain ordered within their job. Workers return private results and request timing. Only the runner reduces them into the snapshot, in deterministic order, after the wave has joined. Cancellation joins all workers and publishes no partial generation. Mutations remain serialized and do not overlap capture workers.
 
 An actual CLI fixture capture completed 31 GETs in 0.519 real seconds; those requests' measured service times summed to 1.255 seconds. This is a local overlap measurement, not a live-game speedup benchmark or a separately run serial client. The same run observed six concurrent GETs, one mutation at a time, no GET/mutation overlap, and recovery after a `Retry-After: 1` refusal.
@@ -75,6 +79,8 @@ The published stream-control epoch also fences staging, preflight and the actual
 ## Rate limits and retry ownership
 
 The transport owns individual attempts, bounded transient retries, and rate-limit waits. The engine owns mission recovery, SSE reconnection, resynchronization, and economic replanning. Both use cancellation.
+
+A process-wide public release watcher runs independently of account runners and trading, including when no account can trade. Its unauthenticated client reads the configured API's `/update` at startup and every 15 real minutes, with limiter feedback isolated from authenticated clients and a public cooldown capped at one hour. The first successful feed establishes the baseline even when empty; the first later release warns. Restarts establish a new informational baseline. A feed omitting the last-seen release is ignored without advancing its cursor. Polls emit at most five release warnings with bounded fields and headings extracted outside fenced code. Consecutive failures log once per streak and use jittered exponential retries starting within one minute and capped at one hour. This watcher neither blocks trading nor authorizes investment mutations.
 
 | Bucket | Per-key burst / refill per second | Shared-IP allowance |
 | --- | ---: | ---: |
