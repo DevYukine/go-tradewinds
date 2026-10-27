@@ -34,6 +34,7 @@ type currentHold struct {
 	ShipID    string `json:"ship_id"`
 	Reason    string `json:"reason"`
 	subjectID string
+	expected  bool
 }
 
 type Runner struct {
@@ -557,6 +558,14 @@ func (r *Runner) rememberDecision(key string, fingerprint [sha256.Size]byte, now
 }
 
 func (r *Runner) hold(ctx context.Context, shipID, reason string) error {
+	return r.recordHold(ctx, shipID, reason, false)
+}
+
+func (r *Runner) holdExpected(ctx context.Context, shipID, reason string) error {
+	return r.recordHold(ctx, shipID, reason, true)
+}
+
+func (r *Runner) recordHold(ctx context.Context, shipID, reason string, expected bool) error {
 	holdShipID := shipID
 	switch shipID {
 	case "__treasury", "__growth", "__loans", "__underwriting", "__marque":
@@ -566,8 +575,29 @@ func (r *Runner) hold(ctx context.Context, shipID, reason string) error {
 	if subjectID == "" {
 		subjectID = r.holdScope
 	}
-	r.holding = append(r.holding, currentHold{ShipID: holdShipID, Reason: reason, subjectID: subjectID})
+	r.holding = append(r.holding, currentHold{ShipID: holdShipID, Reason: reason, subjectID: subjectID, expected: expected})
 	return r.decision(ctx, shipID, "hold", reason, nil)
+}
+
+func (r *Runner) holdVoyageArrival(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData, reason string) error {
+	now, _, clockOK := r.serverBounds()
+	if !clockOK || ship.Voyage == nil || ship.Voyage.EstimatedArrivalAt.IsZero() {
+		return r.hold(ctx, ship.Ship.ID, reason)
+	}
+	if data.FirstArrivalETA.IsZero() {
+		data.FirstArrivalETA = ship.Voyage.EstimatedArrivalAt
+		if err := r.saveMission(ctx, mission, data); err != nil {
+			return err
+		}
+	}
+	eta := data.FirstArrivalETA
+	if ship.Voyage.EstimatedArrivalAt.Before(eta) {
+		eta = ship.Voyage.EstimatedArrivalAt
+	}
+	if now.After(eta.Add(5 * time.Minute)) {
+		return r.hold(ctx, ship.Ship.ID, reason)
+	}
+	return r.holdExpected(ctx, ship.Ship.ID, reason)
 }
 
 func (r *Runner) planningInput(ship ShipState) PlanningInput {

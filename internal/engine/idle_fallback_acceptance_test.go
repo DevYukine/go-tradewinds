@@ -554,7 +554,7 @@ func TestIdleFallbackKeepsActiveAndAmbiguousExplorationExclusive(t *testing.T) {
 			}
 			w.h.putMission(recoveryShipCharizard, "exclusive-idle-probe", "sourcing_fund", data)
 			ship, _ := runner.ship(recoveryShipBlastoise)
-			started, err := runner.considerSourcing(w.h.ctx, ship)
+			started, _, err := runner.considerSourcing(w.h.ctx, ship)
 			if err != nil {
 				t.Fatal(err)
 			}

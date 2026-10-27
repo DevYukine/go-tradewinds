@@ -1061,7 +1061,7 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 	}
 	for region, required := range best.required {
 		if evidence.balances[region] < required {
-			return false, r.hold(ctx, "", "best capital-return package awaits completed regional funding")
+			return false, r.holdExpected(ctx, "", "best capital-return package awaits completed regional funding")
 		}
 	}
 	return r.startGrowth(ctx, best.port, best.hull, best.plan, best.decision.WorkingCapitalPence)

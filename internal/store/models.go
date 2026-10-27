@@ -26,8 +26,10 @@ const (
 	DiagnosticRetention = 7 * 24 * time.Hour
 	MaxHistoryLimit     = 500
 
+	// MaxSnapshotBytes bounds the encoded account snapshot accepted by SaveSnapshot.
+	MaxSnapshotBytes = 8 * 1024 * 1024
+
 	maxDiagnosticBytes        = 32 * 1024
-	maxSnapshotBytes          = 8 * 1024 * 1024
 	maxDashboardSnapshotBytes = 16 * 1024 * 1024
 	maxDashboardAccounts      = 100
 )

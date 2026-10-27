@@ -62,6 +62,7 @@ type missionData struct {
 	Freight                   []freightObligation     `json:"freight"`
 	Eligible                  map[string]int64        `json:"eligible"`
 	DepartedCargo             map[string]int64        `json:"departed_cargo"`
+	FirstArrivalETA           time.Time               `json:"first_arrival_eta,omitempty"`
 	BoughtQuantity            int64                   `json:"bought_quantity"`
 	DeliveredQuantity         int64                   `json:"delivered_quantity"`
 	BuyDone                   bool                    `json:"buy_done"`
@@ -327,10 +328,13 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			voyageHeld = true
 		}
 		holdsBeforeSourcing := len(r.holding)
+		sourcingReason := ""
 		if !sourcingActive {
-			if changed, err := r.considerSourcing(ctx, ship); changed || err != nil {
+			changed, reason, err := r.considerSourcing(ctx, ship)
+			if changed || err != nil {
 				return changed, err
 			}
+			sourcingReason = reason
 		}
 		sourcingHeld := false
 		for _, hold := range r.holding[holdsBeforeSourcing:] {
@@ -343,10 +347,16 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			reason := "no executable purchase-and-voyage alternative from " + ship.Ship.CurrentPortID
 			if len(plans) > 0 {
 				best := plans[0]
-				reason = fmt.Sprintf("no profitable executable voyage from %s; best evaluated alternative %dt %s to %s: %s", ship.Ship.CurrentPortID, best.Quantity, best.Commodity, best.Destination, best.Reason)
-				if best.Economics.GameDays > 0 {
-					reason += fmt.Sprintf(" (expected cash net %dp; %.0fp per game day)", best.Economics.ExpectedNetPence, best.Economics.NetPencePerGameDay)
+				reason = "no profitable executable voyage from " + ship.Ship.CurrentPortID
+				if sourcingReason == "" {
+					reason += fmt.Sprintf("; best evaluated alternative %dt %s to %s: %s", best.Quantity, best.Commodity, best.Destination, best.Reason)
+					if best.Economics.GameDays > 0 {
+						reason += fmt.Sprintf(" (expected cash net %dp; %.0fp per game day)", best.Economics.ExpectedNetPence, best.Economics.NetPencePerGameDay)
+					}
 				}
+			}
+			if sourcingReason != "" {
+				reason += "; sourcing: " + sourcingReason
 			}
 			if err := r.hold(ctx, ship.Ship.ID, reason); err != nil {
 				return false, err
@@ -592,7 +602,7 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 	}
 	if mission.Phase == "sailing" || mission.Phase == "return_sailing" {
 		if ship.Ship.Status == "sailing" {
-			return false, r.hold(ctx, ship.Ship.ID, "actual fleet confirms voyage in flight; waiting for authoritative arrival")
+			return false, r.holdVoyageArrival(ctx, ship, mission, data, "actual fleet confirms voyage in flight; waiting for authoritative arrival")
 		}
 		destination := data.Plan.Destination
 		if mission.Phase == "return_sailing" {

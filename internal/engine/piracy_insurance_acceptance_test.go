@@ -624,7 +624,7 @@ func TestPiracyInsuranceSourcingAdmissionAndFunding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			changed, err := runner.considerSourcing(h.ctx, ship)
+			changed, _, err := runner.considerSourcing(h.ctx, ship)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1086,7 +1086,7 @@ func TestPiracyInsuranceSourcingFundingFirstSend(t *testing.T) {
 	runner := refreshedRunner(t, h)
 	sourcingReviewInject(t, runner, sourcingReviewCharters())
 	ship := harnessShip(t, runner, recoveryShipBlastoise)
-	if changed, err := runner.considerSourcing(h.ctx, ship); err != nil || !changed {
+	if changed, _, err := runner.considerSourcing(h.ctx, ship); err != nil || !changed {
 		t.Fatalf("matching insured empty sourcing did not admit funded transfer: changed %t error %v holds %+v", changed, err, runner.holding)
 	}
 	mission, data := h.mission(ship.Ship.ID)
@@ -1929,7 +1929,7 @@ func TestPiracyInsuranceSourcingSelectsHighestRankedPolicyCompatibleSource(t *te
 			if err != nil {
 				t.Fatal(err)
 			}
-			changed, err := runner.considerSourcing(h.ctx, ship)
+			changed, _, err := runner.considerSourcing(h.ctx, ship)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -309,7 +309,7 @@ func (r *Runner) holdCapacitySavings(ctx context.Context, target capacitySavings
 	}); err != nil {
 		return false, err
 	}
-	return false, r.hold(ctx, "", capacitySavingsReason)
+	return false, r.holdExpected(ctx, "", capacitySavingsReason)
 }
 
 type capacityIntent struct {
@@ -327,7 +327,23 @@ func (r *Runner) holdCapacityGrowth(ctx context.Context, reason string) (bool, e
 	if err := r.decision(ctx, "", "capacity_growth", reason, decision); err != nil {
 		return false, err
 	}
-	return false, r.hold(ctx, "", reason)
+	return false, r.recordHold(ctx, "", reason, expectedGrowthAdmission(reason))
+}
+
+// Admission decisions may wait quietly; missing authority and integrity
+// failures default to real stalls, including any newly introduced verdict.
+func expectedGrowthAdmission(reason string) bool {
+	switch reason {
+	case capacityShipLossReason,
+		"capacity growth waits for every unresolved account action",
+		"capacity growth waits for every unresolved control action",
+		"capacity growth waits for every unresolved mission action",
+		"capacity growth must reuse an idle ship's currently executable profitable lane first",
+		"capacity growth waits for every stationary incumbent to have a voyage commitment":
+		return true
+	}
+	return strings.HasPrefix(reason, "growth deferred: incumbent working capital or protected regional bills are underfunded in ") ||
+		strings.HasPrefix(reason, "capacity growth pauses for ") && strings.HasSuffix(reason, " real hours after a build price overrun")
 }
 
 func (r *Runner) capacityLosses(ctx context.Context, asOf time.Time) (string, error) {
@@ -388,12 +404,21 @@ func (r *Runner) capacityLosses(ctx context.Context, asOf time.Time) (string, er
 	windowStart := asOf.Add(-capacityHistoryWindow)
 	recentLoss := false
 	for _, lostAt := range losses {
+		if lostAt.After(asOf) {
+			futureLoss = true
+		}
 		if !lostAt.Before(windowStart) {
 			recentLoss = true
 			r.wakeBy(lostAt.Add(capacityHistoryWindow))
 		}
 	}
-	if undatedLoss || futureLoss || recentLoss {
+	if undatedLoss {
+		return "capacity growth requires a reliable timestamp for every ship loss", nil
+	}
+	if futureLoss {
+		return "capacity growth rejects future-dated ship-loss evidence", nil
+	}
+	if recentLoss {
 		return capacityShipLossReason, nil
 	}
 	return "", nil
@@ -869,7 +894,7 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 		return r.holdCapacitySavings(ctx, savingsTarget, bestDecision, evidence.available, savingsRate)
 	}
 	if !found {
-		if err := r.hold(ctx, "", bestDecision.Reason); err != nil {
+		if err := r.holdExpected(ctx, "", bestDecision.Reason); err != nil {
 			return false, err
 		}
 		if r.opts.Execute && canExpand && portID == "" {
@@ -885,7 +910,7 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 	}
 	for region, required := range bestRequired {
 		if evidence.balances[region] < required {
-			return false, r.hold(ctx, "", "capacity growth waits for completed regional yard funding")
+			return false, r.holdExpected(ctx, "", "capacity growth waits for completed regional yard funding")
 		}
 	}
 	changed, err := r.startCapacityGrowth(ctx, bestPort, bestHull, bestDecision, nil)

@@ -123,6 +123,9 @@ func (r *Runner) stageAction(ctx context.Context, mission *store.Mission, data *
 			return r.hold(ctx, mission.ShipID, err.Error())
 		}
 	}
+	if stage == "depart" {
+		data.FirstArrivalETA = time.Time{}
+	}
 	return r.saveMission(ctx, mission, data)
 }
 

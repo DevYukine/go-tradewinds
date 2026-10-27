@@ -122,7 +122,7 @@ func sourcingReviewPass(t *testing.T, h *recoveryHarness, runner *Runner, charte
 	if !exists {
 		t.Fatal("review ship missing from the refreshed fleet")
 	}
-	if _, err := runner.considerSourcing(h.ctx, ship); err != nil {
+	if _, _, err := runner.considerSourcing(h.ctx, ship); err != nil {
 		t.Fatalf("run sourcing review: %v", err)
 	}
 }

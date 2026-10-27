@@ -125,7 +125,7 @@ func idleExecutionReviewPilot(t *testing.T) (*idleFallbackWorld, *Runner, *store
 	idleExecutionReviewSetFree(t, w, runner, 1_000_000)
 	w.observe(t, runner, 106)
 	ship, _ := runner.ship(recoveryShipBlastoise)
-	started, err := runner.considerSourcing(w.h.ctx, ship)
+	started, _, err := runner.considerSourcing(w.h.ctx, ship)
 	if err != nil || !started {
 		t.Fatalf("select the liquidity-backed pilot: started=%v err=%v holds=%v", started, err, runner.holding)
 	}

@@ -45,7 +45,7 @@ func (s *Store) Competition(ctx context.Context, accountID string, at time.Time)
 		}
 		// PostgreSQL's jsonb text adds whitespace absent from SaveSnapshot's
 		// compact JSON; that rendering is bounded by twice the compact cap.
-		if size > 2*maxSnapshotBytes {
+		if size > 2*MaxSnapshotBytes {
 			return ErrResponseTooLarge
 		}
 		if err := tx.Table("snapshots").Select("data -> 'catalog' AS catalog, data -> 'ports' AS ports, data -> '_meta' AS metadata").

@@ -118,7 +118,7 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if target.PortID != "" {
-		return false, r.hold(ctx, "", capacitySavingsReason)
+		return false, r.holdExpected(ctx, "", capacitySavingsReason)
 	}
 	for _, dataset := range []string{"catalog", "clock", "ships", "factors", "contracts", "vaults", "rates", "profile"} {
 		if !r.fresh(dataset) {
@@ -155,7 +155,7 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		return false, r.hold(ctx, "", reason)
+		return false, r.recordHold(ctx, "", reason, expectedGrowthAdmission(reason))
 	}
 	evidence.available = 0
 	for region, balance := range input.Balances {
@@ -166,7 +166,7 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		return false, r.hold(ctx, "", reason)
+		return false, r.recordHold(ctx, "", reason, expectedGrowthAdmission(reason))
 	}
 	cheapest := int64(math.MaxInt64)
 	var estimatedCapital int64
@@ -201,7 +201,7 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 		}
 	}
 	if cheapest == math.MaxInt64 {
-		return false, r.hold(ctx, "", "expansion agent needs a previously observed regional hull quote to estimate overseas capital")
+		return false, r.holdExpected(ctx, "", "expansion agent needs a previously observed regional hull quote to estimate overseas capital")
 	}
 	if err := r.decision(ctx, "", "expansion_agent", "estimate overseas capital from observed quotes before exploring an unoccupied region with a positive observed spot spread", map[string]any{
 		"port_id": yard.ID, "region": yard.BankingRegion, "score_pence": score, "estimated_hull_capital_pence": estimatedCapital,
@@ -211,7 +211,7 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if evidence.available < cheapest {
-		return false, r.hold(ctx, "", "expansion agent requires surplus for estimated regional hull capital, capacity cash buffer and hire fee")
+		return false, r.holdExpected(ctx, "", "expansion agent requires surplus for estimated regional hull capital, capacity cash buffer and hire fee")
 	}
 	required := input.ReserveByRegion
 	baseRequired, err := r.treasuryReserves(ctx)
@@ -224,14 +224,14 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 	required[yard.BankingRegion] = growthCashTotal(max(required[yard.BankingRegion], r.opts.ReservePence), expansionAgentHireFeePence)
 	_, fees, _, funded := measuredFunding(input.Balances, required, input.Rates)
 	if !funded || evidence.available < growthCashTotal(cheapest, fees) {
-		return false, r.hold(ctx, "", "expansion agent must preserve the hull capital, capacity working cash and funding fees")
+		return false, r.holdExpected(ctx, "", "expansion agent must preserve the hull capital, capacity working cash and funding fees")
 	}
 	if changed, err := r.fundTreasury(ctx, input.Balances, required); changed || err != nil {
 		return changed, err
 	}
 	for region, amount := range required {
 		if input.Balances[region] < amount {
-			return false, r.hold(ctx, "", "expansion agent waits for completed regional fee and reserve funding")
+			return false, r.holdExpected(ctx, "", "expansion agent waits for completed regional fee and reserve funding")
 		}
 	}
 	mission = &store.Mission{

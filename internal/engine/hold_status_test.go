@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DevYukine/go-tradewinds/internal/store"
 	"go.uber.org/zap"
 )
 
@@ -209,5 +210,106 @@ func TestHoldStatusSuppressesTransientClassesAndDroppedShips(t *testing.T) {
 	runner.logStatus(h.ctx, start.Add(72*time.Minute))
 	if logs.FilterMessage("work still blocked").Len() != 1 || logs.FilterMessage("work unblocked").Len() != 0 {
 		t.Fatal("a ship absent from a fresh fleet must stop heartbeats without inventing a clear")
+	}
+}
+
+func TestHoldStatusVoyageArrivalWaitBecomesRealWhenOverdue(t *testing.T) {
+	for _, tc := range []struct {
+		name, phase string
+		relocation  bool
+	}{
+		{"ordinary voyage", "sailing", false},
+		{"return voyage", "return_sailing", false},
+		{"sourcing voyage", "sailing", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			runner, logs := observedStatusRunner(h)
+			runner.opts.Execute = true
+			start := time.Now().UTC()
+			// A skewed host clock must not make an on-time voyage look overdue.
+			serverNow := start.Add(-2 * time.Hour)
+			ship := operationShip(recoveryShipLapras, "Lapras", "sailing", recoveryHomePort)
+			ship.Voyage = &struct {
+				EstimatedArrivalAt time.Time `json:"estimated_arrival_at"`
+			}{EstimatedArrivalAt: serverNow.Add(time.Minute)}
+			runner.stateCache.Ships = []ShipState{ship}
+			mission := &store.Mission{AccountID: h.account.ID, ShipID: ship.Ship.ID, Phase: tc.phase, Generation: "arrival-status-test"}
+			data := missionData{Plan: Plan{Origin: recoveryHomePort, Destination: recoveryFarPort}}
+			if tc.relocation {
+				data.Relocation = &relocationIntent{}
+			}
+			for _, elapsed := range []time.Duration{0, 5 * time.Minute, 7 * time.Minute, 12 * time.Minute, 42 * time.Minute} {
+				runner.holding = nil
+				clear(runner.assessedHoldIDs)
+				runner.assessShip(ship.Ship.ID)
+				captured := time.Now().UTC()
+				runner.meta["clock"] = DatasetMeta{
+					AttemptedAt: captured, UpdatedAt: captured,
+					Generation: runner.generation, Complete: true,
+				}
+				runner.stateCache.Clock.RealUTC = serverNow.Add(elapsed)
+				if elapsed >= 7*time.Minute {
+					mission, data = h.mission(ship.Ship.ID)
+					ship.Voyage.EstimatedArrivalAt = serverNow.Add(2 * time.Hour)
+				}
+				if changed, err := runner.driveMission(h.ctx, ship, mission, &data); changed || err != nil {
+					t.Fatalf("arrival wait advanced without authoritative arrival: changed=%v err=%v", changed, err)
+				}
+				expected := elapsed < 7*time.Minute
+				if len(runner.holding) != 1 || runner.holding[0].expected != expected {
+					t.Fatalf("arrival classification at %s: expected=%v holds=%+v", elapsed, expected, runner.holding)
+				}
+				runner.logStatus(h.ctx, start.Add(elapsed))
+				wantBlocked := 0
+				if elapsed >= 12*time.Minute {
+					wantBlocked = 1
+				}
+				if logs.FilterMessage("work blocked").Len() != wantBlocked {
+					t.Fatalf("arrival wait logged before the grace and real-hold delays elapsed: %s", elapsed)
+				}
+			}
+			blocked := logs.FilterMessage("work blocked").All()
+			if blocked[0].ContextMap()["blocked_since"] != start.Add(7*time.Minute) ||
+				logs.FilterMessage("work still blocked").Len() != 1 {
+				t.Fatal("overdue voyage lost its real-hold interval or thirty-minute heartbeat")
+			}
+			if logs.FilterMessage("ship arrived").Len() != 0 {
+				t.Fatal("an overdue ETA invented an authoritative arrival")
+			}
+		})
+	}
+}
+
+func TestHoldStatusVoyageArrivalWithoutTimeAuthorityRemainsReal(t *testing.T) {
+	for _, missing := range []string{"voyage", "ETA", "clock"} {
+		t.Run(missing, func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			runner, _ := observedStatusRunner(h)
+			now := time.Now().UTC()
+			runner.stateCache.Clock.RealUTC = now
+			runner.meta["clock"] = DatasetMeta{
+				AttemptedAt: now, UpdatedAt: now,
+				Generation: runner.generation, Complete: true,
+			}
+			ship := operationShip(recoveryShipLapras, "Lapras", "sailing", recoveryHomePort)
+			ship.Voyage = &struct {
+				EstimatedArrivalAt time.Time `json:"estimated_arrival_at"`
+			}{EstimatedArrivalAt: now.Add(time.Minute)}
+			switch missing {
+			case "voyage":
+				ship.Voyage = nil
+			case "ETA":
+				ship.Voyage.EstimatedArrivalAt = time.Time{}
+			case "clock":
+				delete(runner.meta, "clock")
+			}
+			if err := runner.holdVoyageArrival(h.ctx, ship, &store.Mission{}, &missionData{}, "waiting for authoritative arrival"); err != nil {
+				t.Fatal(err)
+			}
+			if len(runner.holding) != 1 || runner.holding[0].expected {
+				t.Fatalf("missing %s must not hide a voyage indefinitely: %+v", missing, runner.holding)
+			}
+		})
 	}
 }

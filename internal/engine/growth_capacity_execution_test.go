@@ -764,8 +764,23 @@ func TestCapacityGrowthShipLossWindowAndFirstObservationSurviveRestart(t *testin
 			}
 			runner.stateCache.Ships = append(runner.stateCache.Ships, lost)
 			_, reason, err := runner.capacityFleetInput(h.ctx, &evidence)
-			if err != nil || timing == "old" && reason != "" || timing != "old" && reason != capacityShipLossReason {
-				t.Fatalf("%s sinking admission: %s, %v", timing, reason, err)
+			wantReason := capacityShipLossReason
+			switch timing {
+			case "undated":
+				wantReason = "capacity growth requires a reliable timestamp for every ship loss"
+			case "future":
+				wantReason = "capacity growth rejects future-dated ship-loss evidence"
+			case "old":
+				wantReason = ""
+			}
+			if err != nil || reason != wantReason {
+				t.Fatalf("%s sinking admission: %s, %v; want %q", timing, reason, err, wantReason)
+			}
+			if reason != "" {
+				if _, err := runner.holdCapacityGrowth(h.ctx, reason); err != nil {
+					t.Fatal(err)
+				}
+				requireReviewHold(t, runner, reason, timing == "recent")
 			}
 			if timing == "old" {
 				laterTouch := evidence.asOf.Add(-time.Minute)

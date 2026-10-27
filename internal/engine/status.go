@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"regexp"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -115,15 +116,40 @@ func (r *Runner) logBlockingStatus(ctx context.Context, now time.Time, fleetFres
 		status.observed = false
 		r.blockingStatuses[id] = status
 	}
+	growthWaiting := false
 	for _, hold := range r.holding {
 		id := hold.subjectID
 		if id == "" {
 			id = hold.ShipID
 		}
+		blockedSince := now
+		if hold.expected {
+			if id != "__growth" {
+				continue
+			}
+			growthWaiting = true
+			since := decode[time.Time](r.snapshot, "_growth_wait_since")
+			if since.IsZero() {
+				since = now
+				r.snapshot["_growth_wait_since"] = encode(since)
+			}
+			if !since.After(now) && now.Sub(since) < 6*time.Hour {
+				continue
+			}
+			if !since.After(now) {
+				blockedSince = since
+			}
+		}
 		status := r.blockingStatuses[id]
+		if status.blockedSince.IsZero() || blockedSince.Before(status.blockedSince) {
+			status.blockedSince = blockedSince
+		}
 		status.currentReason = hold.Reason
 		status.observed = true
 		r.blockingStatuses[id] = status
+	}
+	if r.assessedHoldIDs["__growth"] && !growthWaiting {
+		delete(r.snapshot, "_growth_wait_since")
 	}
 	for id, status := range r.blockingStatuses {
 		switch id {
@@ -141,7 +167,9 @@ func (r *Runner) logBlockingStatus(ctx context.Context, now time.Time, fleetFres
 				status.blockedSince = now
 			}
 			if status.reason != status.currentReason {
-				class := blockingReasonNumbers.ReplaceAllString(status.currentReason, "#")
+				headline, _, _ := strings.Cut(status.currentReason, "; best evaluated")
+				headline, _, _ = strings.Cut(headline, "; sourcing:")
+				class := blockingReasonNumbers.ReplaceAllString(headline, "#")
 				if status.reasonClass != class {
 					status.reasonClass = class
 					status.classSince = now

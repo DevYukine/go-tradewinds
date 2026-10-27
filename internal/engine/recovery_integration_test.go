@@ -370,10 +370,9 @@ func (f *fakeGameAPI) handleGet(writer http.ResponseWriter, request *http.Reques
 			"total_cost_pence":  60_000,
 		})
 	case "/v1/world/route":
-		f.writeJSON(writer, http.StatusOK, f.routeDocument(
-			request.URL.Query().Get("from"),
-			request.URL.Query().Get("to"),
-		))
+		route := f.routeDocument(request.URL.Query().Get("from"), request.URL.Query().Get("to"))
+		route["ship_class"] = request.URL.Query().Get("ship_class")
+		f.writeJSON(writer, http.StatusOK, route)
 	default:
 		f.writeProblem(writer, http.StatusNotFound, "not_found", "this test fake does not implement "+request.URL.Path)
 	}

@@ -359,15 +359,38 @@ func (s *Store) authenticatedSecrets(db *gorm.DB) (map[string][]string, error) {
 	return secrets, nil
 }
 
+func encodeSnapshot(data map[string]json.RawMessage, secrets []string) ([]byte, error) {
+	if data == nil {
+		data = make(map[string]json.RawMessage)
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("encode snapshot: %w", err)
+	}
+	return redactJSON(encoded, secrets, 0)
+}
+
+// RedactedSnapshotSize measures the exact encoded representation SaveSnapshot
+// persists, including credential scrubbing. It may exceed MaxSnapshotBytes so
+// callers can evict optional history before attempting to save.
+func (s *Store) RedactedSnapshotSize(ctx context.Context, accountID string, data map[string]json.RawMessage) (int, error) {
+	secrets, err := s.secrets(ctx, accountID)
+	if err != nil {
+		return 0, err
+	}
+	encoded, err := encodeSnapshot(data, secrets)
+	if err != nil {
+		return 0, err
+	}
+	return len(encoded), nil
+}
+
 func (s *Store) SaveSnapshot(ctx context.Context, accountID string, data map[string]json.RawMessage) error {
 	secrets, err := s.secrets(ctx, accountID)
 	if err != nil {
 		return err
 	}
-	if data == nil {
-		data = make(map[string]json.RawMessage)
-	}
-	remaining := maxSnapshotBytes
+	remaining := MaxSnapshotBytes
 	for key, raw := range data {
 		if len(key) > remaining {
 			return ErrResponseTooLarge
@@ -378,15 +401,11 @@ func (s *Store) SaveSnapshot(ctx context.Context, accountID string, data map[str
 		}
 		remaining -= len(raw)
 	}
-	encoded, err := json.Marshal(data)
-	if err != nil {
-		return fmt.Errorf("encode snapshot: %w", err)
-	}
-	encoded, err = redactJSON(encoded, secrets, 0)
+	encoded, err := encodeSnapshot(data, secrets)
 	if err != nil {
 		return err
 	}
-	if len(encoded) > maxSnapshotBytes {
+	if len(encoded) > MaxSnapshotBytes {
 		return ErrResponseTooLarge
 	}
 	row := snapshotRow{AccountID: accountID, Data: encoded, UpdatedAt: time.Now().UTC()}

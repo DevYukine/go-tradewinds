@@ -852,28 +852,28 @@ func (r *Runner) loadSourcingHistory(ctx context.Context, input *PlanningInput) 
 	return nil
 }
 
-func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, error) {
+func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, string, error) {
 	for _, id := range []string{"__treasury", "__growth"} {
 		mission, err := r.db.GetMission(ctx, r.account.ID, id)
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		if mission != nil {
-			return false, nil
+			return false, "", nil
 		}
 	}
 	for _, other := range r.stateCache.Ships {
 		mission, data, err := r.loadMission(ctx, other.Ship.ID)
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		if mission != nil && (data.Relocation != nil || data.SourcingHandoff != nil) {
-			return false, nil
+			return false, "", nil
 		}
 	}
 	input, err := r.sourcingInput(ctx, ship)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	plans := planSourcingRelocation(input)
 	accepted := 0
@@ -885,11 +885,11 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, er
 	shown := min(3, len(plans))
 	summary := map[string]int{"candidates": len(plans), "accepted": accepted, "shown": shown}
 	if err := r.decision(ctx, ship.Ship.ID, "sourcing", "ranked public sourcing candidates; remote executable inventory and proceeds remain unknown", summary); err != nil {
-		return false, err
+		return false, "", err
 	}
 	for _, plan := range plans[:shown] {
 		if err := r.decision(ctx, ship.Ship.ID, "sourcing:"+plan.Destination+":"+plan.ContractID, plan.Reason, plan); err != nil {
-			return false, err
+			return false, "", err
 		}
 	}
 	// A policy suppression must remain visible even when accepted candidates
@@ -903,19 +903,19 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, er
 				continue
 			}
 			if err := r.decision(ctx, ship.Ship.ID, policy.kind, policy.reason, candidate); err != nil {
-				return false, err
+				return false, "", err
 			}
 			break
 		}
 	}
 	if len(plans) == 0 {
-		return false, nil
+		return false, "", nil
 	}
 	if !plans[0].Accepted {
-		return false, r.hold(ctx, ship.Ship.ID, plans[0].Reason)
+		return false, plans[0].Reason, nil
 	}
 	if !r.opts.Execute {
-		return false, r.hold(ctx, ship.Ship.ID, "observe mode: funded sourcing inspection is not executed")
+		return false, "", r.hold(ctx, ship.Ship.ID, "observe mode: funded sourcing inspection is not executed")
 	}
 	planIndex := 0
 	insuranceErr := r.insuranceActionReady(ship, "depart", plans[0].Destination)
@@ -932,22 +932,22 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, er
 		}
 	}
 	if insuranceErr != nil {
-		return false, r.hold(ctx, ship.Ship.ID, insuranceErr.Error())
+		return false, "", r.hold(ctx, ship.Ship.ID, insuranceErr.Error())
 	}
 	plan := plans[planIndex]
 	source, _ := findPort(input.Catalog, plan.Destination)
 	input.ReserveByRegion = sourcingReserves(input, source)
 	provisions := bookCommodity(input.Markets[plan.Origin], "provisions")
 	if provisions == nil || provisions.Depth == nil {
-		return false, r.hold(ctx, ship.Ship.ID, "sourcing store-risk basis lacks current local replacement depth")
+		return false, "", r.hold(ctx, ship.Ship.ID, "sourcing store-risk basis lacks current local replacement depth")
 	}
 	fill, err := WalkDepth(provisions.Depth.Asks, max(1, plan.StoresToBuy), true)
 	if err != nil {
-		return false, r.hold(ctx, ship.Ship.ID, "sourcing store-risk basis: "+err.Error())
+		return false, "", r.hold(ctx, ship.Ship.ID, "sourcing store-risk basis: "+err.Error())
 	}
 	contract, exists := r.contract(plan.ContractID)
 	if !exists {
-		return false, r.hold(ctx, ship.Ship.ID, "sourcing target contract disappeared before durable intent")
+		return false, "", r.hold(ctx, ship.Ship.ID, "sourcing target contract disappeared before durable intent")
 	}
 	mission, data := r.newVoyage(ship, plan)
 	mission.Phase = "sourcing_fund"
@@ -965,7 +965,7 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, er
 		},
 	}
 	data.ProvenLane = sourcingEvidenceKey(source.ID, contract, ask)
-	return true, r.saveMission(ctx, mission, &data)
+	return true, "", r.saveMission(ctx, mission, &data)
 }
 
 func relocationCashCost(data *missionData) int64 {
@@ -1309,7 +1309,7 @@ func (r *Runner) driveRelocation(ctx context.Context, ship ShipState, mission *s
 		return r.prepareDeparture(ctx, ship, mission, data)
 	case "sailing":
 		if ship.Ship.Status == "sailing" {
-			return false, r.hold(ctx, ship.Ship.ID, "sourcing relocation waits for authoritative source arrival")
+			return false, r.holdVoyageArrival(ctx, ship, mission, data, "sourcing relocation waits for authoritative source arrival")
 		}
 		if ship.Voyage != nil || ship.Ship.CurrentPortID != data.Plan.Destination {
 			return false, r.hold(ctx, ship.Ship.ID, "sourcing arrival disagrees with the durable source port")

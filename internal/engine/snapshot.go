@@ -14,6 +14,13 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	sourcingRouteRetentionLimit     = 256
+	sourcingRouteRetentionBytes     = 1 << 20
+	sourcingRouteRetentionScanLimit = 4 * sourcingRouteRetentionLimit
+	snapshotSafetyMargin            = 64 << 10
+)
+
 type accountState struct {
 	Catalog           Catalog
 	Clock             Clock
@@ -74,6 +81,17 @@ func (r *Runner) applyCapture(ctx context.Context, key string, result fetchResul
 		var marques []letterOfMarque
 		if err := json.Unmarshal(result.data, &marques); err != nil {
 			result.err = err
+		}
+	}
+	if result.err == nil && strings.HasPrefix(key, "routes/") {
+		from, rest, hasFrom := strings.Cut(strings.TrimPrefix(key, "routes/"), "|")
+		to, class, hasClass := strings.Cut(rest, "|")
+		var route Route
+		if err := json.Unmarshal(result.data, &route); err != nil {
+			result.err = err
+		} else if !hasFrom || !hasClass || route.FromPort != from || route.ToPort != to ||
+			class != "" && route.ShipClass != class {
+			result.err = errors.New("route identity disagrees with the requested ports or ship class")
 		}
 	}
 	meta := r.meta[key]
@@ -162,10 +180,10 @@ func (r *Runner) captureWave(ctx context.Context, tasks []fetchTask, groups map[
 }
 
 // finishGroup persists one child-keyed group and prunes it to exactly the
-// keys requested in this generation. Values and per-entry metadata for keys
-// the fleet no longer requests must disappear: historical books, routes and
-// quotes otherwise accumulate forever across travel and eventually exceed the
-// store's snapshot budget. A currently requested child whose capture failed
+// keys requested or explicitly retained in this generation. Values and per-entry
+// metadata the fleet no longer needs must disappear: historical books, routes
+// and quotes otherwise accumulate forever across travel and eventually exceed
+// the store's snapshot budget. A currently requested child whose capture failed
 // keeps its last-good value and its stale/error metadata so the planner sees
 // visible failure instead of silently missing data.
 func (r *Runner) finishGroup(group string, values map[string]json.RawMessage, keys []string) {
@@ -305,6 +323,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 	presence := make(map[string]bool)
 	current := PlanningInput{Now: time.Now(), Clock: state.Clock, Metadata: r.meta, Generation: r.generation}
 	classes := make(map[string]bool)
+	fleetClasses := make(map[string]bool)
 	shipKeys := make([]string, 0, len(state.Ships))
 	for _, ship := range state.Ships {
 		shipKeys = append(shipKeys, ship.Ship.ID)
@@ -316,6 +335,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 		cargo[ship.Ship.ID] = ship.CargoManifest
 		if ship.Ship.Status != "sunk" {
 			classes[ship.Ship.ShipClass] = true
+			fleetClasses[ship.Ship.ShipClass] = true
 			if current.fresh("ships") && (ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") && ship.Voyage == nil && ship.Ship.CurrentPortID != "" {
 				presence[ship.Ship.CurrentPortID] = true
 			}
@@ -442,6 +462,43 @@ func (r *Runner) refresh(ctx context.Context) error {
 			}
 		}
 	}
+	// Committed relocations need all of their public legs regardless of the
+	// exploration budget or their position in fleet order.
+	shipMissions := make([]struct {
+		mission *store.Mission
+		data    missionData
+	}, len(state.Ships))
+	for i, ship := range state.Ships {
+		mission, data, err := r.loadMission(ctx, ship.Ship.ID)
+		if err != nil {
+			return err
+		}
+		shipMissions[i].mission = mission
+		shipMissions[i].data = data
+		if data.Relocation == nil {
+			continue
+		}
+		for _, pair := range [][2]string{
+			{data.Plan.Origin, data.Plan.Destination},
+			{data.Plan.Destination, data.Plan.Origin},
+			{data.Plan.Destination, data.Relocation.TargetDestination},
+			{data.Relocation.TargetDestination, data.Plan.Destination},
+		} {
+			if pair[0] == "" || pair[1] == "" || pair[0] == pair[1] {
+				continue
+			}
+			key := routeKey(pair[0], pair[1], ship.Ship.ShipClass)
+			if seenRoutes[key] {
+				continue
+			}
+			seenRoutes[key] = true
+			routeKeys = append(routeKeys, key)
+			if len(routes[key]) == 0 || !r.fresh("routes/"+key) {
+				path := "/v1/world/route?from=" + url.QueryEscape(pair[0]) + "&to=" + url.QueryEscape(pair[1]) + "&ship_class=" + url.QueryEscape(ship.Ship.ShipClass)
+				childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
+			}
+		}
+	}
 	if err := r.captureWave(ctx, childTasks, groups); err != nil {
 		return err
 	}
@@ -451,9 +508,9 @@ func (r *Runner) refresh(ctx context.Context) error {
 	r.finishGroup("ports", ports, portKeys)
 	r.finishGroup("books", markets, bookKeys)
 	r.finishGroup("yard_quotes", quotes, quoteKeys)
-	// Inspect at most three new public source/charter route pairs per pass.
-	// Reject known illegal legs before spending that budget on later pairs;
-	// neither catalog production nor a route quote grants private quay access.
+	// Exploratory captures, including expired illegal pairs, share the
+	// three-new-pair / six-GET budget. Committed legs were requested above.
+	// Public evidence never grants private quay access.
 	state.Ports = decode[map[string]PortDetail](map[string]json.RawMessage{"ports": encode(ports)}, "ports")
 	state.Routes = decode[map[string]Route](map[string]json.RawMessage{"routes": encode(routes)}, "routes")
 	state.Markets = withoutOwnOrders(decode[map[string]Market](map[string]json.RawMessage{"books": encode(markets)}, "books"), r.ownedOrders())
@@ -461,8 +518,15 @@ func (r *Runner) refresh(ctx context.Context) error {
 	r.stateCache = state
 	r.recordShipIdle(state, previousIdle)
 	r.refreshSourcingHistory(ctx, r.planningInput(ShipState{}))
-	captureSourcePair := func(pair [2]string, class string) error {
+	requiredRoutes := make(map[string]bool, len(routeKeys))
+	for _, key := range routeKeys {
+		requiredRoutes[key] = true
+	}
+	exploredRoutes := make(map[string]bool)
+	inspections, sourceGETs := 0, 0
+	captureSourcePair := func(pair [2]string, class string) (bool, error) {
 		var tasks []fetchTask
+		var keys []string
 		for _, endpoints := range [][2]string{pair, {pair[1], pair[0]}} {
 			if endpoints[0] == "" || endpoints[1] == "" || endpoints[0] == endpoints[1] {
 				continue
@@ -471,15 +535,25 @@ func (r *Runner) refresh(ctx context.Context) error {
 			if seenRoutes[key] {
 				continue
 			}
-			seenRoutes[key] = true
-			routeKeys = append(routeKeys, key)
+			keys = append(keys, key)
 			if len(routes[key]) == 0 || !r.fresh("routes/"+key) {
 				path := "/v1/world/route?from=" + url.QueryEscape(endpoints[0]) + "&to=" + url.QueryEscape(endpoints[1]) + "&ship_class=" + url.QueryEscape(class)
 				tasks = append(tasks, fetchTask{key: "routes/" + key, path: path})
 			}
 		}
+		if len(tasks) > 0 {
+			if inspections >= sourcingPairLimit || sourceGETs+len(tasks) > 2*sourcingPairLimit {
+				return false, nil
+			}
+			inspections++
+			sourceGETs += len(tasks)
+		}
+		for _, key := range keys {
+			seenRoutes[key] = true
+			exploredRoutes[key] = true
+		}
 		if err := r.captureWave(ctx, tasks, groups); err != nil {
-			return err
+			return false, err
 		}
 		for _, task := range tasks {
 			key := strings.TrimPrefix(task.key, "routes/")
@@ -488,16 +562,13 @@ func (r *Runner) refresh(ctx context.Context) error {
 				state.Routes[key] = route
 			}
 		}
-		return nil
+		return true, nil
 	}
 	shortlisted := 0
-	inspections := 0
 	sourcingBudgetLoaded := false
-	for _, ship := range state.Ships {
-		mission, data, err := r.loadMission(ctx, ship.Ship.ID)
-		if err != nil {
-			return err
-		}
+	for i, ship := range state.Ships {
+		mission := shipMissions[i].mission
+		data := &shipMissions[i].data
 		sourcingEligible := mission == nil && current.fresh("ships") && emptyCargo(ship) && ship.Voyage == nil &&
 			(ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") && ship.Ship.ConvoyID == "" &&
 			!idleFreight(ship.Ship.ID, state.Contracts)
@@ -505,14 +576,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 			r.refreshSourcingBudget(ctx, r.planningInput(ship))
 			sourcingBudgetLoaded = true
 		}
-		if mission != nil && data.Relocation != nil {
-			if err := captureSourcePair([2]string{data.Plan.Origin, data.Plan.Destination}, ship.Ship.ShipClass); err != nil {
-				return err
-			}
-			if err := captureSourcePair([2]string{data.Plan.Destination, data.Relocation.TargetDestination}, ship.Ship.ShipClass); err != nil {
-				return err
-			}
-		} else if sourcingEligible && shortlisted < sourcingPairLimit {
+		if sourcingEligible && shortlisted < sourcingPairLimit {
 			sourcingInput, err := r.sourcingInput(ctx, ship)
 			if err != nil {
 				return err
@@ -536,56 +600,64 @@ func (r *Runner) refresh(ctx context.Context) error {
 					continue
 				}
 				pair := [2]string{plan.Destination, target}
-				illegal := false
-				missing := false
+				illegal, missing := false, false
 				for _, endpoints := range [][2]string{pair, {pair[1], pair[0]}} {
 					key := routeKey(endpoints[0], endpoints[1], hull.ID)
 					if route, retained := sourcingInput.Routes[key]; retained && ValidateRoute(route, hull, state.Catalog.SeaZones) != nil {
 						illegal = true
-						if !seenRoutes[key] {
-							seenRoutes[key] = true
-							routeKeys = append(routeKeys, key)
-							if !r.fresh("routes/" + key) {
-								path := "/v1/world/route?from=" + url.QueryEscape(endpoints[0]) + "&to=" + url.QueryEscape(endpoints[1]) + "&ship_class=" + url.QueryEscape(hull.ID)
-								childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
-							}
+					}
+					missing = missing || !seenRoutes[key] && (len(routes[key]) == 0 || !r.fresh("routes/"+key))
+				}
+				if illegal {
+					if missing {
+						if _, err := captureSourcePair(pair, hull.ID); err != nil {
+							return err
 						}
 					}
-					missing = missing || !seenRoutes[key]
-				}
-				if illegal || !plan.Accepted || shortlisted >= sourcingPairLimit || missing && inspections >= sourcingPairLimit {
 					continue
 				}
-				if missing {
-					inspections++
+				if !plan.Accepted || shortlisted >= sourcingPairLimit {
+					continue
 				}
-				if err := captureSourcePair(pair, hull.ID); err != nil {
+				captured, err := captureSourcePair(pair, hull.ID)
+				if err != nil {
 					return err
+				}
+				if !captured {
+					continue
 				}
 				if validateRelocationTarget(sourcingInput, plan).Accepted {
 					shortlisted++
+					for _, endpoints := range [][2]string{pair, {pair[1], pair[0]}} {
+						key := routeKey(endpoints[0], endpoints[1], hull.ID)
+						if !requiredRoutes[key] {
+							requiredRoutes[key] = true
+							routeKeys = append(routeKeys, key)
+						}
+					}
 				}
 			}
 		}
 	}
 	// Observe every persisted continuation, including sailing arrivals and
 	// sealed inter-stop legs, without pretending to have private quay access.
-	for _, ship := range state.Ships {
-		mission, data, err := r.loadMission(ctx, ship.Ship.ID)
-		if err != nil {
-			return err
-		}
+	for i, ship := range state.Ships {
+		mission := shipMissions[i].mission
+		data := &shipMissions[i].data
 		if r.opts.MarquesEnabled && mission != nil && ship.Ship.Status != "sunk" {
-			for _, plan := range marqueMissionPlans(state, ship, mission, &data) {
+			for _, plan := range marqueMissionPlans(state, ship, mission, data) {
 				if plan.Origin == "" || plan.Destination == "" || plan.Origin == plan.Destination {
 					continue
 				}
 				key := routeKey(plan.Origin, plan.Destination, ship.Ship.ShipClass)
+				if !requiredRoutes[key] {
+					requiredRoutes[key] = true
+					routeKeys = append(routeKeys, key)
+				}
 				if seenRoutes[key] {
 					continue
 				}
 				seenRoutes[key] = true
-				routeKeys = append(routeKeys, key)
 				if len(routes[key]) == 0 || !r.fresh("routes/"+key) {
 					path := "/v1/world/route?from=" + url.QueryEscape(plan.Origin) + "&to=" + url.QueryEscape(plan.Destination) + "&ship_class=" + url.QueryEscape(ship.Ship.ShipClass)
 					childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
@@ -616,11 +688,14 @@ func (r *Runner) refresh(ctx context.Context) error {
 					continue
 				}
 				key := routeKey(from, to, ship.Ship.ShipClass)
+				if !requiredRoutes[key] {
+					requiredRoutes[key] = true
+					routeKeys = append(routeKeys, key)
+				}
 				if seenRoutes[key] {
 					continue
 				}
 				seenRoutes[key] = true
-				routeKeys = append(routeKeys, key)
 				if len(routes[key]) == 0 || !r.fresh("routes/"+key) {
 					path := "/v1/world/route?from=" + url.QueryEscape(from) + "&to=" + url.QueryEscape(to) + "&ship_class=" + url.QueryEscape(ship.Ship.ShipClass)
 					childTasks = append(childTasks, fetchTask{key: "routes/" + key, path: path})
@@ -630,6 +705,161 @@ func (r *Runner) refresh(ctx context.Context) error {
 	}
 	if err := r.captureWave(ctx, childTasks, groups); err != nil {
 		return err
+	}
+	// Rejected exploratory pairs are optional too, even when a GET was sent
+	// this pass. Never let the request-deduplication set bypass history caps.
+	var historyKeys []string
+	for key := range state.Routes {
+		if !requiredRoutes[key] && r.fresh("routes/"+key) {
+			historyKeys = append(historyKeys, key)
+		}
+	}
+	sort.Slice(historyKeys, func(i, j int) bool {
+		left, right := historyKeys[i], historyKeys[j]
+		leftAt, rightAt := r.meta["routes/"+left].UpdatedAt, r.meta["routes/"+right].UpdatedAt
+		if !leftAt.Equal(rightAt) {
+			return leftAt.After(rightAt)
+		}
+		return left < right
+	})
+	type sourceCommodity struct {
+		port, commodity string
+	}
+	type supplyHint struct {
+		production bool
+		ask        int64
+		askAt      time.Time
+	}
+	var supply map[sourceCommodity]supplyHint
+	var charterRewards map[string]map[string]int64
+	var sourcePorts map[string]bool
+	var hulls map[string]Hull
+	retentionInput := r.planningInput(ShipState{})
+	_, upper, validClock := retentionInput.serverBounds()
+	if len(historyKeys) > 0 && validClock && state.Clock.Calendar.TimeScale > 0 {
+		supply = make(map[sourceCommodity]supplyHint)
+		charterRewards = make(map[string]map[string]int64)
+		sourcePorts = make(map[string]bool)
+		hulls = make(map[string]Hull)
+		// Index each charter, catalog source and gossip price once. Retention
+		// lookups must not multiply routes by charters by all public gossip.
+		for _, contract := range state.Contracts {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if contract.ContractType != "charter" || contract.Status != "open" || contract.Stale ||
+				contract.RemainingQuantity <= 0 || contract.RewardPerTonPence == nil || *contract.RewardPerTonPence <= 0 {
+				continue
+			}
+			if charterRewards[contract.OriginPortID] == nil {
+				charterRewards[contract.OriginPortID] = make(map[string]int64)
+			}
+			rewards := charterRewards[contract.OriginPortID]
+			rewards[contract.CommodityID] = max(rewards[contract.CommodityID], *contract.RewardPerTonPence)
+		}
+		for _, hull := range state.Catalog.ShipClasses {
+			if fleetClasses[hull.ID] {
+				hulls[hull.ID] = hull
+			}
+		}
+		for _, port := range state.Catalog.Ports {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if port.Phase > state.Clock.UnlockedPhase {
+				continue
+			}
+			sourcePorts[port.ID] = true
+			for _, commodities := range [][]string{port.Produces, port.Manufactures} {
+				for _, commodity := range commodities {
+					supply[sourceCommodity{port.ID, commodity}] = supplyHint{production: true}
+				}
+			}
+		}
+		for portID, detail := range state.Ports {
+			if !retentionInput.fresh("ports/" + portID) {
+				continue
+			}
+			for _, report := range detail.CoffeeHouseGossip {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				age := upper.Sub(report.SnapshotAt)
+				if !sourcePorts[report.SubjectPortID] || report.SnapshotAt.IsZero() || age < 0 ||
+					age.Seconds()*float64(state.Clock.Calendar.TimeScale) > 6*3_600 {
+					continue
+				}
+				for _, price := range report.Commodities {
+					age := upper.Sub(price.SnapshotAt)
+					if price.SnapshotAt.IsZero() || age < 0 ||
+						age.Seconds()*float64(state.Clock.Calendar.TimeScale) > 6*3_600 ||
+						price.BestAskPence == nil || *price.BestAskPence <= 0 {
+						continue
+					}
+					key := sourceCommodity{report.SubjectPortID, price.CommodityID}
+					hint := supply[key]
+					if hint.ask == 0 || price.SnapshotAt.After(hint.askAt) ||
+						price.SnapshotAt.Equal(hint.askAt) && *price.BestAskPence > hint.ask {
+						hint.ask, hint.askAt = *price.BestAskPence, price.SnapshotAt
+						supply[key] = hint
+					}
+				}
+			}
+		}
+	}
+	var retainedRouteKeys []string
+	retainedBytes := 0
+	for checked, key := range historyKeys {
+		if checked >= sourcingRouteRetentionScanLimit || len(retainedRouteKeys) >= sourcingRouteRetentionLimit {
+			break
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		route := state.Routes[key]
+		from, rest, hasFrom := strings.Cut(key, "|")
+		to, class, hasClass := strings.Cut(rest, "|")
+		hull, exists := hulls[class]
+		if !hasFrom || !hasClass || !exists ||
+			route.FromPort != from || route.ToPort != to || route.ShipClass != class {
+			continue
+		}
+		if !exploredRoutes[key] {
+			rejection := ValidateRoute(route, hull, state.Catalog.SeaZones)
+			if rejection == nil {
+				continue
+			}
+			reason := rejection.Error()
+			if !strings.Contains(reason, " is below route edge ") &&
+				!strings.Contains(reason, " is below zone ") && reason != "Sound toll has no observed route cost" {
+				continue
+			}
+			supplied := false
+			for _, pair := range [][2]string{{from, to}, {to, from}} {
+				for commodity, reward := range charterRewards[pair[1]] {
+					hint := supply[sourceCommodity{pair[0], commodity}]
+					if hint.ask > 0 && hint.ask < reward || hint.ask == 0 && hint.production {
+						supplied = true
+						break
+					}
+				}
+				if supplied {
+					break
+				}
+			}
+			if !supplied {
+				continue
+			}
+		}
+		// Include both route and metadata map entries, with JSON escaping.
+		size := len(encode(routes[key])) + len(encode(r.meta["routes/"+key])) +
+			len(encode(key)) + len(encode("routes/"+key)) + 4
+		if size > sourcingRouteRetentionBytes-retainedBytes {
+			continue
+		}
+		routeKeys = append(routeKeys, key)
+		retainedRouteKeys = append(retainedRouteKeys, key)
+		retainedBytes += size
 	}
 	r.finishGroup("routes", routes, routeKeys)
 	if err := ctx.Err(); err != nil {
@@ -643,6 +873,42 @@ func (r *Runner) refresh(ctx context.Context) error {
 		return err
 	}
 	r.snapshot["_meta"] = encode(r.meta)
+	// Redaction can expand short sensitive values, so use the store's exact
+	// persisted representation and remeasure after every eviction batch.
+	if len(retainedRouteKeys) > 0 {
+		for {
+			snapshotBytes, err := r.db.RedactedSnapshotSize(ctx, r.account.ID, r.snapshot)
+			if err != nil {
+				return err
+			}
+			rawBytes := 0
+			for key, value := range r.snapshot {
+				rawBytes += len(key) + len(value)
+			}
+			snapshotBytes = max(snapshotBytes, rawBytes)
+			excess := snapshotBytes - (store.MaxSnapshotBytes - snapshotSafetyMargin)
+			if excess <= 0 || len(retainedRouteKeys) == 0 {
+				break
+			}
+			removed := 0
+			for removed < excess && len(retainedRouteKeys) > 0 {
+				key := retainedRouteKeys[len(retainedRouteKeys)-1]
+				retainedRouteKeys = retainedRouteKeys[:len(retainedRouteKeys)-1]
+				removed += len(encode(routes[key])) + len(encode(key)) +
+					len(encode(r.meta["routes/"+key])) + len(encode("routes/"+key)) + 2
+				if len(routes) > 1 {
+					removed++
+				}
+				if len(r.meta) > 1 {
+					removed++
+				}
+				delete(routes, key)
+				delete(r.meta, "routes/"+key)
+			}
+			r.snapshot["routes"] = encode(routes)
+			r.snapshot["_meta"] = encode(r.meta)
+		}
+	}
 	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
 		return err
 	}
