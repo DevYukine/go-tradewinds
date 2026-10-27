@@ -102,22 +102,38 @@ type RivalVerdicts struct {
 	NotProfitable RivalVerdict `json:"not_profitable"`
 }
 
+type GrowthWindow struct {
+	WindowHours      int        `json:"window_hours"`
+	From             *time.Time `json:"from"`
+	To               *time.Time `json:"to"`
+	OursPence        *int64     `json:"ours_pence"`
+	OursReason       string     `json:"ours_reason"`
+	RivalMedianPence *int64     `json:"rival_median_pence"`
+	RivalsMeasured   int        `json:"rivals_measured"`
+	RivalsUnmeasured int        `json:"rivals_unmeasured"`
+	TopRival         *string    `json:"top_rival"`
+	TopRivalPence    *int64     `json:"top_rival_pence"`
+	OurPlace         *int       `json:"our_place"`
+	PlaceOf          *int       `json:"place_of"`
+}
+
 type RivalReport struct {
-	AccountID            string        `json:"account_id"`
-	GeneratedAt          time.Time     `json:"generated_at"`
-	SeasonNumber         int           `json:"season_number"`
-	ValuationAt          *time.Time    `json:"valuation_at"`
-	NextRefreshAt        *time.Time    `json:"next_refresh_at"`
-	BaselineAt           *time.Time    `json:"baseline_at"`
-	From                 time.Time     `json:"from"`
-	To                   time.Time     `json:"to"`
-	Coverage             string        `json:"coverage"`
-	OwnCompaniesComplete bool          `json:"own_companies_complete"`
-	OverlapKnown         bool          `json:"overlap_known"`
-	EventsTruncated      bool          `json:"events_truncated"`
-	Our                  *RivalRow     `json:"our"`
-	Rivals               []RivalRow    `json:"rivals"`
-	Verdicts             RivalVerdicts `json:"verdicts"`
+	AccountID            string         `json:"account_id"`
+	GeneratedAt          time.Time      `json:"generated_at"`
+	SeasonNumber         int            `json:"season_number"`
+	ValuationAt          *time.Time     `json:"valuation_at"`
+	NextRefreshAt        *time.Time     `json:"next_refresh_at"`
+	BaselineAt           *time.Time     `json:"baseline_at"`
+	From                 time.Time      `json:"from"`
+	To                   time.Time      `json:"to"`
+	Coverage             string         `json:"coverage"`
+	OwnCompaniesComplete bool           `json:"own_companies_complete"`
+	OverlapKnown         bool           `json:"overlap_known"`
+	EventsTruncated      bool           `json:"events_truncated"`
+	Our                  *RivalRow      `json:"our"`
+	Rivals               []RivalRow     `json:"rivals"`
+	Verdicts             RivalVerdicts  `json:"verdicts"`
+	Growth               []GrowthWindow `json:"growth"`
 }
 
 type rivalLane struct {
@@ -634,7 +650,8 @@ func (s *Store) Rivals(ctx context.Context, accountID string, at time.Time) (Riv
 		if !credentials.available {
 			return errors.New("rivals display credentials unavailable")
 		}
-		if err := rivalStandings(tx, &input); err != nil {
+		publications, identities, err := rivalStandings(tx, &input)
+		if err != nil {
 			return err
 		}
 		var snapshot struct {
@@ -693,6 +710,9 @@ func (s *Store) Rivals(ctx context.Context, accountID string, at time.Time) (Riv
 			return err
 		}
 		result = AggregateRivals(input)
+		for _, window := range []time.Duration{6 * time.Hour, 24 * time.Hour} {
+			result.Growth = append(result.Growth, growthFromPublications(input.Standings, identities, input.OwnCompanies, publications, window))
+		}
 		scrubRivals(&result, credentials)
 		return nil
 	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
@@ -702,57 +722,114 @@ func (s *Store) Rivals(ctx context.Context, accountID string, at time.Time) (Riv
 	return result, nil
 }
 
-func rivalStandings(tx *gorm.DB, input *RivalsInput) error {
+type standingsPublications struct {
+	SeasonNumber int
+	To           time.Time
+	From         map[time.Duration]time.Time
+	Times        []time.Time
+}
+
+// Every standings consumer uses the same seasonal publication and nearest-window
+// matching. A report reads each matched publication only once.
+func matchStandingsPublications(tx *gorm.DB, at time.Time, windows ...time.Duration) (standingsPublications, error) {
 	var latest struct {
 		SeasonNumber int
 		RefreshedAt  time.Time
 	}
-	if err := tx.Table("standings_history").Select("season_number, refreshed_at").Where("refreshed_at <= ?", input.At).
+	if err := tx.Table("standings_history").Select("season_number, refreshed_at").Where("refreshed_at <= ?", at).
 		Order("season_number DESC, refreshed_at DESC, rank").Limit(1).Scan(&latest).Error; err != nil {
-		return err
+		return standingsPublications{}, err
 	}
 	if latest.RefreshedAt.IsZero() {
-		return nil
+		return standingsPublications{}, nil
 	}
-	target := latest.RefreshedAt.Add(-CompetitionWindow)
-	var baseline struct {
-		RefreshedAt time.Time
+	result := standingsPublications{
+		SeasonNumber: latest.SeasonNumber, To: latest.RefreshedAt.UTC(),
+		From:  make(map[time.Duration]time.Time, len(windows)),
+		Times: []time.Time{latest.RefreshedAt.UTC()},
 	}
-	if err := tx.Raw(`SELECT refreshed_at FROM standings_history
-		WHERE season_number = ? AND refreshed_at >= ? AND refreshed_at <= ?
-		ORDER BY abs(extract(epoch FROM (refreshed_at - ?::timestamptz))), refreshed_at, rank LIMIT 1`,
-		latest.SeasonNumber, target.Add(-time.Hour), target.Add(time.Hour), target).Scan(&baseline).Error; err != nil {
-		return err
+	for _, window := range windows {
+		if _, exists := result.From[window]; exists {
+			continue
+		}
+		target := result.To.Add(-window)
+		var baseline struct{ RefreshedAt time.Time }
+		if err := tx.Raw(`SELECT refreshed_at FROM standings_history
+			WHERE season_number = ? AND refreshed_at BETWEEN ? AND ?
+			ORDER BY abs(extract(epoch FROM (refreshed_at - ?::timestamptz))), refreshed_at, rank LIMIT 1`,
+			result.SeasonNumber, target.Add(-time.Hour), target.Add(time.Hour), target).Scan(&baseline).Error; err != nil {
+			return result, err
+		}
+		result.From[window] = baseline.RefreshedAt.UTC()
+		if !baseline.RefreshedAt.IsZero() {
+			result.Times = append(result.Times, baseline.RefreshedAt.UTC())
+		}
 	}
-	publications := []time.Time{latest.RefreshedAt}
-	if !baseline.RefreshedAt.IsZero() {
-		publications = append(publications, baseline.RefreshedAt)
+	return result, nil
+}
+
+func standingsPublicationValues(tx *gorm.DB, publications standingsPublications, firstObserved bool) ([]RivalValuation, error) {
+	if publications.To.IsZero() {
+		return nil, nil
 	}
-	// Each publication has the public top 20 plus at most one extra row per
-	// configured account. Probe each name's first valuation through its index.
-	const maxValuations = 2 * (20 + maxDashboardAccounts)
-	if err := tx.Table("standings_history AS h").Select("h.season_number, h.refreshed_at, h.rank, h.company_name, h.net_worth_pence, h.next_refresh_at, first.refreshed_at AS first_at").
-		Joins(`JOIN LATERAL (SELECT refreshed_at FROM standings_history
+	fields := "h.season_number, h.refreshed_at, h.rank, h.company_name, h.net_worth_pence, h.next_refresh_at"
+	query := tx.Table("standings_history AS h")
+	if firstObserved {
+		fields += ", first.refreshed_at AS first_at"
+		query = query.Joins(`JOIN LATERAL (SELECT refreshed_at FROM standings_history
 			WHERE season_number = h.season_number AND company_name = h.company_name
-			AND refreshed_at <= h.refreshed_at ORDER BY refreshed_at LIMIT 1) AS first ON true`).
-		Where("h.season_number = ? AND h.refreshed_at IN ?", latest.SeasonNumber, publications).
-		Order("h.refreshed_at DESC, h.rank").Limit(maxValuations + 1).Scan(&input.Standings).Error; err != nil {
-		return err
+			AND refreshed_at <= h.refreshed_at ORDER BY refreshed_at LIMIT 1) AS first ON true`)
 	}
-	if len(input.Standings) > maxValuations {
-		return ErrResponseTooLarge
+	// Public top 20 plus at most one extra row per configured account.
+	maxValues := len(publications.Times) * (20 + maxDashboardAccounts)
+	var values []RivalValuation
+	if err := query.Select(fields).
+		Where("h.season_number = ? AND h.refreshed_at IN ?", publications.SeasonNumber, publications.Times).
+		Order("h.refreshed_at DESC, h.rank").Limit(maxValues + 1).Scan(&values).Error; err != nil {
+		return nil, err
 	}
-	var identity struct {
+	if len(values) > maxValues {
+		return nil, ErrResponseTooLarge
+	}
+	return values, nil
+}
+
+func standingsPublicationIdentities(tx *gorm.DB, accountID string, publications standingsPublications) (map[time.Time]string, error) {
+	if publications.To.IsZero() {
+		return nil, nil
+	}
+	var rows []struct {
+		RefreshedAt time.Time
 		CompanyName string
 	}
-	if err := tx.Table("standings_accounts AS a").Select("h.company_name").
+	if err := tx.Table("standings_accounts AS a").Select("a.refreshed_at, h.company_name").
 		Joins("JOIN standings_history AS h ON h.season_number = a.season_number AND h.refreshed_at = a.refreshed_at AND h.rank = a.rank").
-		Where("a.account_id = ? AND a.season_number = ? AND a.refreshed_at = ?", input.AccountID, latest.SeasonNumber, latest.RefreshedAt).
-		Scan(&identity).Error; err != nil {
-		return err
+		Where("a.account_id = ? AND a.season_number = ? AND a.refreshed_at IN ?", accountID, publications.SeasonNumber, publications.Times).
+		Scan(&rows).Error; err != nil {
+		return nil, err
 	}
-	input.OurCompanyName = identity.CompanyName
-	return nil
+	identities := make(map[time.Time]string, len(rows))
+	for _, row := range rows {
+		identities[row.RefreshedAt.UTC()] = row.CompanyName
+	}
+	return identities, nil
+}
+
+func rivalStandings(tx *gorm.DB, input *RivalsInput) (standingsPublications, map[time.Time]string, error) {
+	publications, err := matchStandingsPublications(tx, input.At, 6*time.Hour, CompetitionWindow)
+	if err != nil {
+		return publications, nil, err
+	}
+	input.Standings, err = standingsPublicationValues(tx, publications, true)
+	if err != nil {
+		return publications, nil, err
+	}
+	identities, err := standingsPublicationIdentities(tx, input.AccountID, publications)
+	if err != nil {
+		return publications, nil, err
+	}
+	input.OurCompanyName = identities[publications.To]
+	return publications, identities, nil
 }
 
 func rivalEvidence(tx *gorm.DB, input *RivalsInput) error {
@@ -815,4 +892,125 @@ func scrubRivals(report *RivalReport, credentials displayCredentials) {
 			fact(verdict.Fact)
 		}
 	}
+	for i := range report.Growth {
+		if report.Growth[i].TopRival != nil {
+			name := displayText(*report.Growth[i].TopRival, credentials)
+			report.Growth[i].TopRival = &name
+		}
+	}
+}
+
+// Growth uses exact official publications and account-to-rank links at both
+// endpoints. A name change cannot be treated as an observed personal return.
+func growthBenchmark(tx *gorm.DB, accountID string, ownNames []string, t1 time.Time, window time.Duration) (GrowthWindow, error) {
+	publications, err := matchStandingsPublications(tx, t1, window)
+	if err != nil {
+		return GrowthWindow{}, err
+	}
+	values, err := standingsPublicationValues(tx, publications, false)
+	if err != nil {
+		return GrowthWindow{}, err
+	}
+	identities, err := standingsPublicationIdentities(tx, accountID, publications)
+	if err != nil {
+		return GrowthWindow{}, err
+	}
+	return growthFromPublications(values, identities, ownNames, publications, window), nil
+}
+
+func growthFromPublications(values []RivalValuation, identities map[time.Time]string, ownNames []string, publications standingsPublications, window time.Duration) GrowthWindow {
+	result := GrowthWindow{WindowHours: int(window / time.Hour), OursReason: "no_publication"}
+	if publications.To.IsZero() {
+		return result
+	}
+	to := publications.To
+	result.To, result.OursReason = &to, "no_baseline"
+	from := publications.From[window]
+	if !from.IsZero() {
+		result.From = &from
+	}
+	own := make(map[string]bool, len(ownNames)+len(identities))
+	for _, name := range ownNames {
+		own[name] = true
+	}
+	fromName, toName := identities[from], identities[to]
+	if fromName != "" {
+		own[fromName] = true
+	}
+	if toName != "" {
+		own[toName] = true
+	}
+	current := make(map[string]int64)
+	starting := make(map[string]int64)
+	for _, value := range values {
+		if value.RefreshedAt.Equal(to) {
+			current[value.CompanyName] = value.NetWorthPence
+		} else if result.From != nil && value.RefreshedAt.Equal(from) {
+			starting[value.CompanyName] = value.NetWorthPence
+		}
+	}
+	if result.From != nil {
+		switch {
+		case fromName == "" || toName == "":
+			result.OursReason = "our_valuation_missing"
+		case fromName != toName:
+			result.OursReason = "company_changed"
+		default:
+			if delta, ok := growthChange(current[toName], starting[fromName]); ok {
+				result.OursPence, result.OursReason = &delta, ""
+			} else {
+				result.OursReason = "change_out_of_range"
+			}
+		}
+	}
+	deltas := make([]int64, 0, len(current))
+	for name, value := range current {
+		if own[name] {
+			continue
+		}
+		before, measured := starting[name]
+		delta, fits := growthChange(value, before)
+		if !measured || !fits {
+			result.RivalsUnmeasured++
+			continue
+		}
+		deltas = append(deltas, delta)
+		if result.TopRivalPence == nil || delta > *result.TopRivalPence ||
+			delta == *result.TopRivalPence && name < *result.TopRival {
+			top := name
+			result.TopRival, result.TopRivalPence = &top, &delta
+		}
+	}
+	result.RivalsMeasured = len(deltas)
+	if len(deltas) > 0 {
+		sort.Slice(deltas, func(i, j int) bool { return deltas[i] < deltas[j] })
+		median := deltas[len(deltas)/2]
+		if len(deltas)%2 == 0 {
+			left := deltas[len(deltas)/2-1]
+			// Average with truncation toward zero, without an overflowing sum.
+			mean := (left & median) + ((left ^ median) >> 1)
+			if mean < 0 && (left^median)&1 != 0 {
+				mean++
+			}
+			median = mean
+		}
+		result.RivalMedianPence = &median
+	}
+	if result.OursPence != nil {
+		place, total := 1, len(deltas)+1
+		for _, delta := range deltas {
+			if delta > *result.OursPence {
+				place++
+			}
+		}
+		result.OurPlace, result.PlaceOf = &place, &total
+	}
+	return result
+}
+
+func growthChange(after, before int64) (int64, bool) {
+	if before > 0 && after < math.MinInt64+before || before < 0 && after > math.MaxInt64+before {
+		return 0, false
+	}
+	return after - before, true
 }

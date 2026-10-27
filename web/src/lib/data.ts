@@ -9,6 +9,7 @@ import type {
   RivalReport,
   ShipDetail,
   StandingsHistory,
+  WarningReport,
 } from "./types";
 import { customMoneyRange, type MoneyPreferences } from "./money-history";
 
@@ -35,6 +36,19 @@ export function useDashboard() {
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
     staleTime: 4_000,
+    retry: 1,
+  });
+}
+
+export function useWarnings() {
+  return useQuery({
+    queryKey: ["warnings"],
+    queryFn: ({ signal }) => fetchJSON<WarningReport>("/api/warnings", signal),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    staleTime: 20_000,
     retry: 1,
   });
 }

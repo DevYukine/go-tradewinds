@@ -1,0 +1,38 @@
+.strip {
+  min-width: 0;
+  margin-block: 14px;
+}
+
+.strip .line {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  margin-block: 8px;
+  line-height: 1.6;
+}
+
+.line > svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.line > span {
+  min-width: 0;
+  max-width: 100ch;
+  overflow-wrap: anywhere;
+}
+
+.line.warning {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.quiet {
+  max-width: 100ch;
+  margin-block: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}

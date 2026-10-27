@@ -2,6 +2,8 @@ package config
 
 import (
 	"encoding/base64"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -94,6 +96,42 @@ func TestReplayConfigurationLimits(t *testing.T) {
 			}
 			if test.name == "disabled" && cfg.ReplayRetentionDays != 0 {
 				t.Fatal("zero retention did not disable replay")
+			}
+		})
+	}
+}
+
+func TestLoadDoesNotExposeDotenvErrors(t *testing.T) {
+	const secret = "tw_live_synthetic_dotenv_secret"
+	const databasePassword = "synthetic_database_password"
+	for _, test := range []struct {
+		name      string
+		directory bool
+	}{
+		{name: "malformed file"},
+		{name: "unreadable file", directory: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			var err error
+			if test.directory {
+				err = os.Mkdir(".env", 0700)
+			} else {
+				contents := "CREDENTIAL_KEY=\"" + secret + "\nDATABASE_URL=postgres://private:" + databasePassword + "@localhost/private\n"
+				err = os.WriteFile(".env", []byte(contents), 0600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Load()
+			if err == nil {
+				t.Fatal("invalid dotenv file was accepted")
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), databasePassword) {
+				t.Fatal("dotenv error exposed a configured secret")
+			}
+			if err.Error() != "load .env: file could not be read or parsed" || errors.Unwrap(err) != nil {
+				t.Fatalf("dotenv failure did not stop at a constant safe classification: %v", err)
 			}
 		})
 	}

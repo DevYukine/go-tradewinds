@@ -41,6 +41,7 @@ import { DecisionPanel } from "./decisions";
 import { DiagnosticsView } from "./diagnostics";
 import { HoldingsView, TreasuryView } from "./economy";
 import { ExchangeView } from "./exchange";
+import { EngineWarnings } from "./engine-warnings";
 import { FleetPanel } from "./fleet";
 import { Journal } from "./journal";
 import { OperationsOverview } from "./operations-overview";
@@ -311,6 +312,11 @@ export function Dashboard() {
             successful records remain visible. Reconnection is automatic.
           </div>
         )}
+        <EngineWarnings
+          accounts={scoped}
+          accountsLoaded={query.data !== undefined}
+          overview={view === "chart"}
+        />
         {query.isPending ? (
           <div className="loading-state" role="status">
             Loading recorded fleet and company data…

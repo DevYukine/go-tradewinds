@@ -141,6 +141,21 @@ function fixture(): RivalReport {
       },
     }),
     rivals,
+    growth: [6, 24].map((window_hours) => ({
+      window_hours,
+      from:
+        window_hours === 6 ? "2026-10-26T19:28:00Z" : "2026-10-26T01:28:00Z",
+      to: "2026-10-27T01:28:00Z",
+      ours_pence: window_hours === 6 ? 12345 : -1246694,
+      ours_reason: "",
+      rival_median_pence: window_hours === 6 ? 0 : -3505653,
+      rivals_measured: 6,
+      rivals_unmeasured: 1,
+      top_rival: "TescoValue",
+      top_rival_pence: 93888,
+      our_place: 2,
+      place_of: 7,
+    })),
     verdicts: {
       most_dangerous: {
         company_name: rivals[0].company_name,
@@ -170,6 +185,25 @@ function plain(html: string) {
   return html.replace(/<[^>]*>/g, "").replace(/\s+/g, " ");
 }
 
+function companyTable(html: string) {
+  return (
+    html
+      .match(/<table\b[^>]*>.*?<\/table>/gs)
+      ?.find((table) =>
+        table.includes('<caption class="sr-only">Rival companies</caption>'),
+      ) ?? ""
+  );
+}
+
+function growthTable(html: string) {
+  return (
+    html
+      .match(/<table\b[^>]*>.*?<\/table>/gs)
+      ?.find((table) => table.includes("<strong>Growth vs rivals</strong>")) ??
+    ""
+  );
+}
+
 describe("rival company ledger", () => {
   beforeEach(() => {
     state.data = fixture();
@@ -177,6 +211,88 @@ describe("rival company ledger", () => {
     state.isPending = false;
     tableState.props = undefined;
     state.now = Date.parse("2026-10-27T02:00:00Z");
+  });
+
+  it("shows two growth windows above the hunches with matched publications and numeric comparisons", () => {
+    const html = render();
+    const table = growthTable(html);
+    const text = plain(table);
+    const body = table.match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
+    expect(body.match(/<tr>/g)).toHaveLength(2);
+    expect(body).toContain('<th scope="row">6 h</th>');
+    expect(body).toContain('<th scope="row">24 h</th>');
+    expect(table).toContain("Our change");
+    expect(table).toContain("Rival median (n rivals)");
+    expect(table).toContain("Best rival");
+    expect(table).toContain("Our place");
+    expect(text).toContain("+123.45 Cr");
+    expect(text).toContain("-12,466.94 Cr");
+    expect(text).toContain("-35,056.53 Cr");
+    expect(text).toContain("6 rivals; 1 not measured");
+    expect(text).toContain("TescoValue+938.88 Cr");
+    expect(text).toContain("2 of 7");
+    expect(text).toContain("6 h: 26 Oct, 19:28 UTC to 27 Oct, 01:28 UTC");
+    expect(text).toContain("24 h: 26 Oct, 01:28 UTC to 27 Oct, 01:28 UTC");
+    expect(text).toContain("Official net-worth changes, not realized profit");
+    expect(html.indexOf("Growth vs rivals")).toBeLessThan(html.indexOf("<dl"));
+  });
+
+  it("keeps recorded rivals usable when the bot has no growth field", () => {
+    Reflect.deleteProperty(state.data!, "growth");
+    const html = render();
+    expect(plain(html)).toContain("Growth comparisons are not available.");
+    expect(plain(html)).toContain("Kraken");
+  });
+
+  it.each([
+    ["no_publication", "No official standings publication recorded"],
+    [
+      "no_baseline",
+      "No matching publication within 60 min of the window start",
+    ],
+    [
+      "our_valuation_missing",
+      "Our valuation is missing at one or both publications",
+    ],
+    ["company_changed", "Our best company changed between publications"],
+    [
+      "change_out_of_range",
+      "The valuation change is outside the supported range",
+    ],
+  ])("explains unmeasured own growth and placement for %s", (reason, text) => {
+    state.data!.growth = state.data!.growth.map((window) => ({
+      ...window,
+      ours_pence: null,
+      ours_reason: reason,
+      our_place: null,
+      place_of: null,
+    }));
+    const table = growthTable(render());
+    expect(plain(table).match(/Not measured/g)).toHaveLength(4);
+    expect(plain(table)).toContain(text);
+    expect(table).toContain("-35,056.53 Cr");
+    expect(table).not.toContain("Not recorded");
+  });
+
+  it("keeps measured zero distinct from unmeasured rival values", () => {
+    state.data!.growth = state.data!.growth.map((window) => ({
+      ...window,
+      ours_pence: 0,
+      rival_median_pence: null,
+      rivals_measured: 0,
+      rivals_unmeasured: 7,
+      top_rival: null,
+      top_rival_pence: null,
+      our_place: 1,
+      place_of: 1,
+    }));
+    const text = plain(growthTable(render()));
+    expect(text.match(/0\.00 Cr/g)).toHaveLength(2);
+    expect(text.match(/Not measured/g)).toHaveLength(4);
+    expect(text).toContain("No rivals measured at both publications");
+    expect(text).toContain("0 rivals; 7 not measured");
+    expect(text).toContain("1 of 1");
+    expect(text).not.toContain("TescoValue");
   });
 
   it("renders three textual hunch lines with the selected company's recorded fact", () => {
@@ -197,7 +313,7 @@ describe("rival company ledger", () => {
 
   it("shows five columns with exactly one text chip and one key fact per row", () => {
     const html = render();
-    const body = html.match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
+    const body = companyTable(html).match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
     const rows = [...body.matchAll(/<tr>(.*?)<\/tr>/gs)].map(
       (match) => match[1],
     );
@@ -206,7 +322,8 @@ describe("rival company ledger", () => {
       expect(entry.match(/<td(?:\s[^>]*)?>/g)).toHaveLength(5);
       expect(entry.match(/class="badge badge-/g)).toHaveLength(1);
     }
-    const headings = html.match(/<thead>(.*?)<\/thead>/s)?.[1] ?? "";
+    const headings =
+      companyTable(html).match(/<thead>(.*?)<\/thead>/s)?.[1] ?? "";
     expect(
       [...headings.matchAll(/<th(?:\s[^>]*)?>(.*?)<\/th>/gs)].map((match) =>
         plain(match[1]),
@@ -233,7 +350,8 @@ describe("rival company ledger", () => {
       row({ company_name: "Zulu", hunch: "too_new" }),
       row({ company_name: "Alpha", hunch: "threat" }),
     ];
-    const body = render().match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
+    const body =
+      companyTable(render()).match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
     expect(body.indexOf("Zulu")).toBeLessThan(body.indexOf("Alpha"));
   });
 
@@ -376,7 +494,8 @@ describe("rival company ledger", () => {
       change_pence: 10000,
       fact: { kind: "negative_worth" },
     };
-    const body = render().match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
+    const body =
+      companyTable(render()).match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
     const meridian =
       [...body.matchAll(/<tr>(.*?)<\/tr>/gs)].find((match) =>
         match[1].includes("Meridian"),
@@ -406,7 +525,7 @@ describe("rival company ledger", () => {
     expect(plain(html)).toContain(
       "its Most dangerous chip takes precedence, while other Plays rough chips flag their own evidence",
     );
-    const body = html.match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
+    const body = companyTable(html).match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
     expect(body).toContain("Most dangerous");
     expect(body).toContain("Rough Trader");
     expect(body).toContain("Plays rough");
@@ -494,6 +613,20 @@ describe("rival company ledger", () => {
     state.data!.next_refresh_at = null;
     state.data!.our = null;
     state.data!.rivals = [];
+    state.data!.growth = state.data!.growth.map((window) => ({
+      ...window,
+      from: null,
+      to: null,
+      ours_pence: null,
+      ours_reason: "no_publication",
+      rival_median_pence: null,
+      rivals_measured: 0,
+      rivals_unmeasured: 0,
+      top_rival: null,
+      top_rival_pence: null,
+      our_place: null,
+      place_of: null,
+    }));
     state.data!.verdicts = {
       most_dangerous: {
         company_name: null,
@@ -509,7 +642,11 @@ describe("rival company ledger", () => {
     };
     const html = render();
     expect(html).toContain("Rival observations have not been recorded");
-    expect(html).not.toContain("<table");
+    expect(companyTable(html)).toBe("");
+    expect(growthTable(html)).toContain("Not measured");
+    expect(growthTable(html)).toContain(
+      "No official standings publication recorded",
+    );
     expect(html).not.toContain("0.00 Cr");
     expect(html).not.toContain("No rival lost value in 24 h");
   });
@@ -579,7 +716,8 @@ describe("rival company ledger", () => {
         row({ company_name: "Zero", net_worth_pence: 0, change_pence: 900 }),
       ];
       const html = render([{ id: column, desc: descending }]);
-      const body = html.match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
+      const body =
+        companyTable(html).match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
       const names = [
         ...body.matchAll(/<tr><td[^>]*><strong>(.*?)<\/strong>/gs),
       ].map((match) => plain(match[1]));
@@ -613,7 +751,8 @@ describe("rival company ledger", () => {
         "Aster",
       ];
       const html = render([{ id: "Hunch", desc: descending }]);
-      const body = html.match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
+      const body =
+        companyTable(html).match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
       const names = [
         ...body.matchAll(/<tr><td[^>]*><strong>(.*?)<\/strong>/gs),
       ].map((match) => plain(match[1]));

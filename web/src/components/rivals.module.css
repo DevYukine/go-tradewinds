@@ -5,6 +5,47 @@
   border-bottom: 1px solid var(--border);
 }
 
+.growth {
+  table-layout: fixed;
+  margin-block: 16px;
+}
+
+.growth caption {
+  text-align: left;
+}
+
+.growth caption > strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.growth caption > span,
+.growth caption > span > span {
+  display: block;
+}
+
+.growth th,
+.growth td {
+  padding: 10px 8px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.growth thead th:first-child {
+  width: 4rem;
+}
+
+.growth tbody th {
+  background: transparent;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.growth td small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .hunches {
   display: grid;
   gap: 8px;

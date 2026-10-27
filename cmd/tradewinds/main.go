@@ -199,7 +199,18 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
-				apiLog.Info("dashboard API listening", zap.String("address", cfg.HTTPAddr), zap.Bool("execute", execute))
+				ticker := time.NewTicker(time.Minute)
+				defer ticker.Stop()
+				watchWarnings(ctx, log.Named("warnings"), db.Warnings, time.Now, ticker.C)
+			}()
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				build := httpapi.CurrentBuildIdentity()
+				apiLog.Info("dashboard API listening",
+					zap.String("address", cfg.HTTPAddr), zap.Bool("execute", execute),
+					zap.Any("revision", build.Revision), zap.Bool("modified", build.Modified),
+				)
 				if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 					apiLog.Error("dashboard server stopped", zap.Error(err))
 					_ = shutdown.Shutdown(fx.ExitCode(1))

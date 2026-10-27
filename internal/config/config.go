@@ -28,7 +28,8 @@ type Config struct {
 
 func Load() (Config, error) {
 	if err := godotenv.Load(); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return Config{}, fmt.Errorf("load .env: %w", err)
+		// Parser errors can contain dotenv values or the remaining file contents.
+		return Config{}, errors.New("load .env: file could not be read or parsed")
 	}
 	cfg := Config{
 		DatabaseURL: os.Getenv("DATABASE_URL"),

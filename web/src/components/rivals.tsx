@@ -3,12 +3,20 @@
 import { useMemo } from "react";
 import { useNow } from "@/app/providers";
 import { useRivals } from "@/lib/data";
-import { count, dateTime, money } from "@/lib/format";
+import { count, dateTime, humanize, money } from "@/lib/format";
 import { hunchLabel, hunchRank, hunchTone, rivalFactText } from "@/lib/rivals";
 import type { RivalRow } from "@/lib/types";
 import { Badge, DataTable, type Column } from "./ui";
 import chartStyles from "./performance.module.css";
 import styles from "./rivals.module.css";
+
+const growthReasons: Record<string, string> = {
+  no_publication: "No official standings publication recorded",
+  no_baseline: "No matching publication within 60 min of the window start",
+  our_valuation_missing: "Our valuation is missing at one or both publications",
+  company_changed: "Our best company changed between publications",
+  change_out_of_range: "The valuation change is outside the supported range",
+};
 
 export function RivalsView({ accountID }: { accountID: string }) {
   const query = useRivals(accountID);
@@ -71,6 +79,7 @@ export function RivalsView({ accountID }: { accountID: string }) {
     [now],
   );
   const report = query.data;
+  const growth = report?.growth ?? [];
   const ourChange = report?.our?.change_pence;
   const overdue =
     report?.next_refresh_at && now > Date.parse(report.next_refresh_at);
@@ -149,6 +158,122 @@ export function RivalsView({ accountID }: { accountID: string }) {
               unavailable; any recorded port notices remain below.
             </p>
           )}
+          <table className={styles.growth}>
+            <caption>
+              <strong>Growth vs rivals</strong>
+              <span className={styles.caption}>
+                Official net-worth changes, not realized profit. Matched
+                publications:
+                {growth.map((window) => (
+                  <span key={window.window_hours}>
+                    {" "}
+                    {count(window.window_hours)} h:{" "}
+                    {window.from ? dateTime(window.from) : "Not measured"} to{" "}
+                    {window.to ? dateTime(window.to) : "Not measured"}.
+                  </span>
+                ))}
+              </span>
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Window</th>
+                <th scope="col">Our change</th>
+                <th scope="col">Rival median (n rivals)</th>
+                <th scope="col">Best rival</th>
+                <th scope="col">Our place</th>
+              </tr>
+            </thead>
+            <tbody>
+              {growth.length === 0 && (
+                <tr>
+                  <td colSpan={5}>Growth comparisons are not available.</td>
+                </tr>
+              )}
+              {growth.map((window) => {
+                const ourReason =
+                  growthReasons[window.ours_reason] ??
+                  (window.ours_reason
+                    ? humanize(window.ours_reason)
+                    : "Our valuation is not recorded at both publications");
+                const rivalReason =
+                  window.from && window.to
+                    ? "No rivals measured at both publications"
+                    : "No matched publications for this window";
+                return (
+                  <tr key={window.window_hours}>
+                    <th scope="row">{count(window.window_hours)} h</th>
+                    <td>
+                      {window.ours_pence === null ? (
+                        <>
+                          Not measured
+                          <small>{ourReason}</small>
+                        </>
+                      ) : (
+                        <span
+                          className={
+                            window.ours_pence < 0
+                              ? chartStyles.loss
+                              : window.ours_pence > 0
+                                ? chartStyles.gain
+                                : undefined
+                          }
+                        >
+                          {window.ours_pence > 0 ? "+" : ""}
+                          {money(window.ours_pence)}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {window.rival_median_pence === null ? (
+                        <>
+                          Not measured
+                          <small>{rivalReason}</small>
+                        </>
+                      ) : (
+                        <>
+                          {window.rival_median_pence > 0 ? "+" : ""}
+                          {money(window.rival_median_pence)}
+                        </>
+                      )}
+                      <small>
+                        {count(window.rivals_measured)}{" "}
+                        {window.rivals_measured === 1 ? "rival" : "rivals"}
+                        {window.rivals_unmeasured > 0 &&
+                          `; ${count(window.rivals_unmeasured)} not measured`}
+                      </small>
+                    </td>
+                    <td>
+                      {window.top_rival === null ||
+                      window.top_rival_pence === null ? (
+                        <>
+                          Not measured
+                          <small>{rivalReason}</small>
+                        </>
+                      ) : (
+                        <>
+                          <strong>{window.top_rival}</strong>
+                          <small>
+                            {window.top_rival_pence > 0 ? "+" : ""}
+                            {money(window.top_rival_pence)}
+                          </small>
+                        </>
+                      )}
+                    </td>
+                    <td>
+                      {window.our_place === null || window.place_of === null ? (
+                        <>
+                          Not measured
+                          <small>{ourReason}</small>
+                        </>
+                      ) : (
+                        `${count(window.our_place)} of ${count(window.place_of)}`
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
           <dl className={styles.hunches}>
             {verdicts.map(({ label, verdict, gap }) => (
               <div key={label}>

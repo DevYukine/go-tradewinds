@@ -62,6 +62,19 @@ go run ./cmd/tradewinds register --handle AnotherHandle --company "Another compa
 go run ./cmd/tw-sim backfill --account Yukine
 ```
 
+On Windows, build or reuse a versioned binary and restart the live bot in its own console:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restart-bot.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restart-bot.ps1 -Version abc1234
+```
+
+The second command rolls back to an existing binary without building. The default run directory is the first of this repository root or its main worktree containing `.env`; delivery defaults to `<main worktree>-runtime-delivery`. Override them with `-RunDir` and `-DeliveryDir`. Default builds use the captured HEAD revision in a temporary detached worktree. Tracked changes under `cmd/`, `internal/`, `go.mod` or `go.sum` abort with a file list; deploying uncommitted fixes requires `-AllowDirty`, which always builds a staged `<hash>-dirty` binary from the working tree. Builds disable workspaces, set `GOFLAGS=-mod=readonly` without disabling other saved Go settings, and use `-mod=readonly`. Temporary checkout hooks are disabled; cleanup retries once and reports any leaked worktree path. Automatic reuse requires matching HEAD metadata and `vcs.modified=false`; otherwise the script rebuilds. Explicit `-Version` preserves rollback to modified or metadata-incomplete binaries with a warning, but a present revision must match the requested prefix. Only bot executables under the delivery directory are stopped. A build failure leaves the live bot untouched. Read [Fast restart](docs/runbook.md#fast-restart) for guarded console shutdown and legacy rollback: older binaries may return success as `running, revision unverifiable` after readiness and executable-path confirmation. Neither readiness nor warnings prove trading progress or profit.
+
+Verified replacements are installed before shutdown. If a same-version target is still running, the replacement launches from a retained versioned staged path instead. A later restart promotes the newest verified stage to its canonical versioned filename when not running and prunes stale stages. A failure after shutdown keeps that verified executable and prints its exact, safely single-quoted manual relaunch command; inspect existing bot processes before using it.
+
+The safe negative restart check uses a committed syntax error on a throwaway branch/worktree under `%TEMP%`, runs that worktree's restart script with a disposable run directory and unique delivery directory, and confirms exit 1, unchanged live PIDs, no staged executable and no leaked build worktree. Remove the throwaway branch/worktree afterward. Follow [Safe negative restart verification](docs/runbook.md#safe-negative-restart-verification); never substitute a normal buildable commit.
+
 Additional account creation is explicit. `run` starts an independent worker for each enabled, fully registered database account. Company ownership locks prevent competing executors; the request limiter also coordinates the shared public IP within the process.
 
 Live passes also produce an encrypted, deduplicated replay tape. `REPLAY_RETENTION_DAYS` defaults to 90 real days (`0` disables recording and pruning); `REPLAY_MAX_GIB` defaults to 20 GiB. `tw-sim backfill` imports surviving diagnostics for one account without game requests. Rerunning it adds no duplicate frames or payloads. It does not implement a simulator, `run`, or `validate`. See [Replay recording](docs/runbook.md#replay-recording) for coverage, storage limits and backup/restore requirements.

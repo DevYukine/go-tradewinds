@@ -24,6 +24,49 @@ export interface EngineState {
   assessed_ship_ids: string[];
 }
 
+export interface BuildIdentity {
+  revision: string | null;
+  modified: boolean;
+  started_at: string;
+}
+
+export type EngineWarning = {
+  severity: "critical" | "warning";
+  since: string;
+  names: Record<string, string>;
+  reason: string;
+} & (
+  | { code: "controller_stalled"; facts: { minutes: number } }
+  | { code: "refresh_failing"; facts: { minutes: number } }
+  | {
+      code: "fleet_idle";
+      facts: { idle: number; total: number; unknown: number; minutes: number };
+    }
+  | { code: "hold_stuck"; facts: { minutes: number; other_count: number } }
+  | { code: "loss_streak"; facts: { count: number; net_pence: number } }
+  | {
+      code: "falling_behind";
+      facts: { ours_pence: number; median_pence: number; rival_count: number };
+    }
+);
+
+export interface WarningReport {
+  generated_at: string;
+  build: BuildIdentity;
+  accounts: {
+    account_id: string;
+    label: string;
+    available: boolean;
+    error_code: string;
+    suppressed: EngineWarning["code"][];
+    warnings: EngineWarning[];
+  }[];
+  unmonitored: {
+    account_id: string;
+    reason: "disabled" | "unregistered" | "no_api_key";
+  }[];
+}
+
 export interface Account {
   id: string;
   label: string;
@@ -159,6 +202,21 @@ export interface RivalVerdicts {
   not_profitable: RivalVerdict;
 }
 
+export interface GrowthWindow {
+  window_hours: number;
+  from: string | null;
+  to: string | null;
+  ours_pence: number | null;
+  ours_reason: string;
+  rival_median_pence: number | null;
+  rivals_measured: number;
+  rivals_unmeasured: number;
+  top_rival: string | null;
+  top_rival_pence: number | null;
+  our_place: number | null;
+  place_of: number | null;
+}
+
 export interface RivalReport {
   account_id: string;
   generated_at: string;
@@ -175,6 +233,7 @@ export interface RivalReport {
   our: RivalRow | null;
   rivals: RivalRow[];
   verdicts: RivalVerdicts;
+  growth: GrowthWindow[];
 }
 
 export interface CompetitionCompany {
