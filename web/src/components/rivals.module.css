@@ -1,0 +1,41 @@
+.rivals {
+  min-width: 0;
+  margin-block: 16px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.hunches {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.hunches > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
+}
+
+.hunches dt {
+  flex: 0 0 10rem;
+  font-weight: 500;
+}
+
+.hunches dd {
+  flex: 1 1 30ch;
+  min-width: 0;
+  max-width: 80ch;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.caption {
+  max-width: 80ch;
+  margin-block: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}

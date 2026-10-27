@@ -12,7 +12,7 @@ import {
   type StandingSelection,
 } from "@/lib/standings-history";
 import { HistoryRange } from "./history-range";
-import { DataTable, EmptyState } from "./ui";
+import { EmptyState } from "./ui";
 import chartStyles from "./performance.module.css";
 import styles from "./standings-history.module.css";
 
@@ -174,7 +174,7 @@ export function StandingsHistoryView({ accountID }: { accountID: string }) {
             <svg
               viewBox={`0 0 ${width} ${height}`}
               role="img"
-              aria-label="Official player net worth over time. Your player has a heavier solid line. Exact first and last values and signed changes are in the table below."
+              aria-label="Official player net worth over time. Your player has a heavier solid line. Point labels give recorded values and UTC valuation times."
               aria-describedby={descriptionID}
             >
               {ticks.map((tick) => (
@@ -225,8 +225,7 @@ export function StandingsHistoryView({ accountID }: { accountID: string }) {
                         className={styles.dot}
                       >
                         <title>
-                          {player.company_name}, {dateTime(point.at)}:{" "}
-                          {money(point.net_worth_pence)}
+                          {`${player.company_name}, ${dateTime(point.at)}: ${money(point.net_worth_pence)}`}
                         </title>
                       </circle>
                     ))}
@@ -252,93 +251,6 @@ export function StandingsHistoryView({ accountID }: { accountID: string }) {
           </>
         )}
       </div>
-      {players && players.length > 0 && (
-        <>
-          <p className={chartStyles.coverage}>
-            Change is last minus first in range; without stable player IDs,
-            company names and seasons stay separate.
-          </p>
-          <DataTable
-            label="Standings net worth changes"
-            data={players}
-            rowKey={(player) =>
-              `${player.season_number}:${player.company_name}`
-            }
-            columns={[
-              {
-                label: "Player's best company",
-                value: (player) => player.company_name,
-                render: (player) => (
-                  <span className={player.is_us ? styles.ownLabel : undefined}>
-                    {player.company_name}
-                    {player.is_us ? " (you)" : ""}
-                    <small className={styles.season}>
-                      Season {player.season_number} · last rank{" "}
-                      {count(player.rank)}
-                    </small>
-                  </span>
-                ),
-              },
-              {
-                label: "Change",
-                value: (player) => player.change_pence ?? undefined,
-                className: "numeric",
-                render: (player) =>
-                  player.change_pence === null ? (
-                    <span title="At least two observations are needed">
-                      Not measured
-                    </span>
-                  ) : (
-                    <span
-                      className={
-                        player.change_pence < 0
-                          ? chartStyles.loss
-                          : player.change_pence > 0
-                            ? chartStyles.gain
-                            : undefined
-                      }
-                    >
-                      {player.change_pence > 0 ? "+" : ""}
-                      {money(player.change_pence)}
-                    </span>
-                  ),
-              },
-              {
-                label: "First observed",
-                value: (player) => player.first_net_worth_pence,
-                className: "numeric",
-                render: (player) => (
-                  <span title={dateTime(player.first_at)}>
-                    {money(player.first_net_worth_pence)}
-                    <small className={styles.season}>
-                      {dateTime(player.first_at)}
-                    </small>
-                  </span>
-                ),
-              },
-              {
-                label: "Last observed",
-                value: (player) => player.last_net_worth_pence,
-                className: "numeric",
-                render: (player) => (
-                  <span title={dateTime(player.last_at)}>
-                    {money(player.last_net_worth_pence)}
-                    <small className={styles.season}>
-                      {dateTime(player.last_at)}
-                    </small>
-                  </span>
-                ),
-              },
-              {
-                label: "Valuations",
-                value: (player) => player.observations,
-                className: "numeric",
-                render: (player) => count(player.observations),
-              },
-            ]}
-          />
-        </>
-      )}
     </div>
   );
 }

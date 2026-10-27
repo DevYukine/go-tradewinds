@@ -5,6 +5,7 @@ import { useNow } from "@/app/providers";
 import { dataset } from "@/lib/data";
 import { count, dateTime, humanize, money } from "@/lib/format";
 import type { Account, Leaderboard } from "@/lib/types";
+import { RivalsView } from "./rivals";
 import { StandingsHistoryView } from "./standings-history";
 import { Badge, DataTable, Dataset, Section } from "./ui";
 import styles from "./world-views.module.css";
@@ -24,6 +25,7 @@ export function StandingsView({ account }: { account: Account }) {
       }
     >
       <StandingsHistoryView accountID={account.id} />
+      <RivalsView accountID={account.id} />
       <Dataset
         account={account}
         name="leaderboard"

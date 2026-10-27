@@ -94,6 +94,89 @@ export interface StandingsHistory {
   players: StandingSeries[];
 }
 
+export type RivalHunch =
+  | "most_dangerous"
+  | "plays_rough"
+  | "threat"
+  | "losing_value"
+  | "growing"
+  | "steady"
+  | "too_new"
+  | "unmeasured"
+  | "not_ranked";
+
+export type RivalFact =
+  | {
+      kind: "shared_lanes" | "shared_ports";
+      count?: number | null;
+      total?: number | null;
+    }
+  | {
+      kind: "larger";
+      net_worth_pence?: number | null;
+      our_net_worth_pence?: number | null;
+    }
+  | {
+      kind: "monopoly_in_force";
+      commodity?: string;
+      region?: string;
+      expires_at?: string | null;
+    }
+  | {
+      kind:
+        "monopolies_recent" | "loan_walkaways" | "loan_defaults" | "ships_seen";
+      count?: number | null;
+    }
+  | {
+      kind: "value_change";
+      change_pence?: number | null;
+      baseline_pence?: number | null;
+    }
+  | { kind: "short_history"; hours?: number | null }
+  | { kind: "negative_worth" | "no_baseline" };
+
+export interface RivalRow {
+  company_name: string;
+  rank: number | null;
+  net_worth_pence: number | null;
+  change_pence: number | null;
+  baseline_pence: number | null;
+  shared_lanes: number | null;
+  shared_ports: number | null;
+  hunch: RivalHunch;
+  fact: RivalFact;
+}
+
+export interface RivalVerdict {
+  company_name: string | null;
+  fact: RivalFact | null;
+  reason: string;
+}
+
+export interface RivalVerdicts {
+  most_dangerous: RivalVerdict;
+  plays_rough: RivalVerdict;
+  not_profitable: RivalVerdict;
+}
+
+export interface RivalReport {
+  account_id: string;
+  generated_at: string;
+  season_number: number;
+  valuation_at: string | null;
+  next_refresh_at: string | null;
+  baseline_at: string | null;
+  from: string;
+  to: string;
+  coverage: "partial" | "not_observed";
+  own_companies_complete: boolean;
+  overlap_known: boolean;
+  events_truncated: boolean;
+  our: RivalRow | null;
+  rivals: RivalRow[];
+  verdicts: RivalVerdicts;
+}
+
 export interface CompetitionCompany {
   name: string;
   ships: number;

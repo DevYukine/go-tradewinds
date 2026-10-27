@@ -3,9 +3,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as Data from "@/lib/data";
 import { standingKey, standingsChart } from "@/lib/standings-history";
-import type { StandingsHistory } from "@/lib/types";
+import type { Account, Leaderboard, StandingsHistory } from "@/lib/types";
 import { HistoryRange } from "./history-range";
 import { StandingsHistoryView } from "./standings-history";
+import { StandingsView } from "./standings";
 
 const state = vi.hoisted(() => ({
   data: undefined as StandingsHistory | undefined,
@@ -16,6 +17,11 @@ const state = vi.hoisted(() => ({
 vi.mock("@/lib/data", async (original) => ({
   ...(await original<typeof Data>()),
   useStandingsHistory: () => state,
+  useRivals: () => ({
+    data: undefined,
+    isError: false,
+    isPending: false,
+  }),
 }));
 vi.mock("@/app/providers", () => ({
   useNow: () => Date.parse("2026-10-26T12:30:00Z"),
@@ -66,15 +72,64 @@ describe("recorded standings history", () => {
     state.isPending = false;
   });
 
-  it("shows signed gains, declines and an unmeasured single observation", () => {
+  it("keeps exact point values and the chart without the old change table or caption", () => {
     const html = render();
-    expect(html).toContain("+1,000.00 Cr");
-    expect(html).toContain("-500.00 Cr");
-    expect(html).toContain("Not measured");
+    expect(html).toContain("3,000.00 Cr");
+    expect(html).toContain("1,500.00 Cr");
     expect(html).toContain("Our fleet (you)");
     expect(html).toContain('role="img"');
-    expect(html).toContain("without stable player IDs");
-    expect(html).toContain("company names and seasons stay separate");
+    expect(html).toContain(
+      "Point labels give recorded values and UTC valuation times",
+    );
+    expect(html).not.toContain("Standings net worth changes");
+    expect(html).not.toContain("Change is last minus first in range");
+    expect(html).not.toContain("Exact first and last values");
+    expect(html).not.toContain("<table");
+  });
+
+  it("places rivals after history while preserving the official standings and method disclosures", () => {
+    const leaderboard: Leaderboard = {
+      season_number: 1,
+      ranked_players: 1,
+      refreshed_at: "2026-10-26T12:00:00Z",
+      next_refresh_at: "2026-10-26T13:00:00Z",
+      entries: [
+        {
+          rank: 1,
+          company_name: "Our fleet",
+          home_port_id: "london",
+          net_worth_pence: 150000,
+          titles: [],
+        },
+      ],
+    };
+    const account: Account = {
+      id: "one",
+      label: "Our account",
+      company_id: "ours",
+      enabled: true,
+      created_at: "2026-10-26T00:00:00Z",
+      snapshot: { leaderboard },
+    };
+    const html = renderToStaticMarkup(
+      createElement(StandingsView, { account }),
+    );
+    expect(html.indexOf("Net worth over time")).toBeLessThan(
+      html.indexOf('aria-label="Rivals"'),
+    );
+    expect(html.indexOf('aria-label="Rivals"')).toBeLessThan(
+      html.indexOf("Latest full standings"),
+    );
+    expect(html).toContain('aria-label="Standings history date range"');
+    expect(html).toContain('aria-label="Charted players"');
+    expect(html).toContain("Latest full standings");
+    expect(html).toContain("What net worth includes");
+    expect(html).toContain("Official hourly player standings");
+    expect(html).toContain(
+      "Vaults, escrow, owned goods at catalog base prices and afloat hull",
+    );
+    expect(html).not.toContain("Standings net worth changes");
+    expect(html).not.toContain("Change is last minus first in range");
   });
 
   it("defaults to nearest rivals with accessible series toggle buttons", () => {

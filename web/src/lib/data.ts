@@ -6,6 +6,7 @@ import type {
   DatasetMeta,
   JsonRecord,
   MoneyHistory,
+  RivalReport,
   ShipDetail,
   StandingsHistory,
 } from "./types";
@@ -109,6 +110,22 @@ export function useStandingsHistory(
         `/api/standings-history?${query}`,
         signal,
       );
+    },
+    enabled: Boolean(accountID),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    staleTime: 20_000,
+    retry: 1,
+  });
+}
+
+export function useRivals(accountID: string) {
+  return useQuery({
+    queryKey: ["rivals", accountID],
+    queryFn: ({ signal }) => {
+      const query = new URLSearchParams({ account_id: accountID });
+      return fetchJSON<RivalReport>(`/api/rivals?${query}`, signal);
     },
     enabled: Boolean(accountID),
     refetchInterval: 30_000,

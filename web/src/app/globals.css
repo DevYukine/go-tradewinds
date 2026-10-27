@@ -22,9 +22,9 @@
   --muted: #5c645e;
   --border: #dcdedb;
   --success: #2e7d5b;
-  --warning: #9a6b1f;
+  --warning: #80551a;
   --crown: #c9a227;
-  --danger: var(--attention);
+  --danger: #9f3e28;
   --money-gain: #24734f;
   --money-loss: #b42335;
   --foreground: var(--ink);
@@ -50,6 +50,7 @@
   --border: #313130;
   --success: #7fc9a4;
   --warning: #e2be7c;
+  --danger: var(--attention);
   --money-gain: var(--success);
   --money-loss: #ff9ba5;
   color-scheme: dark;
