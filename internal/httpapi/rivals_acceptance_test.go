@@ -80,7 +80,7 @@ func TestRivalsAcceptanceReadErrorMapping(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
-			handler.readError(response, "rivals", test.err)
+			handler.readError(context.Background(), response, "rivals", test.err)
 			if response.Code != test.status || !strings.Contains(response.Body.String(), `"error":"`+test.code+`"`) {
 				t.Fatalf("read error became a misleading response: status=%d body=%s", response.Code, response.Body.String())
 			}

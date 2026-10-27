@@ -108,7 +108,7 @@ func (h *handler) dashboard(ctx context.Context, w http.ResponseWriter) {
 	}
 	data, err := h.store.Dashboard(ctx)
 	if err != nil {
-		h.readError(w, "dashboard", err)
+		h.readError(ctx, w, "dashboard", err)
 		return
 	}
 	h.json(w, http.StatusOK, data)
@@ -143,7 +143,7 @@ func (h *handler) history(ctx context.Context, w http.ResponseWriter, r *http.Re
 	}
 	data, err := h.store.History(ctx, accountID, kind, limit)
 	if err != nil {
-		h.readError(w, "history", err)
+		h.readError(ctx, w, "history", err)
 		return
 	}
 	h.json(w, http.StatusOK, data)
@@ -192,7 +192,7 @@ func (h *handler) moneyHistory(ctx context.Context, w http.ResponseWriter, r *ht
 	}
 	data, err := h.store.MoneyHistory(ctx, accountID, from, to)
 	if err != nil {
-		h.readError(w, "money history", err)
+		h.readError(ctx, w, "money history", err)
 		return
 	}
 	h.json(w, http.StatusOK, data)
@@ -210,7 +210,7 @@ func (h *handler) competition(ctx context.Context, w http.ResponseWriter, r *htt
 	}
 	data, err := h.store.Competition(ctx, accountID, time.Now().UTC())
 	if err != nil {
-		h.readError(w, "competition", err)
+		h.readError(ctx, w, "competition", err)
 		return
 	}
 	h.json(w, http.StatusOK, data)
@@ -228,7 +228,7 @@ func (h *handler) rivals(ctx context.Context, w http.ResponseWriter, r *http.Req
 	}
 	data, err := h.store.Rivals(ctx, accountID, time.Now().UTC())
 	if err != nil {
-		h.readError(w, "rivals", err)
+		h.readError(ctx, w, "rivals", err)
 		return
 	}
 	h.json(w, http.StatusOK, data)
@@ -243,10 +243,10 @@ func (h *handler) metrics(ctx context.Context, w http.ResponseWriter) {
 	}
 	stats, err := h.store.ServiceStats(ctx)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
+		if clientGone(ctx, err) {
 			return
 		}
-		h.readLog.Warn("read metrics failed", zap.Error(err))
+		h.readLog.Warn("read metrics failed", zap.Error(err), zap.Bool("deadline_exceeded", errors.Is(ctx.Err(), context.DeadlineExceeded)))
 		databaseUp := 1
 		if h.store.Ping(ctx) != nil {
 			databaseUp = 0
@@ -293,11 +293,19 @@ func metricLabel(value string) string {
 	return "\"" + value + "\""
 }
 
-func (h *handler) readError(w http.ResponseWriter, operation string, err error) {
-	if errors.Is(err, context.Canceled) {
+// clientGone reports a request the client abandoned. A disconnect in the
+// middle of a transaction makes database/sql roll it back, so the store
+// returns sql.ErrTxDone instead of context.Canceled. Our own deadline is a
+// failure, not a disconnect.
+func clientGone(ctx context.Context, err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled)
+}
+
+func (h *handler) readError(ctx context.Context, w http.ResponseWriter, operation string, err error) {
+	if clientGone(ctx, err) {
 		return
 	}
-	h.readLog.Warn("read "+operation+" failed", zap.Error(err))
+	h.readLog.Warn("read "+operation+" failed", zap.Error(err), zap.Bool("deadline_exceeded", errors.Is(ctx.Err(), context.DeadlineExceeded)))
 	switch {
 	case errors.Is(err, store.ErrInvalidInput):
 		h.failure(w, http.StatusBadRequest, "invalid_query", "The read query is invalid.")

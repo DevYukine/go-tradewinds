@@ -1,11 +1,14 @@
 package httpapi
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
@@ -138,6 +141,47 @@ func TestRepeatedResponseWriteFailuresAreBounded(t *testing.T) {
 			}
 			if test.err != nil && fields["error"] != test.err.Error() {
 				t.Fatalf("write warning discarded its cause: %+v", fields)
+			}
+		})
+	}
+}
+
+func TestReadErrorSkipsDisconnectedClientsButLogsDeadlines(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, expire := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer expire()
+	for _, test := range []struct {
+		name     string
+		ctx      context.Context
+		err      error
+		reported bool
+		deadline bool
+	}{
+		{name: "client gone mid transaction", ctx: cancelled, err: sql.ErrTxDone},
+		{name: "own deadline mid transaction", ctx: expired, err: sql.ErrTxDone, reported: true, deadline: true},
+		{name: "live request failure", ctx: context.Background(), err: errors.New("connection refused"), reported: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			core, logs := observer.New(zap.DebugLevel)
+			handler := &handler{log: zap.New(core), readLog: zap.New(core)}
+			response := httptest.NewRecorder()
+			handler.readError(test.ctx, response, "competition", test.err)
+			if !test.reported {
+				if logs.Len() != 0 || response.Body.Len() != 0 {
+					t.Fatalf("abandoned request was reported: logs=%+v body=%s", logs.All(), response.Body.String())
+				}
+				return
+			}
+			entries := logs.All()
+			if len(entries) != 1 || entries[0].Message != "read competition failed" {
+				t.Fatalf("failure was not logged once: %+v", entries)
+			}
+			if entries[0].ContextMap()["deadline_exceeded"] != test.deadline {
+				t.Fatalf("deadline flag = %v, want %v", entries[0].ContextMap()["deadline_exceeded"], test.deadline)
+			}
+			if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"error":"database_unavailable"`) {
+				t.Fatalf("failure response = %d %s", response.Code, response.Body.String())
 			}
 		})
 	}

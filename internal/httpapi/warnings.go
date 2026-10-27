@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/store"
-	"go.uber.org/zap"
 )
 
 type BuildIdentity struct {
@@ -50,10 +49,7 @@ func (h *handler) warnings(ctx context.Context, w http.ResponseWriter) {
 	at := time.Now().UTC()
 	report, err := h.store.WarningReport(ctx, at)
 	if err != nil {
-		if ctx.Err() != context.Canceled {
-			h.readLog.Warn("read warnings failed", zap.Error(err))
-			h.failure(w, http.StatusServiceUnavailable, "database_unavailable", "The database read failed; no empty success was substituted.")
-		}
+		h.readError(ctx, w, "warnings", err)
 		return
 	}
 	h.json(w, http.StatusOK, struct {

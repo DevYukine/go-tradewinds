@@ -48,7 +48,7 @@ func (h *handler) standingsHistory(ctx context.Context, w http.ResponseWriter, r
 	}
 	data, err := h.store.StandingsHistory(ctx, accountID, from, to, top)
 	if err != nil {
-		h.readError(w, "standings history", err)
+		h.readError(ctx, w, "standings history", err)
 		return
 	}
 	h.json(w, http.StatusOK, data)
