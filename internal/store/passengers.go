@@ -112,19 +112,25 @@ func (s *Store) PassengerEvidenceHistory(ctx context.Context, accountID, lane st
 	return rows, nil
 }
 
-// PassengerEvents returns the complete retained passenger stream in receipt
-// chronology. Recovery callers use PassengerEventsSince's bounded scan instead.
-func (s *Store) PassengerEvents(ctx context.Context, accountID string) ([]Event, error) {
-	return s.passengerEventsRange(ctx, accountID, time.Time{}, time.Now().UTC())
-}
-
-// PassengerEventsSince returns events received in the mission window, clamped
-// to the last seven real days and a fixed current-time upper bound. Source-time
-// attribution remains the caller's responsibility for delayed or replayed SSE.
+// PassengerEventsSince bounds ordinary history to seven real days, extending
+// that horizon for this account's open receipt or active passage recovery.
+// Source-time attribution remains the caller's responsibility for replayed SSE.
 func (s *Store) PassengerEventsSince(ctx context.Context, accountID string, since time.Time) ([]Event, error) {
+	if !validID(accountID) {
+		return nil, fmt.Errorf("passenger events query: %w", ErrInvalidInput)
+	}
 	through := time.Now().UTC()
 	if cutoff := through.Add(-PassengerReceiptLifetime); since.Before(cutoff) {
-		since = cutoff
+		windows, err := s.passengerRecoveryWindows(ctx, accountID)
+		if err != nil {
+			return nil, err
+		}
+		if recovery, exists := windows[accountID]; exists && recovery.Before(cutoff) {
+			cutoff = recovery
+		}
+		if since.Before(cutoff) {
+			since = cutoff
+		}
 	}
 	return s.passengerEventsRange(ctx, accountID, since, through)
 }

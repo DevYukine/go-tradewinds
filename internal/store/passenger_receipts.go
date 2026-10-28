@@ -304,6 +304,32 @@ func (s *Store) ResolvePassengerReceipt(ctx context.Context, settlement *Settlem
 		if !sameSettlement(candidate, basis) || settlement.CostsKnown != receipt.CostsKnown {
 			return ErrActionConflict
 		}
+		var stored settlementRow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND account_id = ?", settlement.ID, settlement.AccountID).Take(&stored).Error; err != nil {
+			return err
+		}
+		persisted, err := s.decodeSettlement(stored)
+		if err != nil {
+			return err
+		}
+		if archive.Resolved {
+			if !sameSettlement(persisted, *settlement) {
+				return ErrActionConflict
+			}
+			var total, matched int64
+			proofs := tx.Model(&passengerReceiptEventRow{}).Where("account_id = ? AND settlement_id = ?", settlement.AccountID, settlement.ID)
+			if err := proofs.Count(&total).Error; err != nil {
+				return err
+			}
+			if err := proofs.Session(&gorm.Session{}).Where("event_id IN ?", eventIDs).Count(&matched).Error; err != nil {
+				return err
+			}
+			if total != int64(len(eventIDs)) || matched != total {
+				return ErrActionConflict
+			}
+			settlement.CreatedAt = persisted.CreatedAt
+			return nil
+		}
 		var retained []Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("account_id = ? AND event_id IN ?", settlement.AccountID, eventIDs).
@@ -357,21 +383,6 @@ func (s *Store) ResolvePassengerReceipt(ctx context.Context, settlement *Settlem
 		}
 		if count != int64(len(eventIDs)) {
 			return ErrActionConflict
-		}
-		var stored settlementRow
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND account_id = ?", settlement.ID, settlement.AccountID).Take(&stored).Error; err != nil {
-			return err
-		}
-		persisted, err := s.decodeSettlement(stored)
-		if err != nil {
-			return err
-		}
-		if archive.Resolved {
-			if !sameSettlement(persisted, *settlement) {
-				return ErrActionConflict
-			}
-			settlement.CreatedAt = persisted.CreatedAt
-			return nil
 		}
 		if !sameSettlement(persisted, basis) {
 			return ErrActionConflict

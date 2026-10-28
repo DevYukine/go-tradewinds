@@ -246,17 +246,23 @@ func (s *Store) Prune(ctx context.Context) error {
 			break
 		}
 	}
-	// Passenger events retain payment anchors and unpaid promise recovery.
-	// Other operational state and permanent economic evidence are never pruned.
+	// Unresolved receipts and in-flight passages protect their account's
+	// passenger event window, even before terminal proof links are written.
+	protection, protectionArgs, err := s.passengerEventProtection(ctx)
+	if err != nil {
+		return fmt.Errorf("prune passenger event protection: %w", err)
+	}
 	for _, table := range []string{"requests", "events", "decisions"} {
 		predicate := "created_at < CURRENT_TIMESTAMP - INTERVAL '7 days'"
+		var args []any
 		if table == "events" {
-			predicate += " AND event_type NOT IN ('passengers_boarded', 'passengers_paid', 'passengers_lost')"
+			predicate += protection
+			args = protectionArgs
 		}
 		query := "DELETE FROM " + table + " WHERE id IN (SELECT id FROM " + table +
 			" WHERE " + predicate + " ORDER BY created_at LIMIT 10000)"
 		for {
-			result := s.db.WithContext(ctx).Exec(query)
+			result := s.db.WithContext(ctx).Exec(query, args...)
 			if result.Error != nil {
 				return fmt.Errorf("prune %s: %w", table, result.Error)
 			}

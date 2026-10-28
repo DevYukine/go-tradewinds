@@ -451,7 +451,7 @@ func TestPassengerEventsCompleteChronologicalRetentionRestart(t *testing.T) {
 	const accountID = "passenger-events"
 	saveTestAccount(t, database, accountID)
 	saveTestAccount(t, database, "passenger-events-foreign")
-	old := time.Now().UTC().Add(-9 * 24 * time.Hour).Truncate(time.Microsecond)
+	old := time.Now().UTC().Add(-6 * 24 * time.Hour).Truncate(time.Microsecond)
 	const total = MaxHistoryLimit*2 + 7
 	if err := database.db.Exec(`INSERT INTO events (account_id, event_id, event_type, payload, created_at)
 		SELECT ?, 'retained-' || n,
@@ -465,7 +465,7 @@ func TestPassengerEventsCompleteChronologicalRetentionRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, event := range []Event{
-		{AccountID: accountID, EventID: "old-noise", EventType: "ship_arrived", Payload: json.RawMessage(`{}`), CreatedAt: old},
+		{AccountID: accountID, EventID: "old-noise", EventType: "ship_arrived", Payload: json.RawMessage(`{}`), CreatedAt: old.Add(-3 * 24 * time.Hour)},
 		{AccountID: "passenger-events-foreign", EventID: "foreign-passenger", EventType: "passengers_paid", Payload: json.RawMessage(`{"fare_paid_pence":500}`), CreatedAt: old},
 	} {
 		if err := database.db.Create(&event).Error; err != nil {
@@ -484,7 +484,7 @@ func TestPassengerEventsCompleteChronologicalRetentionRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	events, err := reopened.PassengerEvents(ctx, accountID)
+	events, err := reopened.PassengerEventsSince(ctx, accountID, time.Time{})
 	if err != nil || len(events) != total+1 || events[0].EventID != unpaid.EventID || string(events[0].Payload) == "" {
 		t.Fatalf("keyset passenger recovery omitted retained unpaid history: count=%d, %v", len(events), err)
 	}
@@ -520,7 +520,7 @@ func TestPassengerEventsCompleteChronologicalRetentionRestart(t *testing.T) {
 	if err := reopened.PutSettlement(ctx, &anchor); err != nil {
 		t.Fatalf("retained old passage could not replay after restart: %v", err)
 	}
-	if _, err := reopened.PassengerEvents(ctx, ""); !errors.Is(err, ErrInvalidInput) {
+	if _, err := reopened.PassengerEventsSince(ctx, "", time.Time{}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("invalid passenger event query accepted: %v", err)
 	}
 }
@@ -652,17 +652,17 @@ func TestPassengerEventsSinceAccountBoundaryRetentionRestart(t *testing.T) {
 	if err != nil || len(empty) != 0 {
 		t.Fatalf("passenger recovery returned events before its empty window: count=%d, %v", len(empty), err)
 	}
-	all, err := reopened.PassengerEvents(ctx, accountID)
+	all, err := reopened.PassengerEventsSince(ctx, accountID, since.Add(-time.Hour))
 	if err != nil || len(all) != total+2 || all[0].EventID != "before-window" {
-		t.Fatalf("all-history passenger recovery lost retained pre-window boarding: count=%d, %v", len(all), err)
+		t.Fatalf("wider passenger window lost retained pre-mission boarding: count=%d, %v", len(all), err)
 	}
 	zeroSince, err := reopened.PassengerEventsSince(ctx, accountID, time.Time{})
 	if err != nil || len(zeroSince) != len(all) {
-		t.Fatalf("zero-since passenger recovery changed all-history behavior: count=%d, %v", len(zeroSince), err)
+		t.Fatalf("zero-since passenger recovery changed retained-window behavior: count=%d, %v", len(zeroSince), err)
 	}
 	for index, event := range all {
 		if zeroSince[index].ID != event.ID {
-			t.Fatal("all-history and zero-since passenger recovery diverged")
+			t.Fatal("wider-window and zero-since passenger recovery diverged")
 		}
 	}
 	if _, err := reopened.PassengerEventsSince(ctx, "", since); !errors.Is(err, ErrInvalidInput) {
@@ -690,9 +690,5 @@ func TestPassengerEventsSinceClampsOldAndZeroStartsToSafeScanHorizon(t *testing.
 		if err != nil || len(rows) != 1 || rows[0].EventID != "inside-horizon" {
 			t.Fatalf("bounded recovery scanned outside its seven-day real window: %+v %v", rows, err)
 		}
-	}
-	all, err := database.PassengerEvents(ctx, accountID)
-	if err != nil || len(all) != 2 || all[0].EventID != "outside-horizon" {
-		t.Fatalf("explicit retained-history API lost its older evidence: %+v %v", all, err)
 	}
 }

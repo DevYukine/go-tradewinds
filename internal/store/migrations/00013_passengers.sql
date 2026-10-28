@@ -7,8 +7,6 @@ ALTER TABLE settlements
         kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery', 'passage', 'relocation', 'aborted', 'maintenance', 'unknown')
     ),
     ADD COLUMN event_id text,
-    ADD CONSTRAINT settlements_passenger_event_fk FOREIGN KEY (account_id, event_id)
-        REFERENCES events (account_id, event_id),
     ADD CONSTRAINT settlements_evidence_anchor_check CHECK (
         (kind = 'passage' AND event_id IS NOT NULL AND length(event_id) BETWEEN 1 AND 255)
         OR (kind <> 'passage' AND action_id IS NOT NULL AND event_id IS NULL)
@@ -68,7 +66,6 @@ DROP INDEX settlements_passenger_event_idx;
 DROP INDEX settlements_action_evidence_idx;
 ALTER TABLE settlements
     DROP CONSTRAINT settlements_evidence_anchor_check,
-    DROP CONSTRAINT settlements_passenger_event_fk,
     DROP CONSTRAINT settlements_kind_check,
     ADD CONSTRAINT settlements_kind_check CHECK (
         kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery', 'relocation', 'aborted', 'maintenance', 'unknown')

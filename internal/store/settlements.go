@@ -144,6 +144,24 @@ func (s *Store) PutSettlement(ctx context.Context, settlement *Settlement) error
 			}
 		}
 		if row.Kind == "passage" {
+			// The immutable receipt outlives its seven-day raw event. Replays
+			// authenticate against that durable row, not expired diagnostics.
+			var existing settlementRow
+			err := tx.Where("id = ? AND account_id = ?", row.ID, row.AccountID).Take(&existing).Error
+			if err == nil {
+				persisted, err := s.decodeSettlement(existing)
+				if err != nil {
+					return err
+				}
+				if !sameSettlement(persisted, row) {
+					return ErrActionConflict
+				}
+				row.CreatedAt = persisted.CreatedAt
+				return nil
+			}
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
 			if row.ProceedsUnknown {
 				var archive passengerReceiptRow
 				if err := tx.Where("id = ? AND account_id = ?", row.ID, row.AccountID).Take(&archive).Error; err != nil {

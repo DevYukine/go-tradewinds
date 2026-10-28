@@ -22,8 +22,7 @@ CREATE TABLE passenger_receipt_events (
     account_id text NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     event_id text NOT NULL,
     settlement_id text NOT NULL REFERENCES settlements(id) ON DELETE CASCADE,
-    PRIMARY KEY (account_id, event_id),
-    FOREIGN KEY (account_id, event_id) REFERENCES events(account_id, event_id)
+    PRIMARY KEY (account_id, event_id)
 );
 CREATE INDEX passenger_receipt_events_settlement_idx ON passenger_receipt_events (settlement_id);
 
