@@ -266,7 +266,7 @@ func TestRelocationExecutionBudgetFundsFullStoresWithoutCallingThemConsumed(t *t
 	}
 	plan := plans[0]
 	runner := &Runner{
-		stateCache: accountState{Ships: []ShipState{in.Ship}, Clock: in.Clock},
+		stateCache: AccountState{Ships: []ShipState{in.Ship}, Clock: in.Clock},
 		meta: map[string]DatasetMeta{
 			"ships": {UpdatedAt: time.Now(), Complete: true, Generation: in.Generation},
 		},

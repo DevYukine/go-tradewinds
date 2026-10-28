@@ -80,6 +80,9 @@ func addFundingFees(plan Plan, fees int64) Plan {
 	if reason := minimumMarginRejection(plan); reason != "" {
 		return reject(plan, reason)
 	}
+	if plan.nextRungReceiptStress && remainingNet-plan.Economics.PriceUncertaintyStressPence <= 0 {
+		return reject(plan, "spot lot is not net-positive at the next NPC bid rung after funding fees")
+	}
 	return plan
 }
 

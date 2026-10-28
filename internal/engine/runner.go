@@ -48,7 +48,7 @@ type Runner struct {
 	opts                   Options
 	snapshot               map[string]json.RawMessage
 	meta                   map[string]DatasetMeta
-	stateCache             accountState
+	stateCache             AccountState
 	generation             string
 	passStart              time.Time
 	replay                 *replayRecorder
@@ -644,52 +644,10 @@ func (r *Runner) planningInput(ship ShipState) PlanningInput {
 	return r.planningInputFrom(ship, r.stateCache)
 }
 
-func (r *Runner) planningInputFrom(ship ShipState, state accountState) PlanningInput {
-	balances := make(map[string]int64)
-	reserves := obligationReserves(state, r.snapshot, r.opts.ReservePence)
-	for _, vault := range state.Vaults {
-		if vault.AccountType == "vault" {
-			balances[vault.BankingRegion] += vault.BalancePence
-		}
-	}
-	upkeep := DailyUpkeep(state.Ships, state.Catalog, len(state.Factors))
-	marqueZones := make(map[string]bool)
-	lower, _, validClock := serverBounds(time.Now(), state.Clock, r.meta["clock"], r.generation)
-	for _, marque := range decode[[]letterOfMarque](r.snapshot, "marques") {
-		if !validClock || lower.Before(marque.ExpiresAt) {
-			marqueZones[marque.SeaZoneID] = true
-		}
-	}
-	if pending := decode[marquePending](r.snapshot, "_marque_pending"); pending.SeaZoneID != "" &&
-		(pending.ExpiresAt.IsZero() || !validClock || lower.Before(pending.ExpiresAt)) {
-		marqueZones[pending.SeaZoneID] = true
-	}
-	return PlanningInput{
-		Now:                   time.Now(),
-		CompanyID:             r.account.CompanyID,
-		Ship:                  ship,
-		Fleet:                 state.Ships,
-		HazardQuotes:          state.HazardQuotes,
-		Catalog:               state.Catalog,
-		Clock:                 state.Clock,
-		Zones:                 decode[[]ZoneObservation](r.snapshot, "zones"),
-		MarqueZones:           marqueZones,
-		Markets:               state.Markets,
-		Ports:                 state.Ports,
-		BookObservedAt:        decode[map[string]time.Time](r.snapshot, "_book_observed"),
-		QuayBookMemory:        decode[map[string]RetainedQuayBook](r.snapshot, "_quay_book_memory"),
-		BookDrift:             decode[[]BookDriftSample](r.snapshot, "_book_drift"),
-		Routes:                state.Routes,
-		Contracts:             taperedContracts(state.Contracts, state.Catalog, r.charterProceedsPence, ship.EffectiveHoldCapacityTons),
-		Balances:              balances,
-		ReserveByRegion:       reserves,
-		ReservePence:          r.opts.ReservePence,
-		Metadata:              r.meta,
-		Generation:            r.generation,
-		FleetDailyUpkeepPence: upkeep,
-		Competition:           r.competition,
-		Rates:                 state.Rates,
-		ReservedPlayerBidTons: r.restingBidReservations(),
-		PlayerBidSellFills:    decode[[]PlayerBidSellFill](r.snapshot, "fills"),
-	}
+func (r *Runner) planningInputFrom(ship ShipState, state AccountState) PlanningInput {
+	return PlanningInputFor(time.Now(), ship, state, r.snapshot, PlanningSources{
+		CompanyID: r.account.CompanyID, ReservePence: r.opts.ReservePence,
+		Metadata: r.meta, Generation: r.generation,
+		CharterProceedsPence: r.charterProceedsPence, Competition: r.competition,
+	})
 }

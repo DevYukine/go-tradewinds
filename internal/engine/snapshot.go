@@ -36,7 +36,8 @@ func gameVersionLogText(version string) string {
 	return version
 }
 
-type accountState struct {
+// AccountState is the decoded account frame consumed by the pure planners.
+type AccountState struct {
 	Catalog           Catalog
 	Clock             Clock
 	Ships             []ShipState
@@ -550,7 +551,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 	state.Ports = decode[map[string]PortDetail](map[string]json.RawMessage{"ports": encode(ports)}, "ports")
 	state.Routes = decode[map[string]Route](map[string]json.RawMessage{"routes": encode(routes)}, "routes")
 	state.Markets = withoutOwnOrders(decode[map[string]Market](map[string]json.RawMessage{"books": encode(markets)}, "books"), r.ownedOrders())
-	state.Markets = r.monopolyMarketView(state.Markets, state.Catalog, state.Clock)
+	state.Markets = monopolyMarketView(time.Now(), r.snapshot, PlanningSources{Metadata: r.meta, Generation: r.generation}, state.Markets, state.Catalog, state.Clock)
 	if err := r.refreshHazardQuotes(ctx, state); err != nil {
 		return err
 	}
@@ -914,7 +915,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 	}
 	r.refreshCompetition(ctx)
 	if scale := r.stateCache.Clock.Calendar.TimeScale; scale > 0 {
-		window := time.Duration(charterTaperWindowGameDays*24*int64(time.Hour)) / time.Duration(scale)
+		window := CharterProceedsWindow(scale)
 		proceeds, err := r.db.CharterProceedsSince(ctx, r.account.ID, time.Now().Add(-window))
 		if err != nil {
 			return err
@@ -976,35 +977,40 @@ func (r *Runner) refresh(ctx context.Context) error {
 	return r.recordBalances(ctx)
 }
 
-func (r *Runner) state() accountState {
-	state := accountState{
-		Catalog:           decode[Catalog](r.snapshot, "catalog"),
-		Clock:             decode[Clock](r.snapshot, "clock"),
-		Ships:             decode[[]ShipState](r.snapshot, "ships"),
-		Markets:           decode[map[string]Market](r.snapshot, "books"),
-		Ports:             decode[map[string]PortDetail](r.snapshot, "ports"),
-		Routes:            decode[map[string]Route](r.snapshot, "routes"),
-		HazardQuotes:      decode[map[string]HazardQuote](r.snapshot, hazardQuoteSnapshotKey),
-		Contracts:         decode[[]Contract](r.snapshot, "contracts"),
-		Loans:             decode[[]gameapi.Loan](r.snapshot, "loans"),
-		InsurancePolicies: decode[[]InsurancePolicy](r.snapshot, "insurance"),
-		Rates:             decode[[]Rate](r.snapshot, "rates"),
-		Factors:           decode[[]string](r.snapshot, "factors"),
-		Quotes:            decode[map[string]YardQuote](r.snapshot, "yard_quotes"),
+func (r *Runner) state() AccountState {
+	return StateFromSnapshot(time.Now(), r.snapshot, PlanningSources{Metadata: r.meta, Generation: r.generation})
+}
+
+// StateFromSnapshot decodes a retained frame without network or database access.
+func StateFromSnapshot(now time.Time, snapshot map[string]json.RawMessage, sources PlanningSources) AccountState {
+	state := AccountState{
+		Catalog:           decode[Catalog](snapshot, "catalog"),
+		Clock:             decode[Clock](snapshot, "clock"),
+		Ships:             decode[[]ShipState](snapshot, "ships"),
+		Markets:           decode[map[string]Market](snapshot, "books"),
+		Ports:             decode[map[string]PortDetail](snapshot, "ports"),
+		Routes:            decode[map[string]Route](snapshot, "routes"),
+		HazardQuotes:      decode[map[string]HazardQuote](snapshot, hazardQuoteSnapshotKey),
+		Contracts:         decode[[]Contract](snapshot, "contracts"),
+		Loans:             decode[[]gameapi.Loan](snapshot, "loans"),
+		InsurancePolicies: decode[[]InsurancePolicy](snapshot, "insurance"),
+		Rates:             decode[[]Rate](snapshot, "rates"),
+		Factors:           decode[[]string](snapshot, "factors"),
+		Quotes:            decode[map[string]YardQuote](snapshot, "yard_quotes"),
 	}
 	var vaults struct {
 		Vaults []Vault `json:"vaults"`
 	}
-	_ = json.Unmarshal(r.snapshot["vaults"], &vaults)
+	_ = json.Unmarshal(snapshot["vaults"], &vaults)
 	state.Vaults = vaults.Vaults
 	var profile struct {
 		Company struct {
 			HomePortID string `json:"home_port_id"`
 		} `json:"company"`
 	}
-	_ = json.Unmarshal(r.snapshot["profile"], &profile)
+	_ = json.Unmarshal(snapshot["profile"], &profile)
 	state.HomePortID = profile.Company.HomePortID
-	state.Markets = r.monopolyMarketView(state.Markets, state.Catalog, state.Clock)
+	state.Markets = monopolyMarketView(now, snapshot, sources, state.Markets, state.Catalog, state.Clock)
 	return state
 }
 

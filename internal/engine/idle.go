@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"math"
 	"time"
 )
@@ -34,7 +35,7 @@ func idleFreight(shipID string, contracts []Contract) bool {
 	return false
 }
 
-func (r *Runner) recordShipIdle(state accountState, previous PlanningInput) {
+func (r *Runner) recordShipIdle(state AccountState, previous PlanningInput) {
 	idle := decode[map[string]shipIdleState](r.snapshot, "_ship_idle")
 	if idle == nil {
 		idle = make(map[string]shipIdleState)
@@ -121,12 +122,16 @@ func (r *Runner) shipIdleEligible(in PlanningInput) bool {
 }
 
 func (r *Runner) shipIdleFor(in PlanningInput, hours int64) bool {
+	return shipIdleFor(in, r.snapshot, hours)
+}
+
+func shipIdleFor(in PlanningInput, snapshot map[string]json.RawMessage, hours int64) bool {
 	if !idleClockReady(in) || in.Ship.Ship.ID == "" || in.Ship.Ship.Status == "sunk" ||
 		in.Ship.Voyage != nil || in.Ship.Ship.Status == "sailing" || !emptyCargo(in.Ship) ||
 		idleFreight(in.Ship.Ship.ID, in.Contracts) {
 		return false
 	}
-	observed := decode[map[string]shipIdleState](r.snapshot, "_ship_idle")[in.Ship.Ship.ID]
+	observed := decode[map[string]shipIdleState](snapshot, "_ship_idle")[in.Ship.Ship.ID]
 	return observed.Validated && !observed.ClockRegressed && observed.EarnedGameHours >= hours &&
 		observed.PortID != "" && observed.PortID == in.Ship.Ship.CurrentPortID &&
 		observed.LastValidatedGameHour == in.Clock.Calendar.TotalGameHours && observed.LastClockUTC.Equal(in.Clock.RealUTC)

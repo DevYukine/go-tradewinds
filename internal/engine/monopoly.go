@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"slices"
 	"time"
 )
@@ -50,20 +51,19 @@ func withoutMonopolizedNPCAsks(markets map[string]Market, ports []Port, monopoli
 	return filtered
 }
 
-func (r *Runner) monopolyMarketView(markets map[string]Market, catalog Catalog, clock Clock) map[string]Market {
+func monopolyMarketView(now time.Time, snapshot map[string]json.RawMessage, sources PlanningSources, markets map[string]Market, catalog Catalog, clock Clock) map[string]Market {
 	profile := decode[struct {
 		Company struct {
 			ID string `json:"id"`
 		} `json:"company"`
-	}](r.snapshot, "profile")
+	}](snapshot, "profile")
 	own := map[string]bool{}
 	if profile.Company.ID != "" {
 		own[profile.Company.ID] = true
 	}
-	now := time.Now()
-	if lower, _, ok := serverBounds(now, clock, r.meta["clock"], r.generation); ok {
+	if lower, _, ok := serverBounds(now, clock, sources.Metadata["clock"], sources.Generation); ok {
 		now = lower
 	}
 	// Failed refreshes retain last-good grants, but cannot prolong an expired one.
-	return withoutMonopolizedNPCAsks(markets, catalog.Ports, decode[[]Monopoly](r.snapshot, "monopolies"), own, now)
+	return withoutMonopolizedNPCAsks(markets, catalog.Ports, decode[[]Monopoly](snapshot, "monopolies"), own, now)
 }

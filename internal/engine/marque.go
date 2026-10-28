@@ -213,7 +213,7 @@ func (r *Runner) refreshMarqueQuotes(ctx context.Context, catalog Catalog) error
 	return nil
 }
 
-func marqueMissionPlans(state accountState, ship ShipState, mission *store.Mission, data *missionData) []Plan {
+func marqueMissionPlans(state AccountState, ship ShipState, mission *store.Mission, data *missionData) []Plan {
 	current := ship.Ship.CurrentPortID
 	atSea := ship.Ship.Status == "sailing" || ship.Voyage != nil
 	if atSea {
@@ -251,7 +251,7 @@ func marqueMissionPlans(state accountState, ship ShipState, mission *store.Missi
 
 // Exposure uses actual legs and persisted destinations, never candidate plans.
 // The policy board omits our permanent slice ownership, so use frozen positions.
-func marqueExposure(state accountState, plans map[string][]Plan, positions []store.UnderwritingPosition) (map[string]bool, error) {
+func marqueExposure(state AccountState, plans map[string][]Plan, positions []store.UnderwritingPosition) (map[string]bool, error) {
 	exposed := make(map[string]bool)
 	addNode := func(node string) {
 		for _, zone := range state.Catalog.SeaZones {

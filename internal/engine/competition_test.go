@@ -195,7 +195,7 @@ func TestCompetitionCoverageRestartsAfterGap(t *testing.T) {
 	runner := &Runner{
 		snapshot: map[string]json.RawMessage{"_competition_coverage": encode(prior)},
 		meta:     map[string]DatasetMeta{"ports/quay": {UpdatedAt: now, Complete: true}},
-		stateCache: accountState{
+		stateCache: AccountState{
 			Catalog: Catalog{Ports: []Port{{ID: "quay", BankingRegion: "region"}}},
 			Ports:   map[string]PortDetail{"quay": {Visibility: "quay"}},
 		},

@@ -37,15 +37,15 @@ func TestActionDispositionDistinguishesAmbiguousFromDefinite(t *testing.T) {
 
 func TestMissionStageKeysAreStableButNeverTradeAndDepartTogether(t *testing.T) {
 	t.Parallel()
-	first := actionID("account-a", "generation-a", "buy", 0)
-	if first != actionID("account-a", "generation-a", "buy", 0) {
+	first := ActionID("account-a", "generation-a", "buy", 0)
+	if first != ActionID("account-a", "generation-a", "buy", 0) {
 		t.Fatal("restored mission changed logical action identity")
 	}
 	for _, other := range []string{
-		actionID("account-b", "generation-a", "buy", 0),
-		actionID("account-a", "generation-b", "buy", 0),
-		actionID("account-a", "generation-a", "depart", 0),
-		actionID("account-a", "generation-a", "buy", 1),
+		ActionID("account-b", "generation-a", "buy", 0),
+		ActionID("account-a", "generation-b", "buy", 0),
+		ActionID("account-a", "generation-a", "depart", 0),
+		ActionID("account-a", "generation-a", "buy", 1),
 	} {
 		if first == other {
 			t.Fatal("account, generation, stage or definite-outcome attempt collided")
@@ -152,7 +152,7 @@ func TestActualOverheadIsClaimedOnceAcrossOverlappingMissions(t *testing.T) {
 				{"id":"transfer","debit_account_id":"vault","credit_account_id":"other-vault","amount_pence":500,"reason":"remit"}
 			]`),
 		},
-		stateCache:    accountState{Vaults: []Vault{{AccountID: "vault"}, {AccountID: "other-vault"}}},
+		stateCache:    AccountState{Vaults: []Vault{{AccountID: "vault"}, {AccountID: "other-vault"}}},
 		expenseOwners: make(map[string]string),
 	}
 	mission := &missionData{InitialLedgerIDs: map[string]bool{"old": true}}
@@ -366,7 +366,7 @@ func TestAuthAndThrottleRefusalsPreserveCarriedInCharterOpportunity(t *testing.T
 				Generation: "mission-a",
 				Phase:      "arrival",
 			}
-			oldActionID := actionID(mission.AccountID, mission.Generation, "deliver-charter", 0)
+			oldActionID := ActionID(mission.AccountID, mission.Generation, "deliver-charter", 0)
 			data := missionData{
 				Action: &durableAction{
 					ID:    oldActionID,
@@ -384,7 +384,7 @@ func TestAuthAndThrottleRefusalsPreserveCarriedInCharterOpportunity(t *testing.T
 			if data.Action != nil || data.LastActionID != oldActionID || data.Sequence != 1 {
 				t.Fatalf("definite request outcome was not consumed durably: %+v", data)
 			}
-			nextActionID := actionID(mission.AccountID, mission.Generation, "deliver-charter", data.Sequence)
+			nextActionID := ActionID(mission.AccountID, mission.Generation, "deliver-charter", data.Sequence)
 			if nextActionID == oldActionID {
 				t.Fatal("post-repair attempt would replay the cached failed idempotency key")
 			}
@@ -446,7 +446,7 @@ func TestFreightDepartureChecksDetourBeforeImmutableStop(t *testing.T) {
 			r := &Runner{
 				generation: "freight-detour",
 				meta:       map[string]DatasetMeta{},
-				stateCache: accountState{
+				stateCache: AccountState{
 					Clock: Clock{RealUTC: now},
 					Routes: map[string]Route{
 						firstKey: {

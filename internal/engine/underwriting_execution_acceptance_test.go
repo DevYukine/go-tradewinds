@@ -262,7 +262,7 @@ func uwExecSeedPendingUnderwrite(t *testing.T, h *recoveryHarness, base time.Tim
 	if err != nil {
 		t.Fatalf("encode underwrite request: %v", err)
 	}
-	id := actionID(h.account.ID, "underwriting-generation", uwExecStage, 0)
+	id := ActionID(h.account.ID, "underwriting-generation", uwExecStage, 0)
 	uwExecPutMission(t, h, base, &durableAction{
 		ID:        id,
 		Stage:     uwExecStage,

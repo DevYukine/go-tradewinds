@@ -109,13 +109,60 @@ Already-paid funding fees are sunk when [rechecking continuation](../internal/en
 
 Live calibration exposed why this distinction matters: the initial Le Havre to Portsmouth provision charter had a modeled 36,055-pence cash margin for 24 tons, but an unsupported 14.5% revenue haircut rejected it. Those prices are a dated observation, not a standing trade signal. Every order must still use refreshed depth and current charter terms.
 
-Using the next lower NPC bid rung as a receipt-stress admission gate is deferred to the simulation loop. Compare loss-inclusive returns and idle ship time before adopting it; no measured improvement from that gate has been established. Fresh-quay spot admission and already-paid cargo continuation retain their current economics.
+The offline planner exposes `NextRungReceiptStress`, disabled in the live Runner. When enabled, a fresh-quay spot lot must remain net-positive after repricing its full receipt at the next lower NPC bid rung, including observed funding fees. Its IOC sell limit still follows the worst actually consumed bid, not the stress price. Charters, freight and gossip retain their current economics. This is an experiment, not an adopted live policy: compare loss-inclusive simulated returns and idle ship time across all three regeneration scenarios before seeking the owner's approval. No measured improvement from this gate has been established; already-paid cargo continuation is unchanged.
 
 The first live roundtrip on 2026-10-22 realized a 91,953-pence loss: 468,600 pence acquisition, 13,074 buyer customs, 783 attributable expenses, and 390,504 spot-sale proceeds. Charter delivery had failed because the automation key lacked `market_derivatives`; incorrectly treating that authorization error as permanently unavailable demand caused the lower-price fallback after the key was repaired. Keep this loss in the durable settlement history. Authorization and throttling failures are not evidence that a charter is closed or the cargo ineligible.
 
 Definitive authorization or throttle refusals complete only the rejected journal request, not a domain opportunity. After the persisted cooldown, rejected treasury and build control intents are released for fresh state-based planning with a new idempotency key. Authorization failures still stop execution until repaired. Ambiguous actions remain attached to their original immutable request and are never discarded by this recovery.
 
 After permission repair, the next 24-ton roundtrip completed at 19:07:46 UTC with 526,992 pence charter proceeds, 468,384 acquisition, 13,209 fees, and 508 attributable expenses: a realized 44,891-pence net gain. Its stores came from the starter allocation, so no newly purchased provisions were charged to that settlement. The two recorded cycles together remained 47,062 pence below their combined acquisition and operating costs. One profitable cycle validates execution, not a guaranteed future return; fleet expansion still uses the complete retained history, including the loss.
+
+### Simulation experiments (2026-10-27)
+
+**Historical simulated estimates predating the 2026-10-28 money-engine release.** These results used the earlier lifetime sourcing seed and did not price Lloyd's hazard quotes, retained quay books, or the current 2% minimum margin. The archived TRUSTED labels below describe the earlier receipt/duration gate only. The current validate/run gate reports **UNTRUSTED: no recorded Lloyd's quotes** for these tapes; absent quotes are never replaced with zero hazard. New tapes retain `_hazard_quotes` and replay the current live pricing and rolling probe budget. Random sinkings and cargo loss remain outside the simulation.
+
+The read-only historical gate, `tw-sim validate --from 2026-10-22T00:00:00Z`, returned **TRUSTED**, exit 0, on the retained tape available at the check. It covered 180 settlements: 28 spot, 40 charter, 69 relocation, 37 freight, two spot+freight and four aborted. One charter was explicitly unlinkable because a linked receipt was missing; no mismatch was reported. There were 103 covered orders and 29 training voyages for the fitted hoy speed factors (1.0711 empty, 0.8843 laden). Freight and aborted kinds were reported separately rather than used to pass the commercial accounting gate. The complete check took 680.702 real seconds. This validates the specified historical tests, not every omitted mechanism or a future profit forecast.
+
+The first controlled comparison used the post-recorder-deployment window `[2026-10-27T12:21:09.959924Z, 2026-10-27T17:18:57.628255001Z)`. Fitting ended at `2026-10-27T14:50:03.7940895Z`; only the subsequent interval was simulated. The three ship IDs were fixed at the window's start, with recorded positions, cargo and balances at the holdout boundary. Earlier diagnostic backfill supplied pre-window state and permanent sourcing history, not calibration samples. All commands were database-read-only and issued no game requests.
+
+This window's gate was **TRUSTED**, exit 0: 17/18 commercial settlements were linkable and all 17 linkable known-cost rows matched all five money fields exactly. All 28 covered orders matched filled tons; 27/28 had gross error within 1%. There were 13 held-out voyages with median absolute duration error 1.070%. The window also contained four freight and one aborted settlement, reported separately.
+
+Regeneration calibration used ten independent samples: conservative 0.083333, base 0.827586 and optimistic 1.000000. Fitted empty/laden speed factors were 1.085442/0.824094 for hoy and 1.057588/0.842178 for cutter, each with five training voyages; unobserved hull classes retained the 1.0/0.8 prior. Coverage remained thin: baseline settled 72 observed and 64 carried tons (52.94% observed); I4 settled 37 observed and 97 carried tons (27.61%). Every row is therefore **low coverage**, despite the historical gate passing.
+
+**Simulated estimates, not live profits. All monetary columns are integer pence.** Net worth is vault cash plus owned cargo at catalog base price; identical hull values and stores are excluded. `Obs/Carry` are settled tons; `Dark` is dark-blocked decisions. Probes, spend and conversions are separate columns so information purchases cannot masquerade as trading income.
+
+| Scenario | Variant | Final NW | ΔNW vs baseline | Realized net | Idle % | Probes | Probe spend | Conversions | Settlements | Obs/Carry | Dark |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Conservative | baseline | 6878621 | 0 | 1389715 | 53.1 | 2 | 10802 | 0 | 8 | 72/64 | 102 |
+| Conservative | i4 | 7304814 | 426193 | 1469065 | 54.4 | 1 | 5130 | 1 | 7 | 37/97 | 41 |
+| Conservative | probe0 | 7264505 | 385884 | 1397377 | 62.5 | 0 | 0 | 0 | 6 | 72/64 | 41 |
+| Conservative | probe50 | 6878621 | 0 | 1389715 | 53.1 | 2 | 10802 | 0 | 8 | 72/64 | 102 |
+| Conservative | probe400 | 6878621 | 0 | 1389715 | 53.1 | 2 | 10802 | 0 | 8 | 72/64 | 102 |
+| Base | baseline | 6910047 | 0 | 1421141 | 53.1 | 2 | 10802 | 0 | 8 | 72/64 | 102 |
+| Base | i4 | 7326594 | 416547 | 1490845 | 54.4 | 1 | 5130 | 1 | 7 | 37/97 | 41 |
+| Base | probe0 | 7295931 | 385884 | 1428803 | 62.5 | 0 | 0 | 0 | 6 | 72/64 | 41 |
+| Base | probe50 | 6910047 | 0 | 1421141 | 53.1 | 2 | 10802 | 0 | 8 | 72/64 | 102 |
+| Base | probe400 | 6910047 | 0 | 1421141 | 53.1 | 2 | 10802 | 0 | 8 | 72/64 | 102 |
+| Optimistic | baseline | 6910047 | 0 | 1421141 | 53.1 | 2 | 10802 | 0 | 8 | 72/64 | 102 |
+| Optimistic | i4 | 7326594 | 416547 | 1490845 | 54.4 | 1 | 5130 | 1 | 7 | 37/97 | 41 |
+| Optimistic | probe0 | 7295931 | 385884 | 1428803 | 62.5 | 0 | 0 | 0 | 6 | 72/64 | 41 |
+| Optimistic | probe50 | 6910047 | 0 | 1421141 | 53.1 | 2 | 10802 | 0 | 8 | 72/64 | 102 |
+| Optimistic | probe400 | 6910047 | 0 | 1421141 | 53.1 | 2 | 10802 | 0 | 8 | 72/64 | 102 |
+
+All variants are **inconclusive**: I4 and probe0 raised modeled net worth but also increased idle percentage; probe50 and probe400 tied the baseline. None satisfies positive ΔNW in all three scenarios with no higher idle time. Hazards, sinkings, cargo loss, berth queues, price response, partial-fill probability, freight execution, fleet growth and new financial instruments remain omitted or optimistic. These results do not authorize a live change: I4 stays off and the probe cash share stays 200 bps.
+
+The initial implementation was too slow: 19,476.625 seconds end-to-end, with 5h13m14.706s in calibration/simulation. A bounded 30-minute fit/20-minute holdout was therefore profiled before interpreting the experiment. At `GOMAXPROCS=2`, below-normal priority, its end-to-end time was 2,033.832 seconds; the 1,580.74-second CPU capture contained 2,508.52 CPU-seconds. Cumulative hotspots were `PlanVoyages` (66.53%), `sizePlan` (60.63%), `quoteVoyage` (55.50%), `observedPlanningRoute` (31.30%) and `ValidateRoute` (16.90%); `TapeReader.Advance` accounted for 9.35%. Percentages are nested call costs, not additive shares.
+
+Memoizing route validation within each planner call, reusing parsed historical delivery receipts and avoiding discarded planning-input copies reduced the same short window to 1,386.511 seconds end-to-end (**1.47× faster**) and 928.44 seconds in calibration/simulation (**1.70× faster**). CPU samples fell from 2,508.52 to 1,428.85 CPU-seconds (**43.0% lower**). Both captures used `GOMAXPROCS=2` and below-normal priority with no overlapping checks. The optimized cumulative hotspots were `PlanVoyages` (58.48%), `sizePlan` (50.08%), `quoteVoyage` (41.72%) and `destinationRevenue` (19.85%); route validation was no longer among the top 25. The before/after JSON files were byte-identical (`cmp` passed), so this measured optimization did not change the short fixture's results.
+
+The route-validation memo used for that historical timing comparison was dropped during the money-engine merge. Every current planning call retains the live route and hazard safety checks; the archived timings are not measurements of this merged implementation.
+
+The short profiling window's validation gate was **UNTRUSTED**; its rows are performance fixtures only and are not used for policy conclusions.
+
+Only after that identity check, the same full frozen-window command was repeated. It retained the **TRUSTED** gate and all 15 rows above, taking 11,713.475 seconds end-to-end (**1.66× faster**) and 3h7m13.755s in calibration/simulation. The repeated `sim-results.json` and preserved first-run JSON were byte-identical (`cmp` passed); both had SHA-256 `658061e747c5b945bff55cc4cf978326812e193972b4d9422a8ab4e191d6565e`. Wall time is deliberately excluded from JSON. The run remains expensive and low-coverage; performance improvement does not strengthen the economic conclusion.
+
+**Model-review qualification:** the table and timing evidence above archive the initial implementation. Subsequent corrections carry recorded-fill addbacks into signed stock deviations, distinguish exhausted orders from NPC re-quotes, enforce the live relocation funding cap and use live charter-versus-bid selection with amount-specific tapering. The full multi-hour experiment has not been regenerated with these corrections; its unchanged archived numbers are not current-model profit evidence. Clock gaps and evidence-budget failures now explicitly invalidate trust. No live policy change follows from this table.
+
 
 ### Bounded offline replay (2026-10-23)
 
@@ -153,6 +200,8 @@ When no ordinary executable opportunity exists, an empty, stationary ship may in
 The [rolling probe budget](../internal/engine/probe_history.go) replaces the lifetime seed and larger idle allowance. Over the last 60 game days, use `clamp(20,000 + floor(conversion net / 2) - probe expenses, 0, floor(free cash / 50))`, in pence. Free cash excludes operating reserves and all current commitments. Conversion net is known-cost delivery net from a source probed no more than seven real days before that delivery started. Losses count too. Scout expenses do not consume this budget. Unknown probe costs in the window close it. The bounded conversion ledger retains 200 rows; the accounting record remains authoritative.
 
 After six coherent idle game hours, the controller may reinspect unchanged evidence, subject to the same rolling budget and a 24-real-minute matching completion cooldown. A future completion blocks it. Maintenance, docking, selection and remittance do not reset physical idle time. Sailing, carried cargo, active freight or a port change do. Stale, failed, paused or regressed clocks earn no idle time. These are [controller spending rules](../internal/engine/sourcing.go), not forecast sales. The [guide, visibility](https://tradewinds.kibb.io/skill.md) still requires arrival and a fresh quay inspection before buying.
+
+Offline experiments may replace the per-probe cash share with `SourcingCashBPS`; nil and 200 retain the live 2% share, while zero disables sourcing's cash allowance. The rolling conversion budget still caps every share. The live Runner supplies neither experiment knob.
 
 Failed catalogue-only `(source port, commodity)` inspections cannot repeat for 24 real hours, even under a different charter ID, delivery port or reward. Only a fresh public ask changes evidence, using the existing lane key, 24-minute cooldown and idle gate; freight contracts, factors and local asks do not re-arm catalogue probes. A source/commodity with an actual conversion in the last seven real days is exempt from the 24-hour ban, but not the existing lane checks. After two nonconverting probes, the ship cannot start another catalogue-only probe until it departs laden or earns six additional coherent idle game hours.
 

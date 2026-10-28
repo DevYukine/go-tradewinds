@@ -5,17 +5,19 @@
 | Package | Responsibility |
 | --- | --- |
 | `cmd/tradewinds` | Explicit registration, account listing, Fx lifecycle, HTTP listener, worker startup and shutdown |
-| `cmd/tw-sim` | Explicit account-scoped diagnostic backfill only; no game client or simulator |
+| `cmd/tw-sim` | Account-scoped backfill, read-only accounting/model validation and offline variant table/JSON; no game client |
 | `internal/config` | Environment loading and validated operating limits |
 | `internal/gameapi` | Current typed API contract, HTTP/SSE transport, scoped rate limits, retries and raw observations |
 | `internal/store` | PostgreSQL migrations, encrypted credentials/journal, missions, snapshots, diagnostics, settlements and metrics |
 | `internal/engine` | Economic decisions, durable mission execution, authoritative reconciliation and eligible reinvestment |
-| `internal/sim` | Diagnostic path mapping, complete-page reconstruction and replay coverage reports |
+| `internal/sim` | Temporal replay reader, shared-depth markets, fixed fleet/accounting, validation, calibration and production-planner policy loops |
 | `internal/httpapi` | Bounded read-only views of database state, readiness and metrics |
 | `internal/names` | Vendored canonical Pokemon catalog and unused-name selection |
 | `web` | Next.js dashboard; no direct game credentials or game requests |
 
 The Go process runs independently of the dashboard. Closing a browser does not stop trading. Opening more tabs does not create more upstream sessions. PostgreSQL is the durable operational record, not an optional cache.
+
+The simulator reuses the engine's pure state/input builders and planners, not its Runner or executor. Each variant owns its residual books, ships, vaults, contracts and sourcing ledger. A monotone tape cursor restricts observation time and phase; recorded factors bound private port intelligence. Validation-only current ledger evidence never enters policy state. `OpenReadOnly` skips migrations and enforces read-only PostgreSQL sessions for validation and comparisons. Simulated settlements and results are CLI-only and are never written to database tables or served to the dashboard. Live receipt stress defaults off and nil sourcing cash share retains 200 bps.
 
 ## Account isolation
 

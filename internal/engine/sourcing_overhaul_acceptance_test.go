@@ -28,7 +28,7 @@ func TestPlanningInputSkipsUnusedZeroBalanceRegionFunding(t *testing.T) {
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	ship := sourcingFixture[ShipState](t, `{"ship":{"id":"`+recoveryShipBlastoise+`","name":"Blastoise","ship_class":"`+recoveryHull+`","status":"sailing","current_port_id":"`+recoveryHomePort+`"}}`)
-	state := accountState{
+	state := AccountState{
 		Catalog: Catalog{
 			Ports: []Port{
 				{ID: recoveryHomePort, BankingRegion: "north"},

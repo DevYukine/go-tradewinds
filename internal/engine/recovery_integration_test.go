@@ -1575,7 +1575,7 @@ func TestRecoveryLegacyGrowthIntentRecoversAndKeepsAttachedActions(t *testing.T)
 	// Replace the fresh intent with a legacy mission that carries an attached
 	// ambiguous build action plus its pending journal row.
 	h.api.setBuildMode("ok")
-	attachedID := actionID(h.account.ID, "legacy-attached-generation", "build", 0)
+	attachedID := ActionID(h.account.ID, "legacy-attached-generation", "build", 0)
 	attachedBody := json.RawMessage(`{"port_id":"` + recoveryHomePort + `","name":"Bulbasaur","ship_class":"` + recoveryHull + `","build_mode":"turnkey_cash"}`)
 	attachedData := missionData{
 		Plan:          Plan{Kind: "spot", ShipID: "__growth", Origin: recoveryHomePort, Destination: recoveryFarPort, Commodity: recoveryGrain},
@@ -1626,7 +1626,7 @@ func TestRecoveryLegacyGrowthIntentRecoversAndKeepsAttachedActions(t *testing.T)
 	t.Run("completed rejection with known accounting replans without replay", func(t *testing.T) {
 		completed := newRecoveryHarness(t)
 		oldGeneration := "legacy-completed-generation"
-		oldID := actionID(completed.account.ID, oldGeneration, "build", 0)
+		oldID := ActionID(completed.account.ID, oldGeneration, "build", 0)
 		oldData := missionData{
 			Plan: Plan{
 				Kind:        "spot",

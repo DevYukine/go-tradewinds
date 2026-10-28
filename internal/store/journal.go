@@ -216,3 +216,105 @@ func (s *Store) PendingActions(ctx context.Context, accountID string) ([]Action,
 	}
 	return actions, nil
 }
+
+// ActionsBetween returns exact replay request/receipt projections in the
+// half-open creation-time window. It authenticates every bounded row, including
+// pending and rejected actions, without retaining rich diagnostic payloads.
+// An evidence budget failure returns no partial history.
+func (s *Store) ActionsBetween(ctx context.Context, accountID string, from, to time.Time) ([]Action, error) {
+	if !validID(accountID) || from.IsZero() || !to.After(from) {
+		return nil, fmt.Errorf("action history window: %w", ErrInvalidInput)
+	}
+	return s.replayActions(ctx, accountID, from, to, nil)
+}
+
+// ReplayActionsByID reads only exact related receipts before the window's
+// exclusive end. It supplements ActionsBetween for missions crossing its start.
+func (s *Store) ReplayActionsByID(ctx context.Context, accountID string, ids []string, before time.Time) ([]Action, error) {
+	if !validID(accountID) || before.IsZero() || len(ids) > 1024 {
+		return nil, fmt.Errorf("related replay actions: %w", ErrInvalidInput)
+	}
+	for _, id := range ids {
+		if !validID(id) {
+			return nil, fmt.Errorf("related replay action identity: %w", ErrInvalidInput)
+		}
+	}
+	if len(ids) == 0 {
+		return []Action{}, nil
+	}
+	return s.replayActions(ctx, accountID, time.Time{}, before, ids)
+}
+
+func (s *Store) replayActions(ctx context.Context, accountID string, from, to time.Time, ids []string) ([]Action, error) {
+	actions := make([]Action, 0)
+	page := make([]replayEvidenceRowMeta, 0, replayEvidencePageSize)
+	var cursor replayEvidenceRowMeta
+	var budget replayEvidenceBudget
+	for {
+		db, cancel := s.query(ctx)
+		query := db.Model(&actionRow{}).
+			Select("CASE WHEN "+replayActionMetadataBytesSQL+" <= ? THEN id ELSE '' END AS id, created_at AS at, "+
+				replayActionCiphertextBytesSQL+" AS ciphertext_bytes, "+replayActionMetadataBytesSQL+" AS metadata_bytes", MaxReplayEvidenceMetadataBytes).
+			Where("account_id = ? AND created_at < ?", accountID, to)
+		if len(ids) > 0 {
+			query = query.Where("id IN ?", ids)
+		} else {
+			query = query.Where("created_at >= ?", from)
+		}
+		if cursor.ID != "" {
+			query = query.Where("(created_at, id) > (?, ?)", cursor.At, cursor.ID)
+		}
+		page = page[:0]
+		err := query.Order("created_at, id").Limit(replayEvidencePageSize).Find(&page).Error
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+		if err := budget.addRows(len(page), "action history"); err != nil {
+			return nil, err
+		}
+		for _, meta := range page {
+			if err := meta.check("action history"); err != nil {
+				return nil, err
+			}
+			action, err := s.replayActionEvidence(ctx, accountID, meta.ID)
+			if err != nil {
+				return nil, err
+			}
+			size := replayEvidenceRowOverhead + len(action.ID) + len(action.AccountID) +
+				len(action.Method) + len(action.Path) + len(action.State) + cap(action.Body) + cap(action.Response)
+			if err := budget.retain(int64(size), "action history"); err != nil {
+				return nil, err
+			}
+			actions = append(actions, action)
+		}
+		if len(page) < replayEvidencePageSize {
+			return actions, nil
+		}
+		cursor = page[len(page)-1]
+	}
+}
+
+func (s *Store) replayActionEvidence(ctx context.Context, accountID, id string) (Action, error) {
+	db, cancel := s.query(ctx)
+	defer cancel()
+	var row actionRow
+	err := db.Select("id, account_id, method, path, body_cipher, state, status, response_cipher, retry_after, created_at, updated_at").
+		Where("account_id = ? AND id = ?", accountID, id).
+		Where("("+replayActionCiphertextBytesSQL+") <= ? AND ("+replayActionMetadataBytesSQL+") <= ?",
+			MaxReplayEvidenceCiphertextBytes, MaxReplayEvidenceMetadataBytes).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return Action{}, fmt.Errorf("action history row changed or exceeds the guarded read budget: %w", ErrReplayEvidenceBudget)
+	}
+	if err != nil {
+		return Action{}, err
+	}
+	action, err := s.decodeAction(row)
+	if err != nil {
+		return Action{}, err
+	}
+	action.Body = projectReplayEvidenceJSON(action.Body, replayEvidenceRequest)
+	action.Response = projectReplayEvidenceJSON(action.Response, replayEvidenceResponse)
+	return *action, nil
+}

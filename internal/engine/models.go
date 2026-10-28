@@ -70,6 +70,7 @@ type Clock struct {
 	Calendar      struct {
 		Month          int   `json:"month"`
 		Day            int   `json:"day"`
+		Minute         int   `json:"minute"`
 		TimeScale      int64 `json:"time_scale"`
 		TotalGameHours int64 `json:"total_game_hours"`
 	} `json:"calendar"`

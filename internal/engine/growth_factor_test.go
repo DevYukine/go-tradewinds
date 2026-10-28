@@ -13,10 +13,10 @@ import (
 	"github.com/google/uuid"
 )
 
-func expansionFactorFixture() accountState {
+func expansionFactorFixture() AccountState {
 	xReward, yReward := int64(200), int64(150)
 	now, ask := time.Now().UTC().Add(-time.Second), int64(100)
-	return accountState{
+	return AccountState{
 		Clock: Clock{UnlockedPhase: 1},
 		Catalog: Catalog{
 			Ports: []Port{
@@ -51,7 +51,7 @@ func expansionFactorFixture() accountState {
 	}
 }
 
-func expansionFactorInput(state accountState) PlanningInput {
+func expansionFactorInput(state AccountState) PlanningInput {
 	now := time.Now().UTC()
 	clock := state.Clock
 	clock.RealUTC, clock.Calendar.TimeScale = now, 60
@@ -69,17 +69,17 @@ func TestExpansionFactorScoring(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name   string
-		change func(*accountState)
+		change func(*AccountState)
 		port   string
 		score  int64
 	}{
 		{name: "positive observed spot spread", port: "yard-a", score: 50},
-		{name: "observed supply need not be catalog production", change: func(state *accountState) {
+		{name: "observed supply need not be catalog production", change: func(state *AccountState) {
 			for i := range state.Catalog.Ports {
 				state.Catalog.Ports[i].Produces, state.Catalog.Ports[i].Manufactures = nil, nil
 			}
 		}, port: "yard-a", score: 50},
-		{name: "newer phase does not beat a richer older region", change: func(state *accountState) {
+		{name: "newer phase does not beat a richer older region", change: func(state *AccountState) {
 			ask, bid := int64(100), int64(140)
 			state.Clock.UnlockedPhase = 2
 			state.Catalog.Ports = append(state.Catalog.Ports,
@@ -94,30 +94,30 @@ func TestExpansionFactorScoring(t *testing.T) {
 			)
 			state.Ports[recoveryHomePort] = detail
 		}, port: "yard-a", score: 50},
-		{name: "oceanic water cannot host a regional build", change: func(state *accountState) {
+		{name: "oceanic water cannot host a regional build", change: func(state *AccountState) {
 			state.Catalog.SeaZones[0].ZoneClass = "oceanic"
 		}},
-		{name: "demand at yard itself", change: func(state *accountState) {
+		{name: "demand at yard itself", change: func(state *AccountState) {
 			state.Catalog.Ports = state.Catalog.Ports[1:2]
 		}},
-		{name: "commodity missing from catalog", change: func(state *accountState) {
+		{name: "commodity missing from catalog", change: func(state *AccountState) {
 			state.Catalog.Commodities = []Commodity{{ID: "z"}}
 		}},
-		{name: "coves and locked phases", change: func(state *accountState) {
+		{name: "coves and locked phases", change: func(state *AccountState) {
 			state.Catalog.Ports = state.Catalog.Ports[2:]
 		}},
-		{name: "charter-only evidence", change: func(state *accountState) { state.Ports = nil }},
-		{name: "no charters needed", change: func(state *accountState) { state.Contracts = nil }, port: "yard-a", score: 50},
-		{name: "finite rewards cannot increase score", change: func(state *accountState) {
+		{name: "charter-only evidence", change: func(state *AccountState) { state.Ports = nil }},
+		{name: "no charters needed", change: func(state *AccountState) { state.Contracts = nil }, port: "yard-a", score: 50},
+		{name: "finite rewards cannot increase score", change: func(state *AccountState) {
 			reward := int64(1_000_000)
 			for i := range state.Contracts {
 				state.Contracts[i].RewardPerTonPence = &reward
 			}
 		}, port: "yard-a", score: 50},
-		{name: "another region", change: func(state *accountState) {
+		{name: "another region", change: func(state *AccountState) {
 			state.Catalog.Ports[2].BankingRegion = "america"
 		}},
-		{name: "no positive stressed spread", change: func(state *accountState) {
+		{name: "no positive stressed spread", change: func(state *AccountState) {
 			ask := int64(1_000)
 			for _, report := range state.Ports[recoveryHomePort].CoffeeHouseGossip {
 				for i := range report.Commodities {
@@ -125,34 +125,34 @@ func TestExpansionFactorScoring(t *testing.T) {
 				}
 			}
 		}},
-		{name: "missing observed supply", change: func(state *accountState) {
+		{name: "missing observed supply", change: func(state *AccountState) {
 			for _, report := range state.Ports[recoveryHomePort].CoffeeHouseGossip {
 				for i := range report.Commodities {
 					report.Commodities[i].BestAskPence = nil
 				}
 			}
 		}},
-		{name: "stale report", change: func(state *accountState) {
+		{name: "stale report", change: func(state *AccountState) {
 			detail := state.Ports[recoveryHomePort]
 			for i := range detail.CoffeeHouseGossip {
 				detail.CoffeeHouseGossip[i].SnapshotAt = time.Now().Add(-7 * time.Minute)
 			}
 			state.Ports[recoveryHomePort] = detail
 		}},
-		{name: "stale commodity", change: func(state *accountState) {
+		{name: "stale commodity", change: func(state *AccountState) {
 			for _, report := range state.Ports[recoveryHomePort].CoffeeHouseGossip {
 				for i := range report.Commodities {
 					report.Commodities[i].SnapshotAt = time.Now().Add(-7 * time.Minute)
 				}
 			}
 		}},
-		{name: "factor presence", change: func(state *accountState) { state.Factors = []string{"demand"} }},
-		{name: "ship presence", change: func(state *accountState) {
+		{name: "factor presence", change: func(state *AccountState) { state.Factors = []string{"demand"} }},
+		{name: "ship presence", change: func(state *AccountState) {
 			ship := ShipState{}
 			ship.Ship.Status, ship.Ship.CurrentPortID = "sailing", "demand"
 			state.Ships = []ShipState{ship}
 		}},
-		{name: "sunk ship is not presence", change: func(state *accountState) {
+		{name: "sunk ship is not presence", change: func(state *AccountState) {
 			ship := ShipState{}
 			ship.Ship.Status, ship.Ship.CurrentPortID = "sunk", "demand"
 			state.Ships = []ShipState{ship}

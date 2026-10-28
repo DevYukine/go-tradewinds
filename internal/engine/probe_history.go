@@ -19,6 +19,14 @@ const sourcingBudgetGameDays = 60
 const sourcingProbeHistoryVersion = 3
 const sourcingConversionLedgerLimit = 200
 
+// SourcingBudgetWindow is the live exploration accounting horizon in real time.
+func SourcingBudgetWindow(scale int64) time.Duration {
+	if scale <= 0 {
+		return 0
+	}
+	return time.Duration(sourcingBudgetGameDays*24*int64(time.Hour)) / time.Duration(scale)
+}
+
 type probeConversion struct {
 	SettlementID string    `json:"settlement_id"`
 	Source       string    `json:"source"`
@@ -342,7 +350,7 @@ func (h *sourcingProbeHistory) rollingBudget(rows []store.Settlement, now time.T
 		return fmt.Errorf("rolling exploration budget requires a current positive game clock")
 	}
 	h.BudgetAsOf = now
-	h.BudgetWindowStart = now.Add(-time.Duration(sourcingBudgetGameDays*24*int64(time.Hour)) / time.Duration(scale))
+	h.BudgetWindowStart = now.Add(-SourcingBudgetWindow(scale))
 	h.ConversionNetPence, h.ProbeExpensePence = 0, 0
 	h.ProbeCostsUnknown = false
 	h.Conversions = nil
@@ -449,7 +457,7 @@ func (r *Runner) loadRollingSourcingBudget(ctx context.Context, input *PlanningI
 	if input.Now.IsZero() || input.Clock.Calendar.TimeScale <= 0 {
 		return fmt.Errorf("rolling exploration budget requires a current positive game clock")
 	}
-	window := time.Duration(sourcingBudgetGameDays*24*int64(time.Hour)) / time.Duration(input.Clock.Calendar.TimeScale)
+	window := SourcingBudgetWindow(input.Clock.Calendar.TimeScale)
 	rows, err := r.db.SourcingBudgetSettlements(ctx, r.account.ID, input.Now.Add(-window), input.Now)
 	if err != nil {
 		return err

@@ -77,7 +77,7 @@ func (r *Runner) maintain(ctx context.Context, ship ShipState, mission *store.Mi
 
 // obligationReserves protects observed obligations, not every vault or every
 // hypothetical destination. Candidate-specific funding adds its chosen ports.
-func obligationReserves(state accountState, snapshot map[string]json.RawMessage, base int64) map[string]int64 {
+func obligationReserves(state AccountState, snapshot map[string]json.RawMessage, base int64) map[string]int64 {
 	required := make(map[string]int64)
 	if home, exists := findPort(state.Catalog, state.HomePortID); exists {
 		required[home.BankingRegion] = base + 3*DailyUpkeep(state.Ships, state.Catalog, len(state.Factors))

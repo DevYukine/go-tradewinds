@@ -60,6 +60,8 @@ go run ./cmd/tradewinds help
 go run ./cmd/tradewinds accounts
 go run ./cmd/tradewinds register --handle AnotherHandle --company "Another company" --home london
 go run ./cmd/tw-sim backfill --account Yukine
+go run ./cmd/tw-sim validate --account Yukine --from 2026-10-22T00:00:00Z
+go run ./cmd/tw-sim run --account Yukine --from 2026-10-22T00:00:00Z --out comparison.json
 ```
 
 On Windows, build or reuse a versioned binary and restart the live bot in its own console:
@@ -77,7 +79,7 @@ The safe negative restart check uses a committed syntax error on a throwaway bra
 
 Additional account creation is explicit. `run` starts an independent worker for each enabled, fully registered database account. Company ownership locks prevent competing executors; the request limiter also coordinates the shared public IP within the process.
 
-Live passes also produce an encrypted, deduplicated replay tape. `REPLAY_RETENTION_DAYS` defaults to 90 real days (`0` disables recording and pruning); `REPLAY_MAX_GIB` defaults to 20 GiB. `tw-sim backfill` imports surviving diagnostics for one account without game requests. Rerunning it adds no duplicate frames or payloads. It does not implement a simulator, `run`, or `validate`. See [Replay recording](docs/runbook.md#replay-recording) for coverage, storage limits and backup/restore requirements.
+Live passes also produce an encrypted, deduplicated replay tape. `REPLAY_RETENTION_DAYS` defaults to 90 real days (`0` disables recording and pruning); `REPLAY_MAX_GIB` defaults to 20 GiB. `tw-sim backfill` imports surviving diagnostics without game requests; reruns add no duplicate frames or payloads. `validate` checks recorded accounting and market/voyage predictions. `run` fits an earlier window and compares five fixed-fleet policies under three regeneration scenarios, printing simulated estimates and optional deterministic JSON. Both use database-enforced read-only connections with no migrations or game requests. A failed gate exits 2 and marks every comparison `UNTRUSTED`; no live policy defaults change. See [Replay recording](docs/runbook.md#replay-recording) for coverage, storage, validation and model limitations.
 
 ## Checks
 
@@ -85,7 +87,7 @@ Live passes also produce an encrypted, deduplicated replay tape. `REPLAY_RETENTI
 gofmt -w cmd internal
 go vet ./...
 go test ./...
-go build ./cmd/tradewinds
+go build ./cmd/...
 pnpm --dir web format:check
 pnpm --dir web lint
 pnpm --dir web typecheck

@@ -190,7 +190,7 @@ func TestReplayFailedEvidenceCanRetryAndPhaseChangesAreRecorded(t *testing.T) {
 	r.replayLink(h.ctx, mission, data)
 	replayRecorderWait(t, func() bool {
 		plans, err := h.db.ReplayPlans(h.ctx, h.account.ID)
-		links, linkErr := h.db.ReplayActionLinks(h.ctx, h.account.ID)
+		links, linkErr := h.db.ReplayActionLinks(h.ctx, h.account.ID, time.Unix(0, 0).UTC(), time.Now().Add(time.Hour), []string{mission.Generation})
 		return err == nil && linkErr == nil && len(plans) == 1 && len(links) == 1
 	})
 	mission.Phase = "depart"
@@ -218,7 +218,7 @@ func TestReplayStartupImportsDoNotClaimNewDecisions(t *testing.T) {
 	}
 	replayRecorderWait(t, func() bool {
 		plans, err := h.db.ReplayPlans(h.ctx, h.account.ID)
-		links, linkErr := h.db.ReplayActionLinks(h.ctx, h.account.ID)
+		links, linkErr := h.db.ReplayActionLinks(h.ctx, h.account.ID, time.Unix(0, 0).UTC(), time.Now().Add(time.Hour), []string{mission.Generation})
 		return err == nil && linkErr == nil && len(plans) == 1 && len(links) == 1 &&
 			plans[0].Generation == mission.Generation && links[0].Generation == mission.Generation &&
 			plans[0].ObservedAt.Equal(mission.UpdatedAt)

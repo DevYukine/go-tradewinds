@@ -201,7 +201,7 @@ func TestPassengerWorkQuarantineSubtractsAlreadySavedReceiptCosts(t *testing.T) 
 			if _, err := r.work(h.ctx); err != nil {
 				t.Fatal(err)
 			}
-			markerID := actionID(h.account.ID, mission.Generation, "passenger-quarantine-accounting", 0)
+			markerID := ActionID(h.account.ID, mission.Generation, "passenger-quarantine-accounting", 0)
 			markers, err := h.db.SettlementsByID(h.ctx, h.account.ID, []string{markerID})
 			if err != nil {
 				t.Fatal(err)

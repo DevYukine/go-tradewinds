@@ -2,8 +2,11 @@ package store
 
 // Assumed API: RecordReplayFrame(context.Context, ReplayFrame) (int64, error);
 // ScanReplayFrames(context.Context, string, func(ReplayFrame) error) error;
+// NewReplayFrameReader(context.Context, string, time.Time) *ReplayFrameReader with
+// PeekTime() (time.Time, error)/Next() (ReplayFrame, error) returning io.EOF when drained;
+// ReplayFrameBounds(context.Context, string, time.Time) (time.Time, time.Time, error);
 // RecordReplayPlan(context.Context, ReplayPlan) error; ReplayPlans(context.Context, string) ([]ReplayPlan, error);
-// LinkReplayAction(context.Context, ReplayActionLink) error; ReplayActionLinks(context.Context, string) ([]ReplayActionLink, error);
+// LinkReplayAction(context.Context, ReplayActionLink) error; ReplayActionLinks(context.Context, string, time.Time, time.Time, []string) ([]ReplayActionLink, error);
 // PruneReplay(context.Context, time.Duration, int64) (time.Time, error).
 // ReplayDataset has Data []byte and Meta json.RawMessage. ReplayFrame has ID int64,
 // AccountID/Generation/Source/CatalogDigest string, ObservedAt time.Time, Clock json.RawMessage,
@@ -289,14 +292,14 @@ func TestReplayAcceptancePlansLinksAppendOnlyAndAccountCascade(t *testing.T) {
 	if err != nil || len(plans) == 0 || !bytes.Equal(plans[0].Plan, plan.Plan) || plans[0].Revision != plan.Revision || !bytes.Equal(plans[0].Policy, plan.Policy) {
 		t.Fatalf("original plan was overwritten or pruned: %+v, %v", plans, err)
 	}
-	links, err := db.ReplayActionLinks(ctx, "journal")
+	links, err := db.ReplayActionLinks(ctx, "journal", plan.ObservedAt, time.Now().Add(time.Hour), []string{"mission"})
 	if err != nil || len(links) == 0 || links[0].Stage != "buy" {
 		t.Fatalf("original action link was overwritten or pruned: %+v, %v", links, err)
 	}
 	if other, err := db.ReplayPlans(ctx, "unrelated"); err != nil || len(other) != 0 {
 		t.Fatalf("plan account isolation: %+v, %v", other, err)
 	}
-	if other, err := db.ReplayActionLinks(ctx, "unrelated"); err != nil || len(other) != 0 {
+	if other, err := db.ReplayActionLinks(ctx, "unrelated", plan.ObservedAt, time.Now().Add(time.Hour), []string{"mission"}); err != nil || len(other) != 0 {
 		t.Fatalf("link account isolation: %+v, %v", other, err)
 	}
 	replayAcceptanceRecord(t, db, replayAcceptanceFrame("journal", "cascade", time.Now(), []byte(`{"cascade":true}`)))

@@ -11,7 +11,7 @@ import (
 
 func passengerQuarantineSettlement(archive *store.Mission, original *missionData) *store.Settlement {
 	return &store.Settlement{
-		ID:        actionID(archive.AccountID, archive.Generation, "passenger-quarantine-accounting", 0),
+		ID:        ActionID(archive.AccountID, archive.Generation, "passenger-quarantine-accounting", 0),
 		AccountID: archive.AccountID, ShipID: original.Plan.ShipID, MissionID: archive.Generation,
 		Kind: "passage", Lane: original.Plan.Origin + "|" + original.Plan.Destination, Origin: original.Plan.Origin, Destination: original.Plan.Destination,
 		CostsKnown: false, ProceedsUnknown: true, RevenueBasis: new("quarantined_passage_accounting"),
@@ -68,7 +68,7 @@ func (r *Runner) recordPassengerRecoverySettlement(ctx context.Context, mission 
 		data.SettlementExpenseIDs = append(data.SettlementExpenseIDs, ids...)
 		completed := time.Now().UTC()
 		marker := passengerQuarantineSettlement(archive, &original)
-		marker.ID = actionID(r.account.ID, mission.Generation, "passenger-quarantine-recovery", 0)
+		marker.ID = ActionID(r.account.ID, mission.Generation, "passenger-quarantine-recovery", 0)
 		marker.Origin, marker.Destination = data.Plan.Origin, data.Plan.Destination
 		marker.Lane = marker.Origin + "|" + marker.Destination
 		marker.RevenueBasis = new("quarantined_passage_recovery")

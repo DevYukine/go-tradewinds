@@ -797,7 +797,7 @@ func TestDeliveryOutcomeAccountingBindsToImmutableRequest(t *testing.T) {
 		runner := refreshedRunner(t, h)
 
 		completed := &durableAction{
-			ID:               actionID(h.account.ID, "freight-generation", "deliver-freight", 0),
+			ID:               ActionID(h.account.ID, "freight-generation", "deliver-freight", 0),
 			Stage:            "deliver-freight",
 			Method:           http.MethodPost,
 			Path:             "/v1/contract/deliver-freight",
@@ -859,7 +859,7 @@ func TestDeliveryOutcomeAccountingBindsToImmutableRequest(t *testing.T) {
 			CollateralPence: 3_000,
 		})
 		requested := &durableAction{
-			ID:               actionID(h.account.ID, "freight-generation", "deliver-freight", 0),
+			ID:               ActionID(h.account.ID, "freight-generation", "deliver-freight", 0),
 			Stage:            "deliver-freight",
 			Method:           http.MethodPost,
 			Path:             "/v1/contract/deliver-freight",
@@ -953,7 +953,7 @@ func TestDeliveryOutcomeAccountingBindsToImmutableRequest(t *testing.T) {
 		h := newRecoveryHarness(t)
 		installReconciliationProxy(t, h)
 		runner := refreshedRunner(t, h)
-		orphanID := actionID(h.account.ID, "orphan-generation", "deliver-freight", 0)
+		orphanID := ActionID(h.account.ID, "orphan-generation", "deliver-freight", 0)
 		if _, err := h.db.BeginAction(h.ctx, &store.Action{
 			ID:        orphanID,
 			AccountID: h.account.ID,

@@ -137,6 +137,10 @@ func TestReplayRecorderAcceptanceGenerationAllowlistAndSweep(t *testing.T) {
 	if startup.Generation != r.generation || startup.Source != "live" {
 		t.Fatalf("startup frame header: %+v", startup)
 	}
+	if quotes, exists := startup.Datasets[hazardQuoteSnapshotKey]; !exists ||
+		!bytes.Equal(quotes.Data, r.snapshot[hazardQuoteSnapshotKey]) {
+		t.Fatal("replay frame omitted the exact recorded Lloyd's quote snapshot")
+	}
 	for _, key := range []string{"ledger", "insurance", "whoami", "unknown_private_dataset", "zones"} {
 		if _, exists := startup.Datasets[key]; exists {
 			t.Fatalf("startup imported stale or non-allowlisted %s", key)
@@ -298,11 +302,11 @@ func TestReplayRecorderAcceptanceBuyPlanLinkAndUnchangedPlan(t *testing.T) {
 	r.flushReplay(h.ctx, at)
 	replayRecorderWait(t, func() bool {
 		plans, err := h.db.ReplayPlans(h.ctx, h.account.ID)
-		links, linkErr := h.db.ReplayActionLinks(h.ctx, h.account.ID)
+		links, linkErr := h.db.ReplayActionLinks(h.ctx, h.account.ID, time.Unix(0, 0).UTC(), at.Add(time.Hour), []string{mission.Generation})
 		return err == nil && linkErr == nil && len(plans) == 1 && len(links) == 1 && len(replayRecorderFrames(t, h)) == 1
 	})
 	plans, _ := h.db.ReplayPlans(h.ctx, h.account.ID)
-	links, _ := h.db.ReplayActionLinks(h.ctx, h.account.ID)
+	links, _ := h.db.ReplayActionLinks(h.ctx, h.account.ID, time.Unix(0, 0).UTC(), at.Add(time.Hour), []string{mission.Generation})
 	var recorded Plan
 	if err := json.Unmarshal(plans[0].Plan, &recorded); err != nil || !reflect.DeepEqual(recorded, data.Plan) {
 		t.Fatalf("accepted Plan/Economics changed: %+v, %v", recorded, err)
@@ -311,7 +315,7 @@ func TestReplayRecorderAcceptanceBuyPlanLinkAndUnchangedPlan(t *testing.T) {
 		t.Fatalf("plan omitted identity, policy or VCS revision: %+v", plans[0])
 	}
 	link := links[0]
-	if link.ActionID != actionID(h.account.ID, mission.Generation, "buy", 3) || link.MissionID != mission.Generation || link.Stage != "buy" || link.Sequence != 3 || link.Generation != r.generation {
+	if link.ActionID != ActionID(h.account.ID, mission.Generation, "buy", 3) || link.MissionID != mission.Generation || link.Stage != "buy" || link.Sequence != 3 || link.Generation != r.generation {
 		t.Fatalf("staged action link mismatch: %+v", link)
 	}
 	frame := replayRecorderFrames(t, h)[0]
@@ -451,7 +455,7 @@ func TestReplayRecorderAcceptanceDisabledWritesAndPrunesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	links, err := h.db.ReplayActionLinks(h.ctx, h.account.ID)
+	links, err := h.db.ReplayActionLinks(h.ctx, h.account.ID, time.Unix(0, 0).UTC(), at.Add(time.Hour), []string{mission.Generation})
 	if err != nil || len(plans) != 0 || len(links) != 0 || len(replayRecorderFrames(t, h)) != 0 {
 		t.Fatalf("disabled recorder wrote rows: plans=%v links=%v err=%v", plans, links, err)
 	}
@@ -661,7 +665,7 @@ func TestReplayRecorderAcceptanceStartupImportsPersistedMissionAndAction(t *test
 	stream.waitReady(t, 2)
 	replayRecorderWait(t, func() bool {
 		plans, err := h.db.ReplayPlans(h.ctx, h.account.ID)
-		links, linkErr := h.db.ReplayActionLinks(h.ctx, h.account.ID)
+		links, linkErr := h.db.ReplayActionLinks(h.ctx, h.account.ID, time.Unix(0, 0).UTC(), time.Now().Add(time.Hour), []string{mission.Generation})
 		return err == nil && linkErr == nil && len(plans) == 1 && len(links) == 1
 	})
 	running.cancel()
@@ -673,7 +677,7 @@ func TestReplayRecorderAcceptanceStartupImportsPersistedMissionAndAction(t *test
 	if err != nil || plans[0].MissionID != mission.Generation || plans[0].ShipID != mission.ShipID {
 		t.Fatalf("startup did not import loaded mission plan: %+v, %v", plans, err)
 	}
-	links, err := h.db.ReplayActionLinks(h.ctx, h.account.ID)
+	links, err := h.db.ReplayActionLinks(h.ctx, h.account.ID, time.Unix(0, 0).UTC(), time.Now().Add(time.Hour), []string{mission.Generation})
 	if err != nil || links[0].ActionID != data.Action.ID || links[0].MissionID != mission.Generation {
 		t.Fatalf("startup did not import persisted action linkage: %+v, %v", links, err)
 	}

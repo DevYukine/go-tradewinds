@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -47,7 +48,22 @@ func sourcingFreeCash(in PlanningInput) int64 {
 	return max(0, cash-reserves)
 }
 
-// Each probe is capped by both the rolling ROI budget and 2% of free cash.
+func sourcingCashCap(in PlanningInput) int64 {
+	bps := int64(200)
+	if in.SourcingCashBPS != nil {
+		bps = max(0, *in.SourcingCashBPS)
+	}
+	if bps == 200 {
+		return sourcingFreeCash(in) / 50
+	}
+	free := sourcingFreeCash(in)
+	// Divide before multiplying so large balances cannot wrap the allowance.
+	return growthCashTotal(checkedPenceProduct(free/10_000, bps),
+		checkedPenceProduct(free%10_000, bps/10_000), (free%10_000)*(bps%10_000)/10_000)
+}
+
+// Each probe is capped by both the rolling ROI budget and 2% of free cash
+// unless an offline experiment explicitly changes the per-probe cash share.
 func sourcingAllowance(in PlanningInput) int64 {
 	if in.SourcingProbeCostsUnknown || in.SourcingProbeExpensePence < 0 {
 		return 0
@@ -56,7 +72,7 @@ func sourcingAllowance(in PlanningInput) int64 {
 	if in.SourcingAllowancePence != nil {
 		budget = max(0, *in.SourcingAllowancePence)
 	}
-	return min(sourcingFreeCash(in)/50, budget)
+	return min(sourcingCashCap(in), budget)
 }
 
 func sourcingBudgetReason(in PlanningInput, exposure, allowance int64) string {
@@ -377,6 +393,12 @@ func sourcingReserves(in PlanningInput, source Port) map[string]int64 {
 	return required
 }
 
+func relocationFundingReserves(in PlanningInput, origin, source Port, cashPence int64) map[string]int64 {
+	required := sourcingReserves(in, source)
+	required[origin.BankingRegion] += cashPence
+	return required
+}
+
 func relocationExposure(in PlanningInput, plan Plan) Plan {
 	hull, hullExists := findHull(in.Catalog, in.Ship.Ship.ShipClass)
 	_, originExists := findPort(in.Catalog, plan.Origin)
@@ -464,8 +486,7 @@ func relocationCost(in PlanningInput, plan Plan, continuation Port, inspectionGa
 		originDays += upper.Sub(*in.Ship.Ship.BerthedAt).Seconds() * float64(in.Clock.Calendar.TimeScale) / 86_400
 	}
 	berth := int64(math.Ceil(float64(in.Ports[origin.ID].BerthDuesPerDayPence)*originDays + float64(in.Ports[source.ID].BerthDuesPerDayPence)*portDays))
-	required := sourcingReserves(in, source)
-	required[origin.BankingRegion] += purchaseCost + berth
+	required := relocationFundingReserves(in, origin, source, purchaseCost+berth)
 	_, fees, transfers, funded := measuredFunding(in.Balances, required, in.Rates)
 	if !funded || len(transfers) > 0 && !in.fresh("rates") {
 		return reject(plan, "modeled sourcing costs and protected reserves cannot be funded with observed remittance fees")
@@ -648,6 +669,10 @@ func addPlayerBidReservation(reserved map[string]map[string]int64, port, commodi
 }
 
 func (r *Runner) restingBidReservations() map[string]map[string]int64 {
+	return restingBidReservations(r.snapshot)
+}
+
+func restingBidReservations(snapshot map[string]json.RawMessage) map[string]map[string]int64 {
 	reserved := make(map[string]map[string]int64)
 	orders := decode[[]struct {
 		PortID         string `json:"port_id"`
@@ -655,7 +680,7 @@ func (r *Runner) restingBidReservations() map[string]map[string]int64 {
 		Side           string `json:"side"`
 		Quantity       int64  `json:"quantity"`
 		FilledQuantity int64  `json:"filled_quantity"`
-	}](r.snapshot, "orders")
+	}](snapshot, "orders")
 	for _, order := range orders {
 		if order.Side == "bid" && order.Quantity > 0 && order.FilledQuantity >= 0 && order.FilledQuantity < order.Quantity {
 			addPlayerBidReservation(reserved, order.PortID, order.CommodityID, order.Quantity-order.FilledQuantity)
@@ -793,7 +818,29 @@ func (r *Runner) loadSourcingHistory(ctx context.Context, input *PlanningInput) 
 	input.SourcingIdleEligible = r.shipIdleEligible(*input)
 	input.SourcingProbeLanes = make(map[string]bool)
 	input.SourcingProbeCompletions = make(map[string]time.Time)
-	if max(sourcingAllowance(*input), scoutAllowance(*input)) == 0 {
+	lanes := sourcingHistoryLanes(*input, r.stateCache.Ships)
+	for len(lanes) > 0 {
+		size := min(len(lanes), 1024)
+		completions, err := r.db.RelocationProbeCompletions(ctx, r.account.ID, lanes[:size])
+		if err != nil {
+			return err
+		}
+		for lane, completed := range completions {
+			input.SourcingProbeLanes[lane] = true
+			input.SourcingProbeCompletions[lane] = completed
+		}
+		lanes = lanes[size:]
+	}
+	return nil
+}
+
+// sourcingHistoryLanes builds the recorded-completion shortlist: every lane a
+// sourcing decision could still start next, derived from open charters, their
+// reachable sources and current scout hints. The effective sourcing allowance
+// gates the shortlist exactly like the live loader; scouts retain their own
+// bounded allowance when ordinary sourcing capital is exhausted.
+func sourcingHistoryLanes(input PlanningInput, ships []ShipState) []string {
+	if max(sourcingAllowance(input), scoutAllowance(input)) == 0 {
 		return nil
 	}
 	lanes := make([]string, 0)
@@ -807,7 +854,7 @@ func (r *Runner) loadSourcingHistory(ctx context.Context, input *PlanningInput) 
 			if source.Phase > input.Clock.UnlockedPhase || source.ID == charter.OriginPortID {
 				continue
 			}
-			ok, _, ask := publicSourceEvidence(*input, source, charter)
+			ok, _, ask := publicSourceEvidence(input, source, charter)
 			if !ok {
 				continue
 			}
@@ -823,12 +870,12 @@ func (r *Runner) loadSourcingHistory(ctx context.Context, input *PlanningInput) 
 		}
 	}
 	origins := make(map[string]bool)
-	for _, ship := range r.stateCache.Ships {
+	for _, ship := range ships {
 		if ship.Voyage == nil && (ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") && ship.Ship.CurrentPortID != "" {
 			origins[ship.Ship.CurrentPortID] = true
 		}
 	}
-	for target, hints := range scoutBidHints(*input) {
+	for target, hints := range scoutBidHints(input) {
 		for commodity := range hints {
 			for origin := range origins {
 				if target == origin {
@@ -842,19 +889,14 @@ func (r *Runner) loadSourcingHistory(ctx context.Context, input *PlanningInput) 
 			}
 		}
 	}
-	for len(lanes) > 0 {
-		size := min(len(lanes), 1024)
-		completions, err := r.db.RelocationProbeCompletions(ctx, r.account.ID, lanes[:size])
-		if err != nil {
-			return err
-		}
-		for lane, completed := range completions {
-			input.SourcingProbeLanes[lane] = true
-			input.SourcingProbeCompletions[lane] = completed
-		}
-		lanes = lanes[size:]
-	}
-	return nil
+	return lanes
+}
+
+// SourcingHistoryLanes exposes the live recorded-completion shortlist without
+// I/O. Callers query retained pre-window completions only for returned lanes;
+// nil means the effective sourcing allowance is zero and no lane remains.
+func SourcingHistoryLanes(input PlanningInput, ships []ShipState) []string {
+	return sourcingHistoryLanes(input, ships)
 }
 
 func (r *Runner) insuredRelocationPlan(ship ShipState, plans []Plan) (int, error) {
@@ -1116,6 +1158,11 @@ func (r *Runner) relocationExplorationExpense(data *missionData, ship ShipState)
 	return relocationSpentExpense(data, ship)
 }
 
+func relocationExpenseWithinCap(cap, expense, bills, extra int64) bool {
+	return cap > 0 && extra >= 0 && expense >= 0 && bills >= 0 &&
+		expense <= cap && bills <= cap-expense && extra <= cap-expense-bills
+}
+
 func (r *Runner) relocationBudget(data *missionData, extra int64) bool {
 	if data.Relocation == nil || data.Relocation.ExpenseCapPence <= 0 || extra < 0 {
 		return false
@@ -1127,7 +1174,7 @@ func (r *Runner) relocationBudget(data *missionData, extra int64) bool {
 	expense, known := relocationSpentExpense(data, ship)
 	bills, _ := r.unclaimedBillsSince(data)
 	cap := data.Relocation.ExpenseCapPence
-	return known && expense >= 0 && bills >= 0 && expense <= cap && bills <= cap-expense && extra <= cap-expense-bills
+	return known && relocationExpenseWithinCap(cap, expense, bills, extra)
 }
 
 // The durable cap is an immutable upper bound, not continuing permission to use
@@ -1396,8 +1443,7 @@ func (r *Runner) driveRelocation(ctx context.Context, ship ShipState, mission *s
 		if !r.relocationProjectedBudget(data, ship, input, plan, 0) {
 			return r.holdOrAbortRelocation(ctx, ship, mission, data, errors.New("fresh sourcing costs exceed the durable exploration cap or lack a known expense basis"))
 		}
-		required := sourcingReserves(input, source)
-		required[origin.BankingRegion] += plan.Economics.StoreCashPence + plan.Economics.BerthDuesPence + plan.Economics.UpkeepPence
+		required := relocationFundingReserves(input, origin, source, plan.Economics.StoreCashPence+plan.Economics.BerthDuesPence+plan.Economics.UpkeepPence)
 		if changed, ready, err := r.stageSourcingFunding(ctx, ship, mission, data, input, required); !ready || changed || err != nil {
 			return changed, err
 		}

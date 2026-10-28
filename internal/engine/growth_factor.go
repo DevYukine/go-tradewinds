@@ -30,7 +30,7 @@ type expansionAgent struct {
 // still letting a region be explored again once a build there is affordable.
 const expansionRegionRetry = 24 * time.Hour
 
-func expansionAgentYard(state accountState, input PlanningInput, agents []expansionAgent, now time.Time) (Port, int64) {
+func expansionAgentYard(state AccountState, input PlanningInput, agents []expansionAgent, now time.Time) (Port, int64) {
 	present := make(map[string]bool)
 	for _, ship := range state.Ships {
 		if ship.Ship.Status != "sunk" {

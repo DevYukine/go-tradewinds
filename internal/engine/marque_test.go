@@ -16,7 +16,7 @@ import (
 
 func TestMarqueExposureProtectsFleetPlansAndUnderwriting(t *testing.T) {
 	t.Parallel()
-	state := accountState{
+	state := AccountState{
 		HomePortID: "home",
 		Catalog: Catalog{
 			Ports: []Port{
@@ -97,7 +97,7 @@ func TestMarqueExposureAllowsSailingMissionWithoutSyntheticOrigin(t *testing.T) 
 	ship := ShipState{}
 	ship.Ship.ID, ship.Ship.ShipClass, ship.Ship.Status = "sailing", "hoy", "sailing"
 	ship.RouteLegs = []RouteLeg{{FromNode: "voyage", ToNode: "arrival"}}
-	state := accountState{
+	state := AccountState{
 		HomePortID: "home", Ships: []ShipState{ship},
 		Catalog: Catalog{Ports: []Port{{ID: "home", SeaZoneID: "home-zone"}, {ID: "arrival", SeaZoneID: "arrival-zone"}},
 			SeaZones: []Zone{{ID: "voyage"}, {ID: "future"}}},
@@ -149,7 +149,7 @@ func TestMarqueMissionPlansRequireEverySailingContinuation(t *testing.T) {
 			ship := ShipState{}
 			ship.Ship.ID, ship.Ship.ShipClass, ship.Ship.Status = "sailing", "hoy", "sailing"
 			ship.RouteLegs = []RouteLeg{{FromNode: "voyage", ToNode: "arrival"}}
-			state := accountState{
+			state := AccountState{
 				HomePortID: "home", Ships: []ShipState{ship}, Routes: make(map[string]Route),
 				Catalog: Catalog{Ports: []Port{{ID: "home"}, {ID: "arrival"}, {ID: "second"}, {ID: "third"}},
 					SeaZones: []Zone{{ID: "voyage"}, {ID: "future"}}},
@@ -275,7 +275,7 @@ func TestMarqueOutcomesMergeSurvivesOmittedHistory(t *testing.T) {
 func TestMarquePendingProtectsOnlyItsHomeFundsAndZone(t *testing.T) {
 	t.Parallel()
 	now := time.Now()
-	state := accountState{
+	state := AccountState{
 		HomePortID: "home", Catalog: Catalog{Ports: []Port{{ID: "home", BankingRegion: "north"}}},
 	}
 	state.Clock.RealUTC = now

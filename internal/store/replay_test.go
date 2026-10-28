@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"sort"
 	"strconv"
@@ -1119,5 +1120,382 @@ func TestReplayLastSeenCoalescingRetainsSlackReferences(t *testing.T) {
 	}
 	if replayAcceptanceCount(t, db, "replay_frames", account) != 0 || replayAcceptanceCount(t, db, "replay_payloads", account) != 0 {
 		t.Fatal("conservative payload slack prevented enforcement of a sub-record byte cap")
+	}
+}
+
+func TestReplayFrameReaderBoundedCutoffExcludesTamperedFutureFrame(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	const account = "reader-cutoff"
+	saveTestAccount(t, db, account)
+	saveTestAccount(t, db, "reader-cutoff-other")
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	data := []byte(`{"book":1}`)
+	first := replayAcceptanceRecord(t, db, replayAcceptanceFrame(account, "kept", at, data))
+	second := replayAcceptanceRecord(t, db, replayAcceptanceFrame(account, "kept-tie", at, data))
+	futureAt := at.Add(time.Minute)
+	future := replayAcceptanceRecord(t, db, replayAcceptanceFrame(account, "future", futureAt, data))
+	replayAcceptanceRecord(t, db, replayAcceptanceFrame("reader-cutoff-other", "hidden", at, data))
+	if err := db.db.Model(&replayFrameRow{}).Where("id = ?", future).
+		Update("manifest_cipher", []byte("corrupt-future-manifest")).Error; err != nil {
+		t.Fatal(err)
+	}
+	// A bound exactly at the future frame's observation time excludes it in SQL,
+	// before any fetch or authentication, while duplicate timestamps keep id order.
+	reader := db.NewReplayFrameReader(context.Background(), account, futureAt)
+	for _, want := range []int64{first, second} {
+		frame, err := reader.Next()
+		if err != nil {
+			t.Fatalf("bounded reader stopped early: %v", err)
+		}
+		if frame.ID != want || frame.AccountID != account {
+			t.Fatalf("bounded reader returned frame %d for %s, want %d", frame.ID, frame.AccountID, want)
+		}
+	}
+	if _, err := reader.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("cutoff fetched or authenticated the excluded row: %v", err)
+	}
+	// The unrestricted scan still authenticates every row and detects the
+	// deliberately invalid future frame.
+	if err := db.ScanReplayFrames(context.Background(), account, func(ReplayFrame) error { return nil }); err == nil {
+		t.Fatal("unrestricted scan did not detect the tampered future frame")
+	}
+}
+
+func TestReplayFrameReaderPeekTimeFetchesMetadataWithoutDecryption(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	const account = "reader-peek"
+	saveTestAccount(t, db, account)
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	id := replayAcceptanceRecord(t, db, replayAcceptanceFrame(account, "peek", at, []byte(`{"book":1}`)))
+	if err := db.db.Model(&replayFrameRow{}).Where("id = ?", id).
+		Update("manifest_cipher", []byte("corrupt-peek-manifest")).Error; err != nil {
+		t.Fatal(err)
+	}
+	reader := db.NewReplayFrameReader(context.Background(), account, time.Time{})
+	peeked, err := reader.PeekTime()
+	if err != nil || !peeked.Equal(at) {
+		t.Fatalf("peek returned %s, %v", peeked, err)
+	}
+	if again, err := reader.PeekTime(); err != nil || !again.Equal(peeked) {
+		t.Fatalf("peek was not stable before Next: %s, %v", again, err)
+	}
+	_, authErr := reader.Next()
+	if authErr == nil || errors.Is(authErr, io.EOF) {
+		t.Fatalf("Next did not authenticate the peeked frame: %v", authErr)
+	}
+	if _, err := reader.PeekTime(); !errors.Is(err, authErr) {
+		t.Fatalf("peek lost the terminal authentication error: %v", err)
+	}
+	if _, err := reader.Next(); !errors.Is(err, authErr) {
+		t.Fatalf("Next skipped or retried corrupt evidence: %v", err)
+	}
+	if _, err := db.NewReplayFrameReader(context.Background(), "reader-peek-absent", time.Time{}).PeekTime(); !errors.Is(err, io.EOF) {
+		t.Fatalf("empty account did not report EOF: %v", err)
+	}
+}
+
+func TestReplayFrameReaderPreservesContextCancellation(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	saveTestAccount(t, db, "reader-cancel")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reader := db.NewReplayFrameReader(ctx, "reader-cancel", time.Time{})
+	if _, err := reader.Next(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled reader did not report context.Canceled: %v", err)
+	}
+	if _, err := reader.PeekTime(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled peek did not report context.Canceled: %v", err)
+	}
+	if err := db.ScanReplayFrames(ctx, "reader-cancel", func(ReplayFrame) error { return nil }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("delegated scan did not report context.Canceled: %v", err)
+	}
+}
+
+func TestReplayFrameBoundsEmptyAccountAndCutoff(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	const account = "frame-bounds"
+	saveTestAccount(t, db, account)
+	saveTestAccount(t, db, "frame-bounds-other")
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	data := []byte(`{"book":1}`)
+	replayAcceptanceRecord(t, db, replayAcceptanceFrame(account, "early", at, data))
+	futureAt := at.Add(time.Minute)
+	future := replayAcceptanceRecord(t, db, replayAcceptanceFrame(account, "late", futureAt, data))
+	replayAcceptanceRecord(t, db, replayAcceptanceFrame("frame-bounds-other", "hidden", at, data))
+	// Bounds are metadata-only: a corrupted cipher cannot block them.
+	if err := db.db.Model(&replayFrameRow{}).Where("id = ?", future).
+		Update("manifest_cipher", []byte("corrupt-bounds-manifest")).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name    string
+		account string
+		before  time.Time
+		first   time.Time
+		last    time.Time
+	}{
+		{"cutoff before every frame", account, at.Add(-time.Minute), time.Time{}, time.Time{}},
+		{"missing account", "frame-bounds-absent", time.Time{}, time.Time{}, time.Time{}},
+		{"unbounded", account, time.Time{}, at, futureAt},
+		{"cutoff between frames", account, at.Add(time.Second), at, at},
+		{"cutoff at first frame", account, at, time.Time{}, time.Time{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			first, last, err := db.ReplayFrameBounds(context.Background(), test.account, test.before)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !first.Equal(test.first) || !last.Equal(test.last) {
+				t.Fatalf("bounds = (%s, %s), want (%s, %s)", first, last, test.first, test.last)
+			}
+		})
+	}
+}
+
+func TestReplayScanRejectsOversizedCiphertextBeforeDecrypt(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	for _, target := range []string{"manifest", "payload"} {
+		t.Run(target, func(t *testing.T) {
+			account := "budget-" + target
+			saveTestAccount(t, db, account)
+			id := replayAcceptanceRecord(t, db, replayAcceptanceFrame(account, "generation", time.Now().UTC(), []byte(`{"book":1}`)))
+			oversized := bytes.Repeat([]byte("j"), MaxReplayCompressedBytes+64)
+			var err error
+			if target == "manifest" {
+				err = db.db.Model(&replayFrameRow{}).Where("id = ?", id).Update("manifest_cipher", oversized).Error
+			} else {
+				err = db.db.Model(&replayPayloadRow{}).Where("account_id = ?", account).Update("payload_cipher", oversized).Error
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.NewReplayFrameReader(context.Background(), account, time.Time{}).Next(); !errors.Is(err, ErrReplayEvidenceBudget) {
+				t.Fatalf("oversized %s ciphertext was fetched or decrypted: %v", target, err)
+			}
+		})
+	}
+}
+
+func TestReplayScanBoundsAggregateDecodedPayloadBytes(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	const account = "aggregate-budget"
+	saveTestAccount(t, db, account)
+	// Nine distinct ~2 MiB JSON payloads: each frame records well inside the
+	// writer's raw frame budget, but one manifest referencing all nine
+	// decodes past it.
+	const padSize = MaxReplayPlaintextBytes/8 - 10
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	var crafted int64
+	cached := make(map[string][]byte)
+	for i := range 9 {
+		pad := []byte(strings.Repeat("p", padSize))
+		pad[0] = byte('a' + i)
+		data := append(append([]byte(`{"pad":"`), pad...), '"', '}')
+		id := replayAcceptanceRecord(t, db, replayAcceptanceFrame(account, fmt.Sprintf("chunk-%d", i), at, data))
+		if i < 8 {
+			cached[db.replayEncodedDigest(account, replayEncodingGzip, data)] = data
+		}
+		if i == 0 {
+			crafted = id
+		}
+	}
+	var digests []string
+	if err := db.db.Table("replay_payloads").Where("account_id = ?", account).
+		Order("digest").Pluck("digest", &digests).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(digests) != 9 {
+		t.Fatalf("identical-tail chunks produced %d payloads, want 9 distinct", len(digests))
+	}
+	manifest := make(map[string]replayManifestEntry, len(digests))
+	for i, digest := range digests {
+		manifest[fmt.Sprintf("books/chunk-%d", i)] = replayManifestEntry{Digest: digest, Encoding: replayEncodingGzip}
+	}
+	var row replayFrameRow
+	if err := db.db.First(&row, crafted).Error; err != nil {
+		t.Fatal(err)
+	}
+	aad, err := replayManifestAAD(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressed, err := replayCompress(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := db.encrypt(compressed, aad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.db.Model(&replayFrameRow{}).Where("id = ?", crafted).
+		Update("manifest_cipher", ciphertext).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.NewReplayFrameReader(context.Background(), account, time.Time{}).Next(); !errors.Is(err, ErrReplayEvidenceBudget) {
+		t.Fatalf("manifest entries decoding past the frame budget were not rejected: %v", err)
+	}
+	// A valid previous-frame cache can hold eight chunks. Reusing them must
+	// still count toward the next frame's retained total, not just its newly
+	// fetched ninth chunk.
+	reader := db.NewReplayFrameReader(context.Background(), account, time.Time{})
+	reader.previous = cached
+	if _, err := reader.Next(); !errors.Is(err, ErrReplayEvidenceBudget) {
+		t.Fatalf("cached payloads bypassed the aggregate frame budget: %v", err)
+	}
+}
+
+type replayMetadataMaterialization struct {
+	largestRow int
+	pageRows   int
+}
+
+func observeReplayMetadata(t *testing.T, db *Store) *replayMetadataMaterialization {
+	t.Helper()
+	observed := new(replayMetadataMaterialization)
+	const callback = "test:replay_metadata_materialization"
+	if err := db.db.Callback().Query().After("gorm:query").Register(callback, func(tx *gorm.DB) {
+		switch rows := tx.Statement.Dest.(type) {
+		case *[]replayFrameHeader:
+			observed.pageRows = max(observed.pageRows, len(*rows))
+			for _, row := range *rows {
+				frame := row.Frame
+				size := len(frame.CaptureID) + len(frame.AccountID) + len(frame.Generation) +
+					len(frame.Source) + len(frame.Clock) + len(frame.CatalogDigest)
+				observed.largestRow = max(observed.largestRow, size)
+			}
+		case *[]replayActionLinkMetadata:
+			observed.pageRows = max(observed.pageRows, len(*rows))
+			for _, row := range *rows {
+				link := row.Link
+				size := len(link.AccountID) + len(link.ActionID) + len(link.MissionID) +
+					len(link.Stage) + len(link.Generation)
+				observed.largestRow = max(observed.largestRow, size)
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.db.Callback().Query().Remove(callback) })
+	return observed
+}
+
+func TestReplayFrameHeadersRejectOversizedValuesBeforeMaterialization(t *testing.T) {
+	db, dsn, key := integrationStore(t)
+	for _, column := range []string{"clock", "generation"} {
+		t.Run(column, func(t *testing.T) {
+			account := "header-budget-" + column
+			saveTestAccount(t, db, account)
+			id := replayAcceptanceRecord(t, db, replayAcceptanceFrame(account, "normal", time.Now().UTC(), []byte(`{}`)))
+			large := strings.Repeat("private-metadata-", MaxReplayEvidenceMetadataBytes)
+			value := large
+			if column == "clock" {
+				data, err := json.Marshal(map[string]string{"extension": large})
+				if err != nil {
+					t.Fatal(err)
+				}
+				value = string(data)
+			}
+			if err := db.db.Model(&replayFrameRow{}).Where("id = ?", id).Update(column, value).Error; err != nil {
+				t.Fatal(err)
+			}
+			readOnly, authentication := replayEvidenceReadOnly(t, dsn, key)
+			observed := observeReplayMetadata(t, readOnly)
+			reader := readOnly.NewReplayFrameReader(context.Background(), account, time.Time{})
+			if _, err := reader.PeekTime(); !errors.Is(err, ErrReplayEvidenceBudget) || strings.Contains(err.Error(), "private-metadata") {
+				t.Fatalf("oversized header did not fail safely: %v", err)
+			}
+			if observed.pageRows != 1 || observed.largestRow != 0 || authentication.opens != 0 {
+				t.Fatalf("oversized header reached Go or payload authentication: observed=%+v opens=%d", observed, authentication.opens)
+			}
+			if _, err := reader.Next(); !errors.Is(err, ErrReplayEvidenceBudget) {
+				t.Fatalf("reader lost its terminal header-budget error: %v", err)
+			}
+		})
+	}
+}
+
+func TestReplayActionLinksRejectOversizedValuesBeforeMaterialization(t *testing.T) {
+	db, dsn, key := integrationStore(t)
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	for _, column := range []string{"mission_id", "generation", "stage", "combined"} {
+		t.Run(column, func(t *testing.T) {
+			account := "link-budget-" + column
+			saveTestAccount(t, db, account)
+			link := ReplayActionLink{AccountID: account, ActionID: account + "-action", MissionID: "mission", Stage: "buy", Generation: "generation"}
+			if err := db.LinkReplayAction(context.Background(), link); err != nil {
+				t.Fatal(err)
+			}
+			action := replayEvidenceAction(t, db, account, link.ActionID, at, []byte(`{}`), []byte(`{}`))
+			if err := db.db.Create(&action).Error; err != nil {
+				t.Fatal(err)
+			}
+			updates := map[string]any{column: strings.Repeat("private-metadata-", MaxReplayEvidenceMetadataBytes)}
+			if column == "combined" {
+				updates = map[string]any{"stage": strings.Repeat("s", 9<<10), "generation": strings.Repeat("g", 9<<10)}
+			}
+			if err := db.db.Model(&ReplayActionLink{}).Where("account_id = ?", account).Updates(updates).Error; err != nil {
+				t.Fatal(err)
+			}
+			readOnly, _ := replayEvidenceReadOnly(t, dsn, key)
+			observed := observeReplayMetadata(t, readOnly)
+			links, err := readOnly.ReplayActionLinks(context.Background(), account, at.Add(-time.Hour), at.Add(time.Hour), nil)
+			if !errors.Is(err, ErrReplayEvidenceBudget) || links != nil || strings.Contains(err.Error(), "private-metadata") {
+				t.Fatalf("oversized link returned evidence or unsafe error: count=%d err=%v", len(links), err)
+			}
+			if observed.pageRows != 1 || observed.largestRow != 0 {
+				t.Fatalf("oversized link reached Go: %+v", observed)
+			}
+		})
+	}
+}
+
+func TestReplayActionLinksPagesAndBudgets(t *testing.T) {
+	db, dsn, key := integrationStore(t)
+	for _, test := range []struct {
+		name       string
+		count      int
+		generation string
+		overBudget bool
+	}{
+		{name: "pages", count: 205, generation: "generation"},
+		{name: "rows", count: MaxReplayEvidenceRows + 1, generation: "generation", overBudget: true},
+		{name: "retained", count: 1100, generation: strings.Repeat("g", 16<<10-128), overBudget: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			account := "link-pages-" + test.name
+			saveTestAccount(t, db, account)
+			values := make([]ReplayActionLink, test.count)
+			for i := range values {
+				values[i] = ReplayActionLink{AccountID: account, ActionID: fmt.Sprintf("action-%05d", i),
+					MissionID: "mission", Stage: "buy", Sequence: int64(i / 3), Generation: test.generation}
+			}
+			if err := db.db.CreateInBatches(values, replayEvidencePageSize).Error; err != nil {
+				t.Fatal(err)
+			}
+			readOnly, _ := replayEvidenceReadOnly(t, dsn, key)
+			observed := observeReplayMetadata(t, readOnly)
+			links, err := readOnly.ReplayActionLinks(context.Background(), account, time.Unix(0, 0).UTC(), time.Now().Add(time.Hour), []string{"mission"})
+			if test.overBudget {
+				if !errors.Is(err, ErrReplayEvidenceBudget) || links != nil {
+					t.Fatalf("over-budget links returned a partial result: count=%d err=%v", len(links), err)
+				}
+			} else {
+				if err != nil || len(links) != len(values) {
+					t.Fatalf("paged links lost evidence: count=%d err=%v", len(links), err)
+				}
+				for i := range values {
+					if links[i] != values[i] {
+						t.Fatalf("paged link %d changed order or fields", i)
+					}
+				}
+			}
+			if observed.pageRows != replayEvidencePageSize || observed.largestRow > MaxReplayEvidenceMetadataBytes {
+				t.Fatalf("link fetch exceeded the guarded page: %+v", observed)
+			}
+		})
 	}
 }

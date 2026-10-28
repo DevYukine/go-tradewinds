@@ -142,7 +142,7 @@ func TestLoanCapacityFiniteCharterCannotFinancePerpetualRate(t *testing.T) {
 func TestLoanInstallmentReservesProtectOtherSpendingAndDonors(t *testing.T) {
 	t.Parallel()
 	loan := snapshotTestLoan()
-	state := accountState{Loans: []gameapi.Loan{loan}}
+	state := AccountState{Loans: []gameapi.Loan{loan}}
 	required := obligationReserves(state, nil, 0)
 	if required["north_sea"] != 48_400 {
 		t.Fatalf("two-installment reserve not protected: %v", required)

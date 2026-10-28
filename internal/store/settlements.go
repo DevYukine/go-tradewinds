@@ -487,3 +487,79 @@ func (s *Store) RelocationProbeCompletions(ctx context.Context, accountID string
 	}
 	return rows, nil
 }
+
+// SettlementsBetween returns exact decrypted accounting in completion order for
+// the half-open interval [from, to). Only the economic context is retained;
+// unknown diagnostic fields in the private JSON are discarded by decoding.
+// An evidence budget failure returns no partial history.
+func (s *Store) SettlementsBetween(ctx context.Context, accountID string, from, to time.Time) ([]Settlement, error) {
+	if !validID(accountID) || from.IsZero() || !to.After(from) {
+		return nil, fmt.Errorf("settlement history window: %w", ErrInvalidInput)
+	}
+	return s.replaySettlementsWhere(ctx, accountID, "completed_at >= ? AND completed_at < ?", from, to)
+}
+
+func (s *Store) replaySettlementsWhere(ctx context.Context, accountID, predicate string, args ...any) ([]Settlement, error) {
+	settlements := make([]Settlement, 0)
+	page := make([]replayEvidenceRowMeta, 0, replayEvidencePageSize)
+	var cursor replayEvidenceRowMeta
+	var budget replayEvidenceBudget
+	for {
+		db, cancel := s.query(ctx)
+		query := db.Model(&settlementRow{}).
+			Select("CASE WHEN "+replaySettlementMetadataBytesSQL+" <= ? THEN id ELSE '' END AS id, completed_at AS at, "+
+				replaySettlementCiphertextBytesSQL+" AS ciphertext_bytes, "+replaySettlementMetadataBytesSQL+" AS metadata_bytes", MaxReplayEvidenceMetadataBytes).
+			Where("account_id = ?", accountID).Where(predicate, args...)
+		if cursor.ID != "" {
+			query = query.Where("(completed_at, id) > (?, ?)", cursor.At, cursor.ID)
+		}
+		page = page[:0]
+		err := query.Order("completed_at, id").Limit(replayEvidencePageSize).Find(&page).Error
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+		if err := budget.addRows(len(page), "settlement history"); err != nil {
+			return nil, err
+		}
+		for _, meta := range page {
+			if err := meta.check("settlement history"); err != nil {
+				return nil, err
+			}
+			value, err := s.replaySettlementEvidence(ctx, accountID, meta.ID)
+			if err != nil {
+				return nil, err
+			}
+			size := replayEvidenceRowOverhead + len(value.ID) + len(value.AccountID) +
+				len(value.MissionID) + len(value.ActionID) + len(value.EventID) + len(value.ShipID) + len(value.Lane) +
+				len(value.Kind) + len(value.Origin) + len(value.Destination) + len(value.Commodity) + len(value.ProbeOutcome)
+			if err := budget.retain(int64(size), "settlement history"); err != nil {
+				return nil, err
+			}
+			settlements = append(settlements, value)
+		}
+		if len(page) < replayEvidencePageSize {
+			return settlements, nil
+		}
+		cursor = page[len(page)-1]
+	}
+}
+
+func (s *Store) replaySettlementEvidence(ctx context.Context, accountID, id string) (Settlement, error) {
+	db, cancel := s.query(ctx)
+	defer cancel()
+	var row settlementRow
+	err := db.Select("id, account_id, mission_id, action_id, event_id, lane_lookup, context_cipher, kind, quantity_tons, game_seconds, costs_known, "+
+		"acquisition_pence, proceeds_pence, proceeds_unknown, fees_pence, provisions_pence, expenses_pence, exploration_expense_pence, started_at, completed_at, created_at").
+		Where("account_id = ? AND id = ?", accountID, id).
+		Where("("+replaySettlementCiphertextBytesSQL+") <= ? AND ("+replaySettlementMetadataBytesSQL+") <= ?",
+			MaxReplayEvidenceCiphertextBytes, MaxReplayEvidenceMetadataBytes).
+		Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return Settlement{}, fmt.Errorf("settlement history row changed or exceeds the guarded read budget: %w", ErrReplayEvidenceBudget)
+	}
+	if err != nil {
+		return Settlement{}, err
+	}
+	return s.decodeSettlement(row)
+}

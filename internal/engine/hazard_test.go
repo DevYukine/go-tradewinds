@@ -244,7 +244,7 @@ func TestHazardRefreshCapsRequestsAndOrdersOldestFirst(t *testing.T) {
 	runner := New(gameapi.New(server.URL, "synthetic-key", nil), nil, store.Account{}, zap.NewNop(), Options{})
 	runner.meta, runner.generation = in.Metadata, in.Generation
 	runner.snapshot[hazardQuoteSnapshotKey] = encode(in.HazardQuotes)
-	state := accountState{Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes}
+	state := AccountState{Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes}
 	runner.snapshot["zones"] = encode(in.Zones)
 	if err := runner.refreshHazardQuotes(context.Background(), state); err != nil {
 		t.Fatal(err)
@@ -294,11 +294,9 @@ func TestHazardFortyCandidatesPricesBestOnFirstPass(t *testing.T) {
 	runner := New(gameapi.New(server.URL, "synthetic-key", nil), nil, store.Account{}, zap.NewNop(), Options{})
 	runner.meta, runner.generation = in.Metadata, in.Generation
 	runner.snapshot["zones"] = encode(in.Zones)
-	state := accountState{
-		Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes,
+	state := AccountState{Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes,
 		Markets: in.Markets, Ports: in.Ports, Contracts: in.Contracts,
-		Vaults: []Vault{{AccountType: "vault", BankingRegion: "channel", BalancePence: 10_000_000}},
-	}
+		Vaults: []Vault{{AccountType: "vault", BankingRegion: "channel", BalancePence: 10_000_000}}}
 	if err := runner.refreshHazardQuotes(context.Background(), state); err != nil {
 		t.Fatal(err)
 	}
@@ -323,11 +321,9 @@ func TestHazardCappedCandidatesWaitAtMostOnePassDespiteFailures(t *testing.T) {
 	runner := New(gameapi.New(server.URL, "synthetic-key", nil), nil, store.Account{}, zap.NewNop(), Options{})
 	runner.meta, runner.generation = in.Metadata, in.Generation
 	runner.snapshot["zones"] = encode(in.Zones)
-	state := accountState{
-		Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes,
+	state := AccountState{Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes,
 		Markets: in.Markets, Ports: in.Ports, Contracts: in.Contracts,
-		Vaults: []Vault{{AccountType: "vault", BankingRegion: "channel", BalancePence: 10_000_000}},
-	}
+		Vaults: []Vault{{AccountType: "vault", BankingRegion: "channel", BalancePence: 10_000_000}}}
 	for range 2 {
 		before := len(destinations)
 		if err := runner.refreshHazardQuotes(context.Background(), state); err != nil {
@@ -362,11 +358,9 @@ func TestHazardLadenRefinementsDoNotStarvePrimaryBounds(t *testing.T) {
 	runner := New(gameapi.New(server.URL, "synthetic-key", nil), nil, store.Account{}, zap.NewNop(), Options{})
 	runner.meta, runner.generation = in.Metadata, in.Generation
 	runner.snapshot["zones"] = encode(in.Zones)
-	state := accountState{
-		Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes,
+	state := AccountState{Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes,
 		Markets: in.Markets, Ports: in.Ports, Contracts: in.Contracts,
-		Vaults: []Vault{{AccountType: "vault", BankingRegion: "channel", BalancePence: 10_000_000}},
-	}
+		Vaults: []Vault{{AccountType: "vault", BankingRegion: "channel", BalancePence: 10_000_000}}}
 	for pass := range 2 {
 		if err := runner.refreshHazardQuotes(context.Background(), state); err != nil {
 			t.Fatal(err)
@@ -423,11 +417,9 @@ func TestHazardFailedRefreshRetainsPublishedBoundAndAllowsVoyage(t *testing.T) {
 	runner.meta, runner.generation = in.Metadata, in.Generation
 	runner.snapshot["zones"] = encode(in.Zones)
 	runner.snapshot[hazardQuoteSnapshotKey] = encode(in.HazardQuotes)
-	state := accountState{
-		Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes,
+	state := AccountState{Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes,
 		Markets: in.Markets, Ports: in.Ports, Contracts: in.Contracts,
-		Vaults: []Vault{{AccountType: "vault", BankingRegion: "channel", BalancePence: 10_000_000}},
-	}
+		Vaults: []Vault{{AccountType: "vault", BankingRegion: "channel", BalancePence: 10_000_000}}}
 	if err := runner.refreshHazardQuotes(context.Background(), state); err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +484,7 @@ func TestHazardRefreshLadenQuoteIllegalPairAndRateLimit(t *testing.T) {
 			runner := New(gameapi.New(server.URL, "synthetic-key", nil), nil, store.Account{}, zap.NewNop(), Options{})
 			runner.meta, runner.generation = in.Metadata, in.Generation
 			runner.snapshot["zones"] = encode(in.Zones)
-			state := accountState{Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes}
+			state := AccountState{Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes}
 			started := time.Now()
 			if err := runner.refreshHazardQuotes(context.Background(), state); err != nil {
 				t.Fatal(err)
@@ -767,7 +759,7 @@ func TestHazardBoundLogsScrubAndBoundGameDerivedIDs(t *testing.T) {
 	runner := New(gameapi.New(server.URL, "synthetic-key", nil), h.db, h.account, zap.New(core), Options{})
 	runner.meta, runner.generation = in.Metadata, in.Generation
 	runner.snapshot["zones"] = encode(in.Zones)
-	state := accountState{Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes}
+	state := AccountState{Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Routes: in.Routes}
 	if err := runner.refreshHazardQuotes(h.ctx, state); err != nil {
 		t.Fatal(err)
 	}

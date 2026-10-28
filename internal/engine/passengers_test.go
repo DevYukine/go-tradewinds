@@ -124,7 +124,7 @@ func passengerRunnerFixture(t *testing.T) (*recoveryHarness, *Runner, PlanningIn
 	for _, key := range []string{"marques", "passenger_offers", "passenger_waiting/origin", "passenger_aboard/ship-a", "insurance", "loans", "settings", "ledger", "rates", "factors", "profile", "orders", "fills", "warehouses"} {
 		r.meta[key] = r.meta["zones"]
 	}
-	r.stateCache = accountState{Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Markets: in.Markets, Ports: in.Ports, Routes: in.Routes, HazardQuotes: in.HazardQuotes, HomePortID: "origin", Vaults: []Vault{{AccountID: "vault", AccountType: "vault", BankingRegion: "channel", BalancePence: 10_000_000}}}
+	r.stateCache = AccountState{Catalog: in.Catalog, Clock: in.Clock, Ships: []ShipState{in.Ship}, Markets: in.Markets, Ports: in.Ports, Routes: in.Routes, HazardQuotes: in.HazardQuotes, HomePortID: "origin", Vaults: []Vault{{AccountID: "vault", AccountType: "vault", BankingRegion: "channel", BalancePence: 10_000_000}}}
 	r.snapshot["zones"] = encode(in.Zones)
 	r.snapshot["marques"] = encode([]letterOfMarque{})
 	r.snapshot["passenger_offers"] = encode([]gameapi.PassengerOffer{})

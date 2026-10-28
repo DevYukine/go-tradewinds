@@ -295,7 +295,7 @@ type hazardQuoteRequest struct {
 	plan    *Plan
 }
 
-func (r *Runner) refreshHazardQuotes(ctx context.Context, state accountState) error {
+func (r *Runner) refreshHazardQuotes(ctx context.Context, state AccountState) error {
 	in := r.planningInputFrom(ShipState{}, state)
 	quotes := decode[map[string]HazardQuote](r.snapshot, hazardQuoteSnapshotKey)
 	if quotes == nil {

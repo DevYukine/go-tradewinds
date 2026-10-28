@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +49,28 @@ type Store struct {
 }
 
 func Open(ctx context.Context, dsn string, masterKey []byte, log *zap.Logger) (*Store, error) {
+	return openStore(ctx, dsn, masterKey, log, false)
+}
+
+// OpenReadOnly skips every migration and makes PostgreSQL reject writes on
+// every pooled connection. It requires an already migrated database.
+func OpenReadOnly(ctx context.Context, dsn string, masterKey []byte, log *zap.Logger) (*Store, error) {
+	if strings.Contains(dsn, "://") {
+		endpoint, err := url.Parse(dsn)
+		if err != nil {
+			return nil, fmt.Errorf("read-only database URL: %w", ErrInvalidInput)
+		}
+		query := endpoint.Query()
+		query.Set("default_transaction_read_only", "on")
+		endpoint.RawQuery = query.Encode()
+		dsn = endpoint.String()
+	} else {
+		dsn += " default_transaction_read_only=on"
+	}
+	return openStore(ctx, dsn, masterKey, log, true)
+}
+
+func openStore(ctx context.Context, dsn string, masterKey []byte, log *zap.Logger, readOnly bool) (*Store, error) {
 	if strings.TrimSpace(dsn) == "" {
 		return nil, fmt.Errorf("database URL: %w", ErrInvalidInput)
 	}
@@ -84,9 +107,11 @@ func Open(ctx context.Context, dsn string, masterKey []byte, log *zap.Logger) (*
 		sqlDB: sqlDB, dsn: dsn, aead: aead, lookupKey: deriveLookupKey(masterKey),
 		log: log, leases: make(map[*accountLease]struct{}),
 	}
-	if err := migrate(migrationCtx, sqlDB, log, privateStore); err != nil {
-		_ = sqlDB.Close()
-		return nil, err
+	if !readOnly {
+		if err := migrate(migrationCtx, sqlDB, log, privateStore); err != nil {
+			_ = sqlDB.Close()
+			return nil, err
+		}
 	}
 	db, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
 		DisableAutomaticPing: true,

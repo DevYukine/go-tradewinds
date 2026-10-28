@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // ProbeHistoryCursor advances by insertion order, not mission completion time:
@@ -55,16 +57,9 @@ func (s *Store) SourcingBudgetSettlements(ctx context.Context, accountID string,
 	}
 	db, cancel := s.query(ctx)
 	defer cancel()
-	earliestStart := from
-	if err := db.Model(&settlementRow{}).Select("COALESCE(MIN(started_at), ?)", from).
-		Where("account_id = ? AND completed_at >= ? AND completed_at <= ? AND started_at > ? AND costs_known AND quantity_tons > 0 AND kind IN ?",
-			accountID, from, asOf, time.Time{}, []string{"spot", "charter", "freight", "spot+freight", "charter+freight", "recovery"}).
-		Row().Scan(&earliestStart); err != nil {
+	probeFrom, err := sourcingBudgetProbeFrom(db, accountID, from, asOf)
+	if err != nil {
 		return nil, err
-	}
-	probeFrom := earliestStart.Add(-7 * 24 * time.Hour)
-	if from.Before(probeFrom) {
-		probeFrom = from
 	}
 	var stored []settlementRow
 	if err := db.Where("account_id = ? AND completed_at <= ? AND (completed_at >= ? OR (kind = ? AND completed_at >= ?))",
@@ -80,4 +75,19 @@ func (s *Store) SourcingBudgetSettlements(ctx context.Context, accountID string,
 		settlements = append(settlements, value)
 	}
 	return settlements, nil
+}
+
+func sourcingBudgetProbeFrom(db *gorm.DB, accountID string, from, asOf time.Time) (time.Time, error) {
+	earliestStart := from
+	if err := db.Model(&settlementRow{}).Select("COALESCE(MIN(started_at), ?)", from).
+		Where("account_id = ? AND completed_at >= ? AND completed_at <= ? AND started_at > ? AND costs_known AND quantity_tons > 0 AND kind IN ?",
+			accountID, from, asOf, time.Time{}, []string{"spot", "charter", "freight", "spot+freight", "charter+freight", "recovery"}).
+		Row().Scan(&earliestStart); err != nil {
+		return time.Time{}, err
+	}
+	probeFrom := earliestStart.Add(-7 * 24 * time.Hour)
+	if from.Before(probeFrom) {
+		probeFrom = from
+	}
+	return probeFrom, nil
 }

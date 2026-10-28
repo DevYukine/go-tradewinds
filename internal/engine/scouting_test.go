@@ -304,7 +304,7 @@ func TestScoutTargetCooldownSpansOriginsAndRecentDepartures(t *testing.T) {
 	self := in.Ship
 	self.Ship.Status = "sailing"
 	self.RouteLegs = []RouteLeg{{ToNode: "amsterdam"}}
-	runner := &Runner{stateCache: accountState{Ships: []ShipState{self}}}
+	runner := &Runner{stateCache: AccountState{Ships: []ShipState{self}}}
 	if got := runner.scoutBlockedPorts(in, nil)["amsterdam"]; got != "" {
 		t.Fatalf("a ship's own ambiguous route must not reserve its prospective target: %q", got)
 	}

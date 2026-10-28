@@ -15,6 +15,7 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -770,88 +771,297 @@ func (s *Store) recordReplayFrame(ctx context.Context, frame ReplayFrame) (Repla
 		DemotedDatasets: prepared.demotedDatasets + compressedDemotions}, nil
 }
 
-func (s *Store) ScanReplayFrames(ctx context.Context, accountID string, yield func(ReplayFrame) error) error {
-	previous := make(map[string][]byte)
-	var after time.Time
-	var afterID int64
-	for {
-		db, cancel := s.query(ctx)
-		var rows []replayFrameRow
-		err := db.Where("account_id = ? AND (observed_at, id) > (?, ?)", accountID, after, afterID).
-			Order("observed_at, id").Limit(100).Find(&rows).Error
-		cancel()
-		if err != nil {
-			return fmt.Errorf("scan replay frames: %w", databaseError{cause: err})
+const replayFrameMetadataBytesSQL = `COALESCE(octet_length(capture_id), 0)::bigint +
+	COALESCE(octet_length(account_id), 0) + COALESCE(octet_length(generation), 0) +
+	COALESCE(octet_length(source), 0) + COALESCE(octet_length(clock::text), 0) +
+	COALESCE(octet_length(catalog_digest), 0)`
+
+var replayFrameMetaColumns = "id, observed_at, phase, decision, assumed_catalog, " +
+	replayMetadataProjection([]string{"capture_id", "account_id", "generation", "source", "clock", "catalog_digest"},
+		replayFrameMetadataBytesSQL)
+
+type replayFrameHeader struct {
+	Frame         replayFrameRow `gorm:"embedded"`
+	MetadataBytes int64
+}
+
+// replayMetadataProjection never transfers an oversized variable-length row to
+// the caller. Its size still comes back so the reader fails rather than silently
+// filtering evidence. Column names and the size expression are internal SQL.
+func replayMetadataProjection(columns []string, sizeSQL string) string {
+	fields := make([]string, 0, len(columns)+1)
+	fields = append(fields, sizeSQL+" AS metadata_bytes")
+	for _, column := range columns {
+		fields = append(fields, fmt.Sprintf("CASE WHEN (%s) <= %d THEN %s END AS %s",
+			sizeSQL, MaxReplayEvidenceMetadataBytes, column, column))
+	}
+	return strings.Join(fields, ", ")
+}
+
+// ReplayFrameReader streams authenticated replay frames one at a time in
+// stable (observed_at, id) order. It retains at most one bounded metadata
+// page plus the previous frame's decoded payload cache, never the whole tape.
+type ReplayFrameReader struct {
+	store     *Store
+	ctx       context.Context
+	accountID string
+	before    time.Time
+	after     time.Time
+	afterID   int64
+	rows      []replayFrameRow
+	previous  map[string][]byte
+	err       error
+}
+
+// NewReplayFrameReader starts a pull scan of one account's replay frames. A
+// zero before is unbounded; otherwise frames observed at or after before are
+// never fetched, authenticated or decoded.
+func (s *Store) NewReplayFrameReader(ctx context.Context, accountID string, before time.Time) *ReplayFrameReader {
+	return &ReplayFrameReader{store: s, ctx: ctx, accountID: accountID, before: before,
+		previous: make(map[string][]byte)}
+}
+
+func (r *ReplayFrameReader) page() error {
+	db, cancel := r.store.query(r.ctx)
+	var headers []replayFrameHeader
+	bounded := db.Table("replay_frames").Select(replayFrameMetaColumns).
+		Where("account_id = ? AND (observed_at, id) > (?, ?)", r.accountID, r.after, r.afterID)
+	if !r.before.IsZero() {
+		bounded = bounded.Where("observed_at < ?", r.before)
+	}
+	err := bounded.Order("observed_at, id").Limit(replayEvidencePageSize).Find(&headers).Error
+	cancel()
+	if err != nil {
+		return fmt.Errorf("scan replay frames: %w", databaseError{cause: err})
+	}
+	rows := make([]replayFrameRow, 0, len(headers))
+	for _, header := range headers {
+		if header.MetadataBytes > MaxReplayEvidenceMetadataBytes {
+			return fmt.Errorf("replay frame metadata exceeds the %d-byte row budget: %w",
+				MaxReplayEvidenceMetadataBytes, ErrReplayEvidenceBudget)
 		}
-		if len(rows) == 0 {
+		rows = append(rows, header.Frame)
+	}
+	r.rows = rows
+	return nil
+}
+
+// PeekTime returns the next frame's observation time, fetching only the
+// bounded metadata page. No ciphertext is fetched or authenticated; io.EOF
+// marks a drained account. Authentication/read errors are terminal and sticky.
+func (r *ReplayFrameReader) PeekTime() (time.Time, error) {
+	if r.err != nil {
+		return time.Time{}, r.err
+	}
+	if len(r.rows) == 0 {
+		if err := r.page(); err != nil {
+			r.err = err
+			return time.Time{}, err
+		}
+		if len(r.rows) == 0 {
+			return time.Time{}, io.EOF
+		}
+	}
+	return r.rows[0].ObservedAt, nil
+}
+
+// Next authenticates and decodes the next frame, returning io.EOF once the
+// account has no further frame inside the reader's bound.
+func (r *ReplayFrameReader) Next() (ReplayFrame, error) {
+	if r.err != nil {
+		return ReplayFrame{}, r.err
+	}
+	if len(r.rows) == 0 {
+		if err := r.page(); err != nil {
+			r.err = err
+			return ReplayFrame{}, err
+		}
+		if len(r.rows) == 0 {
+			return ReplayFrame{}, io.EOF
+		}
+	}
+	row := r.rows[0]
+	r.rows = r.rows[1:]
+	frame, err := r.decode(row)
+	if err != nil {
+		r.err = err
+		return ReplayFrame{}, err
+	}
+	r.after, r.afterID = row.ObservedAt, row.ID
+	return frame, nil
+}
+
+// decode turns one metadata row into a whole frame: the manifest ciphertext is
+// fetched under a SQL size guard, each payload under a per-encoding guard, and
+// the frame's total distinct decoded payload bytes stay within the writer's raw
+// frame budget, including reused payloads from the previous frame.
+func (r *ReplayFrameReader) decode(row replayFrameRow) (ReplayFrame, error) {
+	aad, err := replayManifestAAD(row)
+	if err != nil {
+		return ReplayFrame{}, err
+	}
+	cipher, err := r.store.replayManifestCipher(r.ctx, row.ID)
+	if err != nil {
+		return ReplayFrame{}, err
+	}
+	compressed, err := r.store.decrypt(cipher, aad)
+	if err != nil {
+		return ReplayFrame{}, err
+	}
+	plain, err := replayDecompress(compressed)
+	if err != nil {
+		return ReplayFrame{}, err
+	}
+	var manifest map[string]replayManifestEntry
+	if err := json.Unmarshal(plain, &manifest); err != nil {
+		return ReplayFrame{}, err
+	}
+	frame := ReplayFrame{ID: row.ID, AccountID: r.accountID, Generation: row.Generation,
+		Source: row.Source, ObservedAt: row.ObservedAt, Clock: row.Clock, Phase: row.Phase,
+		CatalogDigest: row.CatalogDigest, Decision: row.Decision, AssumedCatalog: row.AssumedCatalog,
+		Datasets: make(map[string]ReplayDataset, len(manifest))}
+	current := make(map[string][]byte)
+	decoded := 0
+	for key, entry := range manifest {
+		dataset := ReplayDataset{Meta: entry.Meta}
+		if entry.Digest != "" {
+			data, currentHit := current[entry.Digest]
+			ok := currentHit
+			if !ok {
+				data, ok = r.previous[entry.Digest]
+			}
+			if !ok {
+				cipher, err := r.store.replayPayloadCipher(r.ctx, r.accountID, entry.Digest, entry.Encoding)
+				if err != nil {
+					return ReplayFrame{}, err
+				}
+				compressed, err := r.store.decrypt(cipher, privateAAD("replay_payloads", "payload", r.accountID, entry.Digest))
+				if err != nil {
+					return ReplayFrame{}, err
+				}
+				switch entry.Encoding {
+				case replayEncodingGzip:
+					data, err = replayDecompress(compressed)
+				case replayEncodingEvents:
+					if len(compressed) > MaxReplayPlaintextBytes {
+						return ReplayFrame{}, ErrResponseTooLarge
+					}
+					data = compressed
+				default:
+					return ReplayFrame{}, fmt.Errorf("replay payload encoding: %w", ErrInvalidInput)
+				}
+				if err != nil {
+					return ReplayFrame{}, err
+				}
+			}
+			if !currentHit {
+				decoded += len(data)
+				if decoded > MaxReplayPlaintextBytes {
+					return ReplayFrame{}, fmt.Errorf("replay frame %d payload total exceeds the %d-byte frame budget: %w",
+						row.ID, MaxReplayPlaintextBytes, ErrReplayEvidenceBudget)
+				}
+			}
+			current[entry.Digest] = data
+			dataset.Data = data
+		}
+		frame.Datasets[key] = dataset
+	}
+	r.previous = current
+	return frame, nil
+}
+
+// replayManifestCipher fetches one manifest ciphertext after a SQL
+// octet_length guard, so an oversized stored blob never enters the process.
+// The writer caps manifest gzip before encryption, so every legitimate row
+// fits the guarded bound.
+func (s *Store) replayManifestCipher(ctx context.Context, id int64) ([]byte, error) {
+	db, cancel := s.query(ctx)
+	defer cancel()
+	var row replayFrameRow
+	err := db.Select("manifest_cipher").Where("id = ? AND octet_length(manifest_cipher) <= ?", id,
+		int64(MaxReplayCompressedBytes)+int64(s.aead.NonceSize()+s.aead.Overhead())).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("replay frame %d manifest row changed or exceeds the guarded read budget: %w",
+			id, ErrReplayEvidenceBudget)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve replay manifest: %w", databaseError{cause: err})
+	}
+	return row.ManifestCipher, nil
+}
+
+// replayPayloadCipher fetches one payload ciphertext after a per-encoding SQL
+// octet_length guard plus the AEAD envelope, so an oversized stored blob never
+// enters the process.
+func (s *Store) replayPayloadCipher(ctx context.Context, accountID, digest, encoding string) ([]byte, error) {
+	var limit int64
+	switch encoding {
+	case replayEncodingGzip:
+		limit = MaxReplayCompressedBytes
+	case replayEncodingEvents:
+		limit = MaxReplayPlaintextBytes
+	default:
+		return nil, fmt.Errorf("replay payload encoding: %w", ErrInvalidInput)
+	}
+	limit += int64(s.aead.NonceSize() + s.aead.Overhead())
+	db, cancel := s.query(ctx)
+	defer cancel()
+	var row replayPayloadRow
+	err := db.Select("payload_cipher").Where("account_id = ? AND digest = ? AND octet_length(payload_cipher) <= ?",
+		accountID, digest, limit).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("replay payload row changed or exceeds the guarded read budget: %w", ErrReplayEvidenceBudget)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve replay payload: %w", databaseError{cause: err})
+	}
+	return row.PayloadCipher, nil
+}
+
+// ReplayFrameBounds reports an account's first and last replay frame
+// observation times, optionally restricted to observed_at < before. The query
+// reads no ciphertext and returns zero times when nothing matches.
+func (s *Store) ReplayFrameBounds(ctx context.Context, accountID string, before time.Time) (time.Time, time.Time, error) {
+	db, cancel := s.query(ctx)
+	defer cancel()
+	bounded := db.Model(&replayFrameRow{}).
+		Select("min(observed_at) AS first, max(observed_at) AS last").
+		Where("account_id = ?", accountID)
+	if !before.IsZero() {
+		bounded = bounded.Where("observed_at < ?", before)
+	}
+	var bounds struct {
+		First *time.Time
+		Last  *time.Time
+	}
+	if err := bounded.Scan(&bounds).Error; err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("replay frame bounds: %w", databaseError{cause: err})
+	}
+	var first, last time.Time
+	if bounds.First != nil {
+		first = *bounds.First
+	}
+	if bounds.Last != nil {
+		last = *bounds.Last
+	}
+	return first, last, nil
+}
+
+// ScanReplayFrames streams every frame of an account through yield in stable
+// (observed_at, id) order. A non-nil yield error aborts the scan and returns
+// unchanged.
+func (s *Store) ScanReplayFrames(ctx context.Context, accountID string, yield func(ReplayFrame) error) error {
+	reader := s.NewReplayFrameReader(ctx, accountID, time.Time{})
+	for {
+		frame, err := reader.Next()
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
-		for _, row := range rows {
-			aad, err := replayManifestAAD(row)
-			if err != nil {
-				return err
-			}
-			compressed, err := s.decrypt(row.ManifestCipher, aad)
-			if err != nil {
-				return err
-			}
-			plain, err := replayDecompress(compressed)
-			if err != nil {
-				return err
-			}
-			var manifest map[string]replayManifestEntry
-			if err := json.Unmarshal(plain, &manifest); err != nil {
-				return err
-			}
-			frame := ReplayFrame{ID: row.ID, AccountID: accountID, Generation: row.Generation,
-				Source: row.Source, ObservedAt: row.ObservedAt, Clock: row.Clock, Phase: row.Phase,
-				CatalogDigest: row.CatalogDigest, Decision: row.Decision, AssumedCatalog: row.AssumedCatalog,
-				Datasets: make(map[string]ReplayDataset, len(manifest))}
-			current := make(map[string][]byte)
-			for key, entry := range manifest {
-				dataset := ReplayDataset{Meta: entry.Meta}
-				if entry.Digest != "" {
-					data, ok := current[entry.Digest]
-					if !ok {
-						data, ok = previous[entry.Digest]
-					}
-					if !ok {
-						db, cancel := s.query(ctx)
-						var payload replayPayloadRow
-						err := db.Where("account_id = ? AND digest = ?", accountID, entry.Digest).First(&payload).Error
-						cancel()
-						if err != nil {
-							return fmt.Errorf("resolve replay payload: %w", databaseError{cause: err})
-						}
-						compressed, err := s.decrypt(payload.PayloadCipher, privateAAD("replay_payloads", "payload", accountID, entry.Digest))
-						if err != nil {
-							return err
-						}
-						switch entry.Encoding {
-						case replayEncodingGzip:
-							data, err = replayDecompress(compressed)
-						case replayEncodingEvents:
-							if len(compressed) > MaxReplayPlaintextBytes {
-								return ErrResponseTooLarge
-							}
-							data = compressed
-						default:
-							return fmt.Errorf("replay payload encoding: %w", ErrInvalidInput)
-						}
-						if err != nil {
-							return err
-						}
-					}
-					current[entry.Digest] = data
-					dataset.Data = data
-				}
-				frame.Datasets[key] = dataset
-			}
-			if err := yield(frame); err != nil {
-				return err
-			}
-			previous = current
-			after, afterID = row.ObservedAt, row.ID
+		if err != nil {
+			return err
+		}
+		if err := yield(frame); err != nil {
+			return err
 		}
 	}
 }
@@ -986,14 +1196,75 @@ func (s *Store) LinkReplayAction(ctx context.Context, link ReplayActionLink) err
 	return nil
 }
 
-func (s *Store) ReplayActionLinks(ctx context.Context, accountID string) ([]ReplayActionLink, error) {
+const replayActionLinkMetadataBytesSQL = `COALESCE(octet_length(account_id), 0)::bigint +
+	COALESCE(octet_length(action_id), 0) + COALESCE(octet_length(mission_id), 0) +
+	COALESCE(octet_length(stage), 0) + COALESCE(octet_length(generation), 0)`
+
+var replayActionLinkColumns = "COALESCE(sequence, 0) AS sequence, " +
+	replayMetadataProjection([]string{"account_id", "action_id", "mission_id", "stage", "generation"},
+		replayActionLinkMetadataBytesSQL)
+
+type replayActionLinkMetadata struct {
+	Link          ReplayActionLink `gorm:"embedded"`
+	MetadataBytes int64
+}
+
+// ReplayActionLinks returns links for window actions and explicitly selected
+// settlement missions, in stable mission/sequence/action order. SQL guards each
+// page's variable-length values; budgets reject the whole result on overflow.
+func (s *Store) ReplayActionLinks(ctx context.Context, accountID string, from, to time.Time, missions []string) ([]ReplayActionLink, error) {
+	if !validID(accountID) || from.IsZero() || !to.After(from) || len(missions) > MaxReplayEvidenceRows {
+		return nil, fmt.Errorf("replay action link window: %w", ErrInvalidInput)
+	}
+	for _, mission := range missions {
+		if !validID(mission) {
+			return nil, fmt.Errorf("replay action link mission: %w", ErrInvalidInput)
+		}
+	}
 	db, cancel := s.query(ctx)
 	defer cancel()
-	var links []ReplayActionLink
-	if err := db.Where("account_id = ?", accountID).Order("mission_id, sequence, action_id").Find(&links).Error; err != nil {
-		return nil, fmt.Errorf("read replay action links: %w", databaseError{cause: err})
+	links := make([]ReplayActionLink, 0)
+	var budget replayEvidenceBudget
+	var afterMission, afterAction string
+	var afterSequence int64
+	for {
+		var page []replayActionLinkMetadata
+		query := db.Table("replay_action_links").Select(replayActionLinkColumns).
+			Where("account_id = ?", accountID)
+		scope := `EXISTS (SELECT 1 FROM actions a WHERE a.account_id = replay_action_links.account_id
+			AND a.id = replay_action_links.action_id AND a.created_at >= ? AND a.created_at < ?)`
+		if len(missions) > 0 {
+			query = query.Where("("+scope+" OR mission_id IN ?)", from, to, missions)
+		} else {
+			query = query.Where(scope, from, to)
+		}
+		if len(links) != 0 {
+			query = query.Where("(COALESCE(mission_id, ''), COALESCE(sequence, 0), action_id) > (?, ?, ?)",
+				afterMission, afterSequence, afterAction)
+		}
+		if err := query.Order("COALESCE(mission_id, ''), COALESCE(sequence, 0), action_id").
+			Limit(replayEvidencePageSize).Find(&page).Error; err != nil {
+			return nil, fmt.Errorf("read replay action links: %w", databaseError{cause: err})
+		}
+		if len(page) == 0 {
+			return links, nil
+		}
+		if err := budget.addRows(len(page), "replay action links"); err != nil {
+			return nil, err
+		}
+		for _, row := range page {
+			if row.MetadataBytes > MaxReplayEvidenceMetadataBytes {
+				return nil, fmt.Errorf("replay action link metadata exceeds the %d-byte row budget: %w",
+					MaxReplayEvidenceMetadataBytes, ErrReplayEvidenceBudget)
+			}
+			if err := budget.retain(row.MetadataBytes+replayEvidenceRowOverhead, "replay action links"); err != nil {
+				return nil, err
+			}
+			links = append(links, row.Link)
+		}
+		last := page[len(page)-1].Link
+		afterMission, afterSequence, afterAction = last.MissionID, last.Sequence, last.ActionID
 	}
-	return links, nil
 }
 
 func (s *Store) PruneReplay(ctx context.Context, retention time.Duration, capBytes int64) (time.Time, error) {

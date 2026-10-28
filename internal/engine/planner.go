@@ -190,6 +190,7 @@ type Plan struct {
 	competitionComparable bool
 	playerBidStress       bool
 	sunkFundingFeesPence  int64
+	nextRungReceiptStress bool
 }
 
 type PlayerBidSellFill struct {
@@ -201,23 +202,26 @@ type PlayerBidSellFill struct {
 }
 
 type PlanningInput struct {
-	Now                       time.Time
-	CompanyID                 string
-	Ship                      ShipState
-	Catalog                   Catalog
-	Fleet                     []ShipState
-	HazardQuotes              map[string]HazardQuote
-	Clock                     Clock
-	Zones                     []ZoneObservation
-	MarqueZones               map[string]bool
-	Markets                   map[string]Market
-	Ports                     map[string]PortDetail
-	Routes                    map[string]Route
-	Contracts                 []Contract
-	Balances                  map[string]int64
-	ReserveByRegion           map[string]int64
-	ReservePence              int64
-	SourcingAllowancePence    *int64
+	Now                    time.Time
+	CompanyID              string
+	Ship                   ShipState
+	Catalog                Catalog
+	Fleet                  []ShipState
+	HazardQuotes           map[string]HazardQuote
+	Clock                  Clock
+	Zones                  []ZoneObservation
+	MarqueZones            map[string]bool
+	Markets                map[string]Market
+	Ports                  map[string]PortDetail
+	Routes                 map[string]Route
+	Contracts              []Contract
+	Balances               map[string]int64
+	ReserveByRegion        map[string]int64
+	ReservePence           int64
+	SourcingAllowancePence *int64
+	// Nil retains the live 200-bps per-probe cash cap.
+	SourcingCashBPS           *int64
+	NextRungReceiptStress     bool
 	SourcingProbeLanes        map[string]bool
 	SourcingLoadingBlocked    bool
 	SourcingIdleEligible      bool
@@ -685,6 +689,12 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 	if revenueBasis == "retained" && expectedNet-priceStress <= 0 {
 		return reject(plan, "retained quay book lot is not net-positive after price uncertainty stress")
 	}
+	if in.NextRungReceiptStress && plan.Kind == "spot" && plan.PriceSource == "observed destination full depth" {
+		plan.nextRungReceiptStress = true
+		if expectedNet-priceStress <= 0 {
+			return reject(plan, "spot lot is not net-positive at the next NPC bid rung")
+		}
+	}
 	if expectedNet < 0 || expectedNet == 0 && plan.sunkFundingFeesPence == 0 {
 		return reject(plan, "non-positive destination contribution after measured depth, buyer customs, consumed provisions and harbour bills")
 	}
@@ -867,7 +877,19 @@ func destinationRevenue(in PlanningInput, destination, commodity string, quantit
 			if err != nil {
 				return 0, 0, 0, "", "fresh destination quay bids cannot fill the whole lot"
 			}
-			return fill.GrossPence, fill.LimitPence, 0, "observed destination full depth", ""
+			stress := int64(0)
+			if in.NextRungReceiptStress {
+				var nextBid int64
+				for _, level := range entry.Depth.Bids {
+					if level.IsNPC && level.RemainingQuantity > 0 && level.PricePence < fill.LimitPence {
+						nextBid = max(nextBid, level.PricePence)
+					}
+				}
+				if nextBid > 0 {
+					stress = max(0, fill.GrossPence-quantity*nextBid)
+				}
+			}
+			return fill.GrossPence, fill.LimitPence, stress, "observed destination full depth", ""
 		}
 	}
 	var bid, playerPrice, npcBid, fresherBid int64

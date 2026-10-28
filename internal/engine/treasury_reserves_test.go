@@ -5,7 +5,7 @@ import "testing"
 func TestObligationReservesFundObservedArrivalNotSailingOrigin(t *testing.T) {
 	t.Parallel()
 	const reserve int64 = 75_000
-	state := accountState{
+	state := AccountState{
 		HomePortID: recoveryHomePort,
 		Catalog: Catalog{
 			Ports: []Port{

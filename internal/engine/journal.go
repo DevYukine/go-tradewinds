@@ -72,7 +72,8 @@ func disposition(err error) actionDisposition {
 	return actionUnresolved
 }
 
-func actionID(accountID, generation, stage string, sequence int64) string {
+// ActionID is stable across retries of one logical account mutation.
+func ActionID(accountID, generation, stage string, sequence int64) string {
 	return uuid.NewSHA1(uuid.NameSpaceURL, []byte(fmt.Sprintf("tradewinds:%s:%s:%s:%d", accountID, generation, stage, sequence))).String()
 }
 
@@ -105,7 +106,7 @@ func (r *Runner) stageAction(ctx context.Context, mission *store.Mission, data *
 		method = http.MethodPatch
 	}
 	data.Action = &durableAction{
-		ID:               actionID(r.account.ID, mission.Generation, stage, data.Sequence),
+		ID:               ActionID(r.account.ID, mission.Generation, stage, data.Sequence),
 		Stage:            stage,
 		Method:           method,
 		Path:             path,
