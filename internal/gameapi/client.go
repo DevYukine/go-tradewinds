@@ -150,10 +150,16 @@ func (c *Client) Get(ctx context.Context, path string, out any) error {
 	return c.Do(ctx, http.MethodGet, path, nil, "", out)
 }
 
+// GetOnce uses the shared read limiter and honours Retry-After, but leaves
+// transient failures to the caller instead of replaying a budgeted observation.
+func (c *Client) GetOnce(ctx context.Context, path string, out any) error {
+	return c.do(ctx, http.MethodGet, path, nil, "", out, nil, 1)
+}
+
 // Do marshals once, then reuses the identical bytes and key for every bounded
 // transport/5xx retry. A 4xx is definitive, including a cached mutation 429.
 func (c *Client) Do(ctx context.Context, method, path string, body any, idempotencyKey string, out any) error {
-	return c.do(ctx, method, path, body, idempotencyKey, out, nil)
+	return c.do(ctx, method, path, body, idempotencyKey, out, nil, maxAttempts)
 }
 
 // DoWithPreflight checks a new mutation after its rate-limit wait, immediately
@@ -161,10 +167,10 @@ func (c *Client) Do(ctx context.Context, method, path string, body any, idempote
 // an attempt starts, retries retain the request and never rerun the preflight.
 // This is a local validity check, not an atomic condition on upstream state.
 func (c *Client) DoWithPreflight(ctx context.Context, method, path string, body any, idempotencyKey string, out any, beforeFirstSend func() error) error {
-	return c.do(ctx, method, path, body, idempotencyKey, out, beforeFirstSend)
+	return c.do(ctx, method, path, body, idempotencyKey, out, beforeFirstSend, maxAttempts)
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body any, idempotencyKey string, out any, beforeFirstSend func() error) error {
+func (c *Client) do(ctx context.Context, method, path string, body any, idempotencyKey string, out any, beforeFirstSend func() error, attemptLimit int) error {
 	if c.initErr != nil {
 		return c.initErr
 	}
@@ -183,7 +189,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, idempote
 	bucket := requestBucket(method, path)
 	var lastOutcome error
 
-	for attempt := range maxAttempts {
+	for attempt := range attemptLimit {
 		if err := c.rates.wait(ctx, bucket, c.keyHash, c.apiKey != ""); err != nil {
 			return interruptedOutcome(lastOutcome, err)
 		}
@@ -210,7 +216,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, idempote
 		if err := ctx.Err(); err != nil {
 			return interruptedOutcome(result.err, err)
 		}
-		if attempt+1 == maxAttempts {
+		if attempt+1 == attemptLimit {
 			return result.err
 		}
 

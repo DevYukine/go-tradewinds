@@ -90,7 +90,8 @@ export interface MoneyPeriod {
   to: string;
   count: number;
   known_count: number;
-  gross_pence: number;
+  gross_pence: number | null;
+  unknown_proceeds_count?: number;
   costs_pence: number | null;
   net_pence: number | null;
 }
@@ -296,6 +297,8 @@ export interface CompetitionSummary {
 // decisions can omit fields, including the destination valuation basis.
 export interface Economics {
   basis?: "destination";
+  revenue_basis?: string;
+  revenue_age_game_hours?: number | null;
   revenue_pence?: number;
   purchase_pence?: number;
   customs_pence?: number;
@@ -306,6 +309,9 @@ export interface Economics {
   toll_pence?: number;
   funding_fees_pence?: number;
   collateral_pence?: number;
+  hazard_bps?: number;
+  hazard_pence?: number;
+  hazard_source?: string;
   expected_net_pence?: number;
   stress_haircut_bps?: number;
   stress_haircut_pence?: number;
@@ -354,6 +360,7 @@ export interface Settlement {
   mission_id: string;
   lane: string;
   action_id: string;
+  event_id?: string;
   kind: string;
   origin: string;
   destination: string;
@@ -362,10 +369,20 @@ export interface Settlement {
   game_seconds: number;
   costs_known: boolean;
   acquisition_pence: number;
-  proceeds_pence: number;
+  proceeds_pence: number | null;
+  proceeds_unknown?: boolean;
   fees_pence: number;
   provisions_pence: number;
   expenses_pence: number;
+  exploration_expense_pence?: number;
+  planned_net_pence?: number;
+  planned_revenue_pence?: number;
+  revenue_basis?: string;
+  revenue_age_game_hours?: number;
+  hazard_bps?: number;
+  hazard_source?: string;
+  cargo_shortfall_pence?: number;
+  departed_cargo_pence?: number;
   started_at: string;
   completed_at: string;
   created_at: string;

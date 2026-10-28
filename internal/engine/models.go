@@ -4,6 +4,8 @@ package engine
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/DevYukine/go-tradewinds/internal/gameapi"
 )
 
 // The planner projects only documented economic fields. Snapshots retain the full
@@ -22,16 +24,17 @@ type Commodity struct {
 }
 
 type Port struct {
-	ID            string   `json:"id"`
-	BankingRegion string   `json:"banking_region"`
-	SeaZoneID     string   `json:"sea_zone_id"`
-	Phase         int      `json:"phase"`
-	IsHub         bool     `json:"is_hub"`
-	HasShipyard   bool     `json:"has_shipyard"`
-	Produces      []string `json:"produces"`
-	Manufactures  []string `json:"manufactures"`
-	Imports       []string `json:"imports"`
-	IsCove        bool     `json:"is_cove"`
+	ID            string                `json:"id"`
+	BankingRegion string                `json:"banking_region"`
+	SeaZoneID     string                `json:"sea_zone_id"`
+	Phase         int                   `json:"phase"`
+	IsHub         bool                  `json:"is_hub"`
+	HasShipyard   bool                  `json:"has_shipyard"`
+	YardDiscount  *gameapi.YardDiscount `json:"yard_discount"`
+	Produces      []string              `json:"produces"`
+	Manufactures  []string              `json:"manufactures"`
+	Imports       []string              `json:"imports"`
+	IsCove        bool                  `json:"is_cove"`
 }
 
 type Hull struct {
@@ -40,6 +43,7 @@ type Hull struct {
 	Phase               int    `json:"phase"`
 	BaseSpeedCentiknots int64  `json:"base_speed_centiknots"`
 	HoldCapacityTons    int64  `json:"hold_capacity_tons"`
+	PassengersPerTon    int64  `json:"passengers_per_ton"`
 	MaxCannons          int64  `json:"max_cannons"`
 	CrewRequired        int64  `json:"crew_required"`
 	CanSealDispatches   bool   `json:"can_seal_dispatches"`
@@ -53,8 +57,10 @@ type Zone struct {
 }
 
 type ZoneObservation struct {
-	SeaZoneID    string `json:"sea_zone_id"`
-	NetPiracyBPS int64  `json:"net_piracy_bps"`
+	SeaZoneID       string `json:"sea_zone_id"`
+	NetPiracyBPS    int64  `json:"net_piracy_bps"`
+	MarquePiracyBPS *int64 `json:"marque_piracy_bps"`
+	ActiveMarques   *int64 `json:"active_marques"`
 }
 
 type Clock struct {
@@ -88,6 +94,7 @@ type ShipState struct {
 	HoldCapacityTons          int64            `json:"hold_capacity_tons"`
 	EffectiveHoldCapacityTons int64            `json:"effective_hold_capacity_tons"`
 	CargoUsedTons             int64            `json:"cargo_used_tons"`
+	PassengerHoldTons         int64            `json:"passenger_hold_tons"`
 	CargoManifest             map[string]int64 `json:"cargo_manifest"`
 	Stores                    struct {
 		ProvisionsTons float64 `json:"provisions_tons"`
@@ -96,6 +103,27 @@ type ShipState struct {
 	Voyage    *struct {
 		EstimatedArrivalAt time.Time `json:"estimated_arrival_at"`
 	} `json:"voyage"`
+}
+
+func (s *ShipState) UnmarshalJSON(raw []byte) error {
+	type shipFields ShipState
+	var decoded shipFields
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	var passenger struct {
+		Ship struct {
+			PassengerHoldTons *int64 `json:"passenger_hold_tons"`
+		} `json:"ship"`
+	}
+	if err := json.Unmarshal(raw, &passenger); err != nil {
+		return err
+	}
+	if passenger.Ship.PassengerHoldTons != nil {
+		decoded.PassengerHoldTons = *passenger.Ship.PassengerHoldTons
+	}
+	*s = ShipState(decoded)
+	return nil
 }
 
 type Route struct {
@@ -207,13 +235,15 @@ type Rate struct {
 }
 
 type YardQuote struct {
-	PortID            string `json:"port_id"`
-	ShipClass         string `json:"ship_class"`
-	BuildMode         string `json:"build_mode"`
-	Available         bool   `json:"available"`
-	TotalCostPence    *int64 `json:"total_cost_pence"`
-	MaterialsPence    int64  `json:"materials_pence"`
-	NPCMaterialsPence int64  `json:"npc_materials_pence"`
+	PortID            string                 `json:"port_id"`
+	ShipClass         string                 `json:"ship_class"`
+	BuildMode         string                 `json:"build_mode"`
+	Available         bool                   `json:"available"`
+	TotalCostPence    *int64                 `json:"total_cost_pence"`
+	MaterialsPence    int64                  `json:"materials_pence"`
+	NPCMaterialsPence int64                  `json:"npc_materials_pence"`
+	Mortgage          *gameapi.MortgageTerms `json:"mortgage"`
+	YardDiscount      *gameapi.YardDiscount  `json:"yard_discount"`
 }
 
 type DatasetMeta struct {

@@ -25,6 +25,7 @@ type Options struct {
 	MarquesEnabled      bool
 	ReplayRetentionDays int
 	ReplayMaxGiB        float64
+	GameVersion         func() string `json:"-"`
 }
 
 type decisionFingerprint struct {
@@ -124,6 +125,8 @@ type streamMessage struct {
 // capture must refresh loans and fleet state as well as cash.
 var financialEvents = map[string]bool{
 	"company_upkeep_billed":           true,
+	"passengers_paid":                 true,
+	"passengers_lost":                 true,
 	"auto_remittance":                 true,
 	"tax_and_fee_charged":             true,
 	"crown_bailiff_warehouse_seizure": true,
@@ -195,9 +198,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	messages := make(chan streamMessage, 256)
 	publishedControl := &r.publishedControl
 	var handledControl uint64
-	// Financial events publish before enqueue like controls, so a barrier
-	// behind a full ordinary queue still vetoes work against an earlier
-	// REST capture; unlike controls they leave the stream open.
+	// Cash and passenger hold-capacity events publish before enqueue like
+	// controls, so a full ordinary queue cannot leave an earlier REST capture
+	// authoritative for another first-send. They leave the stream open.
 	publishedFinancial := &r.publishedFinancial
 	var handledFinancial uint64
 	var stopStream context.CancelFunc
@@ -216,11 +219,10 @@ func (r *Runner) Run(ctx context.Context) error {
 					// Publish before enqueue so a control behind a full ordinary
 					// queue still prevents work against an earlier REST capture.
 					message.controlEpoch = publishedControl.Add(1)
-				} else if financialEvents[event.Type] {
-					// Publish before enqueue so spending cannot start from vault
-					// balances captured before this cash movement; unlike a
-					// control the stream stays open and ordinary events keep
-					// flowing.
+				} else if financialEvents[event.Type] || event.Type == "passengers_boarded" {
+					// Boarding changes effective hold capacity asynchronously.
+					// Share the full-capture fence so fleet state, as well as
+					// vaults, is recaptured before any next mutation.
 					message.financialEpoch = publishedFinancial.Add(1)
 				}
 				select {
@@ -306,6 +308,17 @@ func (r *Runner) Run(ctx context.Context) error {
 				return err
 			}
 			r.replayEvent(ctx, event.ID, event.Type, event.Data)
+			if event.Type == "passengers_boarded" {
+				var boarded passengerEventPayload
+				if decodePassengerEvent(event.Data, &boarded) && boarded.ShipID != "" {
+					hints := decode[map[string]bool](r.snapshot, "_passenger_boarding_ships")
+					if hints == nil {
+						hints = make(map[string]bool)
+					}
+					hints[boarded.ShipID] = true
+					r.snapshot["_passenger_boarding_ships"] = encode(hints)
+				}
+			}
 			backoff = time.Second
 			if streamDegraded {
 				r.log.Info("event stream reconnected")
@@ -655,6 +668,8 @@ func (r *Runner) planningInputFrom(ship ShipState, state accountState) PlanningI
 		Now:                   time.Now(),
 		CompanyID:             r.account.CompanyID,
 		Ship:                  ship,
+		Fleet:                 state.Ships,
+		HazardQuotes:          state.HazardQuotes,
 		Catalog:               state.Catalog,
 		Clock:                 state.Clock,
 		Zones:                 decode[[]ZoneObservation](r.snapshot, "zones"),
@@ -662,6 +677,8 @@ func (r *Runner) planningInputFrom(ship ShipState, state accountState) PlanningI
 		Markets:               state.Markets,
 		Ports:                 state.Ports,
 		BookObservedAt:        decode[map[string]time.Time](r.snapshot, "_book_observed"),
+		QuayBookMemory:        decode[map[string]RetainedQuayBook](r.snapshot, "_quay_book_memory"),
+		BookDrift:             decode[[]BookDriftSample](r.snapshot, "_book_drift"),
 		Routes:                state.Routes,
 		Contracts:             taperedContracts(state.Contracts, state.Catalog, r.charterProceedsPence, ship.EffectiveHoldCapacityTons),
 		Balances:              balances,

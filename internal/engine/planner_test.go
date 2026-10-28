@@ -64,7 +64,14 @@ func inputFixture(t *testing.T) engine.PlanningInput {
 		Catalog:   catalog,
 		Clock:     clock,
 		Zones:     []engine.ZoneObservation{{SeaZoneID: "english_channel", NetPiracyBPS: 200}},
-		Markets:   map[string]engine.Market{"le_havre": book},
+		HazardQuotes: map[string]engine.HazardQuote{
+			"hull|ship-a|le_havre|portsmouth": {
+				ShipID: "ship-a", Origin: "le_havre", Destination: "portsmouth", ShipClass: "hoy",
+				CannonsCount: 4, Month: 3, ObservedAt: now, AttemptedAt: now,
+				NetPiracyBPS: map[string]int64{"english_channel": 200},
+			},
+		},
+		Markets: map[string]engine.Market{"le_havre": book},
 		Ports: map[string]engine.PortDetail{
 			"le_havre":   {ID: "le_havre", BerthDuesPerDayPence: 1000, EffectiveBerths: 4},
 			"portsmouth": {ID: "portsmouth", BerthDuesPerDayPence: 1000, EffectiveBerths: 4},
@@ -119,6 +126,30 @@ func TestPublicCharterUsesMeasuredLocalDepthWithoutRemoteBook(t *testing.T) {
 	}
 }
 
+func TestPlannerUsesRetainedQuayDepthWithoutRepeatFunding(t *testing.T) {
+	t.Parallel()
+	in := inputFixture(t)
+	in.Contracts = nil
+	in.QuayBookMemory = map[string]engine.RetainedQuayBook{
+		"portsmouth": {
+			ObservedAt: in.Now.Add(-144 * time.Minute),
+			Bids: map[string][]engine.RetainedBid{
+				"provisions": {{PricePence: 5_000, RemainingQuantity: 20}},
+			},
+		},
+	}
+	plan := engine.PlanVoyages(in)[0]
+	if !plan.Accepted || plan.Kind != "spot" || plan.Quantity != 20 ||
+		plan.Economics.RevenueBasis != "retained" || plan.Economics.RevenuePence != 94_000 ||
+		plan.Economics.PriceUncertaintyStressPence != 9_000 || plan.SellLimitPence != 4_250 {
+		t.Fatalf("remembered quay depth did not fund the complete delivery lot: %+v", plan)
+	}
+	if plan.PriceSource != "our quay book 6.0 game days old; 600 bps age haircut" ||
+		plan.Economics.BallastRepeatGameDays != 0 || plan.Economics.BallastRepeatNetPence != 0 {
+		t.Fatalf("retained estimates lost their source or financed a repeat: %+v", plan)
+	}
+}
+
 func narrowMarginFixture(t *testing.T) engine.PlanningInput {
 	t.Helper()
 	in := inputFixture(t)
@@ -126,6 +157,9 @@ func narrowMarginFixture(t *testing.T) engine.PlanningInput {
 	in.Catalog.SeaZones[0].BaseStormBPS = 500
 	in.Catalog.SeaZones[0].BasePiracyBPS = 400
 	in.Zones[0].NetPiracyBPS = 400
+	quote := in.HazardQuotes["hull|ship-a|le_havre|portsmouth"]
+	quote.NetPiracyBPS["english_channel"] = 400
+	in.HazardQuotes["hull|ship-a|le_havre|portsmouth"] = quote
 	in.Ship.Stores.ProvisionsTons = 7.9
 	berthedAt := in.Now.Add(-48*time.Minute - 30*time.Second)
 	in.Ship.Ship.BerthedAt = &berthedAt
@@ -198,7 +232,7 @@ func TestPlannerCashNetIdentityDoesNotChargeStressOrRefundableCollateral(t *test
 			}
 			cash := calm.Economics
 			wantCash := cash.RevenuePence - cash.PurchasePence - cash.CustomsPence -
-				cash.ProvisionsPence - cash.BerthDuesPence - cash.UpkeepPence - cash.TollPence
+				cash.ProvisionsPence - cash.BerthDuesPence - cash.UpkeepPence - cash.TollPence - cash.HazardPence
 			if cash.ExpectedNetPence != wantCash || cash.UpkeepPence != 0 ||
 				cash.ProvisionsPence <= 0 || cash.BerthDuesPence <= 0 {
 				t.Fatalf("cash net is not revenue less observable nonrefundable costs: %+v; identity %dp", cash, wantCash)
@@ -208,12 +242,15 @@ func TestPlannerCashNetIdentityDoesNotChargeStressOrRefundableCollateral(t *test
 			}
 			in.Catalog.SeaZones[0].BaseStormBPS = 8_000
 			in.Zones[0].NetPiracyBPS = 8_000
+			quote := in.HazardQuotes["hull|ship-a|le_havre|portsmouth"]
+			quote.NetPiracyBPS["english_channel"] = 8_000
+			in.HazardQuotes["hull|ship-a|le_havre|portsmouth"] = quote
 			stressed := engine.PlanVoyages(in)[0]
 			diagnostic := stressed.Economics
 			if !stressed.Accepted || stressed.Kind != calm.Kind || stressed.Quantity != calm.Quantity ||
 				diagnostic.ExpectedNetPence != cash.ExpectedNetPence ||
 				diagnostic.NetPencePerGameDay != cash.NetPencePerGameDay {
-				t.Fatalf("uncalibrated hazards changed cash acceptance, lot size or ranking: calm %+v stressed %+v", calm, stressed)
+				t.Fatalf("zone-rating stress changed cash acceptance, lot size or ranking despite unchanged published loss: calm %+v stressed %+v", calm, stressed)
 			}
 			if diagnostic.StressHaircutPence <= cash.StressHaircutPence ||
 				diagnostic.StressNetPence != diagnostic.ExpectedNetPence-diagnostic.StressHaircutPence-diagnostic.PriceUncertaintyStressPence ||
@@ -394,7 +431,7 @@ func TestBallastRepeatCrossRegionRestoresRecurringOriginCash(t *testing.T) {
 			in.Rates[0].FeeBPS = 10_000
 		}},
 		{"delivery cannot replenish origin after fees", func(in *engine.PlanningInput) {
-			reward := int64(1070)
+			reward := int64(1071)
 			in.Contracts[0].RewardPerTonPence = &reward
 		}},
 	}
@@ -677,6 +714,24 @@ func TestUpkeepChargesMarginalFleetAndHalfOceanicTons(t *testing.T) {
 	}
 }
 
+func TestDailyUpkeepFactorExponent(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		factors int
+		want    int64
+	}{
+		{0, 0},
+		{1, 12_000},
+		{2, 28_541},
+		{4, 67_883},
+		{8, 161_453},
+	} {
+		if got := engine.DailyUpkeep(nil, engine.Catalog{}, tc.factors); got != tc.want {
+			t.Errorf("DailyUpkeep with %d factors = %dp, want %dp", tc.factors, got, tc.want)
+		}
+	}
+}
+
 func TestGrowthRequiresActualSettlementsSpareDepthAndFundedPayback(t *testing.T) {
 	t.Parallel()
 	price := int64(100_000)
@@ -745,5 +800,163 @@ func TestGrowthRequiresActualSettlementsSpareDepthAndFundedPayback(t *testing.T)
 	})
 	if engine.EvaluateGrowth(unknownLoss).Accepted {
 		t.Fatal("growth treated an unresolved capital loss as zero cost")
+	}
+}
+
+func minimumMarginInput(t *testing.T, kind string, net int64) engine.PlanningInput {
+	t.Helper()
+	in := inputFixture(t)
+	in.Catalog.ShipClasses[0].CrewRequired = 0
+	in.Ship.EffectiveHoldCapacityTons = 2
+	book := in.Markets["le_havre"]
+	book.CustomsBPS = 0
+	book.Books[0].Depth.Asks[0].PricePence = 99_999
+	in.Markets["le_havre"] = book
+	for id, detail := range in.Ports {
+		detail.BerthDuesPerDayPence = 0
+		in.Ports[id] = detail
+	}
+	revenue := int64(100_000) + net
+	if strings.Contains(kind, "+freight") {
+		revenue -= 1_000
+	}
+	in.Contracts[0].RewardPerTonPence = &revenue
+	in.Contracts[0].RemainingQuantity = 1
+	if strings.HasPrefix(kind, "spot") {
+		in.Contracts = nil
+		destination := fixture[engine.Market](t, `{"port_id":"portsmouth","visibility":"quay","books":[{"commodity_id":"provisions","depth":{"bids":[{"price_pence":1,"remaining_quantity":1}]}}]}`)
+		destination.Books[0].Depth.Bids[0].PricePence = revenue
+		in.Markets["portsmouth"] = destination
+		in.Metadata["books/portsmouth"] = in.Metadata["books/le_havre"]
+	}
+	if strings.Contains(kind, "freight") {
+		freight := engine.Contract{
+			ID: "margin-freight", ContractType: "freight", OriginPortID: "le_havre", DestPortID: "portsmouth",
+			CommodityID: "grain", QuantityRequired: 1, RewardPence: 1_000, Status: "open", IssuerCompanyID: "other",
+		}
+		if kind == "freight" {
+			freight.RewardPence = net
+			in.Contracts = nil
+		}
+		in.Contracts = append(in.Contracts, freight)
+	}
+	return in
+}
+
+func TestMinimumMarginBoundaryTable(t *testing.T) {
+	for _, kind := range []string{"charter", "spot", "charter+freight", "spot+freight", "freight"} {
+		for _, net := range []int64{1_999, 2_000} {
+			in := minimumMarginInput(t, kind, net)
+			var found bool
+			for _, plan := range engine.PlanVoyages(in) {
+				if plan.Kind != kind {
+					continue
+				}
+				found = true
+				accepted := net >= 2_000 || kind == "freight"
+				if plan.Accepted != accepted || plan.Economics.ExpectedNetPence != net {
+					t.Fatalf("%s net %dp: %+v", kind, net, plan)
+				}
+				if kind != "freight" && plan.Economics.PurchasePence+plan.Economics.CustomsPence != 100_000 {
+					t.Fatalf("%s did not use the purchase-plus-customs denominator: %+v", kind, plan)
+				}
+				if !accepted && plan.Reason != "below 2% minimum margin on purchase plus customs" {
+					t.Fatalf("%s rejection = %q", kind, plan.Reason)
+				}
+			}
+			if !found {
+				t.Fatalf("missing %s margin candidate", kind)
+			}
+		}
+	}
+	in := minimumMarginInput(t, "freight", 1)
+	if plan := engine.PlanVoyages(in)[0]; !plan.Accepted || plan.Economics.ExpectedNetPence != 1 {
+		t.Fatalf("freight-only one-penny contribution rejected: %+v", plan)
+	}
+}
+
+func TestMinimumMarginAppliesToGrowthAndOneTonProbes(t *testing.T) {
+	for _, kind := range []string{"growth", "probe"} {
+		for _, net := range []int64{1_999, 2_000} {
+			in := minimumMarginInput(t, "spot", net)
+			if kind == "growth" {
+				in.Fleet = []engine.ShipState{in.Ship}
+				in.Ship.Ship.ID = "growth-candidate"
+			} else {
+				delete(in.Markets, "portsmouth")
+				delete(in.Metadata, "books/portsmouth")
+				detail := in.Ports["le_havre"]
+				bid := int64(100_000) + net
+				detail.CoffeeHouseGossip = []engine.Gossip{{
+					SubjectPortID: "portsmouth", SnapshotAt: in.Now,
+					Commodities: []engine.GossipCommodity{{CommodityID: "provisions", SnapshotAt: in.Now, BestBidPence: &bid}},
+				}}
+				in.Ports["le_havre"] = detail
+			}
+			plan := engine.PlanVoyages(in)[0]
+			if plan.Accepted != (net >= 2_000) || plan.Economics.ExpectedNetPence != net || plan.Quantity != 1 {
+				t.Fatalf("%s net %dp bypassed minimum margin: %+v", kind, net, plan)
+			}
+		}
+	}
+}
+
+func TestMinimumMarginRetainedPlansAlsoRequireStressFloor(t *testing.T) {
+	for _, net := range []int64{2_000, 4_000} {
+		in := minimumMarginInput(t, "spot", net)
+		delete(in.Markets, "portsmouth")
+		delete(in.Metadata, "books/portsmouth")
+		in.QuayBookMemory = map[string]engine.RetainedQuayBook{"portsmouth": {
+			ObservedAt: in.Now,
+			Bids:       map[string][]engine.RetainedBid{"provisions": {{PricePence: 100_000 + net, RemainingQuantity: 1}}},
+		}}
+		plan := engine.PlanVoyages(in)[0]
+		if plan.Accepted != (net == 4_000) || plan.Economics.ExpectedNetPence != net {
+			t.Fatalf("retained net %dp did not enforce both independent gates: %+v", net, plan)
+		}
+	}
+}
+
+func TestMinimumMarginUsesNetAfterFundingFees(t *testing.T) {
+	for _, net := range []int64{1_999, 2_000} {
+		in := minimumMarginInput(t, "charter", 10_000)
+		in.Balances["channel"] = 75_000
+		in.Balances["donor"] = 1_000_000
+		in.Rates = []engine.Rate{{FromRegion: "donor", ToRegion: "channel", FeeBPS: 100}}
+		in.Metadata["rates"] = in.Metadata["vaults"]
+		baseline := engine.PlanVoyages(in)[0]
+		if !baseline.Accepted || baseline.Economics.FundingFeesPence <= 0 {
+			t.Fatalf("fixture lacks a measured donor fee: %+v", baseline)
+		}
+		reward := int64(100_000) + baseline.Economics.FundingFeesPence + net
+		in.Contracts[0].RewardPerTonPence = &reward
+		plan := engine.PlanVoyages(in)[0]
+		if plan.Accepted != (net >= 2_000) || plan.Economics.ExpectedNetPence != net {
+			t.Fatalf("post-funding net %dp bypassed minimum margin: %+v", net, plan)
+		}
+	}
+}
+
+func TestMinimumMarginUsesHazardAdjustedNet(t *testing.T) {
+	for _, kind := range []string{"charter", "spot", "charter+freight", "spot+freight"} {
+		for _, net := range []int64{1_999, 2_000} {
+			in := minimumMarginInput(t, kind, net+3_510)
+			quote := in.HazardQuotes["hull|ship-a|le_havre|portsmouth"]
+			quote.ExpectedLossBPS = 351
+			in.HazardQuotes["hull|ship-a|le_havre|portsmouth"] = quote
+			found := false
+			for _, plan := range engine.PlanVoyages(in) {
+				if plan.Kind != kind {
+					continue
+				}
+				found = true
+				if plan.Accepted != (net >= 2_000) || plan.Economics.ExpectedNetPence != net || plan.Economics.HazardPence != 3_510 {
+					t.Fatalf("%s post-hazard net %dp bypassed minimum margin: %+v", kind, net, plan)
+				}
+			}
+			if !found {
+				t.Fatalf("missing %s hazard-priced margin candidate", kind)
+			}
+		}
 	}
 }

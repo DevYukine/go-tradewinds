@@ -18,7 +18,7 @@ func TestPrivateGrowthMigrationExplicitlyClosesLegacyAllocationWithoutChangingRe
 	if err != nil {
 		t.Fatal(err)
 	}
-	var currentVersion int64
+	currentVersion := int64(passengerQuarantineMigrationVersion)
 	for _, entry := range entries {
 		prefix, _, _ := strings.Cut(entry.Name(), "_")
 		version, err := strconv.ParseInt(prefix, 10, 64)

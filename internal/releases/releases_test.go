@@ -86,7 +86,7 @@ func TestWatchLogsStartupUpdateAndFailureStreakOnce(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		Watch(ctx, fetch, zap.New(core), time.Millisecond)
+		Watch(ctx, fetch, &Version{}, zap.New(core), time.Millisecond)
 	}()
 	select {
 	case <-done:
@@ -145,7 +145,7 @@ func TestWatchEmptyBaselineAndMissingCursor(t *testing.T) {
 				notes := test.feeds[index]
 				index++
 				return notes, nil
-			}, zap.New(core), time.Millisecond)
+			}, &Version{}, zap.New(core), time.Millisecond)
 			if got := logs.FilterMessage("game release notes").Len(); got != test.wantInfo {
 				t.Fatalf("startup logs = %d, want %d", got, test.wantInfo)
 			}
@@ -195,7 +195,7 @@ func TestReleaseLogBoundsAndFencedHeadings(t *testing.T) {
 			cancel()
 			return nil, ctx.Err()
 		}
-	}, zap.New(core), time.Millisecond)
+	}, &Version{}, zap.New(core), time.Millisecond)
 	updates := logs.FilterMessage("game updated while the bot is running").All()
 	if len(updates) != 5 {
 		t.Fatalf("update count = %d, want 5 bounded announcements without repeats", len(updates))
@@ -209,5 +209,46 @@ func TestReleaseLogBoundsAndFencedHeadings(t *testing.T) {
 		if got := entry.ContextMap()["headings"].([]interface{}); len(got) != 6 {
 			t.Fatalf("logged headings = %#v", got)
 		}
+	}
+}
+
+func TestWatchPublishesNewestVersionAndRetainsItDuringOutages(t *testing.T) {
+	sequence := []struct {
+		notes []gameapi.ReleaseNote
+		err   error
+		want  string
+	}{
+		{},
+		{err: errors.New("not yet available")},
+		{notes: []gameapi.ReleaseNote{{Version: "0.4.0"}}, want: "0.4.0"},
+		{notes: []gameapi.ReleaseNote{{Version: "0.5.0"}, {Version: "0.4.0"}}, want: "0.5.0"},
+		{err: errors.New("temporary outage"), want: "0.5.0"},
+		{want: "0.5.0"},
+		// Even when the announcement cursor is absent, the newest-first
+		// published feed still supplies the current route-cache version.
+		{notes: []gameapi.ReleaseNote{{Version: "0.5.1"}}, want: "0.5.1"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var version Version
+	index := 0
+	Watch(ctx, func(context.Context) ([]gameapi.ReleaseNote, error) {
+		want := ""
+		if index > 0 {
+			want = sequence[index-1].want
+		}
+		if got := version.Current(); got != want {
+			t.Fatalf("published version after poll %d = %q, want %q", index, got, want)
+		}
+		if index == len(sequence) {
+			cancel()
+			return nil, ctx.Err()
+		}
+		result := sequence[index]
+		index++
+		return result.notes, result.err
+	}, &version, zap.NewNop(), time.Millisecond)
+	if index != len(sequence) {
+		t.Fatalf("watcher stopped before publishing all version transitions: %d", index)
 	}
 }

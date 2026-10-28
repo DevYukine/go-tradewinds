@@ -39,25 +39,40 @@ func TestCapacitySavingsRateRecordedWindow(t *testing.T) {
 	}
 }
 
-// Keep the ordinary executable capacity world, adding only a larger local hull
-// and enough recent income to make a small cash shortfall worth waiting for.
+// A recent known closeout supports measured per-hull earnings without adding a
+// delivered lane cycle. Its older offset independently fixes 24-hour savings.
+func seedCapacitySavingsWindows(t *testing.T, h *recoveryHarness, savingsNet int64) {
+	t.Helper()
+	const recentNet = int64(60_000_000_000)
+	persistGrowthWindowSettlement(t, h, store.Settlement{
+		ID: "savings-measured-closeout", Kind: "aborted", CostsKnown: true,
+		ProceedsPence: recentNet, GameSeconds: 3_600,
+		CompletedAt: time.Now().UTC().Add(-time.Hour),
+	})
+	persistGrowthWindowSettlement(t, h, store.Settlement{
+		ID: "savings-prior-loss", Kind: "aborted", CostsKnown: true,
+		AcquisitionPence: recentNet - savingsNet, GameSeconds: 3_600,
+		CompletedAt: time.Now().UTC().Add(-13 * time.Hour),
+	})
+}
+
+// Keep the executable capacity world with a larger local hull. Recent known
+// income supports its measured rate; an older loss preserves the savings rate.
 func capacitySavingsRunnerFixture(t *testing.T, income bool) (*recoveryHarness, *Runner, GrowthDecision, GrowthDecision) {
 	t.Helper()
 	h := newRecoveryHarness(t)
 	row := sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)
-	row["ship"].(map[string]any)["created_at"] = time.Now().UTC().Add(-30 * time.Hour)
+	row["ship"].(map[string]any)["created_at"] = time.Now().UTC().Add(-30 * 24 * time.Hour)
 	h.api.setFleet([]map[string]any{row})
 	newExpansionFactorAPI(h)
 	runner := growthWindowRunner(t, h)
 	runner.stateCache.Clock.Calendar.TimeScale = 60
 	runner.stateCache.Contracts = nil
+	savingsNet := int64(0)
 	if income {
-		persistGrowthWindowSettlement(t, h, store.Settlement{
-			ID: "savings-recent-income", Kind: "charter", CostsKnown: true,
-			QuantityTons: 1, GameSeconds: 3_600, ProceedsPence: 60_000_000,
-			CompletedAt: time.Now().UTC().Add(-time.Hour),
-		})
+		savingsNet = 60_000_000
 	}
+	seedCapacitySavingsWindows(t, h, savingsNet)
 	small := runner.stateCache.Catalog.ShipClasses[0]
 	large := small
 	large.ID, large.HoldCapacityTons = "savings-large-hull", 240

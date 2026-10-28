@@ -6,6 +6,7 @@ import type {
   DashboardData,
   EngineHold,
   Leaderboard,
+  Settlement,
   ShipDetail,
   Vault,
 } from "./types";
@@ -218,8 +219,10 @@ export function companyMoney(account: Account, dashboard: DashboardData) {
     (item) => item.account_id === account.id,
   );
   const known = settlements.filter(
-    (item) =>
+    (item): item is Settlement & { proceeds_pence: number } =>
       item.costs_known &&
+      item.proceeds_unknown !== true &&
+      item.proceeds_pence !== null &&
       [
         item.proceeds_pence,
         item.acquisition_pence,

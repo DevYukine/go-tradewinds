@@ -4,11 +4,31 @@ import (
 	"context"
 	"math/rand/v2"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/gameapi"
 	"go.uber.org/zap"
 )
+
+// Version shares the newest observed release with concurrent account runners.
+// Its zero value is unknown; empty feeds and failed polls retain the last value.
+type Version struct {
+	mu      sync.RWMutex
+	current string
+}
+
+func (v *Version) Current() string {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.current
+}
+
+func (v *Version) publish(current string) {
+	v.mu.Lock()
+	v.current = current
+	v.mu.Unlock()
+}
 
 // Unseen returns only the prefix before a known cursor in the newest-first
 // feed. A missing cursor is not evidence that historical notes are new.
@@ -26,7 +46,7 @@ func Unseen(lastSeen string, notes []gameapi.ReleaseNote) []gameapi.ReleaseNote 
 
 // Watch polls independently of account workers. Its first successful response,
 // even an empty one, establishes the baseline without announcing old releases.
-func Watch(ctx context.Context, fetch func(context.Context) ([]gameapi.ReleaseNote, error), log *zap.Logger, interval time.Duration) {
+func Watch(ctx context.Context, fetch func(context.Context) ([]gameapi.ReleaseNote, error), version *Version, log *zap.Logger, interval time.Duration) {
 	var lastSeen string
 	baselined, failed := false, false
 	retry := min(interval, time.Minute)
@@ -48,6 +68,9 @@ func Watch(ctx context.Context, fetch func(context.Context) ([]gameapi.ReleaseNo
 		} else {
 			failed = false
 			retry = min(interval, time.Minute)
+			if len(notes) > 0 && notes[0].Version != "" {
+				version.publish(notes[0].Version)
+			}
 			if !baselined {
 				baselined = true
 				if len(notes) > 0 {

@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -387,5 +388,56 @@ func TestIncomeFundingShipOwnsDurableRemittanceAndRejectsChangedOpportunity(t *t
 		rows[0].AcquisitionPence != 0 || rows[0].ProceedsPence != 0 || actualFee <= 0 ||
 		rows[0].FeesPence != actualFee || !rows[0].CostsKnown {
 		t.Fatalf("paid pre-buy funding fee must close exactly once as an actual zero-cargo loss: %+v fee=%d", rows, actualFee)
+	}
+}
+
+func TestIncomeFundingPaidFeesAreSunkWhenRepricingPinnedVoyage(t *testing.T) {
+	t.Parallel()
+	const paidFee int64 = 1_000
+	for _, remaining := range []int64{-1, 0, 1, 20} {
+		t.Run(fmt.Sprintf("remaining=%d", remaining), func(t *testing.T) {
+			in := incomeFundingInput(t, "charter")
+			in.Balances["channel"] = 10_000_000
+			pinned := incomeFundingBest(t, in)
+			pinned.Quantity = 1
+			control := priceIncomePlan(in, pinned, 0)
+			if !control.Accepted {
+				t.Fatalf("one-ton admission control unavailable: %+v", control)
+			}
+			cost := control.Economics.RevenuePence - control.Economics.ExpectedNetPence
+			reward := cost + remaining
+			in.Contracts[0].RewardPerTonPence = &reward
+			quote := quoteIncomePlan(in, pinned, paidFee)
+			if quote.plan.Accepted != (remaining >= 0) {
+				t.Fatalf("paid fee changed the remaining-contribution decision: %+v", quote)
+			}
+			if remaining < 0 {
+				return
+			}
+			economics := quote.plan.Economics
+			if economics.FundingFeesPence != paidFee || economics.ExpectedNetPence != remaining-paidFee ||
+				economics.ExpectedNetPence+paidFee >= ceilBPS(economics.PurchasePence+economics.CustomsPence, 200) {
+				t.Fatalf("paid fee was hidden, charged twice, or fixture clears the 2%% admission gate: %+v", economics)
+			}
+			// Repeating a quote starts from observed prices, not its prior fee
+			// estimate. The receipt remains exactly one actual expense.
+			again := quoteIncomePlan(in, quote.plan, paidFee)
+			if !again.plan.Accepted || again.plan.Economics.FundingFeesPence != paidFee ||
+				again.plan.Economics.ExpectedNetPence != economics.ExpectedNetPence {
+				t.Fatalf("repeated funded repricing charged the same receipt again: %+v", again)
+			}
+			if unfunded := quoteIncomePlan(in, pinned, 0); unfunded.plan.Accepted {
+				t.Fatalf("unpaid admission bypassed the 2%% gate: %+v", unfunded)
+			}
+			// New fees are not sunk: they may spend the last remaining penny,
+			// but must never justify another loss-making transfer.
+			atZero := addFundingFees(quote.plan, remaining)
+			if !atZero.Accepted || atZero.Economics.ExpectedNetPence != -paidFee {
+				t.Fatalf("zero remaining contribution should continue after paid funding: %+v", atZero)
+			}
+			if negative := addFundingFees(quote.plan, remaining+1); negative.Accepted {
+				t.Fatalf("prospective fees made the remaining voyage negative: %+v", negative)
+			}
+		})
 	}
 }

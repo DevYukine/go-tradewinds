@@ -144,6 +144,10 @@ func migrate(ctx context.Context, db *sql.DB, log *zap.Logger, privateStore *Sto
 			RunTx: func(context.Context, *sql.Tx) error {
 				return errors.New("standings history is permanent; restore a pre-migration backup to roll back")
 			},
+		}), goose.NewGoMigration(passengerQuarantineMigrationVersion, &goose.GoFunc{RunTx: privateStore.migratePassengerQuarantineArchives}, &goose.GoFunc{
+			RunTx: func(context.Context, *sql.Tx) error {
+				return errors.New("passenger quarantine archives require restoring a pre-migration backup to roll back")
+			},
 		})),
 	)
 	if err != nil {

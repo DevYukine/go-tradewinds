@@ -14,7 +14,7 @@ import (
 )
 
 func probeHistoryFixture() sourcingProbeHistory {
-	return sourcingProbeHistory{Version: 2, Sources: make(map[string]probeSourceHistory), Ships: make(map[string]probeShipHistory)}
+	return sourcingProbeHistory{Version: sourcingProbeHistoryVersion, Sources: make(map[string]probeSourceHistory), Ships: make(map[string]probeShipHistory)}
 }
 
 func probeHistoryLiveInput(t *testing.T) PlanningInput {
@@ -25,6 +25,7 @@ func probeHistoryLiveInput(t *testing.T) PlanningInput {
 	for key := range in.Metadata {
 		in.Metadata[key] = sourcingFreshMeta(in.Now)
 	}
+	seedZeroHazardQuotes(&in)
 	return in
 }
 
@@ -316,6 +317,7 @@ func TestProbeHistoryDecodeFailureBlocksOnlyAdmissionNotRefresh(t *testing.T) {
 		t.Fatalf("new sourcing was not held after decode failure: %q", got)
 	}
 	in.Ship.Ship.CurrentPortID = "amsterdam"
+	seedZeroHazardQuotes(&in)
 	ordinary := PlanVoyages(in)
 	if len(ordinary) == 0 || !ordinary[0].Accepted {
 		t.Fatal("sourcing-history hold blocked an otherwise profitable ordinary charter")
@@ -514,21 +516,21 @@ func TestProbeHistoryRefreshLoadsBudgetOnlyForSourcingOrContinuation(t *testing.
 	}
 }
 
-func TestProbeHistoryZeroAllowanceSkipsLanesButOtherIdleHullLoadsThem(t *testing.T) {
+func TestProbeHistoryZeroSourcingAllowanceLoadsLanesForScoutsAndOtherIdleHulls(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
 	idleFallbackExhaustSeed(t, h)
-	in := sourcingInputFixture(t)
+	in := probeHistoryLiveInput(t)
 	row := probeHistoryRow(in, "amsterdam", in.Now.Add(-time.Hour))
-	row.ID, row.Lane = "already-probed", sourcingEvidenceKey("amsterdam", in.Contracts[0], 900)
+	row.ID, row.Lane = "already-probed", sourcingEvidenceKey("amsterdam", in.Contracts[0], 0)
 	putProbeHistorySettlement(t, h, row)
 	runner := h.runner(primaryTestKey)
 	probeHistoryRunner(runner, in)
 	if err := runner.loadSourcingHistory(h.ctx, &in); err != nil {
 		t.Fatal(err)
 	}
-	if sourcingAllowance(in) != 0 || len(in.SourcingProbeCompletions) != 0 {
-		t.Fatal("zero allowance still loaded matching encrypted probe lanes")
+	if sourcingAllowance(in) != 0 || scoutAllowance(in) == 0 || in.SourcingProbeCompletions[row.Lane].IsZero() {
+		t.Fatal("positive scout allowance did not load matching encrypted probe lanes after sourcing was exhausted")
 	}
 	idleShip := in.Ship
 	idleShip.Ship.ID = "idle-ship"
@@ -545,7 +547,53 @@ func TestProbeHistoryZeroAllowanceSkipsLanesButOtherIdleHullLoadsThem(t *testing
 	}
 	in.Ship = idleShip
 	runner.applySourcingHistory(&in)
-	if !in.SourcingIdleEligible || sourcingAllowance(in) == 0 {
-		t.Fatal("the idle hull lost its distinct bounded reinspection allowance")
+	if !in.SourcingIdleEligible || sourcingAllowance(in) != 0 {
+		t.Fatal("idle hours replenished an exhausted rolling budget")
+	}
+}
+
+func TestProbeHistoryVersionRebuildsRollingBudgetFromAccounting(t *testing.T) {
+	t.Parallel()
+	h := newRecoveryHarness(t)
+	in := probeHistoryLiveInput(t)
+	expense := int64(30_000)
+	probe := probeHistoryRow(in, "amsterdam", in.Now.Add(-8*24*time.Hour))
+	probe.ID, probe.ExplorationExpensePence = "rolling-version-probe", &expense
+	putProbeHistorySettlement(t, h, probe)
+	delivery := store.Settlement{ID: "rolling-version-delivery", Kind: "charter", Origin: "amsterdam", Commodity: "sawn_planks",
+		ShipID: in.Ship.Ship.ID, QuantityTons: 10, ProceedsPence: 120_000, AcquisitionPence: 20_000,
+		StartedAt: in.Now.Add(-24 * time.Hour), CompletedAt: in.Now.Add(-time.Hour)}
+	putProbeHistorySettlement(t, h, delivery)
+	// A version-2 cursor that already consumed the probe must be ignored.
+	runner := h.runner(primaryTestKey)
+	probeHistoryRunner(runner, in)
+	runner.snapshot["_sourcing_probe_history"] = encode(sourcingProbeHistory{Version: 2,
+		Cursor: store.ProbeHistoryCursor{SettlementAt: time.Now().Add(time.Hour)}, ProbeExpensePence: 999_999})
+	for range 2 {
+		if err := runner.loadSourcingHistory(h.ctx, &in); err != nil {
+			t.Fatal(err)
+		}
+		history := decode[sourcingProbeHistory](runner.snapshot, "_sourcing_probe_history")
+		if history.Version != sourcingProbeHistoryVersion || history.ProbeExpensePence != 0 ||
+			history.ConversionNetPence != 100_000 || len(history.Conversions) != 1 || *in.SourcingAllowancePence != 70_000 ||
+			history.Cursor.SettlementID == "" {
+			t.Fatalf("old cursor or allowance survived the version rebuild: %+v", history)
+		}
+		if err := h.db.SaveSnapshot(h.ctx, h.account.ID, runner.snapshot); err != nil {
+			t.Fatal(err)
+		}
+		runner = h.runner(primaryTestKey)
+		probeHistoryRunner(runner, in)
+	}
+	// Accounting recorded later still credits a delivery whose probe predates
+	// its start. A cached budget and capped ledger are never the authority.
+	delivery.ID = "rolling-version-late-delivery"
+	delivery.ProceedsPence = 30_000
+	putProbeHistorySettlement(t, h, delivery)
+	if err := runner.loadSourcingHistory(h.ctx, &in); err != nil {
+		t.Fatal(err)
+	}
+	if *in.SourcingAllowancePence != 75_000 {
+		t.Fatalf("late converted net was lost after restart: %dp", *in.SourcingAllowancePence)
 	}
 }

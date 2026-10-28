@@ -124,13 +124,16 @@ export function moneyAxisTicks(values: readonly number[]): number[] {
 }
 
 export function settlementTotals(periods: MoneyPeriod[]) {
-  let gross = 0;
+  let gross: number | undefined = 0;
   let costs = 0;
   let net = 0;
   let known = 0;
   let count = 0;
   for (const period of periods) {
-    gross += period.gross_pence;
+    gross =
+      gross === undefined || period.gross_pence === null
+        ? undefined
+        : gross + period.gross_pence;
     costs += period.costs_pence ?? 0;
     net += period.net_pence ?? 0;
     known += period.known_count;

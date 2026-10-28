@@ -19,19 +19,27 @@ import (
 // action cash movements and settlement net can describe overlapping money.
 // Events retain seven days; actions and settlements are durable.
 type JournalRow struct {
-	ID           string    `json:"id"`
-	AccountID    string    `json:"account_id"`
-	At           time.Time `json:"at"`
-	Kind         string    `json:"kind"`
-	ShipID       string    `json:"ship_id,omitempty"`
-	Summary      string    `json:"summary"`
-	AmountPence  *int64    `json:"amount_pence,omitempty"`
-	AmountKind   string    `json:"amount_kind,omitempty"`
-	CostsKnown   *bool     `json:"costs_known,omitempty"`
-	Origin       string    `json:"origin,omitempty"`
-	Destination  string    `json:"destination,omitempty"`
-	Commodity    string    `json:"commodity,omitempty"`
-	QuantityTons *int64    `json:"quantity_tons,omitempty"`
+	ID               string    `json:"id"`
+	AccountID        string    `json:"account_id"`
+	At               time.Time `json:"at"`
+	Kind             string    `json:"kind"`
+	ShipID           string    `json:"ship_id,omitempty"`
+	Summary          string    `json:"summary"`
+	AmountPence      *int64    `json:"amount_pence,omitempty"`
+	AmountKind       string    `json:"amount_kind,omitempty"`
+	CostsKnown       *bool     `json:"costs_known,omitempty"`
+	Origin           string    `json:"origin,omitempty"`
+	Destination      string    `json:"destination,omitempty"`
+	Commodity        string    `json:"commodity,omitempty"`
+	QuantityTons     *int64    `json:"quantity_tons,omitempty"`
+	Heads            *int64    `json:"heads,omitempty"`
+	FarePerHeadPence *int64    `json:"fare_per_head_pence,omitempty"`
+	FullFarePence    *int64    `json:"full_fare_pence,omitempty"`
+	FarePaidPence    *int64    `json:"fare_paid_pence,omitempty"`
+	GameDaysLate     *float64  `json:"game_days_late,omitempty"`
+	Cause            string    `json:"cause,omitempty"`
+	CargoLossPct     *float64  `json:"cargo_loss_pct,omitempty"`
+	StoresLossPct    *float64  `json:"stores_loss_pct,omitempty"`
 }
 
 // journalOutcomeCiphertextLimit bounds how much ciphertext one journal outcome
@@ -85,6 +93,8 @@ func (s *Store) journalHistory(ctx context.Context, accountID string, limit int)
 				"/v1/shipyard/build-ship",
 				"/v1/shipyard/modify-ship",
 				"/v1/treasury/remit",
+				"/v1/passengers/offer",
+				"/v1/passengers/cancel-offer",
 			}, "PATCH", "/v1/company/settings").
 			Order("updated_at DESC, id DESC").Limit(limit).Find(&actions).Error; err != nil {
 			return err
@@ -193,6 +203,10 @@ func journalSettlementRow(settlement Settlement) (JournalRow, error) {
 	if settlement.Kind != "" {
 		row.Summary = journalLabel(strings.ReplaceAll(settlement.Kind, "+", " and ")) + " voyage settled"
 	}
+	if settlement.ProceedsUnknown {
+		row.Summary += "; proceeds unknown"
+		return row, nil
+	}
 	if !settlement.CostsKnown {
 		row.Summary += "; costs unknown"
 		return row, nil
@@ -218,16 +232,24 @@ func journalEventRow(event Event) JournalRow {
 		Summary:   journalLabel(event.EventType),
 	}
 	var payload struct {
-		ShipID           string `json:"ship_id"`
-		OriginPortID     string `json:"origin_port_id"`
-		DestPortID       string `json:"dest_port_id"`
-		PortID           string `json:"port_id"`
-		AtNode           string `json:"at_node"`
-		CompletedLeg     *int64 `json:"completed_leg_idx"`
-		Status           string `json:"status"`
-		Reason           string `json:"reason"`
-		AmountPence      *int64 `json:"amount_pence"`
-		TotalBilledPence *int64 `json:"total_billed_pence"`
+		ShipID           string   `json:"ship_id"`
+		OriginPortID     string   `json:"origin_port_id"`
+		DestPortID       string   `json:"dest_port_id"`
+		PortID           string   `json:"port_id"`
+		AtNode           string   `json:"at_node"`
+		CompletedLeg     *int64   `json:"completed_leg_idx"`
+		Status           string   `json:"status"`
+		Reason           string   `json:"reason"`
+		AmountPence      *int64   `json:"amount_pence"`
+		TotalBilledPence *int64   `json:"total_billed_pence"`
+		Heads            *int64   `json:"heads"`
+		FarePerHeadPence *int64   `json:"fare_per_head_pence"`
+		FullFarePence    *int64   `json:"full_fare_pence"`
+		FarePaidPence    *int64   `json:"fare_paid_pence"`
+		GameDaysLate     *float64 `json:"game_days_late"`
+		Cause            string   `json:"cause"`
+		CargoLossPct     *float64 `json:"cargo_loss_pct"`
+		StoresLossPct    *float64 `json:"stores_loss_pct"`
 		Metadata         struct {
 			ShipID string `json:"ship_id"`
 			PortID string `json:"port_id"`
@@ -268,7 +290,47 @@ func journalEventRow(event Event) JournalRow {
 		if payload.AtNode != "" {
 			row.Summary += " at " + journalLabel(payload.AtNode)
 		}
-	case "ship_provisions_exhausted", "ship_evicted", "ship_mutinied", "voyage_hazard":
+	case "passengers_boarded", "passengers_paid", "passengers_lost":
+		row.ShipID = payload.ShipID
+		row.Origin, row.Destination = payload.OriginPortID, payload.DestPortID
+		row.Heads = payload.Heads
+		row.FarePerHeadPence, row.FullFarePence = payload.FarePerHeadPence, payload.FullFarePence
+		if event.EventType == "passengers_boarded" {
+			row.Summary = "Passengers boarded"
+			if payload.Heads != nil {
+				row.Summary += fmt.Sprintf(": %d heads", *payload.Heads)
+			}
+			if payload.FarePerHeadPence != nil {
+				row.Summary += fmt.Sprintf("; fare %d pence per head", *payload.FarePerHeadPence)
+			}
+			if payload.DestPortID != "" {
+				row.Summary += " for " + journalLabel(payload.DestPortID)
+			}
+		} else if event.EventType == "passengers_paid" {
+			row.Summary = "Passenger fares paid"
+			row.AmountPence, row.AmountKind = payload.FarePaidPence, "cash_in"
+			row.FarePaidPence = payload.FarePaidPence
+			row.GameDaysLate = payload.GameDaysLate
+			if payload.GameDaysLate != nil {
+				row.Summary += fmt.Sprintf("; %g game days late", *payload.GameDaysLate)
+			}
+		} else {
+			row.Summary = "Passengers lost"
+			if payload.Cause != "" {
+				row.Cause = boundedText(payload.Cause, 160)
+				row.Summary += ": " + journalLabel(row.Cause)
+			}
+		}
+	case "voyage_hazard":
+		row.ShipID = payload.ShipID
+		row.CargoLossPct, row.StoresLossPct = payload.CargoLossPct, payload.StoresLossPct
+		if payload.CargoLossPct != nil {
+			row.Summary += fmt.Sprintf("; cargo loss %g%%", *payload.CargoLossPct)
+		}
+		if payload.StoresLossPct != nil {
+			row.Summary += fmt.Sprintf("; stores loss %g%%", *payload.StoresLossPct)
+		}
+	case "ship_provisions_exhausted", "ship_evicted", "ship_mutinied":
 		row.ShipID = payload.ShipID
 	case "company_upkeep_billed":
 		row.Summary = "Company upkeep billed"
@@ -288,7 +350,7 @@ func journalEventRow(event Event) JournalRow {
 			row.AmountPence = payload.AmountPence
 		}
 	}
-	if row.AmountPence != nil {
+	if row.AmountPence != nil && row.AmountKind == "" {
 		row.AmountKind = "charge"
 	}
 	row.Summary = boundedText(row.Summary, 512)
@@ -324,6 +386,10 @@ func journalActionRow(action *Action, secrets []string) JournalRow {
 		GrossPence     *int64 `json:"gross_amount_pence"`
 		AutoRemit      *bool  `json:"auto_remit_for_bills"`
 		AutoRemitFloor *int64 `json:"auto_remit_min_reserve_pence"`
+		Destination    string `json:"dest_port_id"`
+		OfferID        string `json:"offer_id"`
+		FarePerHead    *int64 `json:"fare_per_head_pence"`
+		MaxBerths      *int64 `json:"max_berths"`
 	}
 	var result struct {
 		Uninterpreted  bool   `json:"committed_uninterpreted"`
@@ -352,6 +418,9 @@ func journalActionRow(action *Action, secrets []string) JournalRow {
 		RemitNet       *int64 `json:"net_credited_pence"`
 		AutoRemit      *bool  `json:"auto_remit_for_bills"`
 		AutoRemitFloor *int64 `json:"auto_remit_min_reserve_pence"`
+		ID             string `json:"id"`
+		FarePerHead    *int64 `json:"fare_per_head_pence"`
+		MaxBerths      *int64 `json:"max_berths"`
 		Ship           struct {
 			ID            string `json:"id"`
 			CurrentPortID string `json:"current_port_id"`
@@ -368,6 +437,21 @@ func journalActionRow(action *Action, secrets []string) JournalRow {
 		return row
 	}
 	switch action.Path {
+	case "/v1/passengers/offer":
+		if request.ShipID == "" || result.ShipID != request.ShipID || result.DestPortID != request.Destination ||
+			request.FarePerHead == nil || result.FarePerHead == nil || *request.FarePerHead <= 0 || *request.FarePerHead != *result.FarePerHead ||
+			request.MaxBerths == nil || result.MaxBerths == nil || *request.MaxBerths <= 0 || *request.MaxBerths != *result.MaxBerths {
+			return row
+		}
+		row.ShipID, row.Origin, row.Destination = result.ShipID, result.PortID, result.DestPortID
+		row.FarePerHeadPence, row.Heads = result.FarePerHead, result.MaxBerths
+		row.Summary = fmt.Sprintf("Passenger offer: up to %d heads for %s at %d pence per head", *result.MaxBerths, label(result.DestPortID), *result.FarePerHead)
+	case "/v1/passengers/cancel-offer":
+		if request.OfferID == "" || result.ID != request.OfferID || result.ShipID == "" || result.Status == "open" {
+			return row
+		}
+		row.ShipID, row.Origin, row.Destination = result.ShipID, result.PortID, result.DestPortID
+		row.Summary = "Passenger offer cancelled"
 	case "/v1/market/place-order":
 		if request.Quantity == nil || *request.Quantity <= 0 || request.CommodityID == "" ||
 			result.CommodityID != request.CommodityID || result.Filled == nil || *result.Filled < 0 || *result.Filled > *request.Quantity ||

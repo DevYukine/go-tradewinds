@@ -114,6 +114,7 @@ func sourcingInputFixture(t *testing.T) PlanningInput {
 			in.Metadata["routes/"+key] = sourcingFreshMeta(now)
 		}
 	}
+	seedZeroHazardQuotes(&in)
 	return in
 }
 
@@ -440,11 +441,16 @@ func TestSourcingProbeAllowanceIsTwoPercentOfFreeCash(t *testing.T) {
 	starved := sourcingInputFixture(t)
 	starved.Balances["channel"] = 200_000
 	starved.ReserveByRegion["channel"] = 150_000
+	harbour := starved.Ports["le_havre"]
+	harbour.BerthDuesPerDayPence = 4_000
+	starved.Ports["le_havre"] = harbour
 	if accepted := acceptedRelocations(planSourcingRelocation(starved)); len(accepted) != 0 {
 		t.Fatalf("probe accepted beyond floor(uncommitted cash/50) = 1000p: %+v", accepted)
 	}
 	expensive := sourcingInputFixture(t)
-	expensive.FleetDailyUpkeepPence = 500_000
+	harbour = expensive.Ports["le_havre"]
+	harbour.BerthDuesPerDayPence = 100_000
+	expensive.Ports["le_havre"] = harbour
 	if accepted := acceptedRelocations(planSourcingRelocation(expensive)); len(accepted) != 0 {
 		t.Fatalf("probe accepted beyond floor(uncommitted cash/50) = 18500p: %+v", accepted)
 	}
@@ -465,6 +471,7 @@ func sourcingArrivalFixture(t *testing.T, asks []Level, rewardPerTon, spentPence
 	reward := rewardPerTon
 	charter.RewardPerTonPence = &reward
 	probe := Plan{Kind: "relocation", ShipID: "ship-a", Origin: "amsterdam", Destination: "portsmouth", Commodity: "sawn_planks"}
+	seedZeroHazardQuotes(&in)
 	return in, probe, charter
 }
 

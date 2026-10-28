@@ -101,7 +101,7 @@ func TestLoanAnnualAndLegacyDailyDecoding(t *testing.T) {
 		"term_game_days":360, "repayment":"amortised", "total_repayable_pence":975000,
 		"installment_pence":24200, "next_payment_due_at":"2026-10-26T22:00:00Z",
 		"next_payment_pence":24201, "arrears_pence":100, "arrears_due_by":"2026-10-26T18:24:00Z",
-		"recourse":true, "collateral_kind":"ship_lien", "collateral_ship_id":"ship-1",
+		"is_mortgage":false, "recourse":true, "collateral_kind":"ship_lien", "collateral_ship_id":"ship-1",
 		"collateral_port_id":"amsterdam", "collateral_commodity_id":"grain", "collateral_tons":25,
 		"collateral_contract_id":"contract-1", "collateral_value_pence":2500000,
 		"collateral_status":"pledged", "status":"active", "outstanding_principal_pence":700000,
@@ -120,7 +120,7 @@ func TestLoanAnnualAndLegacyDailyDecoding(t *testing.T) {
 		"rate_basis":"daily", "daily_rate_bps":45, "annual_rate_bps":null,
 		"term_game_days":20, "repayment":"balloon", "total_repayable_pence":null,
 		"installment_pence":null, "next_payment_due_at":null, "next_payment_pence":null,
-		"arrears_pence":0, "arrears_due_by":null, "recourse":false, "collateral_kind":"unsecured",
+		"arrears_pence":0, "arrears_due_by":null, "is_mortgage":false, "recourse":false, "collateral_kind":"unsecured",
 		"collateral_ship_id":null, "collateral_port_id":null, "collateral_commodity_id":null,
 		"collateral_tons":null, "collateral_contract_id":null, "collateral_value_pence":0,
 		"collateral_status":"none", "status":"repaid", "outstanding_principal_pence":0,
@@ -150,6 +150,49 @@ func TestLoanAnnualAndLegacyDailyDecoding(t *testing.T) {
 				t.Fatalf("legacy nullable fields or daily rate changed: %+v", loan)
 			}
 			assertLoanJSON(t, fixture, loan)
+		})
+	}
+}
+
+func TestLoanMortgageClassificationDecoding(t *testing.T) {
+	const legacy = `{
+		"id":"loan-old", "lender_company_id":"lender-1", "borrower_company_id":"borrower-1",
+		"banking_region":"north_sea", "principal_pence":750000,
+		"rate_basis":"annual", "daily_rate_bps":0, "annual_rate_bps":3000,
+		"term_game_days":360, "repayment":"amortised", "status":"active",
+		"recourse":true, "collateral_kind":"ship_lien", "collateral_status":"pledged",
+		"owed_pence":700000, "offer_expires_at":"2026-10-26T18:06:00Z",
+		"created_at":"2026-10-26T18:00:00Z", "updated_at":"2026-10-26T18:02:00Z"
+	}`
+	var loan gameapi.Loan
+	if err := json.Unmarshal([]byte(legacy), &loan); err != nil {
+		t.Fatalf("durable loan written before is_mortgage must decode: %v", err)
+	}
+	if loan.IsMortgage || loan.ID != "loan-old" || loan.PrincipalPence != 750000 || !loan.Recourse {
+		t.Fatalf("absent is_mortgage misdecoded: %+v", loan)
+	}
+	for _, test := range []struct {
+		name    string
+		value   string
+		want    bool
+		wantErr bool
+	}{
+		{"explicit false", `"is_mortgage":false`, false, false},
+		{"explicit true", `"is_mortgage":true`, true, false},
+		{"explicit null", `"is_mortgage":null`, false, true},
+		{"string value", `"is_mortgage":"yes"`, false, true},
+		{"number value", `"is_mortgage":1`, false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var classified gameapi.Loan
+			err := json.Unmarshal([]byte(strings.Replace(legacy, `"recourse":true`,
+				`"recourse":true, `+test.value, 1)), &classified)
+			if test.wantErr != (err != nil) {
+				t.Fatalf("is_mortgage %s error = %v, wantErr %t", test.value, err, test.wantErr)
+			}
+			if err == nil && classified.IsMortgage != test.want {
+				t.Fatalf("is_mortgage %s decoded %t, want %t", test.value, classified.IsMortgage, test.want)
+			}
 		})
 	}
 }

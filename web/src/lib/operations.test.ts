@@ -240,6 +240,13 @@ describe("operational evidence boundaries", () => {
         settlement("profit", {}),
         settlement("loss", { proceeds_pence: 100 }),
         settlement("unknown", { costs_known: false, proceeds_pence: 80_000 }),
+        settlement("passage", {
+          kind: "passage",
+          event_id: "fare-event",
+          proceeds_pence: null,
+          proceeds_unknown: true,
+          costs_known: false,
+        }),
         settlement("other", {
           account_id: "account-b",
           proceeds_pence: 900_000,
@@ -250,7 +257,7 @@ describe("operational evidence boundaries", () => {
     expect(result.cashPence).toBe(14_500);
     expect(result.settledNetPence).toBe(-300);
     expect(result.knownSettlements).toBe(2);
-    expect(result.unknownSettlements).toBe(1);
+    expect(result.unknownSettlements).toBe(2);
     expect(result.netWorthPence).toBeUndefined();
   });
 });

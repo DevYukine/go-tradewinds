@@ -12,7 +12,7 @@ func TestCapacitySavingsRetainsAgedAgentOnlyPresence(t *testing.T) {
 	for _, scenario := range []string{"without marker", "live marker", "expired marker"} {
 		t.Run(scenario, func(t *testing.T) {
 			h := newRecoveryHarness(t)
-			newExpansionFactorAPI(h)
+			newMeasuredExpansionFactorAPI(h)
 			runner := h.runner(primaryTestKey)
 			refreshExpansionFactor(t, h, runner)
 			if changed, err := runner.considerExpansionAgent(h.ctx); err != nil || !changed {

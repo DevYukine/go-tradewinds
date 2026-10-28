@@ -325,6 +325,11 @@ func (f *fakeGameAPI) handleGet(writer http.ResponseWriter, request *http.Reques
 		"/v1/market/orders", "/v1/market/fills", "/v1/insurance/list",
 		"/v1/future/list", "/v1/contract/list", "/v1/loan/list":
 		f.writeJSON(writer, http.StatusOK, []any{})
+	case "/v1/insurance/quote":
+		f.writeJSON(writer, http.StatusOK, map[string]any{
+			"lloyds_expected_loss_bps": 0, "max_insurable_pence": 2_000_000,
+			"priced_consort_ship_ids": []any{},
+		})
 	case "/v1/company/factors":
 		f.writeJSON(writer, http.StatusOK, f.factorPorts)
 	case "/v1/treasury/vaults":
@@ -839,6 +844,12 @@ func (h *recoveryHarness) runner(apiKey string) *Runner {
 			instance.meta = make(map[string]DatasetMeta)
 		}
 	}
+	if _, exists := instance.snapshot[hazardQuoteSnapshotKey]; !exists {
+		h.seedDefaultHazardQuotes(instance)
+		if err := h.db.SaveSnapshot(h.ctx, h.account.ID, instance.snapshot); err != nil {
+			h.t.Fatalf("persist pre-sailing hazard observations: %v", err)
+		}
+	}
 	instance.expenseOwners = decode[map[string]string](instance.snapshot, "_expense_allocations")
 	if instance.expenseOwners == nil {
 		instance.expenseOwners = make(map[string]string)
@@ -852,6 +863,49 @@ func (h *recoveryHarness) runner(apiKey string) *Runner {
 		}
 	})
 	return instance
+}
+
+// The baseline fleet is already sailing when recovery fixtures begin. Its
+// default zero-bps quote evidence represents observations before those sails;
+// quote-specific tests use their own explicit runner and HTTP responses.
+func (h *recoveryHarness) seedDefaultHazardQuotes(runner *Runner) {
+	h.api.mu.Lock()
+	documents := map[string]json.RawMessage{
+		"catalog": encode(h.api.catalogDocument()), "clock": encode(h.api.clockDocument()), "ships": encode(h.api.fleet),
+	}
+	h.api.mu.Unlock()
+	in := PlanningInput{
+		Now: time.Now(), Catalog: decode[Catalog](documents, "catalog"), Clock: decode[Clock](documents, "clock"),
+		Fleet: decode[[]ShipState](documents, "ships"), Routes: make(map[string]Route),
+	}
+	for _, ship := range in.Fleet {
+		for _, origin := range in.Catalog.Ports {
+			for _, destination := range in.Catalog.Ports {
+				if origin.ID == destination.ID {
+					continue
+				}
+				raw := encode(h.api.routeDocument(origin.ID, destination.ID))
+				var route Route
+				if err := json.Unmarshal(raw, &route); err != nil {
+					h.t.Fatal(err)
+				}
+				route.ShipClass = ship.Ship.ShipClass
+				in.Routes[routeKey(origin.ID, destination.ID, ship.Ship.ShipClass)] = route
+			}
+		}
+	}
+	// Before sailing, each fixture ship could have observed either quay.
+	for _, ship := range in.Fleet {
+		if ship.Ship.Status == "sunk" {
+			continue
+		}
+		for _, port := range in.Catalog.Ports {
+			in.Ship = ship
+			in.Ship.Ship.CurrentPortID = port.ID
+			seedZeroHazardQuotes(&in)
+		}
+	}
+	runner.snapshot[hazardQuoteSnapshotKey] = encode(in.HazardQuotes)
 }
 
 func (h *recoveryHarness) tick(instance *Runner) (bool, error) {

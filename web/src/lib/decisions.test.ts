@@ -188,6 +188,79 @@ describe("recorded decision cash", () => {
 });
 
 describe("destination delivery economics", () => {
+  it.each(["stale published quote", "lane proxy"])(
+    "reconciles the delivery contribution including a Lloyd's bound from %s",
+    (source) => {
+      const view = buildDecisionView({
+        economics: {
+          basis: "destination",
+          revenue_pence: 12000,
+          purchase_pence: 2000,
+          customs_pence: 300,
+          provisions_pence: 400,
+          berth_dues_pence: 500,
+          upkeep_pence: 600,
+          toll_pence: 700,
+          funding_fees_pence: 200,
+          hazard_bps: 500,
+          hazard_pence: 150,
+          hazard_source: source,
+          expected_net_pence: 7150,
+          collateral_pence: 800,
+          store_cash_pence: 82000,
+        },
+      });
+      const operating = view.cashRows.filter(
+        (row) =>
+          row.key !== "collateral_pence" && row.key !== "store_cash_pence",
+      );
+      expect(operating.at(-2)).toEqual({
+        key: "hazard_pence",
+        label: `Lloyd's hazard bound (${source})`,
+        pence: 150,
+      });
+      const [revenue, ...costs] = operating.slice(0, -1);
+      expect(
+        revenue.pence - costs.reduce((sum, row) => sum + row.pence, 0),
+      ).toBe(view.expectedNetPence);
+      expect(operating.at(-1)?.pence).toBe(7150);
+      const legacy = buildDecisionView(plan);
+      expect(legacy.cashRows.some((row) => row.key === "hazard_pence")).toBe(
+        false,
+      );
+      expect(legacy.expectedNetPence).toBe(7456);
+    },
+  );
+
+  it.each([
+    {
+      kind: "rejected",
+      reason: "Lloyd's hazard quote unavailable; hazard is not assumed zero",
+      economics: {
+        revenue_pence: 0,
+        provisions_pence: 0,
+        hazard_bps: 0,
+        hazard_pence: 0,
+        expected_net_pence: 0,
+      },
+    },
+    {
+      kind: "relocation",
+      economics: {
+        basis: "destination",
+        revenue_pence: 0,
+        provisions_pence: 400,
+        hazard_bps: 0,
+        hazard_pence: 0,
+        expected_net_pence: -400,
+      },
+    },
+  ])("does not present an unpriced $kind hazard as a zero bound", (details) => {
+    const view = buildDecisionView(details);
+    expect(view.cashRows.some((row) => row.key === "hazard_pence")).toBe(false);
+    expect(view.expectedNetPence).toBe(details.economics.expected_net_pence);
+  });
+
   it("keeps consumed stores and the full cash purchase distinct", () => {
     const view = buildDecisionView({
       ...plan,

@@ -113,7 +113,14 @@ func seedPrivateLegacyEvidence(t *testing.T, database *Store) privateLegacyEvide
 		StartedAt: value.position.AcceptedAt, CompletedAt: value.position.AcceptedAt.Add(time.Hour),
 		CreatedAt: value.position.AcceptedAt.Add(time.Hour),
 	}
-	if err := database.db.Create(&value.settlement).Error; err != nil {
+	// This fixture is deliberately schema v4. Do not let fields added to the
+	// current runtime model become INSERT columns before their migrations run.
+	if err := database.db.Select(
+		"id", "account_id", "ship_id", "mission_id", "action_id", "lane", "kind",
+		"origin", "destination", "commodity", "quantity_tons", "game_seconds", "costs_known",
+		"acquisition_pence", "proceeds_pence", "fees_pence", "provisions_pence", "expenses_pence",
+		"exploration_expense_pence", "started_at", "completed_at", "created_at",
+	).Create(&value.settlement).Error; err != nil {
 		t.Fatal(err)
 	}
 	secrets := credentialSecrets(value.credentials)

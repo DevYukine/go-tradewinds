@@ -749,13 +749,22 @@ func TestGrowthReturnRepricesNeverSentItineraryButKeepsPaidReturnSunk(t *testing
 		w.until(runner, func(mission *store.Mission, data missionData) bool {
 			return mission != nil && mission.Phase == "return_sailing" && data.Action == nil
 		})
+		// Keep the next lot above MM while leaving less than the paid 17p
+		// return charge as headroom: charging that sunk return again would
+		// wrongly reject an otherwise admissible operating lot.
+		const nextBuyPrice = 945
 		w.h.api.mu.Lock()
-		w.source = []Level{{OrderID: "small-positive-owned-lot", PricePence: 950, RemainingQuantity: 4}}
+		w.source = []Level{{OrderID: "small-positive-owned-lot", PricePence: nextBuyPrice, RemainingQuantity: 4}}
 		firstMission := w.firstMission
 		w.h.api.mu.Unlock()
-		w.until(runner, func(mission *store.Mission, data missionData) bool {
+		_, next := w.until(runner, func(mission *store.Mission, data missionData) bool {
 			return mission != nil && mission.Generation != firstMission && data.BuyDone && data.Action == nil
 		})
+		economics := next.Plan.Economics
+		marginHeadroom := economics.ExpectedNetPence - ceilBPS(economics.PurchasePence+economics.CustomsPence, 200)
+		if marginHeadroom < 0 || marginHeadroom >= 17 {
+			t.Fatalf("fixture must clear MM but fail if the paid return is charged again: %+v", economics)
+		}
 		var purchases []growthExecutionRequest
 		for _, call := range w.h.api.mutationsFor("/v1/market/place-order") {
 			var request growthExecutionRequest
@@ -764,7 +773,7 @@ func TestGrowthReturnRepricesNeverSentItineraryButKeepsPaidReturnSunk(t *testing
 				purchases = append(purchases, request)
 			}
 		}
-		if len(purchases) != 2 || purchases[1].Quantity <= 0 || purchases[1].Quantity > 4 || purchases[1].Price != 950 {
+		if len(purchases) != 2 || purchases[1].Quantity <= 0 || purchases[1].Quantity > 4 || purchases[1].Price != nextBuyPrice {
 			t.Fatalf("sunk hull/return payback re-gated the smaller positive funded operating lot: %+v", purchases)
 		}
 		if rows := w.settlementRows(); len(rows) != 1 || rows[0].ExpensesPence != 17 {

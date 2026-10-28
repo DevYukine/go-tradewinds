@@ -15,6 +15,34 @@ import (
 const scoutHintMaxGameHours = 168
 const scoutBookRecentGameHours = 6
 const failedFleetScoutReason = "two fleet scouting relocations remain unconverted; scouting waits for a laden departure from a scouted port"
+const bookRefreshPriceSource = "book refresh; no executable profit evidence"
+const bookRefreshCooldownGameHours int64 = 24 * 24
+
+type bookRefreshState struct {
+	StartedGameHour         int64     `json:"started_game_hour"`
+	StartedAt               time.Time `json:"started_at"`
+	Generation              string    `json:"generation,omitempty"`
+	PreviousStartedAt       time.Time `json:"previous_started_at,omitempty"`
+	PreviousStartedGameHour int64     `json:"previous_started_game_hour,omitempty"`
+}
+
+func scoutAllowance(in PlanningInput) int64 {
+	if in.SourcingProbeCostsUnknown || in.SourcingProbeExpensePence < 0 {
+		return 0
+	}
+	return sourcingFreeCash(in) / 50
+}
+
+func scoutBudgetReason(in PlanningInput, exposure, allowance int64) string {
+	if in.SourcingProbeCostsUnknown || in.SourcingProbeExpensePence < 0 {
+		return "unpriced probe expense in the rolling window leaves the scout allowance at 0p"
+	}
+	return fmt.Sprintf("scouting modeled exposure %dp exceeds scout allowance %dp from current protected free cash; no measured profit is assumed", exposure, allowance)
+}
+
+func isBookRefresh(plan Plan) bool {
+	return plan.PriceSource == bookRefreshPriceSource
+}
 
 var errScoutTransient = errors.New("scouting evidence temporarily unavailable")
 
@@ -134,15 +162,7 @@ func scoutExposure(in PlanningInput, plan Plan) Plan {
 	if !exists {
 		return reject(plan, "sourcing hull or ports are missing from catalog")
 	}
-	plan = relocationCost(in, plan, origin, 0)
-	if !plan.Accepted {
-		return plan
-	}
-	target, _ := findPort(in.Catalog, plan.Destination)
-	if supplied, _, _ := publicSourceEvidence(in, target, Contract{CommodityID: "provisions"}); !supplied {
-		return reject(plan, "scouting target lacks catalog production/manufacture or fresh ask gossip for provisions")
-	}
-	return plan
+	return relocationCost(in, plan, origin, 0)
 }
 
 func scoutCandidates(in PlanningInput, blocked map[string]string) []Plan {
@@ -189,13 +209,13 @@ func scoutCandidates(in PlanningInput, blocked map[string]string) []Plan {
 			if plan.Accepted {
 				bounded := in
 				bounded.ReserveByRegion = sourcingReserves(in, target)
-				allowance := sourcingAllowance(bounded)
+				allowance := scoutAllowance(bounded)
 				if -plan.Economics.ExpectedNetPence > allowance {
-					plan = reject(plan, sourcingBudgetReason(bounded, -plan.Economics.ExpectedNetPence, allowance))
+					plan = reject(plan, scoutBudgetReason(bounded, -plan.Economics.ExpectedNetPence, allowance))
 				} else if candidate.upside <= -plan.Economics.ExpectedNetPence {
 					plan = reject(plan, "age-labelled gossip hint upside does not exceed modeled scouting exposure")
 				} else {
-					plan.Reason = fmt.Sprintf("bounded ballast scouting uses exploration risk capital; %s; hint upside %dp is not measured profit", plan.PriceSource, candidate.upside)
+					plan.Reason = fmt.Sprintf("bounded ballast scouting uses scout allowance %dp; %s; hint upside %dp is not measured profit", allowance, plan.PriceSource, candidate.upside)
 				}
 			}
 		}
@@ -228,6 +248,230 @@ func scoutCandidates(in PlanningInput, blocked map[string]string) []Plan {
 		return []Plan{reject(Plan{Kind: "relocation", ShipID: in.Ship.Ship.ID}, "no unlocked scouting destination away from this port")}
 	}
 	return plans
+}
+
+// A refresh labels a real local ask commodity for scout outcome accounting.
+// Import overlap ranks information value; it does not imply a remote bid.
+func bookRefreshCandidates(in PlanningInput, blocked map[string]string) []Plan {
+	type refreshCandidate struct {
+		plan    Plan
+		overlap int
+	}
+	origin := in.Ship.Ship.CurrentPortID
+	book := in.Markets[origin]
+	asks := make(map[string]bool)
+	fallback := ""
+	for _, entry := range book.Books {
+		if entry.Depth == nil {
+			continue
+		}
+		for _, level := range entry.Depth.Asks {
+			if level.PricePence > 0 && level.PricePence <= maximumPence && level.RemainingQuantity > 0 {
+				asks[entry.CommodityID] = true
+				if fallback == "" || entry.CommodityID < fallback {
+					fallback = entry.CommodityID
+				}
+				break
+			}
+		}
+	}
+	var ranked []refreshCandidate
+	for _, target := range in.Catalog.Ports {
+		if target.ID == origin || target.Phase > in.Clock.UnlockedPhase {
+			continue
+		}
+		commodity, overlap := "", 0
+		for _, imported := range target.Imports {
+			if asks[imported] {
+				overlap++
+				if commodity == "" || imported < commodity {
+					commodity = imported
+				}
+			}
+		}
+		if commodity == "" {
+			commodity = fallback
+		}
+		plan := Plan{Kind: "relocation", ShipID: in.Ship.Ship.ID, Origin: origin, Destination: target.ID,
+			Commodity: commodity, PriceSource: bookRefreshPriceSource}
+		if reason := blocked[target.ID]; reason != "" {
+			plan = reject(plan, reason)
+		} else if !in.fresh("books/"+origin) || book.Visibility != "quay" || book.CustomsBPS < 0 || commodity == "" {
+			plan = reject(plan, "book refresh requires fresh local quay ask depth and valid buyer customs")
+		} else if in.SourcingProbeHistory.ScoutFailures >= 2 {
+			plan = reject(plan, failedFleetScoutReason)
+		} else if in.SourcingProbeHistory.Ships[in.Ship.Ship.ID].Failures >= 2 {
+			plan = reject(plan, failedProbeStreakReason)
+		} else if reason := scoutTargetCooldown(in, target.ID); reason != "" {
+			plan = reject(plan, reason)
+		} else {
+			plan = scoutExposure(in, plan)
+			if plan.Accepted {
+				bounded := in
+				bounded.ReserveByRegion = sourcingReserves(in, target)
+				allowance := scoutAllowance(bounded)
+				if -plan.Economics.ExpectedNetPence > allowance {
+					plan = reject(plan, scoutBudgetReason(bounded, -plan.Economics.ExpectedNetPence, allowance))
+				} else {
+					plan.Reason = fmt.Sprintf("bounded ballast book refresh uses scout allowance %dp; no profit evidence; buys a fresh quay book", allowance)
+				}
+			}
+		}
+		ranked = append(ranked, refreshCandidate{plan: plan, overlap: overlap})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		left, right := ranked[i], ranked[j]
+		if left.plan.Accepted != right.plan.Accepted {
+			return left.plan.Accepted
+		}
+		if left.overlap != right.overlap {
+			return left.overlap > right.overlap
+		}
+		leftAt, rightAt := in.BookObservedAt[left.plan.Destination], in.BookObservedAt[right.plan.Destination]
+		if !leftAt.Equal(rightAt) {
+			return leftAt.Before(rightAt)
+		}
+		if left.plan.Economics.ExpectedNetPence != right.plan.Economics.ExpectedNetPence {
+			return left.plan.Economics.ExpectedNetPence > right.plan.Economics.ExpectedNetPence
+		}
+		return left.plan.Destination < right.plan.Destination
+	})
+	plans := make([]Plan, 0, len(ranked))
+	for _, candidate := range ranked {
+		plans = append(plans, candidate.plan)
+	}
+	if len(plans) == 0 {
+		return []Plan{reject(Plan{Kind: "relocation", ShipID: in.Ship.Ship.ID}, "no unlocked book refresh destination away from this port")}
+	}
+	return plans
+}
+
+func (r *Runner) coLocatedFreeShips(in PlanningInput, missions map[string]*store.Mission) []ShipState {
+	var ships []ShipState
+	for _, ship := range r.stateCache.Ships {
+		if ship.Ship.CurrentPortID == in.Ship.Ship.CurrentPortID && missions[ship.Ship.ID] == nil && ship.Voyage == nil &&
+			(ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") {
+			ships = append(ships, ship)
+		}
+	}
+	sort.Slice(ships, func(i, j int) bool {
+		left, right := ships[i], ships[j]
+		leftHold, rightHold := left.EffectiveHoldCapacityTons-left.CargoUsedTons, right.EffectiveHoldCapacityTons-right.CargoUsedTons
+		if leftHold != rightHold {
+			return leftHold < rightHold
+		}
+		return left.Ship.ID < right.Ship.ID
+	})
+	return ships
+}
+
+func (r *Runner) bookRefreshCooldown(in PlanningInput) string {
+	last := decode[bookRefreshState](r.snapshot, "_book_refresh")
+	if !last.StartedAt.IsZero() && (in.Clock.Calendar.TotalGameHours < last.StartedGameHour ||
+		in.Clock.Calendar.TotalGameHours-last.StartedGameHour < bookRefreshCooldownGameHours) {
+		return "book refresh is cooling down for 24 game days after the last fleet refresh"
+	}
+	return ""
+}
+
+func (r *Runner) hintedScoutElsewhere(ctx context.Context, in PlanningInput, missions map[string]*store.Mission) (string, error) {
+	for _, ship := range r.stateCache.Ships {
+		if ship.Ship.CurrentPortID == in.Ship.Ship.CurrentPortID || ship.Ship.CurrentPortID == "" || missions[ship.Ship.ID] != nil ||
+			ship.Voyage != nil || ship.Ship.Status != "berthed" && ship.Ship.Status != "anchored_roadstead" {
+			continue
+		}
+		candidate, err := r.sourcingInput(ctx, ship)
+		if err != nil {
+			return "", err
+		}
+		if !r.shipIdleFor(candidate, scoutIdleGameHours) || sourcingAdmissionRejection(candidate) != "" {
+			continue
+		}
+		if pairs := sourcingPairs(candidate); len(pairs) == 0 || pairs[0].Accepted {
+			continue
+		}
+		scouts := scoutCandidates(candidate, r.scoutBlockedPorts(candidate, missions))
+		if scouts[0].Accepted {
+			if _, err := r.insuredRelocationPlan(ship, scouts); err == nil {
+				return ship.Ship.ID, nil
+			}
+		}
+	}
+	return "", nil
+}
+
+func (r *Runner) scoutingPlans(ctx context.Context, in PlanningInput, missions map[string]*store.Mission) ([]Plan, string, error) {
+	ships := r.coLocatedFreeShips(in, missions)
+	reason := "scouting waits for twelve coherent idle game hours at this port"
+	var plans []Plan
+	var refreshShipID string
+	for _, ship := range ships {
+		candidate := in
+		if ship.Ship.ID != in.Ship.Ship.ID {
+			var err error
+			candidate, err = r.sourcingInput(ctx, ship)
+			if err != nil {
+				return nil, "", err
+			}
+		}
+		if !r.shipIdleEligible(candidate) || sourcingAdmissionRejection(candidate) != "" {
+			continue
+		}
+		if refreshShipID == "" {
+			refreshShipID = ship.Ship.ID
+		}
+		if !r.shipIdleFor(candidate, scoutIdleGameHours) {
+			continue
+		}
+		if ship.Ship.ID != in.Ship.Ship.ID {
+			if pairs := sourcingPairs(candidate); len(pairs) == 0 || pairs[0].Accepted {
+				continue
+			}
+		}
+		scouts := scoutCandidates(candidate, r.scoutBlockedPorts(candidate, missions))
+		if scouts[0].Accepted {
+			if index, err := r.insuredRelocationPlan(ship, scouts); err != nil {
+				scouts[0] = reject(scouts[0], err.Error())
+			} else {
+				scouts[0], scouts[index] = scouts[index], scouts[0]
+			}
+		}
+		if ship.Ship.ID == in.Ship.Ship.ID {
+			plans, reason = scouts, scouts[0].Reason
+		}
+		if scouts[0].Accepted {
+			if ship.Ship.ID != in.Ship.Ship.ID {
+				return nil, "another co-located ship is the designated scout: " + ship.Ship.ID, nil
+			}
+			return scouts, scouts[0].Reason, nil
+		}
+	}
+	if len(ships) < 2 {
+		return plans, reason, nil
+	}
+	if refreshShipID == "" {
+		return plans, "book refresh waits for an admissible ship with six coherent idle game hours at this port", nil
+	}
+	if refreshShipID != in.Ship.Ship.ID {
+		return plans, "another co-located ship is the designated book refresh: " + refreshShipID, nil
+	}
+	if cooldown := r.bookRefreshCooldown(in); cooldown != "" {
+		return plans, cooldown, nil
+	}
+	if id, err := r.hintedScoutElsewhere(ctx, in, missions); err != nil {
+		return nil, "", err
+	} else if id != "" {
+		return plans, "a hinted scout on another ship takes priority over book refresh: " + id, nil
+	}
+	refreshes := bookRefreshCandidates(in, r.scoutBlockedPorts(in, missions))
+	if refreshes[0].Accepted {
+		if index, err := r.insuredRelocationPlan(in.Ship, refreshes); err != nil {
+			refreshes[0] = reject(refreshes[0], err.Error())
+		} else {
+			refreshes[0], refreshes[index] = refreshes[index], refreshes[0]
+		}
+	}
+	return refreshes, refreshes[0].Reason, nil
 }
 
 func (r *Runner) scoutBlockedPorts(in PlanningInput, missions map[string]*store.Mission) map[string]string {
@@ -285,7 +529,8 @@ func scoutTargetCooldown(in PlanningInput, target string) string {
 	return ""
 }
 
-func (r *Runner) scoutTargetReady(ctx context.Context, in PlanningInput, target string) error {
+func (r *Runner) scoutTargetReady(ctx context.Context, in PlanningInput, plan Plan) error {
+	target := plan.Destination
 	if in.SourcingHistoryError != "" {
 		return fmt.Errorf("%w: %s", errScoutTransient, in.SourcingHistoryError)
 	}
@@ -332,17 +577,20 @@ func (r *Runner) scoutTargetReady(ctx context.Context, in PlanningInput, target 
 	if book := in.Markets[origin]; book.Visibility != "quay" || book.CustomsBPS < 0 {
 		return errors.New("scouting requires fresh local quay ask depth and valid buyer customs")
 	}
-	_, upside, _ := scoutHintUpside(in, scoutBidHints(in)[target])
-	if upside <= 0 {
-		return errors.New("no age-labelled gossip hint shows a positive post-customs spread")
-	}
-	originPort, _ := findPort(in.Catalog, origin)
-	plan := relocationCost(in, Plan{Kind: "relocation", ShipID: in.Ship.Ship.ID, Origin: origin, Destination: target}, originPort, 0)
-	if !plan.Accepted {
-		return errors.New(plan.Reason)
-	}
-	if upside <= -plan.Economics.ExpectedNetPence {
-		return errors.New("age-labelled gossip hint upside does not exceed modeled scouting exposure")
+	if !isBookRefresh(plan) {
+		_, upside, _ := scoutHintUpside(in, scoutBidHints(in)[target])
+		if upside <= 0 {
+			return errors.New("no age-labelled gossip hint shows a positive post-customs spread")
+		}
+		costed := scoutExposure(in, plan)
+		if !costed.Accepted {
+			return errors.New(costed.Reason)
+		}
+		if upside <= -costed.Economics.ExpectedNetPence {
+			return errors.New("age-labelled gossip hint upside does not exceed modeled scouting exposure")
+		}
+	} else if costed := scoutExposure(in, plan); !costed.Accepted {
+		return errors.New(costed.Reason)
 	}
 	return nil
 }

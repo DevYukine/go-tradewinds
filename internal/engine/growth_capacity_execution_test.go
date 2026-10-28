@@ -22,7 +22,7 @@ func capacityExecutionFixture(t *testing.T, refuseBuild bool) (*recoveryHarness,
 	t.Helper()
 	h := newRecoveryHarness(t)
 	row := sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)
-	row["ship"].(map[string]any)["created_at"] = time.Now().UTC().Add(-30 * time.Hour)
+	row["ship"].(map[string]any)["created_at"] = time.Now().UTC().Add(-30 * 24 * time.Hour)
 	h.api.setFleet([]map[string]any{row})
 	h.api.setFactorPorts(recoveryHomePort, recoveryFarPort)
 	persistGrowthWindowSettlement(t, h, store.Settlement{
@@ -246,7 +246,7 @@ func TestCapacityGrowthInputsUseLatestDeliveryLotMedian(t *testing.T) {
 	}
 	persistGrowthWindowSettlement(t, h, store.Settlement{
 		ID: "capacity-old-unknown-delivery", Kind: "spot", QuantityTons: 1,
-		AcquisitionPence: 999_999, GameSeconds: 3_600, CompletedAt: evidence.asOf.Add(-25 * time.Hour),
+		AcquisitionPence: 999_999, GameSeconds: 3_600, CompletedAt: evidence.asOf.Add(-31 * 24 * time.Hour),
 	})
 	input, reason, err := runner.capacityFleetInput(h.ctx, &evidence)
 	if err != nil || reason != "" || input.FleetSize != 1 || input.LotCashPence != 4_800 {
@@ -423,7 +423,7 @@ func TestCapacityGrowthPlanRateAndLotCashFloor(t *testing.T) {
 			continue
 		}
 		lot = max(lot, plan.Economics.PurchasePence+plan.Economics.CustomsPence+plan.Economics.StoreCashPence)
-		if plan.ContractID != "" || basis != "depth" && basis != "gossip" {
+		if plan.ContractID != "" || basis != "depth" && basis != "gossip" && basis != "retained" {
 			continue
 		}
 		candidateRate := float64(plan.Economics.ExpectedNetPence) / (2 * plan.Economics.GameDays)
@@ -468,6 +468,7 @@ func TestCapacityGrowthCountsGossipForEveryFleetSize(t *testing.T) {
 			market := runner.stateCache.Markets[recoveryFarPort]
 			market.Visibility = "gossip"
 			runner.stateCache.Markets[recoveryFarPort] = market
+			delete(runner.snapshot, "_quay_book_memory")
 			runner.stateCache.Contracts = nil
 			bid, playerPrice, playerQuantity := int64(50_000), int64(80_000), int64(50)
 			observed := runner.stateCache.Clock.RealUTC.Add(-time.Minute)
@@ -649,7 +650,7 @@ func TestCapacityGrowthKeepsBuiltHullUntilArmed(t *testing.T) {
 	}
 }
 
-func TestCapacityGrowthUnknownCostsDoNotPausePlanBasedGrowth(t *testing.T) {
+func TestCapacityGrowthUnknownCostsDoNotPauseCheapGrowth(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name        string
@@ -678,11 +679,18 @@ func TestCapacityGrowthUnknownCostsDoNotPausePlanBasedGrowth(t *testing.T) {
 				GameSeconds: 3_600, CompletedAt: time.Now().UTC().Add(-time.Minute),
 			}, growthSettlementAction{Path: test.path})
 			after, reason, err := runner.capacityFleetInput(h.ctx, &evidence)
-			if err != nil || reason != "" {
-				t.Fatalf("unknown costs paused capacity growth: %s, %v", reason, err)
+			if err != nil || reason != "" || after.MeasuredNetAvailable {
+				t.Fatalf("unknown costs did not mark measured net unavailable: %+v, %s, %v", after, reason, err)
 			}
 			if after.LotCashPence != before.LotCashPence || after.FleetSize != before.FleetSize {
-				t.Fatalf("unknown-cost row changed fleet working cash: before %+v, after %+v", before, after)
+				t.Fatalf("unknown-cost settlement changed working-cash exposure: before %+v after %+v", before, after)
+			}
+			if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || !changed {
+				t.Fatalf("unknown costs blocked cheap-hull growth: changed %t error %v", changed, err)
+			}
+			_, data := h.mission("__growth")
+			if data.Capacity == nil || data.BuildClass != "hoy" {
+				t.Fatalf("cheap cash growth was not staged: %+v", data)
 			}
 		})
 	}
@@ -1065,7 +1073,7 @@ func TestCapacityGrowthComputedLosingRepeatDoesNotUseOutboundProfit(t *testing.T
 	}
 }
 
-func TestCapacityGrowthRejectedPaybackExploresAnotherRegion(t *testing.T) {
+func TestCapacityGrowthRejectedPaybackDoesNotFundInadmissibleExpansion(t *testing.T) {
 	t.Parallel()
 	h, runner := capacityExecutionFixture(t, false)
 	newExpansionFactorAPI(h)
@@ -1089,12 +1097,16 @@ func TestCapacityGrowthRejectedPaybackExploresAnotherRegion(t *testing.T) {
 	if err != nil || decision.Accepted || !strings.Contains(decision.Reason, "payback") {
 		t.Fatalf("fixture must have spare local work rejected solely on payback: %+v, %v", decision, err)
 	}
-	if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || !changed {
-		t.Fatalf("bad local payback blocked funded overseas exploration: changed=%t err=%v holds=%v", changed, err, runner.holding)
+	if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || changed {
+		t.Fatalf("bad regional payback paid for an inadmissible overseas build: changed=%t err=%v holds=%v", changed, err, runner.holding)
 	}
-	mission, data := h.mission("__treasury")
-	if mission.Destination != "yard-a" || data.Action == nil || data.Action.Stage != "hire-factor" {
-		t.Fatalf("economic refusal did not hire at the best overseas yard: %+v %+v", mission, data.Action)
+	h.missingMission("__treasury")
+	found := false
+	for _, hold := range runner.holding {
+		found = found || hold.Reason == expansionAgentAdmissionReason
+	}
+	if !found || h.api.mutationCount("/v1/company/hire-factor") != 0 {
+		t.Fatalf("inadmissible paid expansion did not preserve its measured-build hold: %v", runner.holding)
 	}
 	h.missingMission("__growth")
 }
@@ -1103,9 +1115,9 @@ func TestCapacityGrowthIdleHullWithoutProfitableWorkExploresAnotherRegion(t *tes
 	t.Parallel()
 	h, runner := capacityExecutionFixture(t, false)
 	newExpansionFactorAPI(h)
-	h.api.setFleet([]map[string]any{
-		stationaryShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, "berthed", 0, 4),
-	})
+	row := stationaryShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, "berthed", 0, 4)
+	row["ship"].(map[string]any)["created_at"] = time.Now().UTC().Add(-30 * 24 * time.Hour)
+	h.api.setFleet([]map[string]any{row})
 	refreshExpansionFactor(t, h, runner)
 	bookCommodity(runner.stateCache.Markets[recoveryHomePort], recoveryGrain).Depth.Asks = nil
 	ship := runner.stateCache.Ships[0]
@@ -1130,7 +1142,7 @@ func TestCapacityGrowthIdleHullWithoutProfitableWorkExploresAnotherRegion(t *tes
 	h.missingMission("__growth")
 }
 
-func TestCapacityGrowthUnavailableHullDoesNotBlockExpansion(t *testing.T) {
+func TestCapacityGrowthUnavailableHullStillRequiresAdmissibleExpansion(t *testing.T) {
 	t.Parallel()
 	for _, refusal := range []string{"unavailable", "non-turnkey", "unpriced", "missing", "stale"} {
 		t.Run(refusal, func(t *testing.T) {
@@ -1169,17 +1181,19 @@ func TestCapacityGrowthUnavailableHullDoesNotBlockExpansion(t *testing.T) {
 				t.Fatalf("funding: %s, %v", reason, err)
 			}
 			changed, err := runner.considerCapacityGrowth(h.ctx, &evidence)
-			blocked := refusal == "missing" || refusal == "stale"
-			if err != nil || changed == blocked {
-				t.Fatalf("quote %s gave changed=%t err=%v holds=%v", refusal, changed, err, runner.holding)
+			if err != nil || changed {
+				t.Fatalf("quote %s licensed an inadmissible paid expansion: changed=%t err=%v holds=%v", refusal, changed, err, runner.holding)
 			}
-			if blocked {
-				h.missingMission("__treasury")
-				return
-			}
-			_, data := h.mission("__treasury")
-			if data.Action == nil || data.Action.Stage != "hire-factor" {
-				t.Fatalf("unavailable hull blocked exploration: %+v", data.Action)
+			h.missingMission("__treasury")
+			h.missingMission("__growth")
+			if refusal != "missing" && refusal != "stale" {
+				found := false
+				for _, hold := range runner.holding {
+					found = found || hold.Reason == expansionAgentAdmissionReason
+				}
+				if !found {
+					t.Fatalf("quote %s lost the measured-build expansion hold: %v", refusal, runner.holding)
+				}
 			}
 		})
 	}

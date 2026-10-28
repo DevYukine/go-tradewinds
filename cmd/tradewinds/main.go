@@ -115,6 +115,7 @@ func run(cfg config.Config, db *store.Store, log *zap.Logger, args []string) err
 func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Config, db *store.Store, log *zap.Logger, execute bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var workers sync.WaitGroup
+	var gameVersion releases.Version
 	apiLog := log.Named("api")
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -167,6 +168,7 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 					MarquesEnabled:      cfg.MarquesEnabled,
 					ReplayRetentionDays: cfg.ReplayRetentionDays,
 					ReplayMaxGiB:        cfg.ReplayMaxGiB,
+					GameVersion:         gameVersion.Current,
 				})
 				runners = append(runners, accountRunner{runner: runner, log: engineLog})
 			}
@@ -189,7 +191,7 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 				defer workers.Done()
 				releaseLog := log.Named("releases")
 				client := gameapi.New(cfg.APIURL, "", releaseLog.Named("api"))
-				releases.Watch(ctx, client.ReleaseNotes, releaseLog, 15*time.Minute)
+				releases.Watch(ctx, client.ReleaseNotes, &gameVersion, releaseLog, 15*time.Minute)
 			}()
 			workers.Add(1)
 			go func() {

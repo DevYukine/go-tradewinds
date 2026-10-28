@@ -38,6 +38,7 @@ export function buildDecisionView(details: unknown): DecisionView {
       ? "Modeled delivery contribution"
       : "Modeled expected cash net";
   const expectedNetPence = number(economics.expected_net_pence);
+  const hazardSource = text(economics.hazard_source, "");
   const cashRows: EconomicRow[] = [];
   const cashFields: [keyof Economics, string][] = [
     ["revenue_pence", "Expected revenue"],
@@ -51,6 +52,7 @@ export function buildDecisionView(details: unknown): DecisionView {
     ["upkeep_pence", "Incremental upkeep"],
     ["toll_pence", "Tolls"],
     ["funding_fees_pence", "Regional funding fees"],
+    ["hazard_pence", `Lloyd's hazard bound (${hazardSource})`],
     ["expected_net_pence", netLabel],
     ["collateral_pence", "Collateral locked, not an expense"],
   ];
@@ -61,6 +63,7 @@ export function buildDecisionView(details: unknown): DecisionView {
     ]);
   }
   for (const [key, label] of cashFields) {
+    if (key === "hazard_pence" && !hazardSource) continue;
     const pence = number(economics[key]);
     if (pence !== undefined) {
       cashRows.push({ key, label, pence });

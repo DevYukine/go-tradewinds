@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DevYukine/go-tradewinds/internal/gameapi"
 	"github.com/DevYukine/go-tradewinds/internal/names"
 	"github.com/DevYukine/go-tradewinds/internal/store"
 	"github.com/google/uuid"
@@ -53,26 +54,38 @@ type GrowthInput struct {
 }
 
 type GrowthDecision struct {
-	Accepted                      bool                `json:"accepted"`
-	EconomicallyViable            bool                `json:"economically_viable"`
-	CashShortfallPence            int64               `json:"cash_shortfall_pence"`
-	Reason                        string              `json:"reason"`
-	QuotedHullPence               int64               `json:"quoted_hull_pence"`
-	SlippageReservePence          int64               `json:"slippage_reserve_pence"`
-	CannonsPence                  int64               `json:"cannons_pence"`
-	InitialStoresPence            int64               `json:"initial_stores_pence"`
-	WorkingCapitalPence           int64               `json:"working_capital_pence"`
-	FundingFeesPence              int64               `json:"funding_fees_pence"`
-	IncrementalUpkeepPence        int64               `json:"incremental_upkeep_pence"`
-	UpkeepReservePence            int64               `json:"upkeep_reserve_pence"`
-	IncrementalNetPencePerGameDay float64             `json:"incremental_net_pence_per_game_day"`
-	DepthNetPencePerGameDay       float64             `json:"depth_net_pence_per_game_day"`
-	PaybackGameDays               float64             `json:"payback_game_days"`
-	EvidenceBasis                 string              `json:"evidence_basis"`
-	Competition                   CompetitionEvidence `json:"competition"`
-	DepthCompetition              CompetitionEvidence `json:"depth_competition"`
+	Accepted                      bool                   `json:"accepted"`
+	EconomicallyViable            bool                   `json:"economically_viable"`
+	CashShortfallPence            int64                  `json:"cash_shortfall_pence"`
+	Reason                        string                 `json:"reason"`
+	QuotedHullPence               int64                  `json:"quoted_hull_pence"`
+	SlippageReservePence          int64                  `json:"slippage_reserve_pence"`
+	CannonsPence                  int64                  `json:"cannons_pence"`
+	InitialStoresPence            int64                  `json:"initial_stores_pence"`
+	WorkingCapitalPence           int64                  `json:"working_capital_pence"`
+	FundingFeesPence              int64                  `json:"funding_fees_pence"`
+	IncrementalUpkeepPence        int64                  `json:"incremental_upkeep_pence"`
+	UpkeepReservePence            int64                  `json:"upkeep_reserve_pence"`
+	IncrementalNetPencePerGameDay float64                `json:"incremental_net_pence_per_game_day"`
+	DepthNetPencePerGameDay       float64                `json:"depth_net_pence_per_game_day"`
+	PaybackGameDays               float64                `json:"payback_game_days"`
+	EvidenceBasis                 string                 `json:"evidence_basis"`
+	Competition                   CompetitionEvidence    `json:"competition"`
+	DepthCompetition              CompetitionEvidence    `json:"depth_competition"`
+	Mortgage                      *gameapi.MortgageTerms `json:"mortgage,omitempty"`
 	competitionComparable         bool
 	depthCompetitionComparable    bool
+}
+
+func growthCapital(decision GrowthDecision) int64 {
+	price := decision.QuotedHullPence
+	if decision.Mortgage != nil {
+		if decision.Mortgage.PrincipalPence <= 0 || decision.Mortgage.PrincipalPence > price {
+			return math.MaxInt64
+		}
+		price -= decision.Mortgage.PrincipalPence
+	}
+	return growthCashTotal(price, decision.SlippageReservePence, decision.CannonsPence, decision.InitialStoresPence)
 }
 
 func growthWorkingCapital(plan Plan) int64 {
@@ -654,8 +667,7 @@ func (r *Runner) evaluateGrowthCandidate(ctx context.Context, port Port, hull Hu
 	}
 	required := clonePence(evidence.required)
 	required[port.BankingRegion] = max(required[port.BankingRegion], r.opts.ReservePence)
-	required[port.BankingRegion] += decision.QuotedHullPence + decision.SlippageReservePence +
-		decision.CannonsPence + decision.InitialStoresPence + decision.WorkingCapitalPence
+	required[port.BankingRegion] = growthCashTotal(required[port.BankingRegion], growthCapital(decision), decision.WorkingCapitalPence)
 	required[evidence.home.BankingRegion] += decision.UpkeepReservePence
 	if destination, exists := findPort(r.stateCache.Catalog, plan.Destination); exists {
 		required[destination.BankingRegion] = max(required[destination.BankingRegion],

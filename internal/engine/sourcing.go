@@ -47,56 +47,29 @@ func sourcingFreeCash(in PlanningInput) int64 {
 	return max(0, cash-reserves)
 }
 
-// Exploration risk capital scales with free cash (2%) rather than a fixed
-// ceiling, so a larger treasury can afford proportionally larger probes.
-func sourcingNormalAllowance(in PlanningInput) int64 {
-	allowance := sourcingFreeCash(in) / 50
-	if in.SourcingAllowancePence != nil {
-		allowance = min(allowance, max(0, *in.SourcingAllowancePence))
-	}
-	return allowance
-}
-
+// Each probe is capped by both the rolling ROI budget and 2% of free cash.
 func sourcingAllowance(in PlanningInput) int64 {
-	normal := sourcingNormalAllowance(in)
-	if !in.SourcingIdleEligible || in.SourcingProbeCostsUnknown || in.SourcingProbeExpensePence < 0 {
-		return normal
+	if in.SourcingProbeCostsUnknown || in.SourcingProbeExpensePence < 0 {
+		return 0
 	}
-	free := sourcingFreeCash(in)
-	remaining := max(0, 20_000+free/20-in.SourcingProbeExpensePence)
-	pilot := min(free/50, remaining)
-	// The liquidity-backed pilot is risk capital, not measured profit and not
-	// a second seed to add to the ordinary permanent allowance.
-	return max(normal, pilot)
+	budget := int64(20_000)
+	if in.SourcingAllowancePence != nil {
+		budget = max(0, *in.SourcingAllowancePence)
+	}
+	return min(sourcingFreeCash(in)/50, budget)
 }
 
 func sourcingBudgetReason(in PlanningInput, exposure, allowance int64) string {
 	if in.SourcingProbeCostsUnknown {
-		return "unpriced permanent probe expense blocks new exploration risk capital"
+		return "unpriced probe expense in the rolling window blocks new exploration risk capital"
 	}
 	if allowance == 0 {
 		if sourcingFreeCash(in) == 0 {
 			return "protected current cash leaves no exploration risk capital"
 		}
-		if !in.SourcingIdleEligible && in.SourcingAllowancePence != nil && *in.SourcingAllowancePence == 0 {
-			return "ordinary exploration risk capital exhausted; waiting for six observed idle game hours on this ship before a cash-backed inspection"
-		}
-		return "idle exploration risk capital exhausted after all permanent probe expenses and current protected cash"
+		return "rolling exploration budget exhausted"
 	}
 	return fmt.Sprintf("sourcing modeled exposure %dp exceeds current exploration risk capital cap %dp; no measured profit is assumed", exposure, allowance)
-}
-
-func sourcingLifetimeAllowance(history store.EconomicHistory) int64 {
-	if history.UnknownProbeCosts {
-		return 0
-	}
-	// Unknown trading returns cannot replenish the fixed seed. They do not
-	// erase its unspent balance: current protected cash still caps every probe.
-	commercialProfit := int64(0)
-	if !history.UnknownCosts {
-		commercialProfit = max(0, history.CommercialNetPence)
-	}
-	return max(0, 20_000+commercialProfit/50-history.ProbeExpensePence)
 }
 
 func publicSourceEvidence(in PlanningInput, source Port, contract Contract) (bool, string, int64) {
@@ -259,9 +232,6 @@ func sourcingProbeRejection(in PlanningInput, source string, charter Contract, a
 func sourcingUsesPilot(in PlanningInput, source string, charter Contract, ask int64) bool {
 	if !in.SourcingIdleEligible {
 		return false
-	}
-	if sourcingAllowance(in) > sourcingNormalAllowance(in) {
-		return true
 	}
 	for _, lane := range []string{
 		sourcingEvidenceKey(source, charter, ask),
@@ -494,14 +464,13 @@ func relocationCost(in PlanningInput, plan Plan, continuation Port, inspectionGa
 		originDays += upper.Sub(*in.Ship.Ship.BerthedAt).Seconds() * float64(in.Clock.Calendar.TimeScale) / 86_400
 	}
 	berth := int64(math.Ceil(float64(in.Ports[origin.ID].BerthDuesPerDayPence)*originDays + float64(in.Ports[source.ID].BerthDuesPerDayPence)*portDays))
-	upkeep := int64(math.Ceil(float64(in.FleetDailyUpkeepPence) * gameDays))
 	required := sourcingReserves(in, source)
-	required[origin.BankingRegion] += purchaseCost + berth + upkeep
+	required[origin.BankingRegion] += purchaseCost + berth
 	_, fees, transfers, funded := measuredFunding(in.Balances, required, in.Rates)
 	if !funded || len(transfers) > 0 && !in.fresh("rates") {
 		return reject(plan, "modeled sourcing costs and protected reserves cannot be funded with observed remittance fees")
 	}
-	exposure := storeExpense + berth + upkeep + fees
+	exposure := storeExpense + berth + fees
 	if exposure <= 0 {
 		return reject(plan, "sourcing relocation lacks a positive measured cost exposure")
 	}
@@ -511,14 +480,13 @@ func relocationCost(in PlanningInput, plan Plan, continuation Port, inspectionGa
 		StoreCashPence:     purchaseCost,
 		FundingFeesPence:   fees,
 		BerthDuesPence:     berth,
-		UpkeepPence:        upkeep,
 		ExpectedNetPence:   -exposure,
 		StressNetPence:     -exposure,
 		GameDays:           gameDays,
 		NetPencePerGameDay: -float64(exposure) / gameDays,
 	}
 	plan.Accepted = true
-	plan.Reason = "bounded cost-only relocation uses exploration risk capital; public supply is not executable stock, price, revenue or measured profit"
+	plan.Reason = fmt.Sprintf("bounded cost-only relocation uses rolling exploration budget %dp; public supply is not executable stock, price, revenue or measured profit", sourcingAllowance(in))
 	return plan
 }
 
@@ -716,6 +684,7 @@ func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipStat
 	}
 	ids = append(ids, "__growth")
 	maintenance := false
+	input.ReservedRetainedBidTons = make(map[string]map[string]int64)
 	for _, id := range ids {
 		if excludedMission != "" && id == excludedMission {
 			continue
@@ -750,11 +719,13 @@ func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipStat
 					}
 				}
 				addPlayerBidReservation(input.ReservedPlayerBidTons, data.Plan.Destination, data.Plan.Commodity, max(0, data.Plan.Quantity-delivered))
+				addPlayerBidReservation(input.ReservedRetainedBidTons, data.Plan.Destination, data.Plan.Commodity, max(0, data.Plan.Quantity-delivered))
 			}
 		}
 		if data.GrowthLane != nil && data.GrowthLane.NextPlan != nil && data.GrowthLane.NextPlan.ContractID == "" {
 			next := data.GrowthLane.NextPlan
 			addPlayerBidReservation(input.ReservedPlayerBidTons, next.Destination, next.Commodity, next.Quantity)
+			addPlayerBidReservation(input.ReservedRetainedBidTons, next.Destination, next.Commodity, next.Quantity)
 		}
 		if ordinaryIncomePending(&data) && (mission.Phase == "provision" || mission.Phase == "buy" || mission.Phase == "freight") &&
 			!r.loadingReservationSuspended(mission, &data, owner) {
@@ -816,18 +787,13 @@ func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipStat
 }
 
 func (r *Runner) loadSourcingHistory(ctx context.Context, input *PlanningInput) error {
-	history, err := r.db.EconomicHistory(ctx, r.account.ID, "")
-	if err != nil {
+	if err := r.loadRollingSourcingBudget(ctx, input); err != nil {
 		return err
 	}
-	allowance := sourcingLifetimeAllowance(history)
-	input.SourcingAllowancePence = &allowance
 	input.SourcingIdleEligible = r.shipIdleEligible(*input)
-	input.SourcingProbeExpensePence = history.ProbeExpensePence
-	input.SourcingProbeCostsUnknown = history.UnknownProbeCosts
 	input.SourcingProbeLanes = make(map[string]bool)
 	input.SourcingProbeCompletions = make(map[string]time.Time)
-	if sourcingAllowance(*input) == 0 {
+	if max(sourcingAllowance(*input), scoutAllowance(*input)) == 0 {
 		return nil
 	}
 	lanes := make([]string, 0)
@@ -941,7 +907,7 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 		}
 	}
 	shown := min(3, len(plans))
-	summary := map[string]int{"candidates": len(plans), "accepted": accepted, "shown": shown}
+	summary := map[string]int64{"candidates": int64(len(plans)), "accepted": int64(accepted), "shown": int64(shown), "rolling_budget_pence": sourcingAllowance(input)}
 	if err := r.decision(ctx, ship.Ship.ID, "sourcing", "ranked public sourcing candidates; remote executable inventory and proceeds remain unknown", summary); err != nil {
 		return false, "", err
 	}
@@ -974,53 +940,9 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 		if admissionReason != "" {
 			return false, plans[0].Reason, nil
 		}
-		scoutReason := "scouting waits for twelve coherent idle game hours at this port"
-		var scouts []Plan
-		if r.shipIdleFor(input, scoutIdleGameHours) {
-			scouts = scoutCandidates(input, r.scoutBlockedPorts(input, missions))
-			designatedID := ""
-			var smallestHold int64
-			if scouts[0].Accepted {
-				if index, err := r.insuredRelocationPlan(ship, scouts); err != nil {
-					scouts[0] = reject(scouts[0], err.Error())
-				} else if missions[ship.Ship.ID] == nil {
-					scouts[0], scouts[index] = scouts[index], scouts[0]
-					designatedID = ship.Ship.ID
-					smallestHold = ship.EffectiveHoldCapacityTons - ship.CargoUsedTons
-				}
-			}
-			scoutReason = scouts[0].Reason
-			for _, other := range r.stateCache.Ships {
-				if other.Ship.ID == ship.Ship.ID || other.Ship.CurrentPortID != ship.Ship.CurrentPortID || missions[other.Ship.ID] != nil {
-					continue
-				}
-				hold := other.EffectiveHoldCapacityTons - other.CargoUsedTons
-				if designatedID != "" && (hold > smallestHold || hold == smallestHold && other.Ship.ID > designatedID) {
-					continue
-				}
-				candidate, err := r.sourcingInput(ctx, other)
-				if err != nil {
-					return false, "", err
-				}
-				if !r.shipIdleFor(candidate, scoutIdleGameHours) || sourcingAdmissionRejection(candidate) != "" {
-					continue
-				}
-				if pairs := sourcingPairs(candidate); len(pairs) == 0 || pairs[0].Accepted {
-					continue
-				}
-				candidates := scoutCandidates(candidate, r.scoutBlockedPorts(candidate, missions))
-				if !candidates[0].Accepted {
-					continue
-				}
-				if _, err := r.insuredRelocationPlan(other, candidates); err != nil {
-					continue
-				}
-				designatedID, smallestHold = other.Ship.ID, hold
-			}
-			if designatedID != "" && designatedID != ship.Ship.ID {
-				scouts = nil
-				scoutReason = "another co-located ship is the designated scout: " + designatedID
-			}
+		scouts, scoutReason, err := r.scoutingPlans(ctx, input, missions)
+		if err != nil {
+			return false, "", err
 		}
 		scoutAccepted := 0
 		for _, plan := range scouts {
@@ -1066,10 +988,14 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 	}
 	mission, data := r.newVoyage(ship, plan)
 	mission.Phase = "sourcing_fund"
+	expenseCap := sourcingAllowance(input)
+	if scout {
+		expenseCap = scoutAllowance(input)
+	}
 	data.Relocation = &relocationIntent{
 		TargetCommodity:     plan.Commodity,
 		TargetDestination:   plan.Origin,
-		ExpenseCapPence:     sourcingAllowance(input),
+		ExpenseCapPence:     expenseCap,
 		ModeledExpensePence: -plan.Economics.ExpectedNetPence,
 		IdlePilot:           scout,
 		Scout:               scout,
@@ -1090,7 +1016,23 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 		data.Relocation.IdlePilot = sourcingUsesPilot(input, source.ID, contract, ask)
 		data.ProvenLane = sourcingEvidenceKey(source.ID, contract, ask)
 	}
-	return true, "", r.saveMission(ctx, mission, &data)
+	if err := r.saveMission(ctx, mission, &data); err != nil {
+		return false, "", err
+	}
+	if isBookRefresh(plan) {
+		previous := decode[bookRefreshState](r.snapshot, "_book_refresh")
+		r.snapshot["_book_refresh"] = encode(bookRefreshState{
+			StartedGameHour:         input.Clock.Calendar.TotalGameHours,
+			StartedAt:               input.Now,
+			Generation:              mission.Generation,
+			PreviousStartedAt:       previous.StartedAt,
+			PreviousStartedGameHour: previous.StartedGameHour,
+		})
+		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+			return true, "", err
+		}
+	}
+	return true, "", nil
 }
 
 func relocationCashCost(data *missionData) int64 {
@@ -1195,7 +1137,7 @@ func (r *Runner) relocationSpendingReady(ctx context.Context, ship ShipState, da
 }
 
 func (r *Runner) relocationProvisionReady(ctx context.Context, ship ShipState, data *missionData, quantity, limit int64) error {
-	if data.Relocation == nil || !data.Relocation.IdlePilot {
+	if data.Relocation == nil {
 		return nil
 	}
 	if quantity <= 0 || limit <= 0 || limit > math.MaxInt64/quantity {
@@ -1205,7 +1147,7 @@ func (r *Runner) relocationProvisionReady(ctx context.Context, ship ShipState, d
 }
 
 func (r *Runner) relocationSpendingReadyAtPrice(ctx context.Context, ship ShipState, data *missionData, extra, storeLimit int64) error {
-	if data.Relocation == nil || !data.Relocation.IdlePilot {
+	if data.Relocation == nil {
 		return nil
 	}
 	input, err := r.committedPlanningInput(ctx, ship)
@@ -1220,17 +1162,25 @@ func (r *Runner) relocationSpendingReadyAtPrice(ctx context.Context, ship ShipSt
 	if input.Clock.Paused || input.Clock.Calendar.TimeScale <= 0 || input.Clock.Calendar.TotalGameHours < data.StartedGameHours {
 		return scoutTransientError(data, errors.New("idle exploration risk capital requires an unpaused nonregressed game clock"))
 	}
+	if data.Relocation.Scout {
+		r.applySourcingHistory(&input)
+	}
+	if err := r.loadRollingSourcingBudget(ctx, &input); err != nil {
+		return scoutTransientError(data, err)
+	}
+	if input.SourcingProbeCostsUnknown {
+		return errors.New("unpriced probe expense in the rolling window blocks further exploration spending")
+	}
 	atOrigin := ship.Ship.CurrentPortID == data.Plan.Origin && ship.Voyage == nil
 	if atOrigin {
-		if !r.shipIdleEligible(input) {
+		if data.Relocation.IdlePilot && !r.shipIdleEligible(input) {
 			return scoutTransientError(data, errors.New("unstarted idle inspection waits for a coherent six-observed-game-hour idle baseline"))
 		}
-		if data.Relocation.Scout && !r.shipIdleFor(input, scoutIdleGameHours) {
+		if data.Relocation.Scout && !isBookRefresh(data.Plan) && !r.shipIdleFor(input, scoutIdleGameHours) {
 			return scoutTransientError(data, errors.New("unstarted scouting relocation waits for twelve coherent idle game hours at this port"))
 		}
 		if data.Relocation.Scout {
-			r.applySourcingHistory(&input)
-			if err := r.scoutTargetReady(ctx, input, data.Plan.Destination); err != nil {
+			if err := r.scoutTargetReady(ctx, input, data.Plan); err != nil {
 				return err
 			}
 		}
@@ -1239,31 +1189,27 @@ func (r *Runner) relocationSpendingReadyAtPrice(ctx context.Context, ship ShipSt
 			return fmt.Errorf("unstarted idle inspection is no longer admissible: %s", reason)
 		}
 	}
-	history, err := r.db.EconomicHistory(ctx, r.account.ID, "")
-	if err != nil {
-		return scoutTransientError(data, err)
-	}
-	if history.UnknownProbeCosts {
-		return errors.New("unpriced permanent probe expense blocks further idle exploration spending")
-	}
 	source, exists := findPort(input.Catalog, data.Plan.Destination)
 	if !exists {
 		return errors.New("idle exploration source is absent from the current catalog")
 	}
 	input.ReserveByRegion = sourcingReserves(input, source)
-	normal := sourcingLifetimeAllowance(history)
-	input.SourcingAllowancePence = &normal
-	input.SourcingProbeExpensePence = history.ProbeExpensePence
 	// Committed source continuation does not re-earn idle after the physical
 	// voyage reset. Origin sends above still require current idle eligibility.
 	// Neither path acquires a fresh seed or a larger durable cap.
 	input.SourcingIdleEligible = true
 	bounded := *data
 	intent := *data.Relocation
-	intent.ExpenseCapPence = min(intent.ExpenseCapPence, sourcingAllowance(input))
+	allowance := sourcingAllowance(input)
+	capital := fmt.Sprintf("current rolling exploration budget %dp", allowance)
+	if intent.Scout {
+		allowance = scoutAllowance(input)
+		capital = "current scout allowance"
+	}
+	intent.ExpenseCapPence = min(intent.ExpenseCapPence, allowance)
 	bounded.Relocation = &intent
 	if !r.relocationBudget(&bounded, extra) {
-		return errors.New("current idle exploration risk capital cannot cover active expense, unclaimed bills and new spending within the immutable cap")
+		return fmt.Errorf("%s cannot cover active expense, unclaimed bills and new spending within the immutable cap", capital)
 	}
 	if atOrigin {
 		plan := costCommittedRelocation(input, data)
@@ -1280,7 +1226,7 @@ func (r *Runner) relocationSpendingReadyAtPrice(ctx context.Context, ship ShipSt
 			}
 		}
 		if !r.relocationProjectedBudget(&bounded, ship, input, plan, storeUnitCeiling) {
-			return errors.New("fresh projected inspection exposure exceeds current idle exploration risk capital or its immutable cap")
+			return fmt.Errorf("fresh projected inspection exposure exceeds %s or its immutable cap", capital)
 		}
 	}
 	return nil
@@ -1384,7 +1330,7 @@ func (r *Runner) relocationDepartureReady(ctx context.Context, ship ShipState, d
 		return scoutTransientError(data, err)
 	}
 	if data.Relocation.Scout {
-		if err := r.scoutTargetReady(ctx, input, data.Plan.Destination); err != nil {
+		if err := r.scoutTargetReady(ctx, input, data.Plan); err != nil {
 			return err
 		}
 	}
@@ -1434,7 +1380,7 @@ func (r *Runner) driveRelocation(ctx context.Context, ship ShipState, mission *s
 			return false, err
 		}
 		if data.Relocation.Scout {
-			if err := r.scoutTargetReady(ctx, input, data.Plan.Destination); err != nil {
+			if err := r.scoutTargetReady(ctx, input, data.Plan); err != nil {
 				return r.holdOrAbortRelocation(ctx, ship, mission, data, err)
 			}
 		}
@@ -1469,7 +1415,7 @@ func (r *Runner) driveRelocation(ctx context.Context, ship ShipState, mission *s
 			if err != nil {
 				return r.holdOrAbortRelocation(ctx, ship, mission, data, scoutTransientError(data, err))
 			}
-			if err := r.scoutTargetReady(ctx, input, data.Plan.Destination); err != nil {
+			if err := r.scoutTargetReady(ctx, input, data.Plan); err != nil {
 				return r.holdOrAbortRelocation(ctx, ship, mission, data, err)
 			}
 		}
@@ -1609,6 +1555,23 @@ func (r *Runner) abortRelocation(ctx context.Context, ship ShipState, mission *s
 	}
 	if ship.Voyage != nil || ship.Ship.Status == "sailing" {
 		return false, nil
+	}
+	if isBookRefresh(data.Plan) && ship.Ship.CurrentPortID == data.Plan.Origin {
+		current := r.snapshot["_book_refresh"]
+		cooldown := decode[bookRefreshState](r.snapshot, "_book_refresh")
+		if cooldown.Generation == mission.Generation {
+			if cooldown.PreviousStartedAt.IsZero() {
+				delete(r.snapshot, "_book_refresh")
+			} else {
+				r.snapshot["_book_refresh"] = encode(bookRefreshState{
+					StartedAt: cooldown.PreviousStartedAt, StartedGameHour: cooldown.PreviousStartedGameHour,
+				})
+			}
+			if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+				r.snapshot["_book_refresh"] = current
+				return false, err
+			}
+		}
 	}
 	data.SourcingHandoff = nil
 	data.Plan.Destination = ship.Ship.CurrentPortID

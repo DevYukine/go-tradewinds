@@ -109,14 +109,18 @@ func TestScoutHistoryLoadsCompletionLanesForStationaryOrigins(t *testing.T) {
 	}
 }
 
-func TestScoutHistoryZeroAllowanceAndCurrentOriginDoNotLoadScoutLanes(t *testing.T) {
+func TestScoutHistoryLoadsWithZeroSourcingAllowanceButExcludesCurrentOrigin(t *testing.T) {
 	for _, zeroAllowance := range []bool{false, true} {
 		t.Run(map[bool]string{false: "origin excluded", true: "zero allowance"}[zeroAllowance], func(t *testing.T) {
 			h := newRecoveryHarness(t)
-			if zeroAllowance {
-				idleFallbackExhaustSeed(t, h)
-			}
 			in := scoutAcceptanceInput(t)
+			if zeroAllowance {
+				expense := int64(20_000)
+				idleFallbackSettlement(t, h, store.Settlement{
+					ID: "scout-current-budget-exhausted", Kind: "relocation", CostsKnown: true,
+					CompletedAt: in.Now.Add(-time.Hour), ExplorationExpensePence: &expense,
+				})
+			}
 			in.SourcingIdleEligible = false
 			home := in.Ports["hamburg"]
 			ownHint := home.CoffeeHouseGossip[0]
@@ -140,12 +144,11 @@ func TestScoutHistoryZeroAllowanceAndCurrentOriginDoNotLoadScoutLanes(t *testing
 			if in.SourcingProbeLanes[scoutLaneKey("hamburg", "hamburg", "copper_sheathing")] {
 				t.Fatal("current-origin hint entered the lane query set")
 			}
-			if zeroAllowance {
-				if sourcingAllowance(in) != 0 || len(in.SourcingProbeLanes) != 0 || len(in.SourcingProbeCompletions) != 0 {
-					t.Fatalf("zero allowance still loaded scout history: %+v", in.SourcingProbeCompletions)
-				}
-			} else if in.SourcingProbeCompletions[scoutLaneKey("amsterdam", "hamburg", "copper_sheathing")].IsZero() {
-				t.Fatal("positive allowance omitted the eligible scout lane")
+			if zeroAllowance && (sourcingAllowance(in) != 0 || scoutAllowance(in) == 0) {
+				t.Fatalf("fixture did not isolate positive scout allowance from exhausted sourcing: sourcing=%dp scout=%dp", sourcingAllowance(in), scoutAllowance(in))
+			}
+			if in.SourcingProbeCompletions[scoutLaneKey("amsterdam", "hamburg", "copper_sheathing")].IsZero() {
+				t.Fatal("positive scout allowance omitted the eligible scout lane")
 			}
 		})
 	}
@@ -672,14 +675,14 @@ func TestScoutCommittedSupplyAgeAndCurrentCashSpendingCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if scoutExposure(input, data.Plan).Accepted {
-		t.Fatal("fixture did not age out admission-only provisions gossip")
+	if admission := scoutExposure(input, data.Plan); !admission.Accepted {
+		t.Fatalf("expired provisions supply gossip still blocked a both-way provisioned scout: %+v", admission)
 	}
 	costed := costCommittedRelocation(input, &data)
 	if !costed.Accepted {
-		t.Fatalf("committed costing reapplied provisions admission: %+v", costed)
+		t.Fatalf("committed costing rejected a both-way provisioned scout: %+v", costed)
 	}
-	if err := runner.scoutTargetReady(h.ctx, input, data.Plan.Destination); err != nil {
+	if err := runner.scoutTargetReady(h.ctx, input, data.Plan); err != nil {
 		t.Fatalf("committed target recheck reapplied provisions admission: %v", err)
 	}
 	if changed, err := runner.driveMission(h.ctx, ship, mission, &data); err != nil || !changed {
@@ -703,10 +706,10 @@ func TestScoutCommittedSupplyAgeAndCurrentCashSpendingCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	input.ReserveByRegion = sourcingReserves(input, target)
-	if sourcingAllowance(input) >= exposure {
+	if scoutAllowance(input) >= exposure {
 		t.Fatal("fixture did not lower the runner's current risk capital below committed exposure")
 	}
-	if err := runner.scoutTargetReady(h.ctx, input, data.Plan.Destination); err != nil {
+	if err := runner.scoutTargetReady(h.ctx, input, data.Plan); err != nil {
 		t.Fatalf("target evidence incorrectly includes the spending allowance: %v", err)
 	}
 	retained.Phase = "depart"
@@ -728,7 +731,7 @@ func TestScoutCommittedSupplyAgeAndCurrentCashSpendingCap(t *testing.T) {
 	h.missingMission(ship.Ship.ID)
 	found := false
 	for _, hold := range runner.holding {
-		found = found || strings.Contains(hold.Reason, "cancelled before further spending: ") && strings.Contains(hold.Reason, "current idle exploration risk capital")
+		found = found || strings.Contains(hold.Reason, "cancelled before further spending: ") && strings.Contains(hold.Reason, "current scout allowance")
 	}
 	if !found {
 		t.Fatalf("current cash shortfall did not cancel through the production spending gate: %+v", runner.holding)
@@ -906,6 +909,477 @@ func TestScoutPermanentSpendingFailuresAbortInsteadOfHolding(t *testing.T) {
 			}
 			if h.api.mutationCount("/v1/treasury/remit")+h.api.mutationCount("/v1/market/place-order")+h.api.mutationCount("/v1/fleet/depart") != 0 {
 				t.Fatal("permanent failure authorized more spending or departure")
+			}
+		})
+	}
+}
+
+func bookRefreshRunner(t *testing.T, idleHours int64) (*recoveryHarness, *Runner) {
+	t.Helper()
+	h, runner := scoutAcceptanceRunner(t)
+	home := runner.stateCache.Ports["hamburg"]
+	home.CoffeeHouseGossip = nil
+	runner.stateCache.Ports["hamburg"] = home
+	idle := decode[map[string]shipIdleState](runner.snapshot, "_ship_idle")
+	for id, observed := range idle {
+		observed.EarnedGameHours = idleHours
+		idle[id] = observed
+	}
+	runner.snapshot["_ship_idle"] = encode(idle)
+	return h, runner
+}
+
+func TestBookRefreshRanksImportOverlapBookAgeThenExposure(t *testing.T) {
+	for _, ranking := range []string{"import overlap", "absent book", "oldest book", "lower exposure"} {
+		t.Run(ranking, func(t *testing.T) {
+			in := scoutAcceptanceInput(t)
+			in.BookObservedAt = make(map[string]time.Time)
+			for i := range in.Catalog.Ports {
+				in.Catalog.Ports[i].Imports = []string{"provisions"}
+				in.BookObservedAt[in.Catalog.Ports[i].ID] = in.Now.Add(-8 * time.Minute)
+			}
+			want := "amsterdam"
+			switch ranking {
+			case "import overlap":
+				in.Catalog.Ports[1].Imports = append(in.Catalog.Ports[1].Imports, "copper_sheathing")
+				delete(in.BookObservedAt, "portsmouth")
+			case "absent book":
+				delete(in.BookObservedAt, "portsmouth")
+				want = "portsmouth"
+			case "oldest book":
+				in.BookObservedAt["amsterdam"] = in.Now.Add(-9 * time.Minute)
+			case "lower exposure":
+				for _, pair := range [][2]string{{"hamburg", "portsmouth"}, {"portsmouth", "hamburg"}} {
+					in.Routes[routeKey(pair[0], pair[1], "hoy")] = sourcingRoute(pair[0], pair[1], 5)
+				}
+				want = "portsmouth"
+			}
+			plans := bookRefreshCandidates(in, nil)
+			if len(plans) == 0 || !plans[0].Accepted || plans[0].Destination != want {
+				t.Fatalf("%s did not rank %s first: %+v", ranking, want, plans)
+			}
+			if !isBookRefresh(plans[0]) || plans[0].Quantity != 0 || plans[0].Economics.RevenuePence != 0 ||
+				!strings.Contains(plans[0].Reason, "no profit evidence; buys a fresh quay book") ||
+				!strings.Contains(plans[0].Reason, "scout allowance") {
+				t.Fatalf("refresh invented profit evidence or lost its reason: %+v", plans[0])
+			}
+		})
+	}
+}
+
+func TestBookRefreshPreservesLegalBlockedAllowanceAndFailureGuards(t *testing.T) {
+	for _, guard := range []string{"blocked", "illegal route", "fleet failures", "ship failures", "unknown cost", "cap exact", "cap one penny short"} {
+		t.Run(guard, func(t *testing.T) {
+			in := scoutAcceptanceInput(t)
+			blocked := make(map[string]string)
+			want := false
+			wantReason := ""
+			switch guard {
+			case "blocked":
+				wantReason = "another ship is already heading to amsterdam"
+				blocked["amsterdam"] = wantReason
+			case "illegal route":
+				key := routeKey("hamburg", "amsterdam", "hoy")
+				route := in.Routes[key]
+				route.Legs = append([]RouteLeg(nil), route.Legs...)
+				route.Legs[0].EdgeClass = "oceanic"
+				in.Routes[key] = route
+			case "fleet failures":
+				in.SourcingProbeHistory.ScoutFailures = 2
+				wantReason = failedFleetScoutReason
+			case "ship failures":
+				in.SourcingProbeHistory.Ships[in.Ship.Ship.ID] = probeShipHistory{Failures: 2}
+				wantReason = failedProbeStreakReason
+			case "unknown cost":
+				in.SourcingProbeCostsUnknown = true
+			case "cap exact", "cap one penny short":
+				baseline := scoutAcceptancePlan(t, bookRefreshCandidates(in, nil), "amsterdam")
+				if !baseline.Accepted {
+					t.Fatalf("baseline refresh rejected: %+v", baseline)
+				}
+				allowance := -baseline.Economics.ExpectedNetPence
+				want = guard == "cap exact"
+				if !want {
+					allowance--
+				}
+				in.Balances["north"] = in.ReserveByRegion["north"] + 50*allowance
+			}
+			plan := scoutAcceptancePlan(t, bookRefreshCandidates(in, blocked), "amsterdam")
+			if plan.Accepted != want || wantReason != "" && plan.Reason != wantReason {
+				t.Fatalf("%s refresh gate: accepted=%v want=%v plan=%+v", guard, plan.Accepted, want, plan)
+			}
+			if (guard == "unknown cost" || guard == "cap one penny short") && !strings.Contains(plan.Reason, "scout allowance") {
+				t.Fatalf("refresh budget rejection hid the scout allowance: %+v", plan)
+			}
+		})
+	}
+}
+
+func TestBookRefreshSixHourBoundaryCreatesOnlyTheDesignatedMission(t *testing.T) {
+	for _, hours := range []int64{5, 6} {
+		t.Run(fmt.Sprint(hours), func(t *testing.T) {
+			h, runner := bookRefreshRunner(t, hours)
+			for _, id := range []string{recoveryShipLapras, recoveryShipCharizard, recoveryShipBlastoise} {
+				changed, reason, err := runner.considerSourcing(h.ctx, harnessShip(t, runner, id))
+				want := hours == 6 && id == recoveryShipBlastoise
+				if err != nil || changed != want {
+					t.Fatalf("%dh refresh admission for %s: changed=%v want=%v reason=%q err=%v", hours, id, changed, want, reason, err)
+				}
+			}
+			if got := scoutAcceptanceMissionCount(t, h, runner); got != int(hours-5) {
+				t.Fatalf("%dh refresh pass created %d missions", hours, got)
+			}
+			if hours == 5 {
+				return
+			}
+			mission, data := h.mission(recoveryShipBlastoise)
+			if mission.Phase != "sourcing_fund" || data.Relocation == nil || !data.Relocation.Scout || !isBookRefresh(data.Plan) ||
+				data.Relocation.ExpenseCapPence < data.Relocation.ModeledExpensePence {
+				t.Fatalf("six-hour pass did not persist the bounded refresh: mission=%+v data=%+v", mission, data)
+			}
+			if err := runner.relocationSpendingReadyAtPrice(h.ctx, harnessShip(t, runner, recoveryShipBlastoise), &data, 0, 0); err != nil {
+				t.Fatalf("committed six-hour refresh incorrectly required twelve hours or a hint: %v", err)
+			}
+			for _, id := range []string{recoveryShipCharizard, recoveryShipLapras} {
+				if changed, _, err := runner.considerSourcing(h.ctx, harnessShip(t, runner, id)); err != nil || changed {
+					t.Fatalf("a second fleet refresh was admitted in flight: changed=%v err=%v", changed, err)
+				}
+			}
+		})
+	}
+}
+
+func TestBookRefreshRequiresTwoMissionFreeStationaryShips(t *testing.T) {
+	for _, scenario := range []string{"one stationary", "other ships have missions", "two stationary"} {
+		t.Run(scenario, func(t *testing.T) {
+			h, runner := bookRefreshRunner(t, 6)
+			switch scenario {
+			case "one stationary":
+				for i := range runner.stateCache.Ships {
+					if runner.stateCache.Ships[i].Ship.ID != recoveryShipBlastoise {
+						runner.stateCache.Ships[i].Ship.Status = "sailing"
+					}
+				}
+			case "other ships have missions":
+				for _, id := range []string{recoveryShipLapras, recoveryShipCharizard} {
+					h.putMission(id, "refresh-unavailable-"+id, "maintenance", missionData{
+						Plan: Plan{Kind: "maintenance", ShipID: id, Origin: "hamburg", Destination: "hamburg"}, CostsKnown: true,
+					})
+				}
+			case "two stationary":
+				runner.stateCache.Ships = runner.stateCache.Ships[1:]
+			}
+			changed, reason, err := runner.considerSourcing(h.ctx, harnessShip(t, runner, recoveryShipBlastoise))
+			if err != nil || changed != (scenario == "two stationary") {
+				t.Fatalf("%s refresh admission: changed=%v reason=%q err=%v", scenario, changed, reason, err)
+			}
+		})
+	}
+}
+
+func TestBookRefreshNeverPreemptsAnAcceptedHintedScout(t *testing.T) {
+	for _, designatedHours := range []int64{6, 12} {
+		t.Run(fmt.Sprint(designatedHours), func(t *testing.T) {
+			h, runner := scoutAcceptanceRunner(t)
+			idle := decode[map[string]shipIdleState](runner.snapshot, "_ship_idle")
+			observed := idle[recoveryShipBlastoise]
+			observed.EarnedGameHours = designatedHours
+			idle[recoveryShipBlastoise] = observed
+			runner.snapshot["_ship_idle"] = encode(idle)
+			changed, reason, err := runner.considerSourcing(h.ctx, harnessShip(t, runner, recoveryShipBlastoise))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if designatedHours == 6 {
+				if changed || !strings.Contains(reason, "designated scout") {
+					t.Fatalf("six-hour refresh preempted another ship's accepted hinted scout: changed=%v reason=%q", changed, reason)
+				}
+				return
+			}
+			if !changed {
+				t.Fatalf("accepted hinted scout was not admitted: %s", reason)
+			}
+			_, data := h.mission(recoveryShipBlastoise)
+			if isBookRefresh(data.Plan) || len(runner.snapshot["_book_refresh"]) != 0 {
+				t.Fatal("a hinted scout consumed the book refresh cooldown")
+			}
+		})
+	}
+}
+
+func TestBookRefreshCooldownPersistsAndEndsAtTwentyFourGameDays(t *testing.T) {
+	h, runner := bookRefreshRunner(t, 6)
+	_, first := scoutAcceptanceAdmit(t, h, runner)
+	if !isBookRefresh(first.Plan) {
+		t.Fatalf("fixture admitted a hinted scout instead of refresh: %+v", first.Plan)
+	}
+	saved, err := h.db.Snapshot(h.ctx, h.account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := decode[bookRefreshState](saved, "_book_refresh")
+	if last.StartedAt.IsZero() || last.StartedGameHour != runner.stateCache.Clock.Calendar.TotalGameHours {
+		t.Fatalf("refresh admission did not persist its game-hour cooldown: %+v", last)
+	}
+	// Clear the durable mission as if the attempt ended. The retained snapshot,
+	// not an in-memory mission or target cooldown, must bound the next refresh.
+	if err := h.db.DeleteMission(h.ctx, h.account.ID, recoveryShipBlastoise); err != nil {
+		t.Fatal(err)
+	}
+	runner.snapshot = saved
+	for _, elapsed := range []int64{24*24 - 1, 24 * 24} {
+		runner.stateCache.Clock.Calendar.TotalGameHours = last.StartedGameHour + elapsed
+		idle := decode[map[string]shipIdleState](runner.snapshot, "_ship_idle")
+		for id, observed := range idle {
+			observed.LastValidatedGameHour = runner.stateCache.Clock.Calendar.TotalGameHours
+			idle[id] = observed
+		}
+		runner.snapshot["_ship_idle"] = encode(idle)
+		changed, reason, err := runner.considerSourcing(h.ctx, harnessShip(t, runner, recoveryShipBlastoise))
+		if err != nil || changed != (elapsed == 24*24) {
+			t.Fatalf("refresh at +%dgh: changed=%v reason=%q err=%v", elapsed, changed, reason, err)
+		}
+		if !changed && !strings.Contains(reason, "24 game days") {
+			t.Fatalf("refresh cooldown lost its game-time explanation: %q", reason)
+		}
+	}
+}
+
+func TestBookRefreshSendsBallastAndCountsAsUnconvertedScout(t *testing.T) {
+	h, runner := bookRefreshRunner(t, 6)
+	_, data := scoutAcceptanceAdmit(t, h, runner)
+	target, lane := data.Plan.Destination, data.ProvenLane
+	scoutAcceptanceServeDeparture(t, h, runner)
+	for range 10 {
+		mission, current := h.mission(recoveryShipBlastoise)
+		if _, err := runner.driveMission(h.ctx, harnessShip(t, runner, recoveryShipBlastoise), mission, &current); err != nil {
+			t.Fatal(err)
+		}
+		if h.api.mutationCount("/v1/fleet/depart") > 0 {
+			break
+		}
+	}
+	if h.api.mutationCount("/v1/fleet/depart") != 1 {
+		t.Fatalf("no-hint refresh failed to send exactly one ballast departure: holds=%+v", runner.holding)
+	}
+	for i := range runner.stateCache.Ships {
+		if runner.stateCache.Ships[i].Ship.ID == recoveryShipBlastoise {
+			ship := &runner.stateCache.Ships[i]
+			ship.Ship.CurrentPortID, ship.Ship.Status, ship.Voyage = target, "anchored_roadstead", nil
+			ship.Stores.ProvisionsTons -= 0.1
+		}
+	}
+	runner.stateCache.Clock.Calendar.TotalGameHours++
+	for range 2 {
+		mission, current := h.mission(recoveryShipBlastoise)
+		if _, err := runner.driveMission(h.ctx, harnessShip(t, runner, recoveryShipBlastoise), mission, &current); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := destinationSettlements(t, h, lane)
+	if len(rows) != 1 || rows[0].ProceedsPence != 0 || rows[0].QuantityTons != 0 {
+		t.Fatalf("refresh did not settle as a zero-income ballast scout: %+v", rows)
+	}
+	history := probeHistoryFixture()
+	history.settlement(rows[0], nil)
+	if history.ScoutFailures != 1 {
+		t.Fatalf("refresh escaped the fleet nonconversion bound: %+v", history)
+	}
+	history.departure("trader", "hamburg", rows[0].CompletedAt.Add(time.Second), true, shipIdleState{})
+	if history.ScoutFailures != 1 {
+		t.Fatal("a laden departure elsewhere released the refresh failure")
+	}
+	history.departure("trader", target, rows[0].CompletedAt.Add(2*time.Second), true, shipIdleState{})
+	if history.ScoutFailures != 0 {
+		t.Fatal("a laden departure from the refreshed port did not release the fleet bound")
+	}
+}
+
+func TestBookRefreshWaitsForAcceptedHintAtAnotherFleetPort(t *testing.T) {
+	h, runner := scoutAcceptanceRunner(t)
+	idle := decode[map[string]shipIdleState](runner.snapshot, "_ship_idle")
+	for id, observed := range idle {
+		observed.EarnedGameHours = 6
+		idle[id] = observed
+	}
+	other := harnessShip(t, runner, recoveryShipBlastoise)
+	other.Ship.ID = "44444444-4444-4444-8444-000000000001"
+	other.Ship.CurrentPortID = "amsterdam"
+	runner.stateCache.Ships = append(runner.stateCache.Ships, other)
+	idle[other.Ship.ID] = shipIdleState{
+		PortID: "amsterdam", EarnedGameHours: 12, Validated: true,
+		LastValidatedGameHour: runner.stateCache.Clock.Calendar.TotalGameHours, LastClockUTC: runner.stateCache.Clock.RealUTC,
+	}
+	runner.snapshot["_ship_idle"] = encode(idle)
+	book := runner.stateCache.Markets["hamburg"]
+	book.PortID = "amsterdam"
+	runner.stateCache.Markets["amsterdam"] = book
+	runner.meta["books/amsterdam"] = runner.meta["books/hamburg"]
+	for _, pair := range [][2]string{{"amsterdam", "flushing"}, {"flushing", "amsterdam"}} {
+		key := routeKey(pair[0], pair[1], "hoy")
+		runner.stateCache.Routes[key] = sourcingRoute(pair[0], pair[1], 30)
+		runner.meta["routes/"+key] = runner.meta["routes/"+routeKey("hamburg", "flushing", "hoy")]
+	}
+	input, err := runner.sourcingInput(h.ctx, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := scoutAcceptancePlan(t, scoutCandidates(input, runner.scoutBlockedPorts(input, nil)), "flushing"); !got.Accepted {
+		t.Fatalf("fixture has no accepted hinted scout at the other port: %+v", got)
+	}
+	changed, reason, err := runner.considerSourcing(h.ctx, harnessShip(t, runner, recoveryShipBlastoise))
+	if err != nil || changed || !strings.Contains(reason, "hinted scout on another ship takes priority") {
+		t.Fatalf("book refresh preempted an accepted hinted fleet scout: changed=%v reason=%q err=%v", changed, reason, err)
+	}
+}
+
+func TestBookRefreshDesignationSkipsInadmissibleAndNonidleShips(t *testing.T) {
+	for _, blocker := range []string{"convoy", "sealed freight", "not idle", "no observed idle", "regressed idle clock"} {
+		t.Run(blocker, func(t *testing.T) {
+			h, runner := bookRefreshRunner(t, 6)
+			switch blocker {
+			case "convoy":
+				for i := range runner.stateCache.Ships {
+					if runner.stateCache.Ships[i].Ship.ID == recoveryShipBlastoise {
+						runner.stateCache.Ships[i].Ship.ConvoyID = "unavailable-convoy"
+					}
+				}
+			case "sealed freight":
+				runner.stateCache.Contracts = []Contract{{ID: "unavailable-freight", ContractType: "freight", Status: "active",
+					CarrierCompanyID: recoveryCompanyID, CarrierShipID: recoveryShipBlastoise}}
+			case "not idle", "no observed idle", "regressed idle clock":
+				idle := decode[map[string]shipIdleState](runner.snapshot, "_ship_idle")
+				observed := idle[recoveryShipBlastoise]
+				switch blocker {
+				case "not idle":
+					observed.EarnedGameHours = sourcingIdleGameHours - 1
+				case "no observed idle":
+					observed.EarnedGameHours = 0
+				case "regressed idle clock":
+					observed.ClockRegressed = true
+				}
+				idle[recoveryShipBlastoise] = observed
+				runner.snapshot["_ship_idle"] = encode(idle)
+			}
+			for _, id := range []string{recoveryShipLapras, recoveryShipCharizard} {
+				changed, reason, err := runner.considerSourcing(h.ctx, harnessShip(t, runner, id))
+				if err != nil || changed != (id == recoveryShipCharizard) {
+					t.Fatalf("%s: refresh for %s changed=%v reason=%q err=%v", blocker, id, changed, reason, err)
+				}
+			}
+			_, data := h.mission(recoveryShipCharizard)
+			if !isBookRefresh(data.Plan) || scoutAcceptanceMissionCount(t, h, runner) != 1 {
+				t.Fatalf("%s: admissible replacement did not exclusively own the refresh: %+v", blocker, data)
+			}
+			h.missingMission(recoveryShipBlastoise)
+		})
+	}
+}
+
+func TestBookRefreshWithoutEligibleShipDoesNotDesignateOne(t *testing.T) {
+	for _, blocker := range []string{"convoy", "not idle"} {
+		t.Run(blocker, func(t *testing.T) {
+			h, runner := bookRefreshRunner(t, sourcingIdleGameHours-1)
+			if blocker == "convoy" {
+				for i := range runner.stateCache.Ships {
+					runner.stateCache.Ships[i].Ship.ConvoyID = "unavailable-convoy"
+				}
+			}
+			for _, ship := range runner.stateCache.Ships {
+				in, err := runner.sourcingInput(h.ctx, ship)
+				if err != nil {
+					t.Fatal(err)
+				}
+				plans, reason, err := runner.scoutingPlans(h.ctx, in, nil)
+				if err != nil || strings.Contains(reason, "designated") {
+					t.Fatalf("%s: an ineligible ship blocked %s by designation: plans=%+v reason=%q err=%v", blocker, ship.Ship.ID, plans, reason, err)
+				}
+				for _, plan := range plans {
+					if plan.Accepted {
+						t.Fatalf("%s: no eligible ship may start a refresh: %+v", blocker, plan)
+					}
+				}
+			}
+			if scoutAcceptanceMissionCount(t, h, runner) != 0 {
+				t.Fatal("an ineligible designation created a mission")
+			}
+		})
+	}
+}
+
+func TestBookRefreshRollingUnknownCostsAndRefusedSpendPreserveCooldownAndFailures(t *testing.T) {
+	for _, refusal := range []string{"none", "new unknown cost", "reduced cap", "reduced cap without prior"} {
+		t.Run(refusal, func(t *testing.T) {
+			h, runner := bookRefreshRunner(t, 6)
+			now := time.Now().UTC()
+			window := time.Duration(sourcingBudgetGameDays*24*int64(time.Hour)) / time.Duration(runner.stateCache.Clock.Calendar.TimeScale)
+			idleFallbackSettlement(t, h, store.Settlement{ID: "refresh-aged-unknown", Kind: "relocation", CostsKnown: false,
+				CompletedAt: now.Add(-window - time.Second)})
+			lifetime, err := h.db.EconomicHistory(h.ctx, h.account.ID, "")
+			if err != nil || !lifetime.UnknownProbeCosts {
+				t.Fatalf("fixture has no lifetime unknown-cost probe: %+v %v", lifetime, err)
+			}
+			runner.refreshSourcingHistory(h.ctx, runner.planningInput(ShipState{}))
+			runner.refreshSourcingBudget(h.ctx, runner.planningInput(ShipState{}))
+			if runner.sourcingHistory.UnknownCost {
+				t.Fatal("old unknown probe entered the rolling admission flag")
+			}
+			previous := bookRefreshState{StartedAt: now.Add(-48 * time.Hour),
+				StartedGameHour: runner.stateCache.Clock.Calendar.TotalGameHours - bookRefreshCooldownGameHours}
+			if refusal == "reduced cap without prior" {
+				previous = bookRefreshState{}
+			} else {
+				runner.snapshot["_book_refresh"] = encode(previous)
+			}
+			mission, data := scoutAcceptanceAdmit(t, h, runner)
+			if !isBookRefresh(data.Plan) {
+				t.Fatal("fixture did not admit a book refresh")
+			}
+			ship := harnessShip(t, runner, recoveryShipBlastoise)
+			if err := runner.relocationSpendingReadyAtPrice(h.ctx, ship, &data, 0, 0); err != nil {
+				t.Fatalf("aged unknown probe vetoed an admitted refresh: %v", err)
+			}
+			if refusal == "none" {
+				return
+			}
+			if refusal == "new unknown cost" {
+				idleFallbackSettlement(t, h, store.Settlement{ID: "refresh-current-unknown", Kind: "relocation", CostsKnown: false})
+			} else {
+				data.Relocation.ExpenseCapPence = 1
+			}
+			if err := runner.saveMission(h.ctx, mission, &data); err != nil {
+				t.Fatal(err)
+			}
+			for range 3 {
+				mission, current, err := runner.loadMission(h.ctx, ship.Ship.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mission == nil {
+					break
+				}
+				if _, err := runner.driveMission(h.ctx, ship, mission, &current); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.missingMission(ship.Ship.ID)
+			saved, err := h.db.Snapshot(h.ctx, h.account.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			last := decode[bookRefreshState](saved, "_book_refresh")
+			if last.StartedGameHour != previous.StartedGameHour || !last.StartedAt.Equal(previous.StartedAt) {
+				t.Fatalf("refused spend burned the prior refresh cooldown: got %+v want %+v", last, previous)
+			}
+			if previous.StartedAt.IsZero() && len(saved["_book_refresh"]) != 0 {
+				t.Fatal("refused first refresh left a durable cooldown reservation")
+			}
+			outcomes, err := runner.readProbeOutcomes(h.ctx, runner.planningInput(ship))
+			if err != nil || outcomes.ScoutFailures != 0 {
+				t.Fatalf("refused refresh counted as an unconverted scout: %+v %v", outcomes, err)
+			}
+			if h.api.mutationCount("/v1/fleet/depart")+h.api.mutationCount("/v1/market/place-order") != 0 {
+				t.Fatal("refused refresh sent a game mutation")
 			}
 		})
 	}

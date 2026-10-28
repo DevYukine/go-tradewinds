@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -25,13 +26,26 @@ type MoneyHistory struct {
 // with a known basis, and remain null when a period has none. Missing periods
 // are not filled with invented zero activity.
 type MoneyPeriod struct {
-	At         time.Time `json:"at"`
-	To         time.Time `json:"to"`
-	Count      int64     `json:"count"`
-	KnownCount int64     `json:"known_count"`
-	GrossPence int64     `json:"gross_pence"`
-	CostsPence *int64    `json:"costs_pence"`
-	NetPence   *int64    `json:"net_pence"`
+	At                   time.Time `json:"at"`
+	To                   time.Time `json:"to"`
+	Count                int64     `json:"count"`
+	KnownCount           int64     `json:"known_count"`
+	GrossPence           int64     `json:"gross_pence"`
+	UnknownProceedsCount int64     `json:"unknown_proceeds_count,omitempty"`
+	CostsPence           *int64    `json:"costs_pence"`
+	NetPence             *int64    `json:"net_pence"`
+}
+
+func (value MoneyPeriod) MarshalJSON() ([]byte, error) {
+	type moneyPeriodJSON MoneyPeriod
+	var gross *int64
+	if value.UnknownProceedsCount == 0 {
+		gross = &value.GrossPence
+	}
+	return json.Marshal(struct {
+		moneyPeriodJSON
+		GrossPence *int64 `json:"gross_pence"`
+	}{moneyPeriodJSON: moneyPeriodJSON(value), GrossPence: gross})
 }
 
 func moneyBucketSeconds(spanSeconds int64) int64 {
@@ -112,6 +126,7 @@ func (s *Store) MoneyHistory(ctx context.Context, accountID string, from, to tim
 				least(bucket + ? * interval '1 second', ?::timestamptz) AS to,
 				count(*) AS count, count(*) FILTER (WHERE costs_known) AS known_count,
 				sum(proceeds_pence::numeric) AS gross_pence,
+				count(*) FILTER (WHERE proceeds_unknown) AS unknown_proceeds_count,
 				sum(acquisition_pence::numeric + fees_pence + provisions_pence + expenses_pence)
 					FILTER (WHERE costs_known) AS costs_pence,
 				sum(proceeds_pence::numeric - acquisition_pence - fees_pence - provisions_pence - expenses_pence)

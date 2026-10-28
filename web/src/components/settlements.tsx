@@ -19,7 +19,9 @@ import styles from "./operations.module.css";
 import viewStyles from "./world-views.module.css";
 
 function realizedNet(item: Settlement): number | undefined {
-  return item.costs_known
+  return item.costs_known &&
+    item.proceeds_pence !== null &&
+    item.proceeds_unknown !== true
     ? item.proceeds_pence -
         item.acquisition_pence -
         item.fees_pence -
@@ -62,7 +64,7 @@ export function SettlementLedger({
         .toLowerCase()
         .includes(search.toLowerCase()),
   );
-  const known = entries.filter((item) => item.costs_known);
+  const known = entries.filter((item) => realizedNet(item) !== undefined);
   const net = known.length
     ? known.reduce((sum, item) => sum + (realizedNet(item) ?? 0), 0)
     : undefined;
@@ -80,7 +82,7 @@ export function SettlementLedger({
       count: number;
       known: number;
       quantity: number;
-      proceeds: number;
+      proceeds: number | null;
       net: number;
     }
   >();
@@ -95,7 +97,12 @@ export function SettlementLedger({
     };
     summary.count++;
     summary.quantity += item.quantity_tons;
-    summary.proceeds += item.proceeds_pence;
+    summary.proceeds =
+      summary.proceeds === null ||
+      item.proceeds_pence === null ||
+      item.proceeds_unknown === true
+        ? null
+        : summary.proceeds + item.proceeds_pence;
     const itemNet = realizedNet(item);
     if (itemNet !== undefined) {
       summary.known++;
@@ -117,7 +124,7 @@ export function SettlementLedger({
     >
       <p className={styles.note}>
         Completed missions only. Net deducts acquisition, fees, provisions and
-        expenses from proceeds. Unknown costs stay unknown.
+        expenses from proceeds. Unknown costs and proceeds stay unknown.
       </p>
       <div className={styles.toolbar}>
         <label>
@@ -221,17 +228,25 @@ export function SettlementLedger({
           <dd>{count(known.length)}</dd>
         </div>
         <div>
-          <dt>Costs unknown</dt>
+          <dt>Costs or proceeds unknown</dt>
           <dd>{count(entries.length - known.length)}</dd>
         </div>
         <div>
           <dt>Sample proceeds</dt>
           <dd>
-            {money(
-              entries.length
-                ? entries.reduce((sum, item) => sum + item.proceeds_pence, 0)
-                : undefined,
-            )}
+            {entries.some(
+              (item) =>
+                item.proceeds_pence === null || item.proceeds_unknown === true,
+            )
+              ? "Proceeds unknown"
+              : money(
+                  entries.length
+                    ? entries.reduce(
+                        (sum, item) => sum + item.proceeds_pence!,
+                        0,
+                      )
+                    : undefined,
+                )}
           </dd>
         </div>
       </dl>
@@ -275,8 +290,11 @@ export function SettlementLedger({
             },
             {
               label: "Proceeds subtotal",
-              value: (row) => row.proceeds,
-              render: (row) => money(row.proceeds),
+              value: (row) => row.proceeds ?? undefined,
+              render: (row) =>
+                row.proceeds === null
+                  ? "Proceeds unknown"
+                  : money(row.proceeds),
               className: styles.numeric,
             },
             {
@@ -304,7 +322,7 @@ export function SettlementLedger({
               className: styles.numeric,
             },
             {
-              label: "Unknown-cost count",
+              label: "Unknown costs or proceeds",
               value: (row) => row.count - row.known,
               render: (row) => count(row.count - row.known),
               className: styles.numeric,
@@ -385,8 +403,11 @@ export function SettlementLedger({
             },
             {
               label: "Proceeds",
-              value: (item) => item.proceeds_pence,
-              render: (item) => money(item.proceeds_pence),
+              value: (item) => item.proceeds_pence ?? undefined,
+              render: (item) =>
+                item.proceeds_pence === null || item.proceeds_unknown
+                  ? "Proceeds unknown"
+                  : money(item.proceeds_pence),
               className: styles.numeric,
             },
             {
@@ -396,7 +417,9 @@ export function SettlementLedger({
                 const amount = realizedNet(item);
                 return amount === undefined ? (
                   <Badge tone="warning" icon={AlertTriangle}>
-                    Costs unknown
+                    {item.proceeds_pence === null || item.proceeds_unknown
+                      ? "Proceeds unknown"
+                      : "Costs unknown"}
                   </Badge>
                 ) : (
                   <span
@@ -461,8 +484,16 @@ export function SettlementLedger({
                     </div>
                     <div>
                       <dt>Action ID</dt>
-                      <dd className={styles.identifier}>{item.action_id}</dd>
+                      <dd className={styles.identifier}>
+                        {item.action_id || "Not recorded"}
+                      </dd>
                     </div>
+                    {item.event_id && (
+                      <div>
+                        <dt>Event ID</dt>
+                        <dd className={styles.identifier}>{item.event_id}</dd>
+                      </div>
+                    )}
                   </dl>
                 </details>
               ),
@@ -548,8 +579,11 @@ export function RecentSettlements({ account }: { account: Account }) {
           },
           {
             label: "Proceeds",
-            value: (item) => item.proceeds_pence,
-            render: (item) => money(item.proceeds_pence),
+            value: (item) => item.proceeds_pence ?? undefined,
+            render: (item) =>
+              item.proceeds_pence === null || item.proceeds_unknown
+                ? "Proceeds unknown"
+                : money(item.proceeds_pence),
             className: styles.numeric,
           },
           {
@@ -559,7 +593,9 @@ export function RecentSettlements({ account }: { account: Account }) {
               const amount = realizedNet(item);
               return amount === undefined ? (
                 <Badge tone="warning" icon={AlertTriangle}>
-                  Costs unknown
+                  {item.proceeds_pence === null || item.proceeds_unknown
+                    ? "Proceeds unknown"
+                    : "Costs unknown"}
                 </Badge>
               ) : (
                 <span

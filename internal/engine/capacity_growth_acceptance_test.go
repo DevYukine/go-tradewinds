@@ -13,6 +13,9 @@ func capacityGrowthAcceptanceInput() CapacityGrowthInput {
 		InitialStoresPence:           50_000,
 		SurplusPence:                 11_300_000,
 		CandidateRatePencePerGameDay: 1_733_800.0 / 60,
+		MeasuredRatePencePerGameDay:  1_000_000,
+		SampleHullGameDays:           30,
+		MeasuredNetAvailable:         true,
 		FleetSize:                    5,
 		LotCashPence:                 480_000,
 		IncrementalDailyUpkeepPence:  1_192,
@@ -84,7 +87,7 @@ func TestEvaluateCapacityGrowthRejectRules(t *testing.T) {
 	}
 }
 
-func TestEvaluateCapacityGrowthOneShipWithoutHistory(t *testing.T) {
+func TestEvaluateCapacityGrowthOneShipAtSuppliedEarningRate(t *testing.T) {
 	t.Parallel()
 	in := capacityGrowthAcceptanceInput()
 	in.FleetSize = 1
@@ -92,7 +95,7 @@ func TestEvaluateCapacityGrowthOneShipWithoutHistory(t *testing.T) {
 	in.CandidateRatePencePerGameDay = 10_000
 	got := EvaluateCapacityGrowth(in)
 	if !got.Accepted || got.PaybackGameDays > 420 {
-		t.Fatalf("one-ship fleet without earnings history rejected: %+v", got)
+		t.Fatalf("one-ship fleet at the supplied earning rate rejected: %+v", got)
 	}
 	capital := growthCashTotal(got.QuotedHullPence, got.SlippageReservePence, got.CannonsPence, got.InitialStoresPence)
 	in.CandidateRatePencePerGameDay = float64(capital)/421 + float64(in.IncrementalDailyUpkeepPence)

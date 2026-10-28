@@ -2,6 +2,7 @@ package gameapi
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -28,20 +29,21 @@ type RecipeInput struct {
 }
 
 type Port struct {
-	ID                string   `json:"id"`
-	Name              string   `json:"name"`
-	BankingRegion     string   `json:"banking_region"`
-	SeaZoneID         string   `json:"sea_zone_id"`
-	Phase             int32    `json:"phase"`
-	IsHub             bool     `json:"is_hub"`
-	HasShipyard       bool     `json:"has_shipyard"`
-	CustomsBPS        int64    `json:"customs_bps"`
-	BaseBerths        int32    `json:"base_berths"`
-	EffectiveBerths   int32    `json:"effective_berths"`
-	TotalWarehouseCap int32    `json:"total_warehouse_cap"`
-	Produces          []string `json:"produces"`
-	Manufactures      []string `json:"manufactures"`
-	Imports           []string `json:"imports"`
+	ID                string        `json:"id"`
+	Name              string        `json:"name"`
+	BankingRegion     string        `json:"banking_region"`
+	SeaZoneID         string        `json:"sea_zone_id"`
+	Phase             int32         `json:"phase"`
+	IsHub             bool          `json:"is_hub"`
+	HasShipyard       bool          `json:"has_shipyard"`
+	YardDiscount      *YardDiscount `json:"yard_discount"`
+	CustomsBPS        int64         `json:"customs_bps"`
+	BaseBerths        int32         `json:"base_berths"`
+	EffectiveBerths   int32         `json:"effective_berths"`
+	TotalWarehouseCap int32         `json:"total_warehouse_cap"`
+	Produces          []string      `json:"produces"`
+	Manufactures      []string      `json:"manufactures"`
+	Imports           []string      `json:"imports"`
 }
 
 type ShipClass struct {
@@ -51,11 +53,30 @@ type ShipClass struct {
 	Phase               int32                     `json:"phase"`
 	BaseSpeedCentiknots int32                     `json:"base_speed_centiknots"`
 	HoldCapacityTons    int32                     `json:"hold_capacity_tons"`
+	PassengersPerTon    int32                     `json:"passengers_per_ton"`
 	MaxCannons          int32                     `json:"max_cannons"`
 	CrewRequired        int32                     `json:"crew_required"`
 	BaseLaborCostPence  int64                     `json:"base_labor_cost_pence"`
 	BuildMaterials      []ShipMaterialRequirement `json:"build_materials"`
 	CanSealDispatches   bool                      `json:"can_seal_dispatches"`
+}
+
+type YardDiscount struct {
+	LabourDiscountBPS   int32 `json:"labour_discount_bps"`
+	TurnkeyMarkupWaived bool  `json:"turnkey_markup_waived"`
+}
+
+type MortgageTerms struct {
+	LenderCompanyID     string `json:"lender_company_id"`
+	LenderName          string `json:"lender_name"`
+	PrincipalPence      int64  `json:"principal_pence"`
+	AnnualRateBPS       int32  `json:"annual_rate_bps"`
+	TermGameDays        int32  `json:"term_game_days"`
+	Repayment           string `json:"repayment"`
+	Installments        int32  `json:"installments"`
+	InstallmentPence    *int64 `json:"installment_pence"`
+	TotalRepayablePence int64  `json:"total_repayable_pence"`
+	Available           bool   `json:"available"`
 }
 
 type ShipMaterialRequirement struct {
@@ -182,6 +203,52 @@ type Route struct {
 	SafeProvisionsTons       float64    `json:"safe_provisions_tons"`
 	PortProvisionsTonsPerDay float64    `json:"port_provisions_tons_per_day"`
 	Legs                     []RouteLeg `json:"legs"`
+}
+
+type PassengerWaitingGroup struct {
+	ID           string    `json:"id"`
+	Kind         string    `json:"kind"`
+	Size         int64     `json:"size"`
+	OriginPortID string    `json:"origin_port_id"`
+	DestPortID   string    `json:"dest_port_id"`
+	BoardBy      time.Time `json:"board_by"`
+}
+
+type PassengerOffer struct {
+	ID               string     `json:"id"`
+	ShipID           string     `json:"ship_id"`
+	PortID           string     `json:"port_id"`
+	DestPortID       string     `json:"dest_port_id"`
+	FarePerHeadPence int64      `json:"fare_per_head_pence"`
+	MaxBerths        int64      `json:"max_berths"`
+	BerthsTaken      int64      `json:"berths_taken"`
+	Status           string     `json:"status"`
+	CreatedAt        time.Time  `json:"created_at"`
+	CloseReason      string     `json:"close_reason"`
+	ClosedAt         *time.Time `json:"closed_at"`
+}
+
+type PassengerAboardGroup struct {
+	ID                string     `json:"id"`
+	Kind              string     `json:"kind"`
+	Size              int64      `json:"size"`
+	OriginPortID      string     `json:"origin_port_id"`
+	DestPortID        string     `json:"dest_port_id"`
+	FarePerHeadPence  int64      `json:"fare_per_head_pence"`
+	FullFarePence     int64      `json:"full_fare_pence"`
+	HoldTons          int64      `json:"hold_tons"`
+	BoardedAt         *time.Time `json:"boarded_at"`
+	PromisedArrivalAt *time.Time `json:"promised_arrival_at"`
+}
+
+type PassengerFare struct {
+	ID               string    `json:"id"`
+	Kind             string    `json:"kind"`
+	OriginPortID     string    `json:"origin_port_id"`
+	DestPortID       string    `json:"dest_port_id"`
+	Size             int64     `json:"size"`
+	FarePerHeadPence int64     `json:"fare_per_head_pence"`
+	AcceptedAt       time.Time `json:"accepted_at"`
 }
 
 type Book struct {
@@ -327,6 +394,7 @@ type Loan struct {
 	NextPaymentPence            *int64     `json:"next_payment_pence"`
 	ArrearsPence                int64      `json:"arrears_pence"`
 	ArrearsDueBy                *time.Time `json:"arrears_due_by"`
+	IsMortgage                  bool       `json:"is_mortgage"`
 	Recourse                    bool       `json:"recourse"`
 	CollateralKind              string     `json:"collateral_kind"`
 	CollateralShipID            *string    `json:"collateral_ship_id"`
@@ -357,6 +425,29 @@ type Loan struct {
 	QuoteID                     *string    `json:"quote_id"`
 	CreatedAt                   time.Time  `json:"created_at"`
 	UpdatedAt                   time.Time  `json:"updated_at"`
+}
+
+func (l *Loan) UnmarshalJSON(raw []byte) error {
+	type loanFields Loan
+	var decoded struct {
+		loanFields
+		IsMortgage json.RawMessage `json:"is_mortgage"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	*l = Loan(decoded.loanFields)
+	if decoded.IsMortgage == nil {
+		// Durable mission JSON written before is_mortgage existed must still
+		// load; live captures reject the missing classification themselves.
+		return nil
+	}
+	var mortgage *bool
+	if err := json.Unmarshal(decoded.IsMortgage, &mortgage); err != nil || mortgage == nil {
+		return errors.New("loan has unknown is_mortgage")
+	}
+	l.IsMortgage = *mortgage
+	return nil
 }
 
 // LoanQuote is a stored lender or Goldsmiths quote. AnnualRateBPS is interest

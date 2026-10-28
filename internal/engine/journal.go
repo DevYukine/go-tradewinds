@@ -177,7 +177,16 @@ func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission,
 
 // dispatch always uses the journal's immutable request, including on the first
 // attempt. It never reconstructs a request from a newly calculated plan.
-func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *missionData) (bool, error) {
+func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *missionData) (changed bool, err error) {
+	if data.Passage == nil && data.Action != nil && passengerStage(data.Action.Stage) {
+		return r.quarantinePassage(ctx, mission, data, errors.New("passenger journal action lacks its durable passage intent"))
+	}
+	if data.Passage != nil {
+		defer r.quarantinePassageError(ctx, mission, data, &changed, &err)
+		if data.Passage.QuarantineReason != "" {
+			return false, nil
+		}
+	}
 	if data.Action == nil {
 		return false, nil
 	}
@@ -229,8 +238,16 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 		if evidence.Kind == neverSentFinancialEvent || evidence.Kind == neverSentPrecondition || evidence.Kind == neverSentControlEvent {
 			return r.replanUnsentAction(ctx, mission, data)
 		}
-		if action.Stage == "build" && evidence.Kind == "authoritative_named_build" &&
+		if passengerStage(action.Stage) {
+			return r.reconcilePassengerAction(ctx, mission, data, persisted)
+		}
+		if action.Stage == "build" && (evidence.Kind == "authoritative_named_build" || evidence.Kind == "authoritative_named_mortgage_build") &&
 			evidence.Ship.Ship.ID != "" && evidence.Ship.Ship.Name == data.BuildName && evidence.Ship.Ship.ShipClass == data.BuildClass {
+			if data.Capacity != nil && data.Capacity.Mortgage != nil &&
+				(evidence.Kind != "authoritative_named_mortgage_build" || !evidence.Loan.IsMortgage ||
+					evidence.Loan.CollateralShipID == nil || *evidence.Loan.CollateralShipID != evidence.Ship.Ship.ID) {
+				return false, r.hold(ctx, mission.ShipID, "mortgaged build reconciliation requires its named hull and mortgage loan")
+			}
 			data.BuiltShipID = evidence.Ship.Ship.ID
 		}
 		if action.Stage == "marque" && evidence.Kind == "authoritative_marque" && data.Marque != nil &&
@@ -259,6 +276,9 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 	if !firstSend {
 		if changed, err := r.reconcileObservedAction(ctx, mission, data, persisted); changed || err != nil {
 			return changed, err
+		}
+		if passengerStage(action.Stage) && (data.Passage == nil || !data.Passage.RetryOffer) {
+			return false, r.holdUnresolvedAction(ctx, mission.ShipID, action, "passenger action awaits bounded request-specific GET evidence before replay")
 		}
 	}
 	if time.Now().Before(data.CooldownUntil) {
@@ -369,7 +389,7 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 	if err := r.db.CompleteAction(ctx, persisted.ID, status, response, retryAfter); err != nil {
 		return false, err
 	}
-	changed, err := r.consumeResult(ctx, mission, data, status, response)
+	changed, err = r.consumeResult(ctx, mission, data, status, response)
 	if status >= 400 && status < 500 {
 		r.logRejectedAction(ctx, mission, data, action, status, response)
 	}
@@ -799,7 +819,7 @@ func (r *Runner) reconcileExpired(ctx context.Context, mission *store.Mission, d
 	if changed, err := r.reconcileObservedAction(ctx, mission, data, action); changed || err != nil {
 		return changed, err
 	}
-	if data.Action != nil && data.Action.Stage == "build" && r.fresh("ships") {
+	if data.Action != nil && data.Action.Stage == "build" && r.fresh("ships") && (data.Capacity == nil || data.Capacity.Mortgage == nil) {
 		for _, candidate := range r.stateCache.Ships {
 			if candidate.Ship.Name == data.BuildName && candidate.Ship.ShipClass == data.BuildClass {
 				evidence := encode(map[string]any{"kind": "authoritative_named_build", "ship": candidate, "observed_at": r.meta["ships"].UpdatedAt})
@@ -835,6 +855,7 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 		mission.Phase = "done"
 	case "depart":
 		data.DepartedCargo = data.Action.Before.CargoManifest
+		recordDepartureCargoCost(data, data.DepartedCargo)
 		mission.Phase = "sailing"
 		if data.ReturnJourney {
 			mission.Phase = "return_sailing"
@@ -847,6 +868,8 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 	case "offshore":
 		if mission.Phase == "closing" {
 			data.ClosingObservedAt = time.Now()
+		} else if data.Passage != nil {
+			mission.Phase = "passenger_loading"
 		} else if data.Plan.Kind == "maintenance" {
 			mission.Phase = "maintenance_done"
 		}
@@ -918,6 +941,9 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		return errors.New("new action requires current successful server clock authority")
 	}
 	action := data.Action
+	if passengerStage(action.Stage) {
+		return r.passengerActionReady(ctx, mission, data)
+	}
 	if action.Stage == "hire-factor" {
 		target, err := r.liveCapacitySavingsTarget(ctx)
 		if err != nil {
@@ -925,6 +951,45 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		}
 		if target.PortID != "" {
 			return errors.New(capacitySavingsReason)
+		}
+		for _, dataset := range []string{"catalog", "ships", "factors", "vaults", "rates", "profile"} {
+			if !r.fresh(dataset) {
+				return errors.New("expansion agent requires current successful " + dataset + " authority")
+			}
+		}
+		var hire struct {
+			PortID string `json:"port_id"`
+		}
+		if json.Unmarshal(action.Body, &hire) != nil {
+			return errors.New("expansion agent has an invalid immutable request")
+		}
+		yard, exists := findPort(r.stateCache.Catalog, hire.PortID)
+		if !exists || !yard.HasShipyard || yard.IsCove || !regionalWater(r.stateCache.Catalog, yard) {
+			return errors.New(expansionAgentAdmissionReason)
+		}
+		evidence := growthEvidence{}
+		if reason, err := r.growthCashFunding(ctx, &evidence); err != nil {
+			return err
+		} else if reason != "" {
+			return errors.New(reason)
+		}
+		input, err := r.committedPlanningInput(ctx, ShipState{})
+		if err != nil {
+			return err
+		}
+		evidence.available = 0
+		for region, balance := range input.Balances {
+			evidence.available = growthCashTotal(evidence.available, max(0, balance-input.ReserveByRegion[region]))
+		}
+		capacity, reason, err := r.capacityFleetInput(ctx, &evidence)
+		if err != nil {
+			return err
+		}
+		if reason != "" {
+			return errors.New(reason)
+		}
+		if build, _, _ := r.expansionBuildEstimate(yard, capacity); !build.Accepted {
+			return errors.New(build.Reason)
 		}
 	}
 	if action.Stage == "loan-accept" || action.Stage == "loan-repay" {
@@ -958,6 +1023,7 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		Gross       int64  `json:"gross_amount_pence"`
 		ShipClass   string `json:"ship_class"`
 		BuildMode   string `json:"build_mode"`
+		Mortgage    bool   `json:"mortgage"`
 		Name        string `json:"name"`
 		Cannons     int64  `json:"target_cannons_count"`
 	}
@@ -1010,11 +1076,12 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			input, err = r.sourcingInput(ctx, ship)
 		} else if mission.ShipID == "__loans" {
 			if !r.loanAuthority() || data.LoanRepayment == nil {
-				return errors.New("arrears funding requires current named debt authority")
+				return errors.New("loan reserve funding requires current named debt authority")
 			}
 			loan, exists := r.loanByID(data.LoanRepayment.Before.ID)
-			if !exists || loan.Status != "active" || loan.ArrearsPence <= 0 || request.ToRegion != loan.BankingRegion {
-				return errors.New("arrears funding is no longer required by this active loan")
+			if !exists || loan.Status != "active" || loan.OwedPence <= 0 || request.ToRegion != loan.BankingRegion ||
+				loan.ArrearsPence <= 0 && (!loan.IsMortgage || loan.NextPaymentDueAt == nil) {
+				return errors.New("loan reserve funding is no longer required by this active loan")
 			}
 			input = r.planningInput(ship)
 			input.ReserveByRegion, err = r.treasuryReserves(ctx)
@@ -1058,8 +1125,12 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 	}
 	if action.Stage == "build" {
 		if mission.ShipID != "__growth" || data.BuiltShipID != "" || request.PortID != data.BuildPort ||
-			request.ShipClass != data.BuildClass || request.Name == "" || request.Name != data.BuildName || request.BuildMode != "turnkey_cash" {
+			request.ShipClass != data.BuildClass || request.Name == "" || request.Name != data.BuildName ||
+			request.BuildMode != "turnkey_cash" {
 			return errors.New("new build requires its matching immutable growth intent")
+		}
+		if request.Mortgage != (data.Capacity != nil && data.Capacity.Mortgage != nil) {
+			return errors.New("new build mortgage flag disagrees with its immutable capacity admission")
 		}
 		if data.Capacity != nil {
 			return r.capacityBuildReady(ctx, data)
@@ -1072,6 +1143,14 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 	ship, exists := r.ship(request.ShipID)
 	if !exists || !r.fresh("ships") || request.ShipID != mission.ShipID && mission.ShipID != "__growth" {
 		return errors.New("new action requires the matching fresh ship")
+	}
+	if action.Path == "/v1/fleet/list-ship" && r.mortgagedShip(ship.Ship.ID) {
+		return errors.New("a mortgaged ship cannot be listed or sold until its mortgage is repaid")
+	}
+	if action.Path == "/v1/fleet/depart" && (ship.PassengerHoldTons > 0 || data.Passage != nil) {
+		if err := r.passageDepartureReady(ship, request.Destination, data); err != nil {
+			return err
+		}
 	}
 	if err := r.insuranceActionReady(ship, action.Stage, request.Destination); err != nil {
 		return err
@@ -1106,7 +1185,11 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		hull, exists := findHull(r.stateCache.Catalog, ship.Ship.ShipClass)
 		key := routeKey(ship.Ship.CurrentPortID, request.Destination, ship.Ship.ShipClass)
 		route := r.stateCache.Routes[key]
-		if !exists || !r.fresh("routes/"+key) || !r.fresh("zones") || ship.Stores.ProvisionsTons+1e-9 < route.SafeProvisionsTons+1 {
+		requiredStores := route.SafeProvisionsTons + 1
+		if data.Passage != nil {
+			requiredStores = route.SafeProvisionsTons
+		}
+		if !exists || !r.fresh("routes/"+key) || !r.fresh("zones") || ship.Stores.ProvisionsTons+1e-9 < requiredStores {
 			return errors.New("new departure requires fresh legal route, hazards and safe stores")
 		}
 		if err := ValidateRoute(route, hull, r.stateCache.Catalog.SeaZones); err != nil {
@@ -1114,6 +1197,9 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		}
 		if err := r.validateFreightDeparture(ship, request.Destination, data, hull); err != nil {
 			return err
+		}
+		if data.Passage != nil {
+			return r.passageDepartureReady(ship, request.Destination, data)
 		}
 		if data.Relocation != nil {
 			return r.relocationDepartureReady(ctx, ship, data)
@@ -1283,11 +1369,17 @@ func (r *Runner) reconcileObservedAction(ctx context.Context, mission *store.Mis
 	if data.Action == nil || action == nil {
 		return false, nil
 	}
+	if passengerStage(data.Action.Stage) {
+		return r.reconcilePassengerAction(ctx, mission, data, action)
+	}
 	if data.Action.Stage == "loan-accept" || data.Action.Stage == "loan-repay" {
 		return r.reconcileLoanAction(ctx, mission, data, action)
 	}
 	if data.Action.Stage == "marque" {
 		return r.reconcileMarque(ctx, mission, data, action)
+	}
+	if data.Action.Stage == "build" && data.Capacity != nil && data.Capacity.Mortgage != nil {
+		return r.reconcileMortgageBuild(ctx, mission, data, action)
 	}
 	if !r.fresh("ships") {
 		return false, nil

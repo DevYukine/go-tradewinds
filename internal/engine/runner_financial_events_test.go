@@ -16,7 +16,16 @@ import (
 )
 
 func TestRunRefreshesFinancialEventsAfterVaultCaptureBeforeNewSpending(t *testing.T) {
-	for _, eventType := range []string{"company_upkeep_billed", "auto_remittance", progressOrdinaryEvent} {
+	testCaptureInvalidatingEvents(t, []string{"company_upkeep_billed", "auto_remittance", progressOrdinaryEvent})
+}
+
+func TestPassengerEventsInvalidateAuthority(t *testing.T) {
+	testCaptureInvalidatingEvents(t, []string{"passengers_paid", "passengers_lost", "passengers_boarded"})
+}
+
+func testCaptureInvalidatingEvents(t *testing.T, eventTypes []string) {
+	t.Helper()
+	for _, eventType := range eventTypes {
 		t.Run(eventType, func(t *testing.T) {
 			h := newRecoveryHarness(t)
 			h.api.setVaultBalance("north", 500_000)
@@ -44,6 +53,8 @@ func TestRunRefreshesFinancialEventsAfterVaultCaptureBeforeNewSpending(t *testin
 			var injected atomic.Bool
 			vaultCaptured := make(chan struct{})
 			var vaultCapturedOnce sync.Once
+			shipsCaptured := make(chan struct{})
+			var shipsCapturedOnce sync.Once
 			h.api.server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				if request.Method == http.MethodGet && request.URL.Path == "/v1/treasury/vaults" {
 					downstream.ServeHTTP(writer, request)
@@ -51,6 +62,14 @@ func TestRunRefreshesFinancialEventsAfterVaultCaptureBeforeNewSpending(t *testin
 						flusher.Flush()
 					}
 					vaultCapturedOnce.Do(func() { close(vaultCaptured) })
+					return
+				}
+				if request.Method == http.MethodGet && request.URL.Path == "/v1/fleet/ships" {
+					downstream.ServeHTTP(writer, request)
+					if flusher, ok := writer.(http.Flusher); ok {
+						flusher.Flush()
+					}
+					shipsCapturedOnce.Do(func() { close(shipsCaptured) })
 					return
 				}
 				// Hold this sibling until the old vault response is produced, then
@@ -62,6 +81,13 @@ func TestRunRefreshesFinancialEventsAfterVaultCaptureBeforeNewSpending(t *testin
 					case <-vaultCaptured:
 					case <-request.Context().Done():
 						return
+					}
+					if eventType == "passengers_boarded" {
+						select {
+						case <-shipsCaptured:
+						case <-request.Context().Done():
+							return
+						}
 					}
 					select {
 					case <-stream.connected:
@@ -78,6 +104,15 @@ func TestRunRefreshesFinancialEventsAfterVaultCaptureBeforeNewSpending(t *testin
 						h.api.vaultBalance["north"] -= 425_000
 						h.api.vaultBalance["south"] += 420_750
 						payload = map[string]any{"from_region": "north", "to_region": "south", "gross_amount_pence": 425_000, "fee_pence": 4_250, "net_credited_pence": 420_750}
+					case "passengers_paid":
+						h.api.vaultBalance["north"] += 3_000
+						payload = map[string]any{"ship_id": recoveryShipBlastoise, "amount_pence": 3_000}
+					case "passengers_lost":
+						payload = map[string]any{"ship_id": recoveryShipBlastoise}
+					case "passengers_boarded":
+						h.api.fleet[0]["ship"].(map[string]any)["passenger_hold_tons"] = int64(1)
+						h.api.fleet[0]["effective_hold_capacity_tons"] = int64(51)
+						payload = map[string]any{"ship_id": recoveryShipBlastoise, "passenger_hold_tons": 1}
 					}
 					h.api.mu.Unlock()
 					companyID := recoveryCompanyID
@@ -144,9 +179,18 @@ func TestRunRefreshesFinancialEventsAfterVaultCaptureBeforeNewSpending(t *testin
 			if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 				t.Fatal("the first capture sent a build instead of staging or refreshing")
 			}
+			if eventType == "passengers_boarded" && runner.stateCache.Ships[0].PassengerHoldTons != 0 {
+				t.Fatal("fixture did not retain the ships capture from before boarding")
+			}
 
 			stream.releaseGates()
-			stream.waitCapture(t, 3)
+			if eventType == "passengers_paid" || eventType == "passengers_lost" || eventType == "passengers_boarded" {
+				// The vetoed pass cannot stage. The next capture stages, and
+				// only the following work pass can first-send that action.
+				stream.waitCapture(t, 4)
+			} else {
+				stream.waitCapture(t, 3)
+			}
 			running.cancel()
 			if err := running.wait(t, 15*time.Second); err != nil && !errors.Is(err, context.Canceled) {
 				t.Fatalf("stop runner: %v", err)
@@ -155,9 +199,16 @@ func TestRunRefreshesFinancialEventsAfterVaultCaptureBeforeNewSpending(t *testin
 			north, south := h.api.vaultBalance["north"], h.api.vaultBalance["south"]
 			h.api.mu.Unlock()
 			calls := h.api.mutationsFor("/v1/shipyard/build-ship")
-			if eventType == progressOrdinaryEvent {
-				if len(calls) != 1 || calls[0].Status != http.StatusOK || north != 500_000-60_000 || south != 100_000 {
-					t.Fatalf("ordinary events prevented one funded build or broke cash identity: calls %+v north %d south %d", calls, north, south)
+			if eventType != "company_upkeep_billed" && eventType != "auto_remittance" {
+				wantNorth := int64(500_000 - 60_000)
+				if eventType == "passengers_paid" {
+					wantNorth += 3_000
+				}
+				if eventType == "passengers_boarded" && runner.stateCache.Ships[0].PassengerHoldTons != 1 {
+					t.Fatal("boarding fence permitted work without a post-event ships capture")
+				}
+				if len(calls) != 1 || calls[0].Status != http.StatusOK || north != wantNorth || south != 100_000 {
+					t.Fatalf("post-event capture did not permit one funded build or broke cash identity: calls %+v north %d south %d", calls, north, south)
 				}
 				return
 			}

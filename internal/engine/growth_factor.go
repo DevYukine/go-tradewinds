@@ -15,6 +15,11 @@ import (
 // https://tradewinds.kibb.io/skill.md §3.12: 750 Crowns, in integer pence.
 const expansionAgentHireFeePence int64 = 75_000
 
+const (
+	expansionAgentAdmissionReason = "expansion agent waits for an admissible build"
+	expansionAgentQuoteReason     = "expansion agent needs a previously observed regional hull quote"
+)
+
 type expansionAgent struct {
 	PortID  string    `json:"port_id"`
 	Region  string    `json:"region"`
@@ -109,6 +114,64 @@ func regionalWater(catalog Catalog, port Port) bool {
 	return false
 }
 
+func (r *Runner) expansionBuildEstimate(yard Port, capacity CapacityGrowthInput) (GrowthDecision, YardQuote, bool) {
+	capacity.SurplusPence -= expansionAgentHireFeePence
+	capacity.CandidateRatePencePerGameDay = capacity.MeasuredRatePencePerGameDay
+	capacity.HasSpareWork = true
+	var oldUpkeep int64
+	var grown []ShipState
+	if capacity.MeasuredNetAvailable {
+		oldUpkeep = DailyUpkeep(r.stateCache.Ships, r.stateCache.Catalog, len(r.stateCache.Factors))
+		grown = make([]ShipState, len(r.stateCache.Ships)+1)
+		copy(grown, r.stateCache.Ships)
+	}
+	var best GrowthDecision
+	var bestQuote YardQuote
+	bestFresh := false
+	var observedAt time.Time
+	needed := int64(math.MaxInt64)
+	hasObservedQuote := false
+	for _, quote := range r.stateCache.Quotes {
+		hull, exists := findHull(r.stateCache.Catalog, quote.ShipClass)
+		if !exists || hull.HullCategory != "regional" && hull.HullCategory != "oceanic" ||
+			hull.CanSealDispatches || hull.Phase > r.stateCache.Clock.UnlockedPhase ||
+			quote.BuildMode != "turnkey_cash" || !quote.Available || quote.TotalCostPence == nil || *quote.TotalCostPence <= 0 {
+			continue
+		}
+		source, exists := findPort(r.stateCache.Catalog, quote.PortID)
+		if !exists {
+			continue
+		}
+		hasObservedQuote = true
+		if !capacity.MeasuredNetAvailable {
+			continue
+		}
+		grown[len(grown)-1] = growthCandidate(yard, hull)
+		capacity.Hull, capacity.HullPricePence = hull, *quote.TotalCostPence
+		capacity.IncrementalDailyUpkeepPence = DailyUpkeep(grown, r.stateCache.Catalog, len(r.stateCache.Factors)+1) - oldUpkeep
+		decision := EvaluateCapacityGrowth(capacity)
+		if !decision.Accepted {
+			continue
+		}
+		_, quoteErr := r.growthQuote(source, hull)
+		fresh := quoteErr == nil
+		updatedAt := r.meta["yard_quotes/"+source.ID+"|"+hull.ID].UpdatedAt
+		capital := growthCapital(decision)
+		total := growthCashTotal(capital, decision.WorkingCapitalPence, expansionAgentHireFeePence)
+		if bestQuote.PortID == "" || fresh && (!bestFresh || total < needed) ||
+			!fresh && !bestFresh && (updatedAt.After(observedAt) || updatedAt.Equal(observedAt) && total < needed) {
+			best, bestQuote, bestFresh, observedAt, needed = decision, quote, fresh, updatedAt, total
+		}
+	}
+	if bestQuote.PortID == "" {
+		best.Reason = expansionAgentAdmissionReason
+		if !hasObservedQuote {
+			best.Reason = expansionAgentQuoteReason
+		}
+	}
+	return best, bestQuote, bestFresh
+}
+
 func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 	if !r.opts.Execute {
 		return false, nil
@@ -168,50 +231,26 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 		}
 		return false, r.recordHold(ctx, "", reason, expectedGrowthAdmission(reason))
 	}
-	cheapest := int64(math.MaxInt64)
-	var estimatedCapital int64
-	bestFresh := false
-	var observedAt time.Time
-	for _, observed := range r.stateCache.Quotes {
-		hull, exists := findHull(r.stateCache.Catalog, observed.ShipClass)
-		if !exists || hull.HullCategory != "regional" && hull.HullCategory != "oceanic" ||
-			hull.CanSealDispatches || hull.Phase > r.stateCache.Clock.UnlockedPhase || hull.MaxCannons < 1 || hull.HoldCapacityTons <= 2*min(4, hull.MaxCannons) {
-			continue
-		}
-		port, exists := findPort(r.stateCache.Catalog, observed.PortID)
-		if !exists {
-			continue
-		}
-		if observed.BuildMode != "turnkey_cash" || !observed.Available || observed.TotalCostPence == nil || *observed.TotalCostPence <= 0 {
-			continue
-		}
-		_, quoteErr := r.growthQuote(port, hull)
-		fresh := quoteErr == nil
-		updatedAt := r.meta["yard_quotes/"+port.ID+"|"+hull.ID].UpdatedAt
-		price := *observed.TotalCostPence
-		capital := growthCashTotal(price, ceilBPS(price, 1_000), min(4, hull.MaxCannons)*15_000)
-		if capacity.LotCashPence > 0 && int64(capacity.FleetSize) >= math.MaxInt64/capacity.LotCashPence {
-			continue
-		}
-		buffer := growthCashTotal(max(capacity.ReservePence, ceilBPS(price, 1_500)), (int64(capacity.FleetSize)+1)*capacity.LotCashPence)
-		needed := growthCashTotal(capital, buffer, expansionAgentHireFeePence)
-		if fresh && (!bestFresh || needed < cheapest) ||
-			!fresh && !bestFresh && (cheapest == math.MaxInt64 || updatedAt.After(observedAt) || updatedAt.Equal(observedAt) && needed < cheapest) {
-			cheapest, estimatedCapital, bestFresh, observedAt = needed, capital, fresh, updatedAt
-		}
+	build, observed, bestFresh := r.expansionBuildEstimate(yard, capacity)
+	if !build.Accepted {
+		return false, r.holdExpected(ctx, "", build.Reason)
 	}
-	if cheapest == math.MaxInt64 {
-		return false, r.holdExpected(ctx, "", "expansion agent needs a previously observed regional hull quote to estimate overseas capital")
-	}
-	if err := r.decision(ctx, "", "expansion_agent", "estimate overseas capital from observed quotes before exploring an unoccupied region with a positive observed spot spread", map[string]any{
-		"port_id": yard.ID, "region": yard.BankingRegion, "score_pence": score, "estimated_hull_capital_pence": estimatedCapital,
-		"estimated_hull_capital_stale": !bestFresh,
-		"competition":                  competitionAt(input.Competition, yard.BankingRegion),
-	}); err != nil {
+	estimatedCapital := growthCapital(build)
+	cheapest := growthCashTotal(estimatedCapital, build.WorkingCapitalPence, expansionAgentHireFeePence)
+	if err := r.decision(ctx, "", "capacity_candidate:"+yard.ID+"|"+observed.ShipClass,
+		"measured earnings admit the estimated regional build before hiring its expansion agent", map[string]any{
+			"accepted": true, "estimated_quote_port": observed.PortID, "estimated_hull_capital_stale": !bestFresh,
+			"measured_rate_pence_per_game_day": capacity.MeasuredRatePencePerGameDay,
+			"used_rate_pence_per_game_day":     capacity.MeasuredRatePencePerGameDay,
+			"sample_hull_game_days":            capacity.SampleHullGameDays, "decision": build,
+		}); err != nil {
 		return false, err
 	}
-	if evidence.available < cheapest {
-		return false, r.holdExpected(ctx, "", "expansion agent requires surplus for estimated regional hull capital, capacity cash buffer and hire fee")
+	if err := r.decision(ctx, "", "expansion_agent", "an admissible measured build supports the paid expansion agent", map[string]any{
+		"port_id": yard.ID, "region": yard.BankingRegion, "score_pence": score, "estimated_hull_capital_pence": estimatedCapital,
+		"estimated_hull_capital_stale": !bestFresh, "competition": competitionAt(input.Competition, yard.BankingRegion),
+	}); err != nil {
+		return false, err
 	}
 	required := input.ReserveByRegion
 	baseRequired, err := r.treasuryReserves(ctx)

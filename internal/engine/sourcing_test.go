@@ -111,29 +111,6 @@ func TestSourcingKnownIllegalRouteRejectsBeforeFreshness(t *testing.T) {
 	}
 }
 
-func TestSourcingLifetimeAllowanceUsesLossInclusiveCommercialProfit(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name    string
-		history store.EconomicHistory
-		want    int64
-	}{
-		{"initial seed", store.EconomicHistory{}, 20_000},
-		{"all earlier probes charged", store.EconomicHistory{ProbeExpensePence: 20_000}, 0},
-		{"losses do not replenish", store.EconomicHistory{CommercialNetPence: -100_000, ProbeExpensePence: 20_000}, 0},
-		{"only two percent of net profit", store.EconomicHistory{CommercialNetPence: 100_000, ProbeExpensePence: 20_000}, 2_000},
-		{"old expense never reset", store.EconomicHistory{CommercialNetPence: 100_000, ProbeExpensePence: 21_999}, 1},
-		{"unknown probe basis", store.EconomicHistory{CommercialNetPence: 100_000, UnknownProbeCosts: true}, 0},
-	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			if got := sourcingLifetimeAllowance(test.history); got != test.want {
-				t.Fatalf("durable allowance = %dp, want %dp", got, test.want)
-			}
-		})
-	}
-}
-
 func TestRelocationConsumedStoreRiskPreservesActualPurchaseCash(t *testing.T) {
 	t.Parallel()
 	data := missionData{
@@ -205,40 +182,48 @@ func putSourcingBudgetSettlement(t *testing.T, h *recoveryHarness, row store.Set
 	}
 }
 
-func TestSourcingExhaustedPermanentExpenseSurvivesRestartAndOnlyNetProfitReplenishes(t *testing.T) {
+func TestSourcingRollingExpenseSurvivesRestartAndOnlyConvertedNetReplenishes(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
 	exploration := int64(20_000)
-	putSourcingBudgetSettlement(t, h, store.Settlement{
+	now := time.Now().UTC()
+	idleFallbackSettlement(t, h, store.Settlement{
 		ID: "source-budget-probe", Kind: "relocation", CostsKnown: true,
-		ProvisionsPence: 100_000, ExplorationExpensePence: &exploration,
+		Origin: "le_havre", Destination: "amsterdam", Commodity: "sawn_planks",
+		CompletedAt: now.Add(-3 * time.Hour), ProvisionsPence: 100_000, ExplorationExpensePence: &exploration,
 	})
 	for range 2 {
 		runner := h.runner(primaryTestKey)
-		in := sourcingInputFixture(t)
+		in := probeHistoryLiveInput(t)
 		if err := runner.loadSourcingHistory(h.ctx, &in); err != nil {
 			t.Fatal(err)
 		}
 		if in.SourcingAllowancePence == nil || *in.SourcingAllowancePence != 0 || len(acceptedRelocations(planSourcingRelocation(in))) != 0 {
-			t.Fatalf("restarting replenished exhausted exploration risk: %+v", in.SourcingAllowancePence)
+			t.Fatalf("restarting replenished exhausted rolling exploration risk: %+v", in.SourcingAllowancePence)
 		}
 	}
-	putSourcingBudgetSettlement(t, h, store.Settlement{
-		ID: "source-budget-loss", Kind: "spot", CostsKnown: true, ExpensesPence: 10_000,
+	idleFallbackSettlement(t, h, store.Settlement{
+		ID: "source-budget-unrelated", Kind: "charter", CostsKnown: true, QuantityTons: 10,
+		Origin: "unprobed-port", Commodity: "sawn_planks", ProceedsPence: 1_000_000, CompletedAt: now.Add(-time.Hour),
 	})
-	putSourcingBudgetSettlement(t, h, store.Settlement{
+	idleFallbackSettlement(t, h, store.Settlement{
+		ID: "source-budget-loss", Kind: "spot", CostsKnown: true, ExpensesPence: 10_000, QuantityTons: 1,
+		Origin: "amsterdam", Commodity: "sawn_planks", CompletedAt: now.Add(-time.Hour),
+	})
+	idleFallbackSettlement(t, h, store.Settlement{
 		ID: "source-budget-profit", Kind: "charter", CostsKnown: true, QuantityTons: 10, ProceedsPence: 110_000,
+		Origin: "amsterdam", Commodity: "sawn_planks", CompletedAt: now.Add(-time.Hour),
 	})
 	runner := h.runner(primaryTestKey)
-	in := sourcingInputFixture(t)
+	in := probeHistoryLiveInput(t)
 	if err := runner.loadSourcingHistory(h.ctx, &in); err != nil {
 		t.Fatal(err)
 	}
-	if in.SourcingAllowancePence == nil || *in.SourcingAllowancePence != 2_000 {
-		t.Fatalf("net 100000p commercial profit did not replenish exactly 2000p: %+v", in.SourcingAllowancePence)
+	if in.SourcingAllowancePence == nil || *in.SourcingAllowancePence != 50_000 {
+		t.Fatalf("converted loss-inclusive 100000p net did not replenish exactly 50000p: %+v", in.SourcingAllowancePence)
 	}
 	if len(acceptedRelocations(planSourcingRelocation(in))) == 0 {
-		t.Fatal("new known loss-inclusive commercial profit could not fund a different legal inspection")
+		t.Fatal("known converted net could not fund a different legal inspection")
 	}
 }
 
@@ -379,8 +364,8 @@ func TestCharterRelocationSpendingFailureAbortsFundingButHoldsDeparturePreparati
 				t.Fatalf("charter relocation was not admitted: changed=%v reason=%q err=%v", changed, reason, err)
 			}
 			mission, data := h.mission(ship.Ship.ID)
-			if data.Relocation == nil || data.Relocation.Scout || !data.Relocation.IdlePilot {
-				t.Fatalf("fixture must be a charter idle-pilot relocation: %+v", data)
+			if data.Relocation == nil || data.Relocation.Scout {
+				t.Fatalf("fixture must be a charter relocation: %+v", data)
 			}
 			meta := runner.meta["contracts"]
 			meta.Stale = true
@@ -416,5 +401,45 @@ func TestCharterRelocationSpendingFailureAbortsFundingButHoldsDeparturePreparati
 				t.Fatal("failed charter spending authority authorized a mutation")
 			}
 		})
+	}
+}
+
+func TestSourcingRelocationDoesNotReserveUnavoidableFleetUpkeep(t *testing.T) {
+	t.Parallel()
+	in := sourcingInputFixture(t)
+	in.Balances["channel"] = in.ReserveByRegion["channel"] + 605
+	for _, fleetUpkeep := range []int64{0, 500_000, maximumPence} {
+		in.FleetDailyUpkeepPence = fleetUpkeep
+		plan := costRelocation(in, Plan{
+			Kind: "relocation", ShipID: in.Ship.Ship.ID, Origin: "le_havre", Destination: "amsterdam",
+			Commodity: "sawn_planks", ContractID: in.Contracts[0].ID,
+		})
+		if !plan.Accepted || plan.Economics.ExpectedNetPence != -613 || plan.Economics.UpkeepPence != 0 {
+			t.Fatalf("unavoidable fleet upkeep %dp changed charter relocation cost/funding: %+v", fleetUpkeep, plan)
+		}
+	}
+}
+
+func TestCharterRelocationSpendingRechecksRollingBudgetWithoutIdlePilot(t *testing.T) {
+	h := newRecoveryHarness(t)
+	h.api.setFleet([]map[string]any{sourcingReviewShipRow()})
+	runner := refreshedRunner(t, h)
+	sourcingReviewInject(t, runner, []Contract{sourcingReviewCharter("charter-rolling-spending")})
+	runner.refreshSourcingHistory(h.ctx, runner.planningInput(ShipState{}))
+	runner.refreshSourcingBudget(h.ctx, runner.planningInput(ShipState{}))
+	ship := harnessShip(t, runner, recoveryShipBlastoise)
+	if changed, reason, err := runner.considerSourcing(h.ctx, ship); err != nil || !changed {
+		t.Fatalf("charter relocation was not admitted: changed=%v reason=%q err=%v", changed, reason, err)
+	}
+	_, data := h.mission(ship.Ship.ID)
+	if data.Relocation == nil || data.Relocation.Scout || data.Relocation.IdlePilot {
+		t.Fatalf("fixture must be an ordinary first probe, not an idle pilot: %+v", data)
+	}
+	// Another hull completes a probe after this mission's immutable cap was
+	// persisted. Spending must use today's B, not that earlier cap.
+	idleFallbackExhaustSeed(t, h)
+	if err := runner.relocationSpendingReadyAtPrice(h.ctx, ship, &data, 1, 0); err == nil ||
+		!strings.Contains(err.Error(), "current rolling exploration budget 0p") {
+		t.Fatalf("ordinary probe bypassed the exhausted rolling budget: %v", err)
 	}
 }

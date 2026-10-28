@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,19 @@ import (
 
 const failedCatalogueProbeCooldown = 24 * time.Hour
 const sourcingConversionWindow = 7 * 24 * time.Hour
+const sourcingBudgetGameDays = 60
+const sourcingProbeHistoryVersion = 3
+const sourcingConversionLedgerLimit = 200
+
+type probeConversion struct {
+	SettlementID string    `json:"settlement_id"`
+	Source       string    `json:"source"`
+	Commodity    string    `json:"commodity"`
+	ProbeAt      time.Time `json:"probe_at"`
+	StartedAt    time.Time `json:"started_at"`
+	CompletedAt  time.Time `json:"completed_at"`
+	NetPence     int64     `json:"net_pence"`
+}
 
 type probeSourceHistory struct {
 	ConvertedAt       time.Time `json:"converted_at"`
@@ -43,16 +57,22 @@ type scoutPortHistory struct {
 	LastDepartureAt time.Time `json:"last_departure_at"`
 }
 
-// Persist only bounded source/ship outcomes. A version change rebuilds the
-// summary from accounting and retained departure evidence, not old policy state.
+// Persist bounded outcomes and rolling money evidence. A version change rebuilds
+// from accounting and retained departures, never an old policy allowance.
 type sourcingProbeHistory struct {
-	Version       int                           `json:"version"`
-	Cursor        store.ProbeHistoryCursor      `json:"cursor"`
-	Sources       map[string]probeSourceHistory `json:"sources"`
-	Ships         map[string]probeShipHistory   `json:"ships"`
-	ScoutFailures int                           `json:"scout_failures,omitempty"`
-	ScoutResetAt  time.Time                     `json:"scout_reset_at,omitempty"`
-	ScoutPorts    map[string]scoutPortHistory   `json:"scout_ports,omitempty"`
+	Version            int                           `json:"version"`
+	Cursor             store.ProbeHistoryCursor      `json:"cursor"`
+	Sources            map[string]probeSourceHistory `json:"sources"`
+	Ships              map[string]probeShipHistory   `json:"ships"`
+	ScoutFailures      int                           `json:"scout_failures,omitempty"`
+	ScoutResetAt       time.Time                     `json:"scout_reset_at,omitempty"`
+	ScoutPorts         map[string]scoutPortHistory   `json:"scout_ports,omitempty"`
+	BudgetAsOf         time.Time                     `json:"budget_as_of"`
+	BudgetWindowStart  time.Time                     `json:"budget_window_start"`
+	ConversionNetPence int64                         `json:"conversion_net_pence"`
+	ProbeExpensePence  int64                         `json:"probe_expense_pence"`
+	ProbeCostsUnknown  bool                          `json:"probe_costs_unknown"`
+	Conversions        []probeConversion             `json:"conversions,omitempty"`
 }
 
 type sourcingHistoryCache struct {
@@ -209,8 +229,8 @@ func (r *Runner) readProbeOutcomes(ctx context.Context, input PlanningInput) (so
 			return history, fmt.Errorf("decode sourcing outcomes: %w", err)
 		}
 	}
-	if history.Version != 2 {
-		history = sourcingProbeHistory{Version: 2}
+	if history.Version != sourcingProbeHistoryVersion {
+		history = sourcingProbeHistory{Version: sourcingProbeHistoryVersion}
 	}
 	if history.Sources == nil {
 		history.Sources = make(map[string]probeSourceHistory)
@@ -314,6 +334,139 @@ func (r *Runner) readProbeOutcomes(ctx context.Context, input PlanningInput) (so
 	return history, nil
 }
 
+// Rebuild money evidence from authoritative accounting, not the capped display
+// ledger or the incremental outcome cursor. Late settlements and changed window
+// bounds must not lose costs or attribute a delivery to a later probe.
+func (h *sourcingProbeHistory) rollingBudget(rows []store.Settlement, now time.Time, scale int64) error {
+	if now.IsZero() || scale <= 0 {
+		return fmt.Errorf("rolling exploration budget requires a current positive game clock")
+	}
+	h.BudgetAsOf = now
+	h.BudgetWindowStart = now.Add(-time.Duration(sourcingBudgetGameDays*24*int64(time.Hour)) / time.Duration(scale))
+	h.ConversionNetPence, h.ProbeExpensePence = 0, 0
+	h.ProbeCostsUnknown = false
+	h.Conversions = nil
+	probes := make(map[string][]time.Time)
+	for _, row := range rows {
+		if row.Kind != "relocation" || row.CompletedAt.IsZero() || row.CompletedAt.After(now) {
+			continue
+		}
+		if row.Origin != row.Destination && row.Destination != "" {
+			probes[row.Destination] = append(probes[row.Destination], row.CompletedAt)
+		}
+		if strings.HasSuffix(row.Lane, "|scout") || row.CompletedAt.Before(h.BudgetWindowStart) {
+			continue
+		}
+		if !row.CostsKnown {
+			h.ProbeCostsUnknown = true
+			continue
+		}
+		expense := int64(0)
+		if row.ExplorationExpensePence != nil {
+			expense = *row.ExplorationExpensePence
+		} else {
+			for _, cost := range []int64{row.AcquisitionPence, row.FeesPence, row.ProvisionsPence, row.ExpensesPence} {
+				if cost < 0 || cost > math.MaxInt64-expense {
+					return fmt.Errorf("rolling exploration expense exceeds integer-pence bounds")
+				}
+				expense += cost
+			}
+		}
+		if expense < 0 || expense > math.MaxInt64-h.ProbeExpensePence {
+			return fmt.Errorf("rolling exploration expense exceeds integer-pence bounds")
+		}
+		h.ProbeExpensePence += expense
+	}
+	for _, row := range rows {
+		switch row.Kind {
+		case "spot", "charter", "freight", "spot+freight", "charter+freight", "recovery":
+		default:
+			continue
+		}
+		if !row.CostsKnown || row.QuantityTons <= 0 || row.StartedAt.IsZero() || row.CompletedAt.IsZero() ||
+			row.CompletedAt.Before(row.StartedAt) || row.CompletedAt.Before(h.BudgetWindowStart) || row.CompletedAt.After(now) {
+			continue
+		}
+		var probeAt time.Time
+		for _, at := range probes[row.Origin] {
+			if !at.After(row.StartedAt) && row.StartedAt.Sub(at) <= sourcingConversionWindow && at.After(probeAt) {
+				probeAt = at
+			}
+		}
+		if probeAt.IsZero() {
+			continue
+		}
+		net := row.ProceedsPence
+		for _, cost := range []int64{row.AcquisitionPence, row.FeesPence, row.ProvisionsPence, row.ExpensesPence} {
+			if cost < 0 || net < math.MinInt64+cost {
+				return fmt.Errorf("rolling conversion net exceeds integer-pence bounds")
+			}
+			net -= cost
+		}
+		if net > 0 && h.ConversionNetPence > math.MaxInt64-net || net < 0 && h.ConversionNetPence < math.MinInt64-net {
+			return fmt.Errorf("rolling conversion net exceeds integer-pence bounds")
+		}
+		h.ConversionNetPence += net
+		h.Conversions = append(h.Conversions, probeConversion{SettlementID: row.ID, Source: row.Origin, Commodity: row.Commodity,
+			ProbeAt: probeAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, NetPence: net})
+	}
+	sort.Slice(h.Conversions, func(i, j int) bool {
+		if h.Conversions[i].CompletedAt.Equal(h.Conversions[j].CompletedAt) {
+			return h.Conversions[i].SettlementID > h.Conversions[j].SettlementID
+		}
+		return h.Conversions[i].CompletedAt.After(h.Conversions[j].CompletedAt)
+	})
+	if len(h.Conversions) > sourcingConversionLedgerLimit {
+		h.Conversions = h.Conversions[:sourcingConversionLedgerLimit:sourcingConversionLedgerLimit]
+	}
+	return nil
+}
+
+func (h sourcingProbeHistory) rollingAllowance() int64 {
+	if h.ProbeCostsUnknown {
+		return 0
+	}
+	// Floor, rather than Go's truncation toward zero, also applies to losses.
+	halfNet := h.ConversionNetPence / 2
+	if h.ConversionNetPence < 0 && h.ConversionNetPence%2 != 0 {
+		halfNet--
+	}
+	if halfNet <= -20_000 {
+		return 0
+	}
+	return max(0, 20_000+halfNet-h.ProbeExpensePence)
+}
+
+func (r *Runner) loadRollingSourcingBudget(ctx context.Context, input *PlanningInput) error {
+	history := r.sourcingHistory.Outcomes
+	if history.Version != sourcingProbeHistoryVersion {
+		var err error
+		history, err = r.readProbeOutcomes(ctx, *input)
+		if err != nil {
+			return err
+		}
+	}
+	if input.Now.IsZero() || input.Clock.Calendar.TimeScale <= 0 {
+		return fmt.Errorf("rolling exploration budget requires a current positive game clock")
+	}
+	window := time.Duration(sourcingBudgetGameDays*24*int64(time.Hour)) / time.Duration(input.Clock.Calendar.TimeScale)
+	rows, err := r.db.SourcingBudgetSettlements(ctx, r.account.ID, input.Now.Add(-window), input.Now)
+	if err != nil {
+		return err
+	}
+	if err := history.rollingBudget(rows, input.Now, input.Clock.Calendar.TimeScale); err != nil {
+		return err
+	}
+	r.snapshot["_sourcing_probe_history"] = encode(history)
+	r.sourcingHistory.Outcomes = history
+	input.SourcingProbeHistory = history
+	allowance := history.rollingAllowance()
+	input.SourcingAllowancePence = &allowance
+	input.SourcingProbeExpensePence = history.ProbeExpensePence
+	input.SourcingProbeCostsUnknown = history.ProbeCostsUnknown
+	return nil
+}
+
 // Incremental outcomes refresh even when no ship can start sourcing. Input
 // builders copy this frame; the allowance and lane queries are loaded on demand.
 func (r *Runner) refreshSourcingHistory(ctx context.Context, input PlanningInput) {
@@ -334,18 +487,6 @@ func (r *Runner) refreshSourcingHistory(ctx context.Context, input PlanningInput
 }
 
 func (r *Runner) refreshSourcingBudget(ctx context.Context, input PlanningInput) {
-	// Any idle-eligible hull can use the shared reinspection allowance, even
-	// if the first ship considered for sourcing has not earned idle yet.
-	if !r.shipIdleEligible(input) {
-		for _, ship := range r.stateCache.Ships {
-			candidate := input
-			candidate.Ship = ship
-			if r.shipIdleEligible(candidate) {
-				input.Ship = ship
-				break
-			}
-		}
-	}
 	if err := r.loadSourcingHistory(ctx, &input); err != nil {
 		r.holdSourcingHistory(ctx, err)
 		return

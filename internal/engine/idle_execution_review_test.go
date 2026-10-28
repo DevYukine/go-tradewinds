@@ -65,8 +65,8 @@ func TestIdleExecutionReviewCachedClockAfterGapCannotCreditDowntime(t *testing.T
 	w := newIdleFallbackWorld(t)
 	runner := w.h.runner(primaryTestKey)
 	w.observe(t, runner, 100)
-	// Fetch genuine public routes before the clock-only frames exhaust normal allowance.
-	idleFallbackExhaustSeed(t, w.h)
+	// Keep genuine routes while prior inspections require coherent idle time.
+	idleFallbackPriorInspections(t, w.h)
 	serverUTC := runner.stateCache.Clock.RealUTC.Add(time.Second)
 	idleExecutionReviewRecordClock(t, w, runner, 100, serverUTC, false)
 	idleExecutionReviewRecordClock(t, w, runner, 100, serverUTC, true)
@@ -82,8 +82,8 @@ func TestIdleExecutionReviewBackwardUTCRecoversFromCoherentNewBaseline(t *testin
 	w := newIdleFallbackWorld(t)
 	runner := w.h.runner(primaryTestKey)
 	w.observe(t, runner, 100)
-	// Keep the fetched route evidence while requiring the independent idle budget.
-	idleFallbackExhaustSeed(t, w.h)
+	// Keep fetched routes while prior inspections require an independent idle baseline.
+	idleFallbackPriorInspections(t, w.h)
 	oldUTC := runner.stateCache.Clock.RealUTC.Add(2 * time.Hour)
 	idleExecutionReviewRecordClock(t, w, runner, 100, oldUTC, false)
 	idleExecutionReviewRecordClock(t, w, runner, 90, oldUTC.Add(-time.Hour), false)
@@ -119,7 +119,7 @@ func idleExecutionReviewPilot(t *testing.T) (*idleFallbackWorld, *Runner, *store
 	t.Helper()
 	w := newIdleFallbackWorld(t)
 	w.h.api.setFleet([]map[string]any{destinationShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, "berthed", 1.5, nil, nil)})
-	idleFallbackExhaustSeed(t, w.h)
+	idleFallbackPriorInspections(t, w.h)
 	runner := w.h.runner(primaryTestKey)
 	w.observe(t, runner, 100)
 	idleExecutionReviewSetFree(t, w, runner, 1_000_000)
@@ -127,10 +127,10 @@ func idleExecutionReviewPilot(t *testing.T) (*idleFallbackWorld, *Runner, *store
 	ship, _ := runner.ship(recoveryShipBlastoise)
 	started, _, err := runner.considerSourcing(w.h.ctx, ship)
 	if err != nil || !started {
-		t.Fatalf("select the liquidity-backed pilot: started=%v err=%v holds=%v", started, err, runner.holding)
+		t.Fatalf("select the rolling-budget reinspection: started=%v err=%v holds=%v", started, err, runner.holding)
 	}
 	mission, data := w.h.mission(recoveryShipBlastoise)
-	if data.Relocation == nil || !data.Relocation.IdlePilot || data.Relocation.ExpenseCapPence != 20_000 || data.StartedGameHours != 106 {
+	if data.Relocation == nil || !data.Relocation.IdlePilot || data.Relocation.ExpenseCapPence != 19_600 || data.StartedGameHours != 106 {
 		t.Fatalf("fixture did not select a bounded pilot at game hour 106: %+v", data)
 	}
 	return w, runner, mission, data
@@ -258,6 +258,9 @@ func idleExecutionReviewIncome(t *testing.T, w *idleFallbackWorld, runner *Runne
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedZeroHazardQuotes(&in)
+	runner.stateCache.HazardQuotes = in.HazardQuotes
+	runner.snapshot["_hazard_quotes"] = encode(in.HazardQuotes)
 	if plans := PlanVoyages(in); len(plans) == 0 || !plans[0].Accepted {
 		t.Fatalf("new funded ordinary opportunity is not executable: %+v", plans)
 	}
@@ -324,6 +327,9 @@ func TestIdleExecutionReviewTieredStoreIOCUsesCurrentReducedCap(t *testing.T) {
 	stores := bookCommodity(market, "provisions")
 	stores.Depth.Asks = []Level{{OrderID: "cheap-first-ton", PricePence: 50, RemainingQuantity: 1}, {OrderID: "expensive-next-ton", PricePence: 40_000, RemainingQuantity: 100}}
 	runner.stateCache.Markets[recoveryHomePort] = market
+	harbour := runner.stateCache.Ports[recoveryHomePort]
+	harbour.BerthDuesPerDayPence = 4_000
+	runner.stateCache.Ports[recoveryHomePort] = harbour
 	ship, _ := runner.ship(recoveryShipBlastoise)
 	in, err := runner.sourcingInput(w.h.ctx, ship)
 	if err != nil {

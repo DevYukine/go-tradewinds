@@ -237,11 +237,24 @@ func (s *Store) RecordMetric(ctx context.Context, accountID, name string, value 
 func (s *Store) Prune(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	// Only diagnostic tables are eligible. Action journals, mission state,
-	// snapshots, cursors, settlements, standings and metric history are operational data.
+	for {
+		result := s.db.WithContext(ctx).Exec("DELETE FROM passenger_quarantine_archives WHERE (account_id, ship_lookup) IN (SELECT account_id, ship_lookup FROM passenger_quarantine_archives WHERE closed_at < CURRENT_TIMESTAMP - INTERVAL '7 days' ORDER BY closed_at LIMIT 1000)")
+		if result.Error != nil {
+			return fmt.Errorf("prune passenger quarantine archives: %w", result.Error)
+		}
+		if result.RowsAffected < 1000 {
+			break
+		}
+	}
+	// Passenger events retain payment anchors and unpaid promise recovery.
+	// Other operational state and permanent economic evidence are never pruned.
 	for _, table := range []string{"requests", "events", "decisions"} {
+		predicate := "created_at < CURRENT_TIMESTAMP - INTERVAL '7 days'"
+		if table == "events" {
+			predicate += " AND event_type NOT IN ('passengers_boarded', 'passengers_paid', 'passengers_lost')"
+		}
 		query := "DELETE FROM " + table + " WHERE id IN (SELECT id FROM " + table +
-			" WHERE created_at < CURRENT_TIMESTAMP - INTERVAL '7 days' ORDER BY created_at LIMIT 10000)"
+			" WHERE " + predicate + " ORDER BY created_at LIMIT 10000)"
 		for {
 			result := s.db.WithContext(ctx).Exec(query)
 			if result.Error != nil {

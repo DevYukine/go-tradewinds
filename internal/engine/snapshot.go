@@ -24,6 +24,18 @@ const (
 	snapshotSafetyMargin            = 64 << 10
 )
 
+func gameVersionLogText(version string) string {
+	version = gameapi.RedactPublicText(version)
+	count := 0
+	for index := range version {
+		if count == 64 {
+			return version[:index]
+		}
+		count++
+	}
+	return version
+}
+
 type accountState struct {
 	Catalog           Catalog
 	Clock             Clock
@@ -31,6 +43,7 @@ type accountState struct {
 	Markets           map[string]Market
 	Ports             map[string]PortDetail
 	Routes            map[string]Route
+	HazardQuotes      map[string]HazardQuote
 	Contracts         []Contract
 	Vaults            []Vault
 	Loans             []gameapi.Loan
@@ -297,10 +310,27 @@ func (r *Runner) refresh(ctx context.Context) error {
 		}
 	}
 	state := r.state()
+	versionChanged := false
+	if r.opts.GameVersion != nil {
+		current := r.opts.GameVersion()
+		if current != "" {
+			previous := decode[string](r.snapshot, "_game_version")
+			versionChanged = current != previous
+			if versionChanged {
+				r.log.Info("game version changed; refetching cached routes",
+					zap.String("previous_version", gameVersionLogText(previous)), zap.String("game_version", gameVersionLogText(current)))
+				r.snapshot["_game_version"] = encode(current)
+			}
+		}
+	}
 	// The route API's default max_phase follows the world unlock. Discard
 	// cached paths, including known hull rejections, when that boundary moves.
-	if _, known := r.snapshot["_route_phase"]; !known || decode[int](r.snapshot, "_route_phase") != state.Clock.UnlockedPhase {
-		delete(r.snapshot, "routes")
+	if _, known := r.snapshot["_route_phase"]; versionChanged || !known || decode[int](r.snapshot, "_route_phase") != state.Clock.UnlockedPhase {
+		for key := range r.snapshot {
+			if key == "routes" || strings.HasPrefix(key, "routes/") {
+				delete(r.snapshot, key)
+			}
+		}
 		for key := range r.meta {
 			if key == "routes" || strings.HasPrefix(key, "routes/") {
 				delete(r.meta, key)
@@ -512,29 +542,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 	r.finishGroup("ports", ports, portKeys)
 	r.replayPorts = ports
 	r.finishGroup("books", markets, bookKeys)
-	observedBooks := decode[map[string]time.Time](r.snapshot, "_book_observed")
-	if observedBooks == nil {
-		observedBooks = make(map[string]time.Time)
-	}
-	for _, port := range bookKeys {
-		var book struct {
-			Visibility string `json:"visibility"`
-		}
-		if err := json.Unmarshal(markets[port], &book); err != nil || book.Visibility != "quay" {
-			continue
-		}
-		meta := r.meta["books/"+port]
-		if meta.Generation == r.generation && meta.Complete && !meta.Stale && meta.Error == "" && meta.UpdatedAt.After(observedBooks[port]) {
-			observedBooks[port] = meta.UpdatedAt
-		}
-	}
-	bookRetention := max(24*time.Hour, time.Duration(scoutHintMaxGameHours)*time.Hour/time.Duration(max(1, state.Clock.Calendar.TimeScale)))
-	for port, observed := range observedBooks {
-		if _, exists := findPort(state.Catalog, port); !exists || time.Since(observed) > bookRetention {
-			delete(observedBooks, port)
-		}
-	}
-	r.snapshot["_book_observed"] = encode(observedBooks)
+	r.recordQuayBooks(markets, bookKeys, state.Catalog, state.Clock, time.Now())
 	r.finishGroup("yard_quotes", quotes, quoteKeys)
 	// Exploratory captures, including expired illegal pairs, share the
 	// three-new-pair / six-GET budget. Committed legs were requested above.
@@ -543,6 +551,10 @@ func (r *Runner) refresh(ctx context.Context) error {
 	state.Routes = decode[map[string]Route](map[string]json.RawMessage{"routes": encode(routes)}, "routes")
 	state.Markets = withoutOwnOrders(decode[map[string]Market](map[string]json.RawMessage{"books": encode(markets)}, "books"), r.ownedOrders())
 	state.Markets = r.monopolyMarketView(state.Markets, state.Catalog, state.Clock)
+	if err := r.refreshHazardQuotes(ctx, state); err != nil {
+		return err
+	}
+	state.HazardQuotes = decode[map[string]HazardQuote](r.snapshot, hazardQuoteSnapshotKey)
 	r.stateCache = state
 	r.recordShipIdle(state, previousIdle)
 	r.refreshSourcingHistory(ctx, r.planningInput(ShipState{}))
@@ -916,6 +928,9 @@ func (r *Runner) refresh(ctx context.Context) error {
 			delete(r.meta, key)
 		}
 	}
+	if err := r.refreshPassengers(ctx); err != nil {
+		return err
+	}
 	r.snapshot["_meta"] = encode(r.meta)
 	// Redaction can expand short sensitive values, so use the store's exact
 	// persisted representation and remeasure after every eviction batch.
@@ -969,6 +984,7 @@ func (r *Runner) state() accountState {
 		Markets:           decode[map[string]Market](r.snapshot, "books"),
 		Ports:             decode[map[string]PortDetail](r.snapshot, "ports"),
 		Routes:            decode[map[string]Route](r.snapshot, "routes"),
+		HazardQuotes:      decode[map[string]HazardQuote](r.snapshot, hazardQuoteSnapshotKey),
 		Contracts:         decode[[]Contract](r.snapshot, "contracts"),
 		Loans:             decode[[]gameapi.Loan](r.snapshot, "loans"),
 		InsurancePolicies: decode[[]InsurancePolicy](r.snapshot, "insurance"),

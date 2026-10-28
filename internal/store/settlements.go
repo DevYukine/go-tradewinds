@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -17,7 +18,7 @@ const ProbeOutcomeContinuation = "continuation_ready"
 
 // Settlement is realized mission accounting. Principal transfers and returned
 // collateral are not proceeds; unknown acquisition costs must set CostsKnown=false.
-// The journal action is the evidence anchor, not a second source of HTTP outcomes.
+// The evidence anchor is a journal action, or the retained fare event for passage.
 type Settlement struct {
 	ID               string `json:"id" gorm:"primaryKey"`
 	AccountID        string `json:"account_id"`
@@ -25,6 +26,7 @@ type Settlement struct {
 	MissionID        string `json:"mission_id"`
 	Lane             string `json:"lane"`
 	ActionID         string `json:"action_id"`
+	EventID          string `json:"event_id,omitempty"`
 	Kind             string `json:"kind"`
 	Origin           string `json:"origin"`
 	Destination      string `json:"destination"`
@@ -35,12 +37,21 @@ type Settlement struct {
 	CostsKnown       bool   `json:"costs_known"`
 	AcquisitionPence int64  `json:"acquisition_pence"`
 	ProceedsPence    int64  `json:"proceeds_pence"`
+	ProceedsUnknown  bool   `json:"proceeds_unknown,omitempty"`
 	FeesPence        int64  `json:"fees_pence"`
 	ProvisionsPence  int64  `json:"provisions_pence"`
 	ExpensesPence    int64  `json:"expenses_pence"`
 	// Exploration expense prices consumed stores and probe costs separately
 	// from actual cash P&L. Nil legacy rows retain the full-cash upper bound.
 	ExplorationExpensePence *int64    `json:"exploration_expense_pence,omitempty"`
+	PlannedNetPence         *int64    `json:"planned_net_pence,omitempty"`
+	PlannedRevenuePence     *int64    `json:"planned_revenue_pence,omitempty"`
+	RevenueBasis            *string   `json:"revenue_basis,omitempty"`
+	RevenueAgeGameHours     *float64  `json:"revenue_age_game_hours,omitempty"`
+	HazardBPS               *int64    `json:"hazard_bps,omitempty"`
+	HazardSource            *string   `json:"hazard_source,omitempty"`
+	CargoShortfallPence     *int64    `json:"cargo_shortfall_pence,omitempty"`
+	DepartedCargoPence      *int64    `json:"departed_cargo_pence,omitempty"`
 	StartedAt               time.Time `json:"started_at"`
 	CompletedAt             time.Time `json:"completed_at"`
 	CreatedAt               time.Time `json:"created_at"`
@@ -48,49 +59,109 @@ type Settlement struct {
 
 func (Settlement) TableName() string { return "settlements" }
 
+func (value Settlement) MarshalJSON() ([]byte, error) {
+	type settlementJSON Settlement
+	var proceeds *int64
+	if !value.ProceedsUnknown {
+		proceeds = &value.ProceedsPence
+	}
+	return json.Marshal(struct {
+		settlementJSON
+		ProceedsPence *int64 `json:"proceeds_pence"`
+	}{settlementJSON: settlementJSON(value), ProceedsPence: proceeds})
+}
+
 func sameSettlement(a, b Settlement) bool {
-	sameExplorationExpense := a.ExplorationExpensePence == nil && b.ExplorationExpensePence == nil ||
-		a.ExplorationExpensePence != nil && b.ExplorationExpensePence != nil &&
-			*a.ExplorationExpensePence == *b.ExplorationExpensePence
+	samePlan := sameOptional(a.PlannedNetPence, b.PlannedNetPence) &&
+		sameOptional(a.PlannedRevenuePence, b.PlannedRevenuePence) &&
+		sameOptional(a.RevenueBasis, b.RevenueBasis) &&
+		sameOptional(a.RevenueAgeGameHours, b.RevenueAgeGameHours) &&
+		sameOptional(a.HazardBPS, b.HazardBPS) &&
+		sameOptional(a.HazardSource, b.HazardSource) &&
+		sameOptional(a.CargoShortfallPence, b.CargoShortfallPence) &&
+		sameOptional(a.DepartedCargoPence, b.DepartedCargoPence)
 	return a.ID == b.ID && a.AccountID == b.AccountID && a.ShipID == b.ShipID &&
 		a.MissionID == b.MissionID && a.Lane == b.Lane && a.ActionID == b.ActionID &&
-		a.Kind == b.Kind && a.Origin == b.Origin && a.Destination == b.Destination &&
+		a.EventID == b.EventID && a.Kind == b.Kind && a.Origin == b.Origin && a.Destination == b.Destination &&
 		a.Commodity == b.Commodity && a.QuantityTons == b.QuantityTons && a.ProbeOutcome == b.ProbeOutcome &&
-		a.GameSeconds == b.GameSeconds && a.CostsKnown == b.CostsKnown &&
+		a.GameSeconds == b.GameSeconds && a.CostsKnown == b.CostsKnown && a.ProceedsUnknown == b.ProceedsUnknown &&
 		a.AcquisitionPence == b.AcquisitionPence && a.ProceedsPence == b.ProceedsPence &&
 		a.FeesPence == b.FeesPence && a.ProvisionsPence == b.ProvisionsPence &&
-		a.ExpensesPence == b.ExpensesPence && sameExplorationExpense &&
+		a.ExpensesPence == b.ExpensesPence && sameOptional(a.ExplorationExpensePence, b.ExplorationExpensePence) && samePlan &&
 		a.StartedAt.Truncate(time.Microsecond).Equal(b.StartedAt.Truncate(time.Microsecond)) &&
 		a.CompletedAt.Truncate(time.Microsecond).Equal(b.CompletedAt.Truncate(time.Microsecond))
 }
 
-func (s *Store) PutSettlement(ctx context.Context, settlement *Settlement) error {
-	if settlement == nil || !validID(settlement.ID) || !validID(settlement.AccountID) || !validID(settlement.ActionID) ||
+func sameOptional[T comparable](a, b *T) bool {
+	return a == nil && b == nil || a != nil && b != nil && *a == *b
+}
+
+func validateSettlement(settlement *Settlement) (int64, error) {
+	if settlement == nil || !validID(settlement.ID) || !validID(settlement.AccountID) ||
+		settlement.Kind == "passage" && (settlement.ActionID != "" && !validID(settlement.ActionID) ||
+			!settlement.ProceedsUnknown && !validID(settlement.EventID) ||
+			settlement.ProceedsUnknown && (settlement.EventID != "" || settlement.ProceedsPence != 0 || settlement.CostsKnown)) ||
+		settlement.Kind != "passage" && (!validID(settlement.ActionID) || settlement.EventID != "" || settlement.ProceedsUnknown) ||
 		settlement.QuantityTons < 0 || settlement.GameSeconds < 0 || settlement.AcquisitionPence < 0 ||
 		settlement.ProceedsPence < 0 || settlement.FeesPence < 0 || settlement.ProvisionsPence < 0 || settlement.ExpensesPence < 0 ||
 		settlement.ExplorationExpensePence != nil && *settlement.ExplorationExpensePence < 0 ||
+		settlement.PlannedRevenuePence != nil && *settlement.PlannedRevenuePence < 0 ||
+		settlement.RevenueAgeGameHours != nil && (*settlement.RevenueAgeGameHours < 0 || math.IsNaN(*settlement.RevenueAgeGameHours) || math.IsInf(*settlement.RevenueAgeGameHours, 0)) ||
+		settlement.HazardBPS != nil && (*settlement.HazardBPS < 0 || *settlement.HazardBPS > 10_000) ||
+		settlement.CargoShortfallPence != nil && *settlement.CargoShortfallPence < 0 ||
+		settlement.DepartedCargoPence != nil && *settlement.DepartedCargoPence < 0 ||
 		settlement.ProbeOutcome != "" && settlement.ProbeOutcome != ProbeOutcomeFailed && settlement.ProbeOutcome != ProbeOutcomeContinuation ||
 		settlement.CompletedAt.IsZero() {
-		return fmt.Errorf("settlement fields: %w", ErrInvalidInput)
+		return 0, fmt.Errorf("settlement fields: %w", ErrInvalidInput)
 	}
-	row := *settlement
-	net := row.ProceedsPence
-	for _, cost := range []int64{row.AcquisitionPence, row.FeesPence, row.ProvisionsPence, row.ExpensesPence} {
+	net := settlement.ProceedsPence
+	for _, cost := range []int64{settlement.AcquisitionPence, settlement.FeesPence, settlement.ProvisionsPence, settlement.ExpensesPence} {
 		if net < math.MinInt64+cost {
-			return fmt.Errorf("settlement net overflows integer pence: %w", ErrInvalidInput)
+			return 0, fmt.Errorf("settlement net overflows integer pence: %w", ErrInvalidInput)
 		}
 		net -= cost
 	}
-	err := s.writeOwned(ctx, row.AccountID, func(tx *gorm.DB) error {
-		var action actionRow
-		if err := tx.Where("id = ? AND account_id = ?", row.ActionID, row.AccountID).Take(&action).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
+	return net, nil
+}
+
+func (s *Store) PutSettlement(ctx context.Context, settlement *Settlement) error {
+	net, err := validateSettlement(settlement)
+	if err != nil {
+		return err
+	}
+	row := *settlement
+	err = s.writeOwned(ctx, row.AccountID, func(tx *gorm.DB) error {
+		if row.ActionID != "" {
+			var action actionRow
+			if err := tx.Where("id = ? AND account_id = ?", row.ActionID, row.AccountID).Take(&action).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrNotFound
+				}
+				return err
 			}
-			return err
+			if action.State == ActionPending {
+				return fmt.Errorf("settlement evidence is unresolved: %w", ErrActionConflict)
+			}
 		}
-		if action.State == ActionPending {
-			return fmt.Errorf("settlement evidence is unresolved: %w", ErrActionConflict)
+		if row.Kind == "passage" {
+			if row.ProceedsUnknown {
+				var archive passengerReceiptRow
+				if err := tx.Where("id = ? AND account_id = ?", row.ID, row.AccountID).Take(&archive).Error; err != nil {
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						return ErrNotFound
+					}
+					return err
+				}
+				receipt, err := s.decodePassengerReceipt(archive)
+				if err != nil {
+					return err
+				}
+				if !sameSettlement(receipt.Settlement, row) {
+					return ErrActionConflict
+				}
+			} else if err := validatePassageSettlement(tx, row); err != nil {
+				return err
+			}
 		}
 		if row.CreatedAt.IsZero() {
 			row.CreatedAt = time.Now().UTC()
@@ -272,8 +343,8 @@ func (s *Store) economicHistory(ctx context.Context, accountID, lane string, asO
 		WITH evidence AS (
 			SELECT *,
 				proceeds_pence::numeric - acquisition_pence - fees_pence - provisions_pence - expenses_pence AS net,
-				kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery', 'aborted', 'unknown') AS commercial,
-				kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery') AS delivery,
+				kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery', 'passage', 'aborted', 'unknown') AS commercial,
+				kind IN ('spot', 'charter', 'freight', 'spot+freight', 'charter+freight', 'recovery', 'passage') AS delivery,
 				(? AND kind = 'aborted' AND quantity_tons = 0 AND acquisition_pence = 0 AND proceeds_pence = 0
 					AND EXISTS (SELECT 1 FROM actions a WHERE a.id = scoped.action_id AND a.account_id = scoped.account_id
 						AND a.path IN ('/v1/shipyard/build-ship', '/v1/shipyard/modify-ship'))) AS control_closeout
@@ -286,7 +357,7 @@ func (s *Store) economicHistory(ctx context.Context, accountID, lane string, asO
 			COUNT(*) FILTER (WHERE in_window AND delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0) AS positive_cycles,
 			COALESCE(SUM(quantity_tons::numeric) FILTER (WHERE in_window AND delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_quantity_tons,
 			COALESCE(SUM(net) FILTER (WHERE in_window AND delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_net_pence,
-			COALESCE(SUM(game_seconds::numeric) FILTER (WHERE in_window AND (commercial OR kind = 'relocation')), 0) AS game_seconds,
+			COALESCE(SUM(game_seconds::numeric) FILTER (WHERE in_window AND (commercial OR kind = 'relocation') AND NOT proceeds_unknown), 0) AS game_seconds,
 			COALESCE(SUM(game_seconds::numeric) FILTER (WHERE in_window AND delivery AND costs_known AND net > 0 AND quantity_tons > 0 AND game_seconds > 0), 0) AS positive_game_seconds,
 			COALESCE(BOOL_OR(NOT costs_known OR kind = 'unknown') FILTER (WHERE in_window AND (commercial OR kind = 'relocation') AND NOT control_closeout), false) AS unknown_costs,
 			COALESCE(BOOL_OR(game_seconds <= 0) FILTER (WHERE in_window AND (commercial OR kind = 'relocation')), false) AS unmeasured_duration,

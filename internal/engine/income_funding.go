@@ -52,8 +52,8 @@ func fundVoyage(in PlanningInput, plan Plan) voyageFundingQuote {
 	return quote
 }
 
-// Funding principal stays cash. Only the observed fee reduces contribution,
-// including the repeat diagnostic, and each quote starts with uncharged prices.
+// Funding principal stays cash. Actual paid fees remain in the economics, but
+// only prospective fees can decide whether a funded commitment should continue.
 func addFundingFees(plan Plan, fees int64) Plan {
 	if fees < 0 || fees == math.MaxInt64 || plan.Economics.FundingFeesPence > math.MaxInt64-fees ||
 		plan.Economics.StressNetPence < math.MinInt64+fees ||
@@ -67,11 +67,18 @@ func addFundingFees(plan Plan, fees int64) Plan {
 		plan.Economics.BallastRepeatNetPence -= fees
 	}
 	plan.Economics.NetPencePerGameDay = float64(plan.Economics.ExpectedNetPence) / plan.Economics.GameDays
-	if plan.Economics.ExpectedNetPence <= 0 {
+	remainingNet := plan.Economics.ExpectedNetPence + plan.sunkFundingFeesPence
+	if remainingNet < 0 || remainingNet == 0 && plan.sunkFundingFeesPence == 0 {
 		return reject(plan, "non-positive destination contribution after measured funding fees")
 	}
-	if plan.playerBidStress && plan.Economics.ExpectedNetPence-plan.Economics.PriceUncertaintyStressPence <= 0 {
+	if plan.playerBidStress && remainingNet-plan.Economics.PriceUncertaintyStressPence <= 0 {
 		return reject(plan, "player bid lot is not net-positive at the stressed gossip NPC bid after funding fees")
+	}
+	if plan.Economics.RevenueBasis == "retained" && remainingNet-plan.Economics.PriceUncertaintyStressPence <= 0 {
+		return reject(plan, "retained quay book lot is not net-positive after price uncertainty stress and funding fees")
+	}
+	if reason := minimumMarginRejection(plan); reason != "" {
+		return reject(plan, reason)
 	}
 	return plan
 }
@@ -152,11 +159,11 @@ func ordinaryIncomePending(data *missionData) bool {
 	}
 }
 
-func quoteIncomePlan(in PlanningInput, pinned Plan) voyageFundingQuote {
-	return fundVoyage(in, priceIncomePlan(in, pinned))
+func quoteIncomePlan(in PlanningInput, pinned Plan, paidFees int64) voyageFundingQuote {
+	return fundVoyage(in, priceIncomePlan(in, pinned, paidFees))
 }
 
-func priceIncomePlan(in PlanningInput, pinned Plan) Plan {
+func priceIncomePlan(in PlanningInput, pinned Plan, paidFees int64) Plan {
 	rejected := func(reason string) Plan {
 		return reject(pinned, reason)
 	}
@@ -179,7 +186,7 @@ func priceIncomePlan(in PlanningInput, pinned Plan) Plan {
 	in.Markets = withoutOwnOrders(in.Markets, in.OwnedOrderIDs)
 	plan := Plan{Kind: pinned.Kind, ShipID: pinned.ShipID, Origin: pinned.Origin, Destination: pinned.Destination,
 		Commodity: pinned.Commodity, ContractID: pinned.ContractID, FreightIDs: slices.Clone(pinned.FreightIDs),
-		Quantity: pinned.Quantity, TargetStoresTons: pinned.TargetStoresTons}
+		Quantity: pinned.Quantity, TargetStoresTons: pinned.TargetStoresTons, sunkFundingFeesPence: paidFees}
 	var revenue, extraTons int64
 	if strings.HasPrefix(plan.Kind, "charter") {
 		found := false
@@ -235,7 +242,13 @@ func priceIncomePlan(in PlanningInput, pinned Plan) Plan {
 	if plan.Kind == "freight" && len(plan.FreightIDs) != 1 || revenue == math.MaxInt64 || extraTons == math.MaxInt64 {
 		return rejected("pinned income manifest exceeds checked terms or integer-pence bounds")
 	}
+	// Procurement is an existing commitment, not a fresh hazard-priced voyage.
+	// Keep its admission charge, including zero for plans made before HZ.
+	in.pinnedHazard = &pinned.Economics
 	plan = pricePlan(in, hull, origin, plan, revenue, extraTons)
+	if plan.Accepted {
+		plan = addFundingFees(plan, paidFees)
+	}
 	if pinned.PriceSource != "" {
 		// Current receipts can improve without resizing the original probe or
 		// relabeling the evidence under which its fixed quantity was admitted.
@@ -256,12 +269,9 @@ func (r *Runner) incomeProcurementQuote(ctx context.Context, ship ShipState, dat
 	if err != nil {
 		return voyageFundingQuote{}, err
 	}
-	quote := quoteIncomePlan(input, data.Plan)
-	if quote.plan.Accepted {
-		// Before cargo procurement FeesPence contains actual funding receipts,
-		// never the transferred principal or an already-paid modeled estimate.
-		quote.plan = addFundingFees(quote.plan, data.FeesPence)
-	}
+	// FeesPence contains actual funding receipts, not transferred principal
+	// or a modeled estimate. Repricing records them without charging them again.
+	quote := quoteIncomePlan(input, data.Plan, data.FeesPence)
 	return quote, nil
 }
 
@@ -353,7 +363,7 @@ func (r *Runner) incomeActionReady(ctx context.Context, ship ShipState, data *mi
 	if err != nil {
 		return err
 	}
-	plan := priceIncomePlan(input, data.Plan)
+	plan := priceIncomePlan(input, data.Plan, data.FeesPence)
 	if !plan.Accepted {
 		return fmt.Errorf("new income action lost its pinned opportunity: %s", plan.Reason)
 	}
@@ -403,16 +413,13 @@ func (r *Runner) incomeActionReady(ctx context.Context, ship ShipState, data *mi
 		if !funded {
 			return errors.New("new income remittance no longer leaves a fully fundable reserve-safe shipment")
 		}
-		plan = addFundingFees(plan, growthCashTotal(data.FeesPence, fee, remainingFees))
+		plan = addFundingFees(plan, growthCashTotal(fee, remainingFees))
 		if !plan.Accepted {
 			return fmt.Errorf("new income remittance lost positive contribution after actual and remaining funding fees: %s", plan.Reason)
 		}
 		return nil
 	}
 	quote := fundVoyage(input, plan)
-	if quote.plan.Accepted {
-		quote.plan = addFundingFees(quote.plan, data.FeesPence)
-	}
 	if !quote.plan.Accepted {
 		return fmt.Errorf("new income action lost its funded opportunity: %s", quote.plan.Reason)
 	}

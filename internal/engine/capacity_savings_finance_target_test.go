@@ -37,9 +37,11 @@ func TestCapacitySavingsUnevaluatedTargetCannotFinanceAnotherHull(t *testing.T) 
 				DepthNetPencePerGameDay: 2 * candidate.DepthNetPencePerGameDay,
 				ExpiresAt:               time.Now().UTC().Add(time.Hour),
 			}
-			if _, found := findHull(runner.stateCache.Catalog, target.HullID); found {
-				t.Fatal("B must be absent from the evaluated candidate set")
-			}
+			// B remains in the catalog for its marginal-upkeep measurement,
+			// but no current yard quote makes it an evaluated candidate.
+			unevaluated := hull
+			unevaluated.ID = target.HullID
+			runner.stateCache.Catalog.ShipClasses = append(runner.stateCache.Catalog.ShipClasses, unevaluated)
 			if saving {
 				if err := runner.setCapacitySavingsTarget(h.ctx, target); err != nil {
 					t.Fatal(err)
@@ -80,6 +82,7 @@ func TestCapacitySavingsTotalInterestRefusalRecordsTargetDecision(t *testing.T) 
 	runner.stateCache.Clock.Calendar.TimeScale = 60
 	runner.stateCache.Contracts = nil
 	bookCommodity(runner.stateCache.Markets[recoveryFarPort], recoveryGrain).Depth.Bids[0].PricePence = 50_000
+	seedCapacitySavingsWindows(t, h, 0)
 	port, small, _, _, _ := loanCapacityDecision(t, h, runner)
 	large := small
 	large.ID, large.HoldCapacityTons = "savings-interest-target", 240

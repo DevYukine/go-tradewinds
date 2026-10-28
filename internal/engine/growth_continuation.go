@@ -324,6 +324,9 @@ func quoteGrowthDelivery(input PlanningInput, base Plan, lane *growthLaneIntent,
 	quoted.Ship.Ship.DockQueuedAt = nil
 	quoted.Ship.Voyage = nil
 	quoted.FleetDailyUpkeepPence = 0
+	if initial {
+		quoted.pinnedHazard = &base.Economics
+	}
 	returnCash := int64(0)
 	returnRegion := ""
 	if back != nil {
@@ -466,6 +469,7 @@ func (r *Runner) refreshGrowthProcurement(ctx context.Context, ship ShipState, m
 	if err := growthOperatingAuthority(input, data.Plan); err != nil {
 		return false, false, r.hold(ctx, ship.Ship.ID, err.Error())
 	}
+	input.pinnedHazard = &data.Plan.Economics
 	quote := quoteGrowthDelivery(input, data.Plan, data.GrowthLane, !data.GrowthLane.InitialProcurementComplete, nil)
 	if !quote.plan.Accepted {
 		data.GrowthLane = nil
@@ -692,6 +696,7 @@ func (r *Runner) growthAllocationReady(ctx context.Context, ship ShipState, data
 			return err
 		}
 		reserveGrowthCommissioning(&input, data)
+		input.pinnedHazard = &data.Plan.Economics
 		quote = quoteGrowthDelivery(input, data.Plan, data.GrowthLane, !data.GrowthLane.InitialProcurementComplete, nil)
 	}
 	if err != nil {

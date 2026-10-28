@@ -121,7 +121,8 @@ type settlementRow struct {
 	ID                      string `gorm:"primaryKey"`
 	AccountID               string
 	MissionID               string
-	ActionID                string
+	ActionID                *string
+	EventID                 *string
 	LaneLookup              string
 	ContextCipher           []byte
 	Kind                    string
@@ -130,10 +131,19 @@ type settlementRow struct {
 	CostsKnown              bool
 	AcquisitionPence        int64
 	ProceedsPence           int64
+	ProceedsUnknown         bool
 	FeesPence               int64
 	ProvisionsPence         int64
 	ExpensesPence           int64
 	ExplorationExpensePence *int64
+	PlannedNetPence         *int64
+	PlannedRevenuePence     *int64
+	RevenueBasis            *string
+	RevenueAgeGameHours     *float64
+	HazardBPS               *int64
+	HazardSource            *string
+	CargoShortfallPence     *int64
+	DepartedCargoPence      *int64
 	StartedAt               time.Time
 	CompletedAt             time.Time
 	CreatedAt               time.Time
@@ -145,6 +155,7 @@ type settlementContext struct {
 	ShipID       string
 	Lane         string
 	Kind         string
+	EventID      string
 	Origin       string
 	Destination  string
 	Commodity    string
@@ -153,7 +164,7 @@ type settlementContext struct {
 
 func settlementClassification(kind string) string {
 	switch kind {
-	case "spot", "charter", "freight", "spot+freight", "charter+freight", "recovery", "relocation", "aborted", "maintenance":
+	case "spot", "charter", "freight", "spot+freight", "charter+freight", "recovery", "passage", "relocation", "aborted", "maintenance":
 		return kind
 	default:
 		return "unknown"
@@ -162,16 +173,27 @@ func settlementClassification(kind string) string {
 
 func (s *Store) encodeSettlement(value Settlement) (settlementRow, error) {
 	row := settlementRow{
-		ID: value.ID, AccountID: value.AccountID, MissionID: value.MissionID, ActionID: value.ActionID,
+		ID: value.ID, AccountID: value.AccountID, MissionID: value.MissionID,
 		LaneLookup: s.privateLookup("settlement-lane", "", value.Lane), Kind: settlementClassification(value.Kind),
 		QuantityTons: value.QuantityTons, GameSeconds: value.GameSeconds, CostsKnown: value.CostsKnown,
 		AcquisitionPence: value.AcquisitionPence, ProceedsPence: value.ProceedsPence,
-		FeesPence: value.FeesPence, ProvisionsPence: value.ProvisionsPence, ExpensesPence: value.ExpensesPence,
+		ProceedsUnknown: value.ProceedsUnknown,
+		FeesPence:       value.FeesPence, ProvisionsPence: value.ProvisionsPence, ExpensesPence: value.ExpensesPence,
 		ExplorationExpensePence: value.ExplorationExpensePence,
-		StartedAt:               value.StartedAt, CompletedAt: value.CompletedAt, CreatedAt: value.CreatedAt,
+		PlannedNetPence:         value.PlannedNetPence, PlannedRevenuePence: value.PlannedRevenuePence,
+		RevenueBasis: value.RevenueBasis, RevenueAgeGameHours: value.RevenueAgeGameHours,
+		HazardBPS: value.HazardBPS, HazardSource: value.HazardSource,
+		CargoShortfallPence: value.CargoShortfallPence, DepartedCargoPence: value.DepartedCargoPence,
+		StartedAt: value.StartedAt, CompletedAt: value.CompletedAt, CreatedAt: value.CreatedAt,
+	}
+	if value.ActionID != "" {
+		row.ActionID = &value.ActionID
+	}
+	if value.EventID != "" {
+		row.EventID = &value.EventID
 	}
 	context := settlementContext{
-		ShipID: value.ShipID, Lane: value.Lane, Kind: value.Kind, Origin: value.Origin,
+		ShipID: value.ShipID, Lane: value.Lane, Kind: value.Kind, EventID: value.EventID, Origin: value.Origin,
 		Destination: value.Destination, Commodity: value.Commodity, ProbeOutcome: value.ProbeOutcome,
 	}
 	var err error
@@ -184,18 +206,82 @@ func (s *Store) decodeSettlement(row settlementRow) (Settlement, error) {
 	if err := s.decodePrivate(row.ContextCipher, &context, "settlements", "context", row.AccountID, row.ID); err != nil {
 		return Settlement{}, err
 	}
-	if s.privateLookup("settlement-lane", "", context.Lane) != row.LaneLookup || settlementClassification(context.Kind) != row.Kind {
+	var actionID, eventID string
+	if row.ActionID != nil {
+		actionID = *row.ActionID
+	}
+	if row.EventID != nil {
+		eventID = *row.EventID
+	}
+	if s.privateLookup("settlement-lane", "", context.Lane) != row.LaneLookup ||
+		settlementClassification(context.Kind) != row.Kind || context.EventID != eventID {
 		return Settlement{}, ErrActionConflict
 	}
 	return Settlement{
 		ID: row.ID, AccountID: row.AccountID, ShipID: context.ShipID, MissionID: row.MissionID,
-		Lane: context.Lane, ActionID: row.ActionID, Kind: context.Kind, Origin: context.Origin,
+		Lane: context.Lane, ActionID: actionID, EventID: eventID, Kind: context.Kind, Origin: context.Origin,
 		Destination: context.Destination, Commodity: context.Commodity, ProbeOutcome: context.ProbeOutcome,
 		QuantityTons: row.QuantityTons, GameSeconds: row.GameSeconds, CostsKnown: row.CostsKnown,
 		AcquisitionPence: row.AcquisitionPence, ProceedsPence: row.ProceedsPence,
-		FeesPence: row.FeesPence, ProvisionsPence: row.ProvisionsPence, ExpensesPence: row.ExpensesPence,
+		ProceedsUnknown: row.ProceedsUnknown,
+		FeesPence:       row.FeesPence, ProvisionsPence: row.ProvisionsPence, ExpensesPence: row.ExpensesPence,
 		ExplorationExpensePence: row.ExplorationExpensePence,
-		StartedAt:               row.StartedAt, CompletedAt: row.CompletedAt, CreatedAt: row.CreatedAt,
+		PlannedNetPence:         row.PlannedNetPence, PlannedRevenuePence: row.PlannedRevenuePence,
+		RevenueBasis: row.RevenueBasis, RevenueAgeGameHours: row.RevenueAgeGameHours,
+		HazardBPS: row.HazardBPS, HazardSource: row.HazardSource,
+		CargoShortfallPence: row.CargoShortfallPence, DepartedCargoPence: row.DepartedCargoPence,
+		StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, CreatedAt: row.CreatedAt,
+	}, nil
+}
+
+type passengerEvidenceRow struct {
+	ID                     string `gorm:"primaryKey"`
+	AccountID              string
+	LaneLookup             string
+	ContextCipher          []byte
+	FarePerHeadPence       int64
+	Outcome                string
+	Heads                  int64
+	GameHour               float64
+	LeewayGameHours        *float64
+	LateCutPerGameDayPence *int64
+	CreatedAt              time.Time
+}
+
+func (passengerEvidenceRow) TableName() string { return "passenger_evidence" }
+
+type passengerEvidenceContext struct {
+	Lane string
+	Kind string
+}
+
+func (s *Store) encodePassengerEvidence(value PassengerEvidence) (passengerEvidenceRow, error) {
+	row := passengerEvidenceRow{
+		ID: value.ID, AccountID: value.AccountID,
+		LaneLookup:       s.privateLookup("passenger-lane", value.AccountID, value.Lane),
+		FarePerHeadPence: value.FarePerHeadPence, Outcome: value.Outcome, Heads: value.Heads,
+		GameHour: value.GameHour, LeewayGameHours: value.LeewayGameHours,
+		LateCutPerGameDayPence: value.LateCutPerGameDayPence, CreatedAt: value.CreatedAt,
+	}
+	var err error
+	row.ContextCipher, err = s.encryptPrivate(passengerEvidenceContext{Lane: value.Lane, Kind: value.Kind},
+		"passenger_evidence", "context", row.AccountID, row.ID)
+	return row, err
+}
+
+func (s *Store) decodePassengerEvidence(row passengerEvidenceRow) (PassengerEvidence, error) {
+	var context passengerEvidenceContext
+	if err := s.decodePrivate(row.ContextCipher, &context, "passenger_evidence", "context", row.AccountID, row.ID); err != nil {
+		return PassengerEvidence{}, err
+	}
+	if s.privateLookup("passenger-lane", row.AccountID, context.Lane) != row.LaneLookup {
+		return PassengerEvidence{}, ErrActionConflict
+	}
+	return PassengerEvidence{
+		ID: row.ID, AccountID: row.AccountID, Lane: context.Lane, Kind: context.Kind,
+		FarePerHeadPence: row.FarePerHeadPence, Outcome: row.Outcome, Heads: row.Heads,
+		GameHour: row.GameHour, LeewayGameHours: row.LeewayGameHours,
+		LateCutPerGameDayPence: row.LateCutPerGameDayPence, CreatedAt: row.CreatedAt,
 	}, nil
 }
 

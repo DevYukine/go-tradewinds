@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DevYukine/go-tradewinds/internal/gameapi"
 	"github.com/DevYukine/go-tradewinds/internal/store"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -49,6 +50,7 @@ type missionData struct {
 	SourcingHandoff           *relocationIntent       `json:"sourcing_handoff,omitempty"`
 	GrowthLane                *growthLaneIntent       `json:"growth_lane,omitempty"`
 	Capacity                  *capacityIntent         `json:"capacity,omitempty"`
+	Passage                   *passageIntent          `json:"passage,omitempty"`
 	Underwriting              *underwritingIntent     `json:"underwriting,omitempty"`
 	Marque                    *marqueIntent           `json:"marque,omitempty"`
 	LoanRepayment             *loanRepaymentIntent    `json:"loan_repayment,omitempty"`
@@ -64,6 +66,7 @@ type missionData struct {
 	Freight                   []freightObligation     `json:"freight"`
 	Eligible                  map[string]int64        `json:"eligible"`
 	DepartedCargo             map[string]int64        `json:"departed_cargo"`
+	DepartedCargoPence        *int64                  `json:"departed_cargo_pence,omitempty"`
 	FirstArrivalETA           time.Time               `json:"first_arrival_eta,omitempty"`
 	BoughtQuantity            int64                   `json:"bought_quantity"`
 	DeliveredQuantity         int64                   `json:"delivered_quantity"`
@@ -114,6 +117,16 @@ func (r *Runner) loadMission(ctx context.Context, shipID string) (*store.Mission
 func (r *Runner) work(ctx context.Context) (bool, error) {
 	r.nextDeadline = time.Time{}
 	r.assessHold("")
+	if changed, err := r.reconcilePendingPassengerReceipts(ctx); err != nil {
+		_ = r.decision(ctx, "", "passenger_receipt_deferred", "passenger receipt reconciliation deferred: "+err.Error(), nil)
+	} else if changed {
+		return true, nil
+	}
+	if changed, err := r.reconcileMissingPassages(ctx); err != nil {
+		_ = r.decision(ctx, "", "passage_reconciliation_deferred", err.Error(), nil)
+	} else if changed {
+		return true, nil
+	}
 	// Restore every durable plan before replaying even one request. An orphaned
 	// pending request blocks all new account mutations rather than being guessed.
 	missions := make(map[string]*store.Mission)
@@ -180,12 +193,21 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	unresolved := false
 	for _, id := range ids {
 		data := dataByShip[id]
-		if data.Action != nil {
-			unresolved = unresolved || id != "__underwriting" && id != "__marque"
+		if data.Action != nil && (data.Passage == nil || data.Passage.QuarantineReason == "") {
 			r.assessShip(id)
 			if changed, err := r.dispatch(ctx, missions[id], &data); changed || err != nil {
 				return changed, err
 			}
+		}
+		if data.Action != nil && data.Passage != nil && data.Passage.QuarantineReason != "" && r.opts.Execute {
+			if err := r.retireQuarantinedPassageAction(ctx, missions[id], &data); err != nil {
+				_ = r.hold(ctx, id, "quarantined passenger action retirement deferred: "+err.Error())
+				unresolved = true
+			}
+		}
+		dataByShip[id] = data
+		if data.Action != nil {
+			unresolved = unresolved || id != "__underwriting" && id != "__marque" && !passengerStage(data.Action.Stage)
 		}
 	}
 	r.assessHold("")
@@ -275,6 +297,9 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		mission := missions[ship.Ship.ID]
 		data := dataByShip[ship.Ship.ID]
 		if mission != nil {
+			if data.Action != nil && passengerStage(data.Action.Stage) && (data.Passage == nil || data.Passage.QuarantineReason == "") {
+				continue // Only this ship is quarantined by its ambiguous fare request.
+			}
 			changed, err := r.driveMission(ctx, ship, mission, &data)
 			if changed || err != nil {
 				return changed, err
@@ -283,6 +308,21 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		}
 		if ship.Ship.Status == "sunk" {
 			continue
+		}
+		if ship.PassengerHoldTons > 0 {
+			if r.opts.Execute {
+				if changed, err := r.recoverPassage(ctx, ship); changed || err != nil {
+					return changed, err
+				}
+			}
+			continue
+		}
+		if r.opts.Execute && r.fresh("passenger_offers") {
+			for _, offer := range decode[[]gameapi.PassengerOffer](r.snapshot, "passenger_offers") {
+				if offer.ShipID == ship.Ship.ID && offer.Status == "open" {
+					return r.recoverPassageOffer(ctx, ship, offer)
+				}
+			}
 		}
 		if ship.Ship.Status == "sailing" || ship.CargoUsedTons > 0 || len(r.activeFreight(ship.Ship.ID)) > 0 {
 			if r.opts.Execute {
@@ -364,6 +404,11 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			}
 			if err := r.hold(ctx, ship.Ship.ID, reason); err != nil {
 				return false, err
+			}
+			if r.opts.Execute {
+				if changed, err := r.considerPassage(ctx, ship, input, missions); changed || err != nil {
+					return changed, err
+				}
 			}
 		}
 		if r.opts.Execute && ship.Ship.Status == "berthed" && r.shipUnlocked(ship) {
@@ -543,8 +588,14 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 	if !r.opts.Execute {
 		return false, r.hold(ctx, ship.Ship.ID, "observe mode: durable mission retained without mutation")
 	}
+	if data.Passage != nil && data.Passage.QuarantineReason != "" {
+		return r.driveQuarantinedPassage(ctx, ship, mission, data)
+	}
 	if data.Action != nil {
 		return r.dispatch(ctx, mission, data)
+	}
+	if data.Passage != nil {
+		return r.drivePassage(ctx, ship, mission, data)
 	}
 	if data.Settlement == nil {
 		if changed, err := r.reconcileFreight(ctx, mission, data); changed || err != nil {
@@ -1063,7 +1114,7 @@ func arrivalEligibility(departed, actual, sealed map[string]int64, evidenced boo
 }
 
 func emptyCargo(ship ShipState) bool {
-	if ship.CargoUsedTons != 0 {
+	if ship.CargoUsedTons != 0 || ship.PassengerHoldTons > 0 {
 		return false
 	}
 	for _, quantity := range ship.CargoManifest {
@@ -1326,6 +1377,15 @@ func (r *Runner) finishMission(ctx context.Context, ship ShipState, mission *sto
 				probeOutcome = store.ProbeOutcomeContinuation
 			}
 		}
+		var revenueBasis, hazardSource *string
+		var hazardBPS *int64
+		if data.Plan.Economics.RevenueBasis != "" {
+			revenueBasis = new(data.Plan.Economics.RevenueBasis)
+		}
+		if data.Plan.Economics.HazardSource != "" {
+			hazardSource = new(data.Plan.Economics.HazardSource)
+			hazardBPS = new(data.Plan.Economics.HazardBPS)
+		}
 		data.Settlement = &store.Settlement{
 			ID:                      mission.Generation,
 			AccountID:               r.account.ID,
@@ -1339,6 +1399,14 @@ func (r *Runner) finishMission(ctx context.Context, ship ShipState, mission *sto
 			ProvisionsPence:         data.ProvisionsPence,
 			ExpensesPence:           data.ExpensesPence,
 			ExplorationExpensePence: explorationExpense,
+			PlannedNetPence:         new(data.Plan.Economics.ExpectedNetPence),
+			PlannedRevenuePence:     new(data.Plan.Economics.RevenuePence),
+			RevenueBasis:            revenueBasis,
+			RevenueAgeGameHours:     data.Plan.Economics.RevenueAgeGameHours,
+			HazardBPS:               hazardBPS,
+			HazardSource:            hazardSource,
+			CargoShortfallPence:     cargoShortfallPence(data),
+			DepartedCargoPence:      data.DepartedCargoPence,
 			QuantityTons:            data.DeliveredQuantity,
 			GameSeconds:             gameSeconds,
 			Kind:                    data.Plan.Kind,
@@ -1387,6 +1455,49 @@ func (r *Runner) finishMission(ctx context.Context, ship ShipState, mission *sto
 		})...)
 	}
 	return true, nil
+}
+
+// Cargo losses are valued at the actual average acquisition cost, rounded up
+// to a penny. Freight deliveries never conceal a shortfall in purchased cargo.
+func cargoShortfallPence(data *missionData) *int64 {
+	if data.BoughtQuantity <= 0 {
+		if data.CostsKnown && data.AcquisitionPence == 0 {
+			zero := int64(0)
+			return &zero
+		}
+		return nil
+	}
+	delivered := data.DeliveredQuantity
+	for _, obligation := range data.Freight {
+		if obligation.Settled {
+			delivered = max(0, delivered-obligation.Quantity)
+		}
+	}
+	missing := max(0, data.BoughtQuantity-delivered)
+	shortfall := ceilRatio(data.AcquisitionPence, missing, data.BoughtQuantity)
+	return &shortfall
+}
+
+func recordDepartureCargoCost(data *missionData, manifest map[string]int64) {
+	if data.DepartedCargoPence != nil || data.ReturnJourney {
+		return
+	}
+	if data.BoughtQuantity <= 0 {
+		if data.CostsKnown && data.AcquisitionPence == 0 {
+			zero := int64(0)
+			data.DepartedCargoPence = &zero
+		}
+		return
+	}
+	tons := manifest[data.Plan.Commodity]
+	for _, obligation := range data.Freight {
+		if !obligation.Settled && obligation.Commodity == data.Plan.Commodity {
+			tons = max(0, tons-obligation.Quantity)
+		}
+	}
+	tons = max(0, min(tons, data.BoughtQuantity))
+	cost := ceilRatio(data.AcquisitionPence, tons, data.BoughtQuantity)
+	data.DepartedCargoPence = &cost
 }
 
 func laneKey(plan Plan) string {

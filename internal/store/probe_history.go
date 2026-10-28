@@ -45,3 +45,39 @@ func (s *Store) ProbeHistorySince(ctx context.Context, accountID string, cursor 
 	}
 	return settlements, departures, nil
 }
+
+// SourcingBudgetSettlements returns the accounting window plus earlier probes
+// that can precede a delivery's start by at most seven real days. It rebuilds
+// attribution without decrypting an account's entire lifetime history.
+func (s *Store) SourcingBudgetSettlements(ctx context.Context, accountID string, from, asOf time.Time) ([]Settlement, error) {
+	if !validID(accountID) || from.IsZero() || asOf.IsZero() || from.After(asOf) {
+		return nil, fmt.Errorf("sourcing budget query: %w", ErrInvalidInput)
+	}
+	db, cancel := s.query(ctx)
+	defer cancel()
+	earliestStart := from
+	if err := db.Model(&settlementRow{}).Select("COALESCE(MIN(started_at), ?)", from).
+		Where("account_id = ? AND completed_at >= ? AND completed_at <= ? AND started_at > ? AND costs_known AND quantity_tons > 0 AND kind IN ?",
+			accountID, from, asOf, time.Time{}, []string{"spot", "charter", "freight", "spot+freight", "charter+freight", "recovery"}).
+		Row().Scan(&earliestStart); err != nil {
+		return nil, err
+	}
+	probeFrom := earliestStart.Add(-7 * 24 * time.Hour)
+	if from.Before(probeFrom) {
+		probeFrom = from
+	}
+	var stored []settlementRow
+	if err := db.Where("account_id = ? AND completed_at <= ? AND (completed_at >= ? OR (kind = ? AND completed_at >= ?))",
+		accountID, asOf, from, "relocation", probeFrom).Order("completed_at, id").Find(&stored).Error; err != nil {
+		return nil, err
+	}
+	settlements := make([]Settlement, 0, len(stored))
+	for _, row := range stored {
+		value, err := s.decodeSettlement(row)
+		if err != nil {
+			return nil, err
+		}
+		settlements = append(settlements, value)
+	}
+	return settlements, nil
+}

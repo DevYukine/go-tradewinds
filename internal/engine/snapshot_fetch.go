@@ -69,6 +69,9 @@ func fetchWave(ctx context.Context, api *gameapi.Client, tasks []fetchTask) ([]f
 				if result.err == nil && (!json.Valid(result.data) || string(result.data) == "null") {
 					result.err = errors.New("upstream response is not the documented non-null JSON dataset")
 				}
+				if result.err == nil {
+					result.err = validatePassengerCapture(task.key, result.data)
+				}
 				result.completedAt = time.Now()
 				results[index] = result
 			}

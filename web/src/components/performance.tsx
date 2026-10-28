@@ -38,7 +38,7 @@ const SERIES: Record<MoneySeries, { label: string; description: string }> = {
   settlement_gross: {
     label: "Gross settlement revenue",
     description:
-      "All recorded settlement proceeds before costs. Seed capital, transfer principal and collateral refunds are not revenue.",
+      "Recorded settlement proceeds before costs. Periods with unknown proceeds are omitted, not treated as zero. Seed capital, transfer principal and collateral refunds are not revenue.",
   },
   settlement_costs: {
     label: "Settlement costs",
@@ -319,7 +319,12 @@ export function Performance({ accountID }: { accountID: string }) {
         <dl className={styles.summary}>
           <div>
             <dt>Gross revenue</dt>
-            <dd>{summaryPlaceholder ?? money(totals.gross)}</dd>
+            <dd>
+              {summaryPlaceholder ??
+                (totals.count > 0 && totals.gross === undefined
+                  ? "Proceeds unknown"
+                  : money(totals.gross))}
+            </dd>
           </div>
           <div>
             <dt>Known costs</dt>
@@ -358,8 +363,8 @@ export function Performance({ accountID }: { accountID: string }) {
         {settlementSeries && history.data && (
           <>
             {count(totals.known)} known-cost settlements;{" "}
-            {count(totals.unknown)} with unknown costs. Not complete company
-            profit.
+            {count(totals.unknown)} with unknown costs or proceeds. Not complete
+            company profit.
           </>
         )}
       </div>
@@ -590,7 +595,7 @@ export function Performance({ accountID }: { accountID: string }) {
           uncompleted voyages and unallocated company costs.
           {settlementSeries &&
             totals.unknown > 0 &&
-            " Gross includes unknown-cost proceeds; costs and net exclude them."}
+            " Known proceeds from unknown-cost settlements count toward gross only. Unknown proceeds keep total gross unknown; affected gross chart periods are omitted. Costs and net include only settlements with known proceeds and costs."}
         </p>
       )}
       {points.length > 0 && (

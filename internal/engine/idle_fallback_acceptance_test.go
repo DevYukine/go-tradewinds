@@ -168,10 +168,21 @@ func idleFallbackExhaustSeed(t *testing.T, h *recoveryHarness) {
 	})
 }
 
+func idleFallbackPriorInspections(t *testing.T, h *recoveryHarness) {
+	t.Helper()
+	expense := int64(100)
+	for _, source := range []string{"amsterdam", "rouen", "calais", "ostend"} {
+		idleFallbackSettlement(t, h, store.Settlement{
+			ID: "idle-prior-" + source, Kind: "relocation", CostsKnown: true,
+			Lane: source + "|" + recoveryFarPort + "|sawn_planks|charter", ExplorationExpensePence: &expense,
+		})
+	}
+}
+
 func TestIdleFallbackEarnsSixObservedHoursAcrossRestartAndMaintenance(t *testing.T) {
 	t.Parallel()
 	w := newIdleFallbackWorld(t)
-	idleFallbackExhaustSeed(t, w.h)
+	idleFallbackPriorInspections(t, w.h)
 	runner := w.h.runner(primaryTestKey)
 	w.observe(t, runner, 100)
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), false)
@@ -192,19 +203,14 @@ func TestIdleFallbackEarnsSixObservedHoursAcrossRestartAndMaintenance(t *testing
 	w.observe(t, runner, 106)
 	in := w.input(t, runner, recoveryShipBlastoise)
 	idleFallbackExpect(t, in, true)
-	history, err := w.h.db.EconomicHistory(w.h.ctx, w.h.account.ID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sourcingLifetimeAllowance(history) != 0 {
-		t.Fatal("fixture unexpectedly replenished ordinary lifetime allowance")
+	if in.SourcingProbeExpensePence != 400 || sourcingAllowance(in) <= 0 {
+		t.Fatal("fixture did not retain its unspent rolling budget after six idle hours")
 	}
 
 	runner = w.h.runner(primaryTestKey)
 	w.observe(t, runner, 106)
 	idleFallbackExpect(t, w.input(t, runner, recoveryShipBlastoise), true)
-	// Refresh must inspect the same bounded shortlist even with no ordinary
-	// allowance; merely enabling execution after refresh would leave no routes.
+	// Refresh must inspect the same bounded shortlist for funded reinspections.
 	w.mu.Lock()
 	pairs := 0
 	for _, source := range []string{"amsterdam", "rouen", "calais", "ostend"} {
@@ -234,7 +240,7 @@ func TestIdleFallbackRequiresTwentyFourRealMinutesAndLatestMatchingCompletion(t 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newIdleFallbackWorld(t)
-			idleFallbackExhaustSeed(t, w.h)
+			idleFallbackPriorInspections(t, w.h)
 			runner := w.h.runner(primaryTestKey)
 			w.observe(t, runner, 100)
 			w.observe(t, runner, 106)
@@ -275,7 +281,7 @@ func TestIdleFallbackInvalidClockObservationsRebaseWithoutCredit(t *testing.T) {
 	for _, invalid := range []string{"paused", "failed clock", "regressed clock", "stale clock"} {
 		t.Run(invalid, func(t *testing.T) {
 			w := newIdleFallbackWorld(t)
-			idleFallbackExhaustSeed(t, w.h)
+			idleFallbackPriorInspections(t, w.h)
 			runner := w.h.runner(primaryTestKey)
 			w.observe(t, runner, 100)
 			w.observe(t, runner, 105)
@@ -309,7 +315,7 @@ func TestIdleFallbackPhysicalWorkResetsEarnedHours(t *testing.T) {
 	for _, activity := range []string{"cargo", "sailing", "active freight", "port change"} {
 		t.Run(activity, func(t *testing.T) {
 			w := newIdleFallbackWorld(t)
-			idleFallbackExhaustSeed(t, w.h)
+			idleFallbackPriorInspections(t, w.h)
 			runner := w.h.runner(primaryTestKey)
 			w.observe(t, runner, 100)
 			w.observe(t, runner, 105)
@@ -340,7 +346,7 @@ func TestIdleFallbackPhysicalWorkResetsEarnedHours(t *testing.T) {
 	}
 }
 
-func TestIdleFallbackBudgetUsesOneLiquiditySeedAndEveryPermanentProbeExpense(t *testing.T) {
+func TestIdleFallbackBudgetUsesRollingConvertedNetNotLiquiditySeed(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
@@ -350,30 +356,32 @@ func TestIdleFallbackBudgetUsesOneLiquiditySeedAndEveryPermanentProbeExpense(t *
 		unknown bool
 		want    int64
 	}{
-		{"two percent per probe", 200_000, 20_000, 0, false, 4_000},
-		{"shrinking cash", 50_000, 20_000, 0, false, 1_000},
-		{"remaining lifetime below per probe", 1_000_000, 69_999, 0, false, 1},
-		{"all liquidity allowance spent", 1_000_000, 70_000, 0, false, 0},
-		{"never add normal and pilot", 1_000_000, 60_000, 2_050_000, false, 10_000},
-		{"two percent of a large treasury", 2_000_000, 20_000, 0, false, 40_000},
-		{"unknown probe costs", 1_000_000, 20_000, 0, true, 0},
+		{"two percent cap", 200_000, 10_000, 0, false, 4_000},
+		{"shrinking cash", 50_000, 10_000, 0, false, 1_000},
+		{"remaining rolling budget", 1_000_000, 19_999, 0, false, 1},
+		{"seed exhausted despite idle cash", 1_000_000, 20_000, 0, false, 0},
+		{"converted net replenishes", 5_000_000, 30_000, 100_000, false, 40_000},
+		{"large treasury does not create a pilot seed", 2_000_000, 20_000, 0, false, 0},
+		{"unknown probe costs", 1_000_000, 10_000, 0, true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newIdleFallbackWorld(t)
-			// Both an old legacy row and another ship's expense consume this
-			// account's allowance; neither fingerprint nor age grants a seed.
+			// Old accounting ages out, while another ship's current expense
+			// still consumes the shared rolling account budget.
 			oldExpense := int64(10_000)
 			idleFallbackSettlement(t, w.h, store.Settlement{
 				ID: "idle-old-legacy", Kind: "relocation", CostsKnown: true,
-				ExpensesPence: oldExpense, CompletedAt: time.Now().UTC().Add(-30 * 24 * time.Hour),
+				ExpensesPence: oldExpense, CompletedAt: time.Now().UTC().Add(-61 * 24 * time.Hour),
 			})
-			rest := tc.expense - oldExpense
+			rest := tc.expense
 			idleFallbackSettlement(t, w.h, store.Settlement{
 				ID: "idle-other-ship", ShipID: recoveryShipCharizard, Kind: "relocation", CostsKnown: !tc.unknown,
-				ExplorationExpensePence: &rest,
+				Origin: recoveryHomePort, Destination: "amsterdam", Commodity: "sawn_planks",
+				CompletedAt: time.Now().UTC().Add(-3 * time.Hour), ExplorationExpensePence: &rest,
 			})
 			if tc.profit > 0 {
-				idleFallbackSettlement(t, w.h, store.Settlement{ID: "idle-commercial", Kind: "charter", CostsKnown: true, QuantityTons: 1, ProceedsPence: tc.profit})
+				idleFallbackSettlement(t, w.h, store.Settlement{ID: "idle-commercial", Kind: "charter", CostsKnown: true,
+					Origin: "amsterdam", Commodity: "sawn_planks", QuantityTons: 1, ProceedsPence: tc.profit})
 			}
 			runner := w.h.runner(primaryTestKey)
 			w.observe(t, runner, 100)
@@ -390,12 +398,12 @@ func TestIdleFallbackBudgetUsesOneLiquiditySeedAndEveryPermanentProbeExpense(t *
 					t.Fatal(err)
 				}
 				if got := sourcingAllowance(in); got != tc.want {
-					t.Fatalf("game hour %d: spending cap=%dp, want %dp with free=%dp, all-time expense=%dp; restart/time must not reset or add seeds", hour, got, tc.want, tc.free, tc.expense)
+					t.Fatalf("game hour %d: budget=%dp, want %dp with free=%dp, window expense=%dp; restart and idle time cannot replenish money", hour, got, tc.want, tc.free, tc.expense)
 				}
 				accepted := acceptedRelocations(planSourcingRelocation(in))
 				for _, plan := range accepted {
 					if sourcingExposure(plan) > tc.want {
-						t.Fatalf("inspection exposure exceeds the remaining liquidity-backed cap: %+v", plan)
+						t.Fatalf("inspection exposure exceeds the remaining rolling budget: %+v", plan)
 					}
 				}
 				if tc.want <= 1 && len(accepted) != 0 {
@@ -412,7 +420,7 @@ func TestIdleFallbackBudgetUsesOneLiquiditySeedAndEveryPermanentProbeExpense(t *
 func TestIdleFallbackDoesNotBorrowAnotherShipOrAccountsIdleHours(t *testing.T) {
 	t.Parallel()
 	w := newIdleFallbackWorld(t)
-	idleFallbackExhaustSeed(t, w.h)
+	idleFallbackPriorInspections(t, w.h)
 	runner := w.h.runner(primaryTestKey)
 	w.observe(t, runner, 100)
 	w.h.api.setFleet([]map[string]any{
@@ -463,11 +471,7 @@ func TestIdleFallbackDoesNotBorrowAnotherShipOrAccountsIdleHours(t *testing.T) {
 	if err := other.db.SaveAccount(other.ctx, other.account, store.Credentials{Handle: "synthetic-idle", APIKey: otherKey}); err != nil {
 		t.Fatal(err)
 	}
-	expense := int64(20_000)
-	idleFallbackSettlement(t, &other, store.Settlement{
-		ID: "idle-seed-spent", ShipID: otherShip, Kind: "relocation", CostsKnown: true,
-		Lane: "different-source|different-demand|grain|charter", ExplorationExpensePence: &expense,
-	})
+	idleFallbackPriorInspections(t, &other)
 	otherRunner := other.runner(otherKey)
 	w.observe(t, otherRunner, 106)
 	if err := otherRunner.verifyIdentity(); err != nil {
@@ -491,7 +495,7 @@ func TestIdleFallbackDoesNotOverrideIncomeOrSafetyGuards(t *testing.T) {
 	for _, guard := range []string{"ordinary income", "stale charter", "stale route", "unsafe route", "protected cash"} {
 		t.Run(guard, func(t *testing.T) {
 			w := newIdleFallbackWorld(t)
-			idleFallbackExhaustSeed(t, w.h)
+			idleFallbackPriorInspections(t, w.h)
 			runner := w.h.runner(primaryTestKey)
 			w.observe(t, runner, 100)
 			w.observe(t, runner, 106)
@@ -501,6 +505,7 @@ func TestIdleFallbackDoesNotOverrideIncomeOrSafetyGuards(t *testing.T) {
 				market := sourcingFixture[Market](t, `{"port_id":"portb","visibility":"quay","customs_bps":200,"books":[{"commodity_id":"provisions","depth":{"asks":[],"bids":[{"order_id":"idle-income-bid","price_pence":5000,"remaining_quantity":100}]}}]}`)
 				in.Markets[recoveryFarPort] = market
 				in.Metadata["books/"+recoveryFarPort] = DatasetMeta{UpdatedAt: in.Now, AttemptedAt: in.Now, Generation: in.Generation, Complete: true}
+				seedZeroHazardQuotes(&in)
 				if ordinary := PlanVoyages(in); len(ordinary) == 0 || !ordinary[0].Accepted {
 					t.Fatalf("ordinary income fixture is not executable: %+v", ordinary)
 				}
@@ -539,7 +544,7 @@ func TestIdleFallbackKeepsActiveAndAmbiguousExplorationExclusive(t *testing.T) {
 	for _, ambiguous := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ambiguous=%v", ambiguous), func(t *testing.T) {
 			w := newIdleFallbackWorld(t)
-			idleFallbackExhaustSeed(t, w.h)
+			idleFallbackPriorInspections(t, w.h)
 			w.h.api.setFleet([]map[string]any{
 				sourcingReviewShipRow(),
 				destinationShipRow(recoveryShipCharizard, "Charizard", recoveryHomePort, "berthed", 5, nil, nil),

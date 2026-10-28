@@ -326,6 +326,11 @@ func (f *snapshotConcurrencyAPI) response(request *http.Request) (int, []byte) {
 			"type": "about:blank", "title": "Not Found", "status": 404,
 			"code": "ship_not_found", "detail": "no such ship: " + shipID,
 		})
+	case "/v1/insurance/quote":
+		return http.StatusOK, f.mustJSON(map[string]any{
+			"lloyds_expected_loss_bps": 0, "max_insurable_pence": 2_000_000,
+			"priced_consort_ship_ids": []any{},
+		})
 	case "/v1/world/port", "/v1/market/book", "/v1/shipyard/quote", "/v1/world/route":
 		return http.StatusOK, f.mustJSON(map[string]any{})
 	default:

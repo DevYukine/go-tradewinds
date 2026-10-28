@@ -196,7 +196,7 @@ func TestIncomeFundingReviewExpiredFreightCannotFundPlanning(t *testing.T) {
 					t.Fatalf("expired freight supplied spendable reward or collateral funding: %+v", plan)
 				}
 			}
-			if quote := quoteIncomePlan(in, pinned); quote.plan.Accepted || len(quote.transfers) != 0 {
+			if quote := quoteIncomePlan(in, pinned, 0); quote.plan.Accepted || len(quote.transfers) != 0 {
 				t.Fatalf("pinned expired freight still funds an ordinary shipment: %+v", quote)
 			}
 		})
@@ -409,5 +409,47 @@ func TestIncomeFundingReviewAttemptedFundingRetainsImmutableReplay(t *testing.T)
 	calls := h.api.mutationsFor(action.Path)
 	if len(calls) != 1 || calls[0].IdempotencyKey != action.ID || !bytes.Equal(calls[0].Body, action.Body) {
 		t.Fatalf("expired opportunity rewrote or suppressed an already-attempted immutable remittance: %+v", calls)
+	}
+}
+
+func TestIncomeFundingPaidFeeDoesNotVetoRemainingPositiveBuy(t *testing.T) {
+	t.Parallel()
+	h, runner, ship, pinned := incomeReviewFixture(t, "charter", true, 4)
+	pinned.Quantity = 1
+	input, err := runner.committedPlanningInput(h.ctx, ship)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := priceIncomePlan(input, pinned, 0)
+	if !control.Accepted {
+		t.Fatalf("one-ton admission control unavailable: %+v", control)
+	}
+	reward := control.Economics.RevenuePence - control.Economics.ExpectedNetPence + 1
+	for index := range runner.stateCache.Contracts {
+		if runner.stateCache.Contracts[index].ID == pinned.ContractID {
+			runner.stateCache.Contracts[index].RewardPerTonPence = &reward
+		}
+	}
+	mission, data := runner.newVoyage(ship, pinned)
+	// This receipt belongs to already-completed funding, before any cargo buy.
+	data.FeesPence = 1_000
+	if err := runner.saveMission(h.ctx, mission, &data); err != nil {
+		t.Fatal(err)
+	}
+	ready, changed, err := runner.refreshIncomeProcurement(h.ctx, ship, mission, &data)
+	if err != nil || !ready || changed || !data.Plan.Accepted ||
+		data.Plan.Economics.ExpectedNetPence != 1-data.FeesPence {
+		t.Fatalf("paid funding unwound a still-positive remaining voyage: ready=%t changed=%t err=%v data=%+v", ready, changed, err, data)
+	}
+	action := &durableAction{Stage: "buy", Body: encode(map[string]any{
+		"ship_id": ship.Ship.ID, "port_id": data.Plan.Origin, "commodity_id": data.Plan.Commodity,
+		"quantity": data.Plan.Quantity, "price_pence": data.Plan.BuyLimitPence,
+	})}
+	if err := runner.incomeActionReady(h.ctx, ship, &data, action); err != nil {
+		t.Fatalf("first-send preflight recharged paid funding or reapplied admission margin: %v", err)
+	}
+	data.FeesPence = 0
+	if err := runner.incomeActionReady(h.ctx, ship, &data, action); err == nil {
+		t.Fatal("unfunded control bypassed the ordinary 2% admission gate")
 	}
 }

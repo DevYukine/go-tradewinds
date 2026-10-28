@@ -325,6 +325,10 @@ func TestCompetitionCapacityAtYardAdmissionUnchanged(t *testing.T) {
 		runner.stateCache.Routes[newKey] = route
 		runner.meta["routes/"+newKey] = runner.meta["routes/"+key]
 	}
+	observations := runner.planningInput(ShipState{})
+	seedZeroHazardQuotes(&observations)
+	runner.stateCache.HazardQuotes = observations.HazardQuotes
+	runner.snapshot[hazardQuoteSnapshotKey] = encode(observations.HazardQuotes)
 	evidence := &growthEvidence{workingByRegion: make(map[string]int64)}
 	if reason, err := runner.growthCashFunding(h.ctx, evidence); err != nil || reason != "" {
 		t.Fatalf("capacity funding: %s, %v", reason, err)

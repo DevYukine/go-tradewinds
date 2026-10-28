@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DevYukine/go-tradewinds/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -212,8 +213,21 @@ func newExpansionFactorAPI(h *recoveryHarness) *expansionFactorAPI {
 	if !slices.Contains(h.api.factorPorts, recoveryHomePort) {
 		h.api.factorPorts = append(h.api.factorPorts, recoveryHomePort)
 	}
+	for _, row := range h.api.fleet {
+		row["ship"].(map[string]any)["created_at"] = time.Now().UTC().Add(-30 * 24 * time.Hour)
+	}
 	h.api.mu.Unlock()
 	h.api.setVaultBalance("caribbean", 500_000)
+	return proxy
+}
+
+func newMeasuredExpansionFactorAPI(h *recoveryHarness) *expansionFactorAPI {
+	proxy := newExpansionFactorAPI(h)
+	persistGrowthWindowSettlement(h.api.t, h, store.Settlement{
+		ID: "expansion-measured-income", Kind: "spot", CostsKnown: true,
+		QuantityTons: 1, ProceedsPence: 30_000_000, GameSeconds: 3_600,
+		CompletedAt: time.Now().UTC().Add(-time.Minute),
+	})
 	return proxy
 }
 
@@ -302,7 +316,7 @@ func TestExpansionFactorRequiresNonCharterEvidenceBeforeHiring(t *testing.T) {
 	for _, charterOnly := range []bool{true, false} {
 		t.Run(map[bool]string{true: "charter only", false: "positive repeatable spot evidence"}[charterOnly], func(t *testing.T) {
 			h := newRecoveryHarness(t)
-			newExpansionFactorAPI(h)
+			newMeasuredExpansionFactorAPI(h)
 			runner := h.runner(primaryTestKey)
 			refreshExpansionFactor(t, h, runner)
 			if charterOnly {
@@ -330,7 +344,7 @@ func TestExpansionFactorRequiresNonCharterEvidenceBeforeHiring(t *testing.T) {
 func TestExpansionFactorLifecycle(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
-	newExpansionFactorAPI(h)
+	newMeasuredExpansionFactorAPI(h)
 	runner := h.runner(primaryTestKey)
 	refreshExpansionFactor(t, h, runner)
 	if changed, err := runner.considerExpansionAgent(h.ctx); err != nil || !changed {
@@ -447,7 +461,7 @@ func TestExpansionFactorRefusalLatch(t *testing.T) {
 	} {
 		t.Run(test.code, func(t *testing.T) {
 			h := newRecoveryHarness(t)
-			proxy := newExpansionFactorAPI(h)
+			proxy := newMeasuredExpansionFactorAPI(h)
 			proxy.code, proxy.status = test.code, test.status
 			runner := h.runner(primaryTestKey)
 			refreshExpansionFactor(t, h, runner)
@@ -490,7 +504,7 @@ func TestExpansionFactorRefusalLatch(t *testing.T) {
 func TestExpansionFactorFundsRegionalFeeFirst(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
-	newExpansionFactorAPI(h)
+	newMeasuredExpansionFactorAPI(h)
 	h.api.setVaultBalance("caribbean", 0)
 	h.api.mu.Lock()
 	h.api.rates = append(h.api.rates, Rate{FromRegion: "north", ToRegion: "caribbean", FeeBPS: 100})
@@ -533,7 +547,7 @@ func TestExpansionFactorGuards(t *testing.T) {
 	for _, guard := range []string{"observe", "factor limit", "pending treasury", "unfunded"} {
 		t.Run(guard, func(t *testing.T) {
 			h := newRecoveryHarness(t)
-			newExpansionFactorAPI(h)
+			newMeasuredExpansionFactorAPI(h)
 			runner := h.runner(primaryTestKey)
 			refreshExpansionFactor(t, h, runner)
 			switch guard {
@@ -561,7 +575,7 @@ func TestExpansionFactorGuards(t *testing.T) {
 func TestExpansionFactorDismissRefusal(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
-	proxy := newExpansionFactorAPI(h)
+	proxy := newMeasuredExpansionFactorAPI(h)
 	proxy.status, proxy.code = http.StatusForbidden, "no_port_presence"
 	h.api.setFactorPorts("yard-a")
 	runner := h.runner(primaryTestKey)
@@ -593,7 +607,7 @@ func TestExpansionFactorDismissRefusal(t *testing.T) {
 func TestExpansionFactorDoesNotCascadeWhileAgentPresent(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
-	newExpansionFactorAPI(h)
+	newMeasuredExpansionFactorAPI(h)
 	runner := h.runner(primaryTestKey)
 	refreshExpansionFactor(t, h, runner)
 	runner.snapshot["_expansion_agents"] = encode([]expansionAgent{{PortID: recoveryHomePort, Region: "north", HiredAt: time.Now().UTC()}})
@@ -615,7 +629,7 @@ func TestExpansionFactorDoesNotCascadeWhileAgentPresent(t *testing.T) {
 func TestExpansionFactorReconcilesUninterpretableHireFromFactors(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
-	proxy := newExpansionFactorAPI(h)
+	proxy := newMeasuredExpansionFactorAPI(h)
 	proxy.uninterpretable = true
 	runner := h.runner(primaryTestKey)
 	refreshExpansionFactor(t, h, runner)
@@ -644,7 +658,7 @@ func TestExpansionFactorReconcilesUninterpretableHireFromFactors(t *testing.T) {
 func TestExpansionFactorCanEstimateFromStaleRegionalQuote(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
-	newExpansionFactorAPI(h)
+	newMeasuredExpansionFactorAPI(h)
 	runner := h.runner(primaryTestKey)
 	refreshExpansionFactor(t, h, runner)
 	for key, meta := range runner.meta {
@@ -667,7 +681,7 @@ func TestExpansionFactorIgnoresTerminalAndSelfPresentMissions(t *testing.T) {
 	for _, phase := range []string{"done", "settled", "maintenance_done", "growth_rejected", "stationary"} {
 		t.Run(phase, func(t *testing.T) {
 			h := newRecoveryHarness(t)
-			newExpansionFactorAPI(h)
+			newMeasuredExpansionFactorAPI(h)
 			h.api.setFactorPorts("yard-a")
 			if phase == "stationary" {
 				h.api.setFleet([]map[string]any{stationaryShipRow(recoveryShipBlastoise, "Blastoise", "yard-a", "berthed", 0, 4)})
@@ -684,5 +698,141 @@ func TestExpansionFactorIgnoresTerminalAndSelfPresentMissions(t *testing.T) {
 				t.Fatalf("redundant factor was not dismissed: %+v", data.Action)
 			}
 		})
+	}
+}
+
+func TestExpansionFactorMeasuredBuildPaybackBoundary(t *testing.T) {
+	t.Parallel()
+	h := newRecoveryHarness(t)
+	newMeasuredExpansionFactorAPI(h)
+	runner := h.runner(primaryTestKey)
+	refreshExpansionFactor(t, h, runner)
+	evidence := capacityMeasuredEvidence(t, h, runner, time.Now().UTC())
+	input, reason, err := runner.capacityFleetInput(h.ctx, &evidence)
+	if err != nil || reason != "" || !input.MeasuredNetAvailable {
+		t.Fatalf("measured regional fixture: %+v %q %v", input, reason, err)
+	}
+	yard, _ := findPort(runner.stateCache.Catalog, "yard-a")
+	control, _, _ := runner.expansionBuildEstimate(yard, input)
+	if !control.Accepted {
+		t.Fatalf("fixture has no admissible observed quote: %+v", control)
+	}
+	capital := growthCashTotal(control.QuotedHullPence, control.SlippageReservePence, control.CannonsPence, control.InitialStoresPence)
+	for _, payback := range []float64{420, 420.01} {
+		input.MeasuredRatePencePerGameDay = float64(control.IncrementalUpkeepPence) + float64(capital)/payback
+		decision, _, _ := runner.expansionBuildEstimate(yard, input)
+		if decision.Accepted != (payback == 420) || !decision.Accepted && decision.Reason != expansionAgentAdmissionReason {
+			t.Fatalf("%.2f game-day payback: %+v", payback, decision)
+		}
+	}
+	input.MeasuredNetAvailable = false
+	if decision, _, _ := runner.expansionBuildEstimate(yard, input); decision.Accepted || decision.Reason != expansionAgentAdmissionReason {
+		t.Fatalf("unavailable R admitted a paid agent: %+v", decision)
+	}
+}
+
+func TestExpansionFactorHirePreflightRechecksMeasuredBuild(t *testing.T) {
+	t.Parallel()
+	h := newRecoveryHarness(t)
+	newMeasuredExpansionFactorAPI(h)
+	runner := h.runner(primaryTestKey)
+	refreshExpansionFactor(t, h, runner)
+	if changed, err := runner.considerExpansionAgent(h.ctx); err != nil || !changed {
+		t.Fatalf("stage admissible hire: %t %v", changed, err)
+	}
+	mission, data := h.mission("__treasury")
+	if err := runner.newActionPreflight(h.ctx, mission, &data); err != nil {
+		t.Fatalf("unchanged admitted build lost its hire: %v", err)
+	}
+	persistGrowthWindowSettlement(t, h, store.Settlement{
+		ID: "expansion-loss-before-hire", Kind: "aborted", CostsKnown: true,
+		AcquisitionPence: 30_000_000, GameSeconds: 1, CompletedAt: time.Now().UTC().Add(-time.Second),
+	})
+	if err := runner.newActionPreflight(h.ctx, mission, &data); err == nil || err.Error() != expansionAgentAdmissionReason {
+		t.Fatalf("falling R did not veto the staged hire: %v", err)
+	}
+	if h.api.mutationCount("/v1/company/hire-factor") != 0 {
+		t.Fatal("hire reached transport after its build ceased to be admissible")
+	}
+}
+
+func TestExpansionFactorMissingQuoteReasonPrecedesMeasuredGate(t *testing.T) {
+	t.Parallel()
+	for _, measured := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unavailable measured rate", true: "available measured rate"}[measured], func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			if measured {
+				newMeasuredExpansionFactorAPI(h)
+			} else {
+				newExpansionFactorAPI(h)
+			}
+			runner := h.runner(primaryTestKey)
+			refreshExpansionFactor(t, h, runner)
+			runner.stateCache.Quotes = nil
+			if changed, err := runner.considerExpansionAgent(h.ctx); err != nil || changed {
+				t.Fatalf("missing quote changed an expansion mission: %t %v", changed, err)
+			}
+			requireReviewHold(t, runner, expansionAgentQuoteReason, true)
+			h.missingMission("__treasury")
+			if h.api.mutationCount("/v1/company/hire-factor") != 0 {
+				t.Fatal("missing observed quote paid for an expansion agent")
+			}
+		})
+	}
+}
+
+func TestExpansionFactorHirePreflightPreservesMissingQuoteReason(t *testing.T) {
+	t.Parallel()
+	h := newRecoveryHarness(t)
+	newMeasuredExpansionFactorAPI(h)
+	runner := h.runner(primaryTestKey)
+	refreshExpansionFactor(t, h, runner)
+	if changed, err := runner.considerExpansionAgent(h.ctx); err != nil || !changed {
+		t.Fatalf("stage admitted hire: %t %v", changed, err)
+	}
+	mission, data := h.mission("__treasury")
+	runner.stateCache.Quotes = nil
+	if err := runner.newActionPreflight(h.ctx, mission, &data); err == nil || err.Error() != expansionAgentQuoteReason {
+		t.Fatalf("hire preflight masked the missing observed quote: %v", err)
+	}
+	if h.api.mutationCount("/v1/company/hire-factor") != 0 {
+		t.Fatal("missing observed quote escaped hire preflight")
+	}
+}
+
+func TestExpansionStrandedRegionalCashFundsAdmittedHomeBuild(t *testing.T) {
+	t.Parallel()
+	h, runner := capacityExecutionFixture(t, false)
+	protected, err := runner.treasuryReserves(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.api.setVaultBalance("north", protected["north"])
+	h.api.setVaultBalance("south", 50_000_000)
+	refreshExpansionFactor(t, h, runner)
+	evidence := capacityMeasuredEvidence(t, h, runner, time.Now().UTC())
+	if changed, err := runner.considerCapacityGrowthAt(h.ctx, &evidence, recoveryHomePort, recoveryHull); err != nil || !changed {
+		t.Fatalf("remote free cash was stranded instead of funding the build: %t %v", changed, err)
+	}
+	mission, data := h.mission("__treasury")
+	var transfer struct {
+		From string `json:"from_region"`
+		To   string `json:"to_region"`
+	}
+	if data.Action == nil || data.Action.Stage != "remit" || json.Unmarshal(data.Action.Body, &transfer) != nil ||
+		transfer.From != "south" || transfer.To != "north" {
+		t.Fatalf("remote cash was not repatriated through the journal: %+v %+v", data.Action, transfer)
+	}
+	if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed {
+		t.Fatalf("repatriate remote cash: %t %v", changed, err)
+	}
+	refreshExpansionFactor(t, h, runner)
+	evidence = capacityMeasuredEvidence(t, h, runner, time.Now().UTC())
+	if changed, err := runner.considerCapacityGrowthAt(h.ctx, &evidence, recoveryHomePort, recoveryHull); err != nil || !changed {
+		t.Fatalf("repatriated cash did not stage its admitted build: %t %v", changed, err)
+	}
+	_, build := h.mission("__growth")
+	if build.Action == nil || build.Action.Stage != "build" {
+		t.Fatalf("repatriation did not release construction: %+v", build.Action)
 	}
 }

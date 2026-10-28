@@ -55,7 +55,7 @@ func validateBorrowerLoans(raw json.RawMessage, companyID string) error {
 		}
 		for _, key := range []string{
 			"id", "borrower_company_id", "banking_region", "status",
-			"owed_pence", "arrears_pence", "collateral_kind", "collateral_status",
+			"owed_pence", "arrears_pence", "collateral_kind", "collateral_status", "is_mortgage",
 		} {
 			if value := bytes.TrimSpace(fields[key]); len(value) == 0 || bytes.Equal(value, []byte("null")) {
 				return fmt.Errorf("borrower loan row %d has unknown %s", index, key)

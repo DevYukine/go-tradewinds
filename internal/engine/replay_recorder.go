@@ -21,7 +21,7 @@ const (
 )
 
 var replayPassRunnerKeys = []string{
-	"_ship_idle", "_book_observed", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase",
+	"_ship_idle", "_book_observed", "_book_refresh", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase", "_game_version",
 }
 
 var replaySweepRunnerKeys = []string{
@@ -471,6 +471,10 @@ func (r *Runner) flushReplay(ctx context.Context, at time.Time) {
 			case "_underwriting_pending":
 				if len(data) == 0 {
 					data = encode(underwritingPending{})
+				}
+			case "_book_refresh":
+				if len(data) == 0 {
+					data = encode(bookRefreshState{})
 				}
 			}
 			if len(data) != 0 || key == "_competition" {

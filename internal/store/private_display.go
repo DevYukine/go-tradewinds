@@ -62,6 +62,7 @@ func (d *displayScrubber) decision(value *Decision) error {
 
 func (d *displayScrubber) settlement(value *Settlement) {
 	credentials := d.credentials(value.AccountID)
+	value.EventID = displayText(value.EventID, credentials)
 	value.ShipID = displayText(value.ShipID, credentials)
 	value.Lane = displayText(value.Lane, credentials)
 	value.Kind = displayText(value.Kind, credentials)

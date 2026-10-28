@@ -123,6 +123,7 @@ func valuationInput(t *testing.T) PlanningInput {
 	} {
 		in.Metadata[key] = valuationMeta(now)
 	}
+	seedZeroHazardQuotes(&in)
 	return in
 }
 
@@ -326,7 +327,7 @@ func TestValuationSizesSharedDestinationCargoAndFreightJointly(t *testing.T) {
 	freight := valuationFixture[Contract](t, `{
 		"id":"freight-joint","contract_type":"freight","origin_port_id":"le_havre","dest_port_id":"portsmouth",
 		"commodity_id":"sawn_planks","quantity_required":6,"remaining_quantity":6,
-		"reward_pence":1150,"collateral_pence":5000,"status":"open","stale":false,
+		"reward_pence":1225,"collateral_pence":5000,"status":"open","stale":false,
 		"issuer_company_id":"valuation-other"
 	}`)
 	in.Contracts = []Contract{freight}

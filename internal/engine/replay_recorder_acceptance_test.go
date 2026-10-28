@@ -74,7 +74,7 @@ func replayRecorderSeed(t *testing.T, h *recoveryHarness, r *Runner, at time.Tim
 	for _, key := range []string{
 		"clock", "catalog", "zones", "profile", "vaults", "loans", "rates", "ships",
 		"warehouses", "orders", "fills", "factors", "monopolies", "marques", "contracts", "expansion",
-		"_ship_idle", "_book_observed", "_marque_pending", "_underwriting_pending", "_route_phase",
+		"_ship_idle", "_book_observed", "_book_refresh", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_underwriting_pending", "_route_phase", "_game_version",
 		"_capacity_savings_target", "_capacity_savings_expired", "_capacity_growth_port", "_expansion_agents",
 		"_sourcing_probe_history", "_growth_build_backoffs", "_capacity_financing_backoffs", "_capacity_growth_paused_until", "_ship_losses",
 	} {
@@ -183,7 +183,7 @@ func TestReplayRecorderAcceptanceGenerationAllowlistAndSweep(t *testing.T) {
 	for _, key := range []string{
 		"clock", "catalog", "profile", "vaults", "loans", "rates", "ships", "warehouses", "orders", "fills", "factors", "monopolies", "marques", "contracts", "expansion", "events",
 		"ship_details/ship-current", "books/quay-port", "ports/quay-port", "ports/remote-port", "routes/quay-port|remote-port|hoy", "yard_quotes/quay-port|hoy",
-		"_ship_idle", "_book_observed", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase",
+		"_ship_idle", "_book_observed", "_book_refresh", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase", "_game_version",
 		"_capacity_savings_target", "_capacity_savings_expired", "_capacity_growth_port", "_expansion_agents",
 		"_sourcing_probe_history", "_growth_build_backoffs", "_capacity_financing_backoffs", "_capacity_growth_paused_until", "_ship_losses",
 	} {
@@ -483,11 +483,12 @@ func TestReplayRecorderAcceptanceTickProducesRunnerInputs(t *testing.T) {
 	h := newRecoveryHarness(t)
 	r := replayRecorderRunner(t, h)
 	r.opts.Execute = false
+	r.opts.GameVersion = func() string { return "0.5.0" }
 	if _, err := h.tick(r); err != nil {
 		t.Fatal(err)
 	}
 	expected := make(map[string]json.RawMessage)
-	for _, key := range []string{"_ship_idle", "_book_observed", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase"} {
+	for _, key := range []string{"_ship_idle", "_book_observed", "_book_refresh", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase", "_game_version"} {
 		if _, exists := r.meta[key]; exists {
 			t.Fatalf("real tick polluted persisted metadata with runner input %s", key)
 		}
@@ -500,6 +501,8 @@ func TestReplayRecorderAcceptanceTickProducesRunnerInputs(t *testing.T) {
 			expected[key] = encode(decode[marquePending](r.snapshot, key))
 		case "_underwriting_pending":
 			expected[key] = encode(decode[underwritingPending](r.snapshot, key))
+		case "_book_refresh":
+			expected[key] = encode(decode[bookRefreshState](r.snapshot, key))
 		default:
 			expected[key] = bytes.Clone(r.snapshot[key])
 			if len(expected[key]) == 0 {

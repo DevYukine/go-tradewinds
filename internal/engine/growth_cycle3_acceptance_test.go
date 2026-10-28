@@ -413,6 +413,7 @@ func TestGrowthCycle3ReservedCoastalWorkDoesNotVetoOceanicBuild(t *testing.T) {
 	h.api.setFactorPorts(recoveryHomePort, recoveryFarPort, oceanPort)
 	h.api.setAutoRemit(true, 1_000_000)
 	incumbent := sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)
+	incumbent["ship"].(map[string]any)["ship_class"] = oceanHull
 	incumbent["cargo_manifest"] = map[string]any{recoveryGrain: int64(10)}
 	incumbent["cargo_used_tons"] = int64(10)
 	idle := sailingShipRow(recoveryShipLapras, "Lapras", recoveryHomePort, recoveryFarPort)
@@ -519,6 +520,12 @@ func TestGrowthCycle3ReservedCoastalWorkDoesNotVetoOceanicBuild(t *testing.T) {
 		h.api.handle(writer, request)
 	})
 	runner := refreshedRunner(t, h)
+	// The sailing ocean-capable incumbent observed this lane before departure;
+	// the idle coastal hoy cannot obtain a quote for an ocean-only passage.
+	observations := runner.planningInput(ShipState{})
+	seedZeroHazardQuotes(&observations)
+	runner.stateCache.HazardQuotes = observations.HazardQuotes
+	runner.snapshot[hazardQuoteSnapshotKey] = encode(observations.HazardQuotes)
 	idleShip, _ := runner.ship(recoveryShipLapras)
 	raw := PlanVoyages(runner.planningInput(idleShip))
 	if len(raw) == 0 || !raw[0].Accepted || raw[0].Destination != recoveryFarPort {

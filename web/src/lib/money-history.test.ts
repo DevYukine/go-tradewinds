@@ -94,6 +94,36 @@ describe("recorded money history", () => {
     });
   });
 
+  it("keeps aggregate proceeds unknown and omits unknown gross chart periods", () => {
+    const unknown: MoneyPeriod = {
+      ...periods[2],
+      gross_pence: null,
+      unknown_proceeds_count: 1,
+    };
+    const mixed = [...periods.slice(0, 2), unknown];
+    expect(settlementTotals(mixed)).toEqual({
+      gross: undefined,
+      costs: 18000,
+      net: -2000,
+      known: 3,
+      unknown: 1,
+      count: 4,
+    });
+    expect(settlementTotals([unknown, periods[0]]).gross).toBeUndefined();
+    expect(settlementTotals([unknown]).net).toBeUndefined();
+    expect(
+      moneyPoints({ ...history, settlements: mixed }, "settlement_gross").map(
+        (point) => point.value,
+      ),
+    ).toEqual([12000, 4000]);
+    expect(
+      moneyPoints(
+        { ...history, settlements: [{ ...periods[0], gross_pence: 0 }] },
+        "settlement_gross",
+      ).map((point) => point.value),
+    ).toEqual([0]);
+  });
+
   it("starts cumulative net inside the selected range and never fills missing periods", () => {
     const selected = { ...history, settlements: periods.slice(1) };
     expect(

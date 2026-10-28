@@ -51,7 +51,7 @@ func TestLoanCaptureRejectsUnknownAuthorityAndRetainsLastGood(t *testing.T) {
 	for _, field := range []string{
 		"id", "borrower_company_id", "banking_region", "status", "outstanding_principal_pence",
 		"owed_pence", "arrears_pence", "rate_basis", "annual_rate_bps", "repayment",
-		"installment_pence", "next_payment_pence", "collateral_kind", "collateral_status", "collateral_ship_id",
+		"installment_pence", "next_payment_pence", "collateral_kind", "collateral_status", "collateral_ship_id", "is_mortgage",
 	} {
 		for _, missing := range []bool{false, true} {
 			var rows []map[string]any
@@ -167,7 +167,7 @@ func TestLoanValidationDoesNotRequireUnusedAccountingOrLifecycleMetadata(t *test
 	}
 	closed := json.RawMessage(`[{
 		"id":"closed-loan","borrower_company_id":"` + recoveryCompanyID + `","banking_region":"north_sea",
-		"status":"repaid","owed_pence":0,"arrears_pence":0,
+		"status":"repaid","owed_pence":0,"arrears_pence":0,"is_mortgage":false,
 		"collateral_kind":"ship_lien","collateral_status":"released"
 	}]`)
 	if err := validateBorrowerLoans(closed, recoveryCompanyID); err != nil {

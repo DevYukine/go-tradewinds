@@ -95,7 +95,7 @@ type capacityCandidate struct {
 }
 
 func capacityReturn(decision GrowthDecision, depth bool) float64 {
-	capital := growthCashTotal(decision.QuotedHullPence, decision.SlippageReservePence, decision.CannonsPence, decision.InitialStoresPence)
+	capital := growthCapital(decision)
 	if capital <= 0 {
 		return 0
 	}

@@ -135,11 +135,12 @@ func ValidateRoute(route Route, hull Hull, zones []Zone) error {
 }
 
 // Destination valuations separate operating contribution from cash funding.
-// Hazard stress stays diagnostic; player-bid gossip also requires a positive NPC stress floor.
+// Lloyd's expected-claim bound prices hazard; zone-rating stress remains diagnostic.
 // ProbabilityEstimate remains nil because no loss probability formula is public.
 type Economics struct {
 	Basis                       string   `json:"basis,omitempty"`
 	RevenueBasis                string   `json:"revenue_basis,omitempty"`
+	RevenueAgeGameHours         *float64 `json:"revenue_age_game_hours,omitempty"`
 	RevenuePence                int64    `json:"revenue_pence"`
 	PurchasePence               int64    `json:"purchase_pence"`
 	CustomsPence                int64    `json:"customs_pence"`
@@ -150,6 +151,9 @@ type Economics struct {
 	TollPence                   int64    `json:"toll_pence"`
 	FundingFeesPence            int64    `json:"funding_fees_pence,omitempty"`
 	CollateralPence             int64    `json:"collateral_pence"`
+	HazardBPS                   int64    `json:"hazard_bps"`
+	HazardPence                 int64    `json:"hazard_pence"`
+	HazardSource                string   `json:"hazard_source,omitempty"`
 	ExpectedNetPence            int64    `json:"expected_net_pence"`
 	StressHaircutBPS            int64    `json:"stress_haircut_bps"`
 	StressHaircutPence          int64    `json:"stress_haircut_pence"`
@@ -185,6 +189,7 @@ type Plan struct {
 	Competition           CompetitionEvidence `json:"competition"`
 	competitionComparable bool
 	playerBidStress       bool
+	sunkFundingFeesPence  int64
 }
 
 type PlayerBidSellFill struct {
@@ -200,6 +205,8 @@ type PlanningInput struct {
 	CompanyID                 string
 	Ship                      ShipState
 	Catalog                   Catalog
+	Fleet                     []ShipState
+	HazardQuotes              map[string]HazardQuote
 	Clock                     Clock
 	Zones                     []ZoneObservation
 	MarqueZones               map[string]bool
@@ -219,16 +226,20 @@ type PlanningInput struct {
 	SourcingProbeCostsUnknown bool
 	SourcingProbeHistory      sourcingProbeHistory
 	BookObservedAt            map[string]time.Time
+	QuayBookMemory            map[string]RetainedQuayBook
+	BookDrift                 []BookDriftSample
 	SourcingHistoryError      string
 	Metadata                  map[string]DatasetMeta
 	Generation                string
 	OwnedOrderIDs             map[string]bool
 	ReservedPlayerBidTons     map[string]map[string]int64
+	ReservedRetainedBidTons   map[string]map[string]int64
 	PlayerBidSellFills        []PlayerBidSellFill
 	FleetDailyUpkeepPence     int64
 	Rates                     []Rate
 	Competition               *store.CompetitionSummary
 	ignorePlayerBids          bool
+	pinnedHazard              *Economics
 }
 
 func (in PlanningInput) fresh(dataset string) bool {
@@ -581,25 +592,63 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 	}
 	stressHaircut := ceilBPS(revenue+plan.Economics.CollateralPence, stressBPS)
 	expectedNet := revenue - purchase - customs - provisionExpense - berthCost
+	var hazardBPS, hazardPence int64
+	var hazardSource string
+	if in.pinnedHazard != nil {
+		hazardBPS = in.pinnedHazard.HazardBPS
+		hazardPence = in.pinnedHazard.HazardPence
+		hazardSource = in.pinnedHazard.HazardSource
+	} else {
+		var available bool
+		hazardBPS, hazardSource, available = planHazard(in, outward)
+		if !available {
+			return reject(plan, hazardUnavailable)
+		}
+		risk := growthCashTotal(purchase, customs, plan.Economics.CollateralPence)
+		var validCharge bool
+		hazardPence, validCharge = hazardCharge(risk, hazardBPS)
+		if risk == math.MaxInt64 || !validCharge {
+			return reject(plan, "Lloyd's hazard charge exceeds checked integer-pence bounds")
+		}
+	}
+	expectedNet -= hazardPence
 	collateral := plan.Economics.CollateralPence
 	revenueBasis := ""
-	switch plan.PriceSource {
-	case "observed destination full depth":
+	switch {
+	case plan.PriceSource == "observed destination full depth":
 		revenueBasis = "depth"
-	case "live contract terms":
+	case plan.PriceSource == "live contract terms":
 		revenueBasis = "contract"
-	case playerBidGossipSource, "recent observed gossip; one-ton probe; unverified bid size":
+	case plan.PriceSource == playerBidGossipSource || plan.PriceSource == "recent observed gossip; one-ton probe; unverified bid size":
 		revenueBasis = "gossip"
+	case strings.HasPrefix(plan.PriceSource, retainedBookSource):
+		revenueBasis = "retained"
+	}
+	var revenueObservedAt time.Time
+	switch revenueBasis {
+	case "depth":
+		revenueObservedAt = in.Metadata["books/"+plan.Destination].UpdatedAt
+	case "retained":
+		revenueObservedAt = in.QuayBookMemory[plan.Destination].ObservedAt
+	}
+	var revenueAge *float64
+	if age, valid := quayBookAgeGameDays(in.Now, revenueObservedAt, in.Clock.Calendar.TimeScale); valid {
+		hours := age * 24
+		revenueAge = &hours
 	}
 	plan.Economics = Economics{
 		Basis:                       "destination",
 		RevenueBasis:                revenueBasis,
+		RevenueAgeGameHours:         revenueAge,
 		RevenuePence:                revenue,
 		PurchasePence:               purchase,
 		CustomsPence:                customs,
 		ProvisionsPence:             provisionExpense,
 		BerthDuesPence:              berthCost,
 		CollateralPence:             collateral,
+		HazardBPS:                   hazardBPS,
+		HazardPence:                 hazardPence,
+		HazardSource:                hazardSource,
 		ExpectedNetPence:            expectedNet,
 		StressHaircutBPS:            stressBPS,
 		StressHaircutPence:          stressHaircut,
@@ -633,12 +682,29 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 			return reject(plan, "player bid lot is not net-positive at the stressed gossip NPC bid")
 		}
 	}
-	if expectedNet <= 0 {
+	if revenueBasis == "retained" && expectedNet-priceStress <= 0 {
+		return reject(plan, "retained quay book lot is not net-positive after price uncertainty stress")
+	}
+	if expectedNet < 0 || expectedNet == 0 && plan.sunkFundingFeesPence == 0 {
 		return reject(plan, "non-positive destination contribution after measured depth, buyer customs, consumed provisions and harbour bills")
 	}
+	if reason := minimumMarginRejection(plan); reason != "" {
+		return reject(plan, reason)
+	}
 	plan.Accepted = true
-	plan.Reason = "positive destination contribution; unpriced hazard and price stress remain diagnostic"
+	plan.Reason = "positive destination contribution after Lloyd's hazard bound and minimum margin; price stress remains diagnostic"
+	if plan.sunkFundingFeesPence > 0 {
+		plan.Reason = "non-negative remaining destination contribution; paid funding fees are sunk"
+	}
 	return plan
+}
+
+func minimumMarginRejection(plan Plan) string {
+	if plan.sunkFundingFeesPence == 0 && plan.Kind != "freight" && plan.Economics.ExpectedNetPence <
+		ceilBPS(plan.Economics.PurchasePence+plan.Economics.CustomsPence, 200) {
+		return "below 2% minimum margin on purchase plus customs"
+	}
+	return ""
 }
 
 // observedPlanningRoute shares the delivery and optional repeat safety checks.
@@ -804,7 +870,7 @@ func destinationRevenue(in PlanningInput, destination, commodity string, quantit
 			return fill.GrossPence, fill.LimitPence, 0, "observed destination full depth", ""
 		}
 	}
-	var bid, playerPrice, npcBid int64
+	var bid, playerPrice, npcBid, fresherBid int64
 	reserved := in.ReservedPlayerBidTons[destination][commodity]
 	for portID, detail := range in.Ports {
 		if !in.fresh("ports/" + portID) {
@@ -827,6 +893,10 @@ func destinationRevenue(in PlanningInput, destination, commodity string, quantit
 				}
 				if bid == 0 || *price.BestBidPence < bid {
 					bid = *price.BestBidPence
+				}
+				if price.SnapshotAt.After(in.QuayBookMemory[destination].ObservedAt) &&
+					(fresherBid == 0 || *price.BestBidPence < fresherBid) {
+					fresherBid = *price.BestBidPence
 				}
 				isNPCBid := price.BestPlayerBidPence != nil && *price.BestBidPence > *price.BestPlayerBidPence
 				if (isNPCBid || price.BestPlayerBidPence == nil) && (npcBid == 0 || *price.BestBidPence < npcBid) {
@@ -856,11 +926,14 @@ func destinationRevenue(in PlanningInput, destination, commodity string, quantit
 		}
 		return revenue, npcStressPrice, max(0, revenue-stressedRevenue), playerBidGossipSource, ""
 	}
+	if revenue, limit, stress, source, ok := retainedDestinationRevenue(in, destination, commodity, quantity, fresherBid); ok {
+		return revenue, limit, stress, source, ""
+	}
 	// Without sufficient player quantity, gossip remains a one-ton probe.
 	if quantity == 1 && bid > 0 {
 		return bid, max(1, bid*3/4), ceilBPS(bid, 2_500), "recent observed gossip; one-ton probe; unverified bid size", ""
 	}
-	return 0, 0, 0, "", "destination has neither executable full depth nor recent observed gossip with enough unreserved player bid quantity"
+	return 0, 0, 0, "", "destination has neither executable full depth, unreserved retained quay bids nor recent observed gossip with enough unreserved player bid quantity"
 }
 
 const playerBidGossipSource = "recent observed gossip; player bid quantity; stressed NPC bid floor"
@@ -922,7 +995,7 @@ func DailyUpkeep(fleet []ShipState, catalog Catalog, factors int) int64 {
 		}
 	}
 	sprawl := 4_500 * math.Pow(float64(max(0, sprawlTons+oceanicTons/2-40))/100, 1.45)
-	factorCost := 12_000 * math.Pow(float64(max(0, factors)), 1.3)
+	factorCost := 12_000 * math.Pow(float64(max(0, factors)), 1.25)
 	return int64(math.Ceil(sprawl+factorCost)) + oceanicTons*100
 }
 

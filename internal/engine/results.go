@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/store"
@@ -64,6 +65,9 @@ func validTrade(result tradeResult) bool {
 func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data *missionData, status int, response json.RawMessage) (bool, error) {
 	if data.Action == nil {
 		return false, fmt.Errorf("mission %s has no attached response stage", mission.ShipID)
+	}
+	if passengerStage(data.Action.Stage) {
+		return r.consumePassengerResult(ctx, mission, data, status, response)
 	}
 	var envelope struct {
 		Uninterpreted bool `json:"committed_uninterpreted"`
@@ -246,6 +250,7 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 			data.CostsKnown = false
 		}
 		data.DepartedCargo = data.Action.Before.CargoManifest
+		recordDepartureCargoCost(data, data.DepartedCargo)
 		mission.Phase = "sailing"
 		if data.ReturnJourney {
 			mission.Phase = "return_sailing"
@@ -257,6 +262,8 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 	case "offshore":
 		if mission.Phase == "closing" {
 			data.ClosingObservedAt = time.Now()
+		} else if data.Passage != nil {
+			mission.Phase = "passenger_loading"
 		} else {
 			mission.Phase = "maintenance_done"
 		}
@@ -376,7 +383,15 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 			return false, err
 		}
 	}
-	if stage == "build" && domainRefusal {
+	mortgageRefusal := stage == "build" && data.Capacity != nil && data.Capacity.Mortgage != nil && status == http.StatusConflict &&
+		(strings.Contains(strings.ToLower(problem.Code), "mortgage") || strings.Contains(strings.ToLower(problem.Detail), "mortgage still owed"))
+	if mortgageRefusal {
+		r.snapshot["_mortgage_refused_at"] = encode(time.Now().UTC())
+		r.snapshot["_mortgage_retry_at"] = encode(maxTime(r.gameDelay(1), time.Now().UTC().Add(30*time.Second)))
+		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+			return false, err
+		}
+	} else if stage == "build" && domainRefusal {
 		if err := r.recordGrowthBuildRefusal(ctx, data); err != nil {
 			return false, err
 		}
@@ -524,7 +539,7 @@ func (r *Runner) reconcileCommitted(ctx context.Context, mission *store.Mission,
 			}
 		}
 	}
-	if data.Action.Stage == "build" && r.fresh("ships") {
+	if data.Action.Stage == "build" && r.fresh("ships") && (data.Capacity == nil || data.Capacity.Mortgage == nil) {
 		for _, candidate := range r.stateCache.Ships {
 			if candidate.Ship.Name == data.BuildName && candidate.Ship.ShipClass == data.BuildClass {
 				data.BuiltShipID = candidate.Ship.ID

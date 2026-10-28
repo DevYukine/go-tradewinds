@@ -32,7 +32,7 @@ func TestCapacitySavingsOptionalSpendingWaits(t *testing.T) {
 		{
 			name: "expansion agent", missionID: "__treasury", stage: "hire-factor", path: "/v1/company/hire-factor",
 			setup: func(t *testing.T, h *recoveryHarness) {
-				newExpansionFactorAPI(h)
+				newMeasuredExpansionFactorAPI(h)
 			},
 			consider: (*Runner).considerExpansionAgent,
 		},
@@ -130,7 +130,7 @@ func TestCapacitySavingsOptionalSpendingWaits(t *testing.T) {
 func TestCapacitySavingsAttemptedHireRetainsImmutableReplay(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
-	proxy := newExpansionFactorAPI(h)
+	proxy := newMeasuredExpansionFactorAPI(h)
 	runner := h.runner(primaryTestKey)
 	refreshExpansionFactor(t, h, runner)
 	if changed, err := runner.considerExpansionAgent(h.ctx); err != nil || !changed {

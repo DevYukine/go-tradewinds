@@ -507,3 +507,54 @@ func TestRequestDiagnosticsScrubAllTokenPrefixesAndPayloadCredentials(t *testing
 		})
 	}
 }
+
+func TestGetOnceDoesNotReplayTransientFailures(t *testing.T) {
+	for _, mode := range []string{"server failure", "transport failure"} {
+		t.Run(mode, func(t *testing.T) {
+			capture := &capturingServer{handler: func(w http.ResponseWriter, r *http.Request, _ int) {
+				if r.Method != http.MethodGet || r.Header.Get("Authorization") == "" {
+					t.Error("GetOnce did not send an authenticated GET")
+				}
+				if mode == "transport failure" {
+					connection, _, err := w.(http.Hijacker).Hijack()
+					if err == nil {
+						_ = connection.Close()
+					}
+					return
+				}
+				problem(w, http.StatusServiceUnavailable, "unavailable", "quote unavailable")
+			}}
+			server := httptest.NewServer(capture)
+			defer server.Close()
+			var out json.RawMessage
+			err := newTestClient(t, server).GetOnce(context.Background(), "/v1/insurance/quote", &out)
+			if err == nil || capture.count() != 1 {
+				t.Fatalf("GetOnce error=%v, requests=%d; want one failed observation", err, capture.count())
+			}
+		})
+	}
+}
+
+func TestGetOnceHonoursSharedRetryAfter(t *testing.T) {
+	capture := &capturingServer{handler: func(w http.ResponseWriter, _ *http.Request, index int) {
+		if index == 0 {
+			w.Header().Set("Retry-After", "1")
+			problem(w, http.StatusTooManyRequests, "rate_limit_exceeded", "wait")
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}}
+	server := httptest.NewServer(capture)
+	defer server.Close()
+	client := newTestClient(t, server)
+	started := time.Now()
+	var out json.RawMessage
+	err := client.GetOnce(context.Background(), "/v1/insurance/quote", &out)
+	var upstream *gameapi.APIError
+	if !errors.As(err, &upstream) || upstream.Status != 429 || capture.count() != 1 || time.Since(started) < time.Second {
+		t.Fatalf("GetOnce did not preserve the shared cooldown: err=%v count=%d elapsed=%s", err, capture.count(), time.Since(started))
+	}
+	if err := client.GetOnce(context.Background(), "/v1/insurance/quote", &out); err != nil || capture.count() != 2 {
+		t.Fatalf("fresh observation after cooldown: err=%v count=%d", err, capture.count())
+	}
+}

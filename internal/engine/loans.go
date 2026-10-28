@@ -28,6 +28,104 @@ type capacityFinancing struct {
 	Cancel            bool                `json:"cancel,omitempty"`
 }
 
+func validMortgageTerms(terms *gameapi.MortgageTerms, total int64) bool {
+	return terms != nil && terms.Available && terms.PrincipalPence > 0 && terms.PrincipalPence <= total &&
+		terms.TermGameDays == 180 && terms.Repayment == "amortised" && terms.Installments == 18 &&
+		terms.InstallmentPence != nil && *terms.InstallmentPence > 0 &&
+		terms.TotalRepayablePence >= terms.PrincipalPence && terms.AnnualRateBPS >= 0 && terms.LenderCompanyID != ""
+}
+
+func mortgageInterestPerGameDay(terms *gameapi.MortgageTerms) float64 {
+	if terms == nil {
+		return 0
+	}
+	return float64(terms.TotalRepayablePence-terms.PrincipalPence) / float64(terms.TermGameDays)
+}
+
+func mortgageReserve(terms *gameapi.MortgageTerms) int64 {
+	if terms == nil || terms.InstallmentPence == nil {
+		return 0
+	}
+	return growthCashTotal(*terms.InstallmentPence, *terms.InstallmentPence)
+}
+
+func sameMortgageTerms(a, b *gameapi.MortgageTerms) bool {
+	return a != nil && b != nil && a.InstallmentPence != nil && b.InstallmentPence != nil &&
+		a.LenderCompanyID == b.LenderCompanyID && a.PrincipalPence == b.PrincipalPence &&
+		a.AnnualRateBPS == b.AnnualRateBPS && a.TermGameDays == b.TermGameDays && a.Repayment == b.Repayment &&
+		a.Installments == b.Installments && *a.InstallmentPence == *b.InstallmentPence && a.TotalRepayablePence == b.TotalRepayablePence
+}
+
+func openMortgage(loan gameapi.Loan) bool {
+	return loan.IsMortgage && (loan.Status == "active" || loan.Status == "defaulted") && loan.OwedPence > 0
+}
+
+func (r *Runner) mortgagedShip(shipID string) bool {
+	for _, loan := range r.stateCache.Loans {
+		if openMortgage(loan) && loan.CollateralShipID != nil && *loan.CollateralShipID == shipID {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Runner) mortgageAvailable() bool {
+	if until := decode[time.Time](r.snapshot, "_mortgage_retry_at"); time.Now().Before(until) {
+		r.wakeBy(until)
+		return false
+	}
+	if !r.loanAuthority() || !r.meta["loans"].UpdatedAt.After(decode[time.Time](r.snapshot, "_mortgage_refused_at")) {
+		return false
+	}
+	for _, loan := range r.stateCache.Loans {
+		if openMortgage(loan) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Runner) mortgageBuildTermsReady(data *missionData, quote YardQuote) error {
+	if data.Capacity == nil || data.Capacity.Mortgage == nil {
+		return nil
+	}
+	if !r.mortgageAvailable() {
+		return errors.New("capacity mortgage waits until authoritative loans show no open mortgage")
+	}
+	if quote.TotalCostPence == nil || !validMortgageTerms(quote.Mortgage, *quote.TotalCostPence) ||
+		!sameMortgageTerms(data.Capacity.Mortgage, quote.Mortgage) {
+		return errors.New("capacity mortgage fresh terms differ from the admitted immutable financing")
+	}
+	return nil
+}
+
+func (r *Runner) reconcileMortgageBuild(ctx context.Context, mission *store.Mission, data *missionData, action *store.Action) (bool, error) {
+	if !r.fresh("ships") || !r.loanAuthority() {
+		return false, nil
+	}
+	for _, ship := range r.stateCache.Ships {
+		if ship.Ship.Name != data.BuildName || ship.Ship.ShipClass != data.BuildClass || ship.Ship.CurrentPortID != data.BuildPort {
+			continue
+		}
+		for _, loan := range r.stateCache.Loans {
+			if !loan.IsMortgage || loan.BorrowerCompanyID != r.account.CompanyID || loan.CollateralShipID == nil ||
+				*loan.CollateralShipID != ship.Ship.ID {
+				continue
+			}
+			if action.State != store.ActionComplete {
+				evidence := encode(map[string]any{"kind": "authoritative_named_mortgage_build", "ship": ship, "loan": loan,
+					"fleet_observed_at": r.meta["ships"].UpdatedAt, "loans_observed_at": r.meta["loans"].UpdatedAt})
+				if err := r.db.ReconcileAction(ctx, action.ID, evidence); err != nil {
+					return false, err
+				}
+			}
+			data.BuiltShipID, data.CostsKnown = ship.Ship.ID, false
+			return r.applyReconciliation(ctx, mission, data)
+		}
+	}
+	return false, nil
+}
+
 type loanRepaymentIntent struct {
 	Before      gameapi.Loan `json:"before"`
 	AmountPence int64        `json:"amount_pence"` // Zero means repay the full current balance.
@@ -144,7 +242,7 @@ func (r *Runner) considerCapacitySavingsFinancing(ctx context.Context, buy Growt
 
 func capacityLoanFunding(decision GrowthDecision, evidence *growthEvidence, region string, principal, reserve int64, rates []Rate) (map[string]int64, map[string]int64, map[string]int64, bool) {
 	required := clonePence(evidence.required)
-	capital := growthCashTotal(decision.QuotedHullPence, decision.SlippageReservePence, decision.CannonsPence, decision.InitialStoresPence)
+	capital := growthCapital(decision)
 	required[region] = growthCashTotal(required[region], capital, reserve)
 	balances := clonePence(evidence.balances)
 	balances[region] = growthCashTotal(balances[region], principal)
@@ -210,6 +308,9 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 	if !decision.EconomicallyViable || decision.Accepted || required == nil || decision.CashShortfallPence <= 0 {
 		return refuse("no borrowing: this is not a positive total cash-only capacity shortfall")
 	}
+	if decision.Mortgage != nil {
+		return refuse("capacity mortgage does not also pledge incumbent ships for a second financing package")
+	}
 	if until := decode[map[string]time.Time](r.snapshot, "_capacity_financing_backoffs")[port.ID+"|"+hull.ID]; time.Now().Before(until) {
 		r.wakeBy(until)
 		return false, nil
@@ -217,7 +318,7 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 	if !r.loanAuthority() || !r.opts.Execute {
 		return refuse("borrowing requires execute mode and fresh complete borrower-loan authority")
 	}
-	capital := growthCashTotal(decision.QuotedHullPence, decision.SlippageReservePence, decision.CannonsPence, decision.InitialStoresPence)
+	capital := growthCapital(decision)
 	if decision.DepthNetPencePerGameDay <= 0 || float64(capital)/decision.DepthNetPencePerGameDay > r.opts.CapacityPaybackDays {
 		return refuse("recourse debt requires depth-backed non-charter earnings inside the capacity payback horizon")
 	}
@@ -231,7 +332,7 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 		pledged := false
 		for _, loan := range r.stateCache.Loans {
 			pledged = pledged || loan.CollateralShipID != nil && *loan.CollateralShipID == ship.Ship.ID &&
-				(loan.CollateralStatus == "pledged" || loan.CollateralStatus == "held" || loan.CollateralStatus == "seizure_pending")
+				(openMortgage(loan) || loan.CollateralStatus == "pledged" || loan.CollateralStatus == "held" || loan.CollateralStatus == "seizure_pending")
 		}
 		if !pledged {
 			ships = append(ships, ship.Ship.ID)
@@ -303,7 +404,7 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 }
 
 func matchesLoanQuote(loan gameapi.Loan, quote gameapi.LoanQuote, companyID string) bool {
-	return loan.BorrowerCompanyID == companyID && loan.LenderCompanyID == quote.LenderCompanyID && loan.BankingRegion == quote.BankingRegion &&
+	return !loan.IsMortgage && loan.BorrowerCompanyID == companyID && loan.LenderCompanyID == quote.LenderCompanyID && loan.BankingRegion == quote.BankingRegion &&
 		loan.PrincipalPence == quote.PrincipalPence && loan.RateBasis == "annual" && loan.AnnualRateBPS != nil && *loan.AnnualRateBPS == quote.AnnualRateBPS &&
 		loan.TermGameDays == quote.TermGameDays && loan.Repayment == quote.Repayment && loan.Recourse &&
 		loan.InstallmentPence != nil && quote.InstallmentPence != nil && *loan.InstallmentPence == *quote.InstallmentPence &&
@@ -311,7 +412,7 @@ func matchesLoanQuote(loan gameapi.Loan, quote gameapi.LoanQuote, companyID stri
 }
 
 func loanQuoteIdentity(loan gameapi.Loan, quote gameapi.LoanQuote) bool {
-	return loan.ID != "" && loan.QuoteID != nil && *loan.QuoteID == quote.ID && loan.CollateralShipID != nil && quote.CollateralShipID != nil && *loan.CollateralShipID == *quote.CollateralShipID
+	return !loan.IsMortgage && loan.ID != "" && loan.QuoteID != nil && *loan.QuoteID == quote.ID && loan.CollateralShipID != nil && quote.CollateralShipID != nil && *loan.CollateralShipID == *quote.CollateralShipID
 }
 
 func (r *Runner) loanByID(id string) (gameapi.Loan, bool) {
@@ -324,6 +425,9 @@ func (r *Runner) loanByID(id string) (gameapi.Loan, bool) {
 }
 
 func (r *Runner) stageLoanRepayment(ctx context.Context, mission *store.Mission, data *missionData, loan gameapi.Loan, amount int64) (bool, error) {
+	if loan.IsMortgage && mission.ShipID != "__loans" {
+		return false, errors.New("mortgage repayment requires its debt-service intent, never capacity financing")
+	}
 	data.LoanRepayment = &loanRepaymentIntent{Before: loan, AmountPence: amount}
 	var requested *int64
 	if amount > 0 {
@@ -345,6 +449,21 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 			return false, nil
 		}
 		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+	}
+	for _, loan := range r.stateCache.Loans {
+		if !loan.IsMortgage || loan.Status != "active" || loan.OwedPence <= 0 || loan.NextPaymentDueAt == nil {
+			continue
+		}
+		required, err := r.treasuryReserves(ctx)
+		if err != nil {
+			return false, err
+		}
+		input := r.planningInput(ShipState{})
+		if input.Balances[loan.BankingRegion] < required[loan.BankingRegion] {
+			if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__loans", &loanRepaymentIntent{Before: loan}); changed || err != nil {
+				return changed, err
+			}
+		}
 	}
 	for _, loan := range r.stateCache.Loans {
 		if loan.Status != "active" || loan.ArrearsPence <= 0 {
@@ -405,7 +524,11 @@ func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (G
 		}
 	}
 	for _, accepted := range financing.Loans {
-		if _, exists := r.loanByID(accepted.ID); !exists {
+		if accepted.IsMortgage {
+			return financing.Decision, nil, errors.New("mortgage is not capacity financing")
+		}
+		loan, exists := r.loanByID(accepted.ID)
+		if !exists || loan.IsMortgage {
 			return financing.Decision, nil, errors.New("capacity financing awaits its named authoritative loan")
 		}
 	}
@@ -436,7 +559,7 @@ func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (G
 	if !exists {
 		return financing.Decision, nil, errors.New("capacity financing lacks its yard banking region")
 	}
-	capital := growthCashTotal(financing.Decision.QuotedHullPence, financing.Decision.SlippageReservePence, financing.Decision.CannonsPence, financing.Decision.InitialStoresPence)
+	capital := growthCapital(financing.Decision)
 	var protectedDebt int64
 	for _, accepted := range financing.Loans {
 		loan, _ := r.loanByID(accepted.ID)
@@ -468,9 +591,15 @@ func (r *Runner) repayCapacityFinancing(ctx context.Context, mission *store.Miss
 		return false, r.hold(ctx, "", "unused capacity debt awaits fresh borrower-loan authority")
 	}
 	for _, accepted := range financing.Loans {
+		if accepted.IsMortgage {
+			continue
+		}
 		loan, exists := r.loanByID(accepted.ID)
 		if !exists {
 			return false, r.hold(ctx, "", "unused capacity debt awaits its named authoritative loan")
+		}
+		if loan.IsMortgage {
+			continue
 		}
 		if loan.OwedPence <= 0 {
 			continue
@@ -566,6 +695,9 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 	if !exists || loan.BorrowerCompanyID != r.account.CompanyID || loan.OwedPence <= 0 {
 		return errors.New("new repayment requires its current owned outstanding debt")
 	}
+	if loan.IsMortgage && mission.ShipID != "__loans" {
+		return errors.New("mortgage cannot be repaid as capacity financing")
+	}
 	input := r.planningInput(ShipState{})
 	var protected map[string]int64
 	var err error
@@ -589,6 +721,9 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 }
 
 func (r *Runner) recordAcceptedCapacityLoan(data *missionData, loan gameapi.Loan, quote gameapi.LoanQuote) {
+	if loan.IsMortgage {
+		return
+	}
 	financing := data.Capacity.Financing
 	if len(financing.Loans) == 0 {
 		// The receipt time prevents reconciliation from extending the idle-debt window.
