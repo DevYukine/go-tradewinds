@@ -142,17 +142,16 @@ func passengerTick(t *testing.T, h *recoveryHarness, r *Runner) {
 	}
 }
 
-func TestPassengerFleetCapAndCargoPriority(t *testing.T) {
+// Passages only take ships with no profitable voyage, so another hull's
+// passage never blocks one; cargo that appears later still wins.
+func TestPassengerAdmitsBesideOtherPassagesAndCargoPriority(t *testing.T) {
 	h, r, in := passengerRunnerFixture(t)
 	other := in.Ship
 	other.Ship.ID = "ship-b"
 	r.stateCache.Ships = append(r.stateCache.Ships, other)
 	committed := &store.Mission{Data: encode(missionData{Passage: &passageIntent{}})}
-	if changed, err := r.considerPassage(h.ctx, in.Ship, in, map[string]*store.Mission{"ship-b": committed}); err != nil || changed {
-		t.Fatalf("two-ship fleet exceeded cap1: %t %v", changed, err)
-	}
-	if changed, err := r.considerPassage(h.ctx, in.Ship, in, nil); err != nil || !changed {
-		t.Fatalf("idle ship did not admit passage: %t %v", changed, err)
+	if changed, err := r.considerPassage(h.ctx, in.Ship, in, map[string]*store.Mission{"ship-b": committed}); err != nil || !changed {
+		t.Fatalf("idle ship did not admit passage beside another passage: %t %v", changed, err)
 	}
 	mission, data := h.mission(in.Ship.Ship.ID)
 	// An executable delivery charter appears after the fare mission exists.
@@ -746,25 +745,14 @@ func TestPassengerClosureWaitsForBoardedPromiseCapture(t *testing.T) {
 	}
 }
 
-func TestPassengerFleetCapCountsAliveAndAvoidsOwnLaneCompetition(t *testing.T) {
+func TestPassengerAvoidsOwnLaneCompetition(t *testing.T) {
 	h, r, in := passengerRunnerFixture(t)
 	other := in.Ship
 	other.Ship.ID = "other"
 	r.stateCache.Ships = append(r.stateCache.Ships, other)
-	for i := range 2 {
-		sunk := in.Ship
-		sunk.Ship.ID, sunk.Ship.Status = fmt.Sprintf("sunk-%d", i), "sunk"
-		r.stateCache.Ships = append(r.stateCache.Ships, sunk)
-	}
+	// Our own fleet must not run competing fare ladders for the same waiting
+	// groups on one origin/destination.
 	existing := &store.Mission{Data: encode(missionData{Plan: Plan{Origin: "origin", Destination: "destination"}, Passage: &passageIntent{}})}
-	if changed, err := r.considerPassage(h.ctx, in.Ship, in, map[string]*store.Mission{"other": existing}); err != nil || changed {
-		t.Fatalf("sunk hulls enlarged the passenger cap: %t %v", changed, err)
-	}
-	// Four live hulls permit two commitments, but not competing fare ladders
-	// from our own fleet on the same origin/destination.
-	for i := 2; i < 4; i++ {
-		r.stateCache.Ships[i].Ship.Status = "berthed"
-	}
 	if changed, err := r.considerPassage(h.ctx, in.Ship, in, map[string]*store.Mission{"other": existing}); err != nil || changed {
 		t.Fatalf("own fare ladder competed for the same waiting groups: %t %v", changed, err)
 	}

@@ -440,25 +440,6 @@ func (r *Runner) considerPassage(ctx context.Context, ship ShipState, input Plan
 	if !hazardStationary(ship) || !emptyCargo(ship) || !r.fresh("passenger_waiting/"+ship.Ship.CurrentPortID) || !r.fresh("passenger_offers") {
 		return false, nil
 	}
-	committed, alive := 0, 0
-	for _, candidate := range r.stateCache.Ships {
-		if candidate.Ship.Status == "sunk" {
-			continue
-		}
-		alive++
-		mission := missions[candidate.Ship.ID]
-		if mission != nil {
-			var data missionData
-			if json.Unmarshal(mission.Data, &data) == nil && data.Passage != nil {
-				committed++
-			}
-		} else if candidate.PassengerHoldTons > 0 {
-			committed++
-		}
-	}
-	if committed >= max(1, alive/2) {
-		return false, nil
-	}
 	// A retained offer from a crash is recovered, never blindly posted twice.
 	for _, offer := range decode[[]gameapi.PassengerOffer](r.snapshot, "passenger_offers") {
 		if offer.ShipID == ship.Ship.ID && offer.Status == "open" {
