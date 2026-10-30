@@ -9,6 +9,21 @@
 
 This is a partially observed economy. Remote books may be hidden, NPC orders requote, players consume liquidity, and future hazards are uncertain. No strategy can prove global maximum profit from the public information. The objective is the best executable, conservatively valued opportunity among observed candidates, followed by measured reinvestment. Every decision must distinguish an actual quote from an estimate.
 
+## Game 0.7.2
+
+Sources: the [guide](https://tradewinds.kibb.io/skill.md), [OpenAPI](https://tradewinds.kibb.io/api-docs/openapi.json) and [release notes](https://tradewinds.kibb.io/update), read on 2026-10-30. The guide and schema were unchanged between 20:28 and 21:21 UTC that day. M means measured from live database and public API captures on 2026-10-29 and 2026-10-30, E a conditional estimate, U unknown.
+
+The changes from 0.5.1 to 0.7.2 add routes and fields; none removes or renames a route, request field or scope the bot uses. The bot decodes unknown fields, so no code change was needed. Releases 0.6.0 and 0.7.0 are dated 2026-10-29, inside the first post-deploy evaluation window, so spot results from that window mix our changes with game changes.
+
+| System | Verdict | Basis | What would change it |
+| --- | --- | --- | --- |
+| Spot cargo and cheap-hull growth | KEEP | M: spot settlements made 110,627.21 Cr in the 24 real hours before 2026-10-30 19:29 UTC. | A sustained loss after the near-neighbour and bulk-depth changes. |
+| Used hulls | NO automatic buying | M: four-gun hoy asks 19,767.40 to 22,499.86 Cr against new hoy quotes of 26,021.84 to 30,428.22 Cr. U: outside 64ths stay with a sold ship and no listing shows them before purchase, so a cheap hull may carry dividend obligations. None of nine listings passes a valuation that assumes the worst case. | Pre-purchase visibility of outside 64ths. |
+| Admiralty commissions | NO today | M: the Hamburg cutter commission pays 49,827.79 Cr against a turnkey quote of 53,617.09 Cr, a loss of 3,789.30 Cr before funding. The London frigate spread is +9,642.60 Cr but needs 247,918.27 Cr of build and deposit capital. Since 0.7.2 each Crown posts commissions only every few game days and only where piracy remains. | A fresh yard quote below an open commission price, with capital the fleet can spare. |
+| Futures | Capped pilot only | The Goldsmith desk added in 0.7.0 takes futures at prices that favour the desk. E: with flat prices our 85%-of-mid ask and 115%-of-mid bid each lose before customs, rent and capital. | Measured fills and settlement. The pilot stays at one ton with no scale-up. |
+| Marques | Stopped | M: seven campaigns made 4,938.07 Cr in total; three expired individually unprofitable, which triggers the stop. Sponsorless Navy patrols now suppress piracy in more zones. | The existing stop rule is permanent; no reset. |
+| NPC share, news and envelope desks | NO | M: no recent NPC share or envelope purchases observed. Selling 64ths raises cash but gives away a share of future ship profit. | Genuine capital scarcity that beats the dividend cost. |
+
 ## Game 0.5.1
 
 The [guide, hazards and golden rules](https://tradewinds.kibb.io/skill.md) describes variable storm losses. Most storms are light. Rough water and an under-rated hull make heavier losses more likely. A pirate raid that releases the ship takes 20% to 50% of each cargo stack and its stores. Route `safe_provisions_tons` covers the worst storm on any leg, not the worst pirate raid. Keep the hard hull-rating check and buy safe stores.
