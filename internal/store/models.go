@@ -43,9 +43,11 @@ type Account struct {
 }
 
 type Credentials struct {
-	Handle     string `json:"handle"`
-	Passphrase string `json:"passphrase"`
-	APIKey     string `json:"api_key"`
+	Handle           string `json:"handle"`
+	Passphrase       string `json:"passphrase"`
+	APIKey           string `json:"api_key"`
+	UnderworldAPIKey string `json:"underworld_api_key"`
+	UnderworldMintID string `json:"underworld_mint_id,omitempty"`
 }
 
 type Mission struct {
@@ -89,6 +91,7 @@ type Metric struct {
 func (Metric) TableName() string { return "metrics" }
 
 type Decision struct {
+	ID        int64           `json:"id" gorm:"primaryKey"`
 	AccountID string          `json:"account_id"`
 	ShipID    string          `json:"ship_id"`
 	Kind      string          `json:"kind"`
@@ -111,6 +114,7 @@ type Event struct {
 func (Event) TableName() string { return "events" }
 
 type RequestSummary struct {
+	ID         int64     `json:"id" gorm:"primaryKey"`
 	AccountID  string    `json:"account_id"`
 	Method     string    `json:"method"`
 	Path       string    `json:"path"`

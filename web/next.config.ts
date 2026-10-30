@@ -29,7 +29,7 @@ const config: NextConfig = {
     ],
   },
   async rewrites() {
-    // src/middleware.ts validates the original Host before this proxy replaces it.
+    // src/proxy.ts validates the original Host before this rewrite replaces it.
     return [{ source: "/api/:path*", destination: `${backend}/api/:path*` }];
   },
 };

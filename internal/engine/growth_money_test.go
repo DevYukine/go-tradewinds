@@ -477,7 +477,7 @@ func TestGrowthChoosesCapitalReturnAcrossHullCatalogOrders(t *testing.T) {
 			state := &runner.stateCache
 			original := state.Catalog.ShipClasses[0]
 			efficient := original
-			efficient.ID = "capital-efficient-cutter"
+			efficient.ID = "cutter"
 			state.Catalog.ShipClasses = []Hull{original, efficient}
 			if reverse {
 				state.Catalog.ShipClasses[0], state.Catalog.ShipClasses[1] = state.Catalog.ShipClasses[1], state.Catalog.ShipClasses[0]

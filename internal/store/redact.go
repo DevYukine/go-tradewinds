@@ -43,12 +43,15 @@ func (s *Store) secrets(ctx context.Context, accountID string) ([]string, error)
 }
 
 func credentialSecrets(credentials Credentials) []string {
-	values := make([]string, 0, 2)
+	values := make([]string, 0, 3)
 	if credentials.Passphrase != "" {
 		values = append(values, credentials.Passphrase)
 	}
 	if credentials.APIKey != "" {
 		values = append(values, credentials.APIKey)
+	}
+	if credentials.UnderworldAPIKey != "" {
+		values = append(values, credentials.UnderworldAPIKey)
 	}
 	return values
 }

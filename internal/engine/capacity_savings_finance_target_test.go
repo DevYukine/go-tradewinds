@@ -32,7 +32,7 @@ func TestCapacitySavingsUnevaluatedTargetCannotFinanceAnotherHull(t *testing.T) 
 				t.Fatalf("C must pass the old savings financing gate: rate=%v candidate=%+v err=%v", rate, candidate, err)
 			}
 			target := capacitySavingsTarget{
-				PortID: recoveryFarPort, HullID: "savings-unevaluated-hull",
+				PortID: recoveryFarPort, HullID: "collier",
 				RequiredPence: evidence.available + 1_000, CapitalPence: 200_000,
 				DepthNetPencePerGameDay: 2 * candidate.DepthNetPencePerGameDay,
 				ExpiresAt:               time.Now().UTC().Add(time.Hour),
@@ -85,7 +85,7 @@ func TestCapacitySavingsTotalInterestRefusalRecordsTargetDecision(t *testing.T) 
 	seedCapacitySavingsWindows(t, h, 0)
 	port, small, _, _, _ := loanCapacityDecision(t, h, runner)
 	large := small
-	large.ID, large.HoldCapacityTons = "savings-interest-target", 240
+	large.ID, large.HoldCapacityTons = "brigantine", 240
 	runner.stateCache.Catalog.ShipClasses = append(runner.stateCache.Catalog.ShipClasses, large)
 	for _, pair := range [][2]string{{recoveryHomePort, recoveryFarPort}, {recoveryFarPort, recoveryHomePort}} {
 		oldKey := routeKey(pair[0], pair[1], small.ID)

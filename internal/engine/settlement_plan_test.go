@@ -18,7 +18,8 @@ func TestSettlementPlanCopiesEconomicsAndCargoShortfallAcrossRestart(t *testing.
 			ship := harnessShip(t, runner, recoveryShipBlastoise)
 			data := missionData{
 				Plan: Plan{Kind: "spot+freight", Origin: recoveryHomePort, Destination: recoveryFarPort, Commodity: recoveryGrain, Quantity: 30,
-					Economics: Economics{Basis: "destination", RevenueBasis: "retained", RevenueAgeGameHours: new(24.5), RevenuePence: 24_000, ExpectedNetPence: 4_000}},
+					Economics: Economics{Basis: "destination", RevenueBasis: "retained", RevenueAgeGameHours: new(24.5), RevenuePence: 24_000,
+						UncalibratedRevenuePence: new(int64(24_000)), RevenueQuantityTons: 30, ExpectedNetPence: 4_000}},
 				BoughtQuantity: 30, BuyDone: true, AcquisitionPence: 18_000, CostsKnown: true,
 				StartedAt: time.Now().UTC().Add(-time.Hour), StartedGameHours: runner.stateCache.Clock.Calendar.TotalGameHours - 1,
 				InitialLedgerIDs: map[string]bool{}, FinishAtDestination: true,
@@ -146,5 +147,105 @@ func TestSettlementPlanRecordsPopulatedHazard(t *testing.T) {
 	row := procurementReviewSettlement(t, data, nil)
 	if row.HazardBPS == nil || *row.HazardBPS != 0 || row.HazardSource == nil || *row.HazardSource != "lloyds_bound" {
 		t.Fatalf("populated zero hazard lost its authority: %+v", row)
+	}
+}
+
+func TestMoneyCalibrationSettledCalibratedQuotesKeepTheirRawRevenue(t *testing.T) {
+	h := newRecoveryHarness(t)
+	h.api.setFleet([]map[string]any{destinationShipRow(recoveryShipBlastoise, "Blastoise", recoveryFarPort, "anchored_roadstead", 3, nil, nil)})
+	runner := refreshedRunner(t, h)
+	runner.snapshot["ledger"] = json.RawMessage(`[]`)
+	ship := harnessShip(t, runner, recoveryShipBlastoise)
+	in := moneyInput(t, time.Now().UTC(), "canvas_sails", 6_000, 10_000, 1, 30)
+	in.RevenueCalibration = map[string]int64{"depth": 9500}
+	plan := moneySpot(t, in, "canvas_sails")
+	if !plan.Accepted || plan.Economics.RevenuePence != 9500 {
+		t.Fatalf("fixture needs an already calibrated quote: %+v", plan)
+	}
+	since := time.Now().UTC().Add(-time.Hour)
+	for i := range 30 {
+		id := fmt.Sprintf("calibrated-settlement-%d", i)
+		destinationSeedAction(t, h, id, "/v1/market/place-order", `{"quantity":1}`, `{"filled_quantity":1}`)
+		data := missionData{
+			Plan: plan, BoughtQuantity: 1, DeliveredQuantity: 1, BuyDone: true, CostsKnown: true,
+			AcquisitionPence: 6000, ProceedsPence: 9500, LastActionID: id, FinishAtDestination: true,
+			StartedAt: since.Add(time.Minute), ProvenLane: laneKey(plan), InitialLedgerIDs: map[string]bool{},
+		}
+		h.putMission(ship.Ship.ID, id, "closing", data)
+		mission, data := h.mission(ship.Ship.ID)
+		if _, err := runner.finishMission(h.ctx, ship, mission, &data); err != nil {
+			t.Fatal(err)
+		}
+		// Reload the frozen intent before inserting, as on a process restart.
+		mission, data = h.mission(ship.Ship.ID)
+		if _, err := runner.finishMission(h.ctx, ship, mission, &data); err != nil {
+			t.Fatal(err)
+		}
+		if data.Settlement.PlannedRevenuePence == nil || *data.Settlement.PlannedRevenuePence != 10_000 ||
+			data.Settlement.PlannedNetPence == nil || *data.Settlement.PlannedNetPence != plan.Economics.ExpectedNetPence {
+			t.Fatalf("settlement mixed calibrated net with the wrong revenue baseline: %+v", data.Settlement)
+		}
+		if i == 9 || i == 29 {
+			factors, err := h.db.RevenueCalibration(h.ctx, h.account.ID, since, time.Now().UTC().Add(time.Second))
+			if err != nil || factors["depth"] != 9500 {
+				t.Fatalf("calibration cancelled itself after %d receipts: %v, %v", i+1, factors, err)
+			}
+		}
+	}
+}
+
+func TestMoneyCalibrationPartialIOCBuyDoesNotBecomeAFullLotPriceMiss(t *testing.T) {
+	for _, filled := range []int64{5, 10} {
+		t.Run(fmt.Sprint(filled), func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			h.api.setFleet([]map[string]any{destinationShipRow(recoveryShipBlastoise, "Blastoise", recoveryFarPort, "anchored_roadstead", 3, nil, nil)})
+			runner := refreshedRunner(t, h)
+			runner.snapshot["ledger"] = json.RawMessage(`[]`)
+			ship := harnessShip(t, runner, recoveryShipBlastoise)
+			in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 200, 10, 30)
+			plan := moneySpot(t, in, "canvas_sails")
+			body := `{"commodity_id":"canvas_sails","quantity":10}`
+			response := fmt.Sprintf(`{"commodity_id":"canvas_sails","filled_quantity":%d,"total_gross_pence":%d,"customs_duty_pence":0}`, filled, filled*100)
+			destinationSeedAction(t, h, "partial-calibration-buy", "/v1/market/place-order", body, response)
+			data := missionData{
+				Plan: plan, CostsKnown: true, FinishAtDestination: true, StartedAt: time.Now().UTC().Add(-time.Minute),
+				ProvenLane: laneKey(plan), InitialLedgerIDs: map[string]bool{},
+				Action: &durableAction{ID: "partial-calibration-buy", Stage: "buy", Body: json.RawMessage(body)},
+			}
+			h.putMission(ship.Ship.ID, "partial-calibration", "buy", data)
+			mission, data := h.mission(ship.Ship.ID)
+			if _, err := runner.consumeResult(h.ctx, mission, &data, http.StatusOK, json.RawMessage(response)); err != nil {
+				t.Fatal(err)
+			}
+			if data.Plan.Quantity != filled || data.Plan.Economics.RevenueQuantityTons != 10 {
+				t.Fatalf("IOC receipt erased the full-lot quote quantity: %+v", data.Plan)
+			}
+			data.DeliveredQuantity, data.ProceedsPence = filled, filled*200
+			mission.Phase = "closing"
+			for range 2 {
+				if _, err := runner.finishMission(h.ctx, ship, mission, &data); err != nil {
+					t.Fatal(err)
+				}
+			}
+			row := data.Settlement
+			if row.CargoShortfallPence == nil || *row.CargoShortfallPence != 0 {
+				t.Fatalf("partial purchase was incorrectly treated as lost cargo: %+v", row)
+			}
+			if filled == 5 && row.PlannedRevenuePence != nil ||
+				filled == 10 && (row.PlannedRevenuePence == nil || *row.PlannedRevenuePence != 2000) {
+				t.Fatalf("forecast denominator did not distinguish partial from full IOC fill: %+v", row)
+			}
+		})
+	}
+}
+
+func TestMoneyCalibrationLegacyRevenueRemainsUnmeasured(t *testing.T) {
+	row := procurementReviewSettlement(t, missionData{
+		Plan: Plan{Kind: "spot", Origin: recoveryHomePort, Destination: recoveryFarPort, Commodity: recoveryGrain, Quantity: 1,
+			Economics: Economics{RevenuePence: 9500, RevenueCalibrationBPS: 9500, RevenueBasis: "depth"}},
+		BoughtQuantity: 1, DeliveredQuantity: 1, AcquisitionPence: 6000, ProceedsPence: 9500, CostsKnown: true,
+	}, nil)
+	if row.PlannedRevenuePence != nil {
+		t.Fatalf("legacy mission without a raw quote fabricated a calibration denominator: %+v", row)
 	}
 }

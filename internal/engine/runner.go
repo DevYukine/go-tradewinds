@@ -23,9 +23,11 @@ type Options struct {
 	MaxPaybackDays      float64
 	CapacityPaybackDays float64
 	MarquesEnabled      bool
+	FuturesPilotEnabled bool
 	ReplayRetentionDays int
 	ReplayMaxGiB        float64
 	GameVersion         func() string `json:"-"`
+	UnderworldAPI       UnderworldAPI `json:"-"`
 }
 
 type decisionFingerprint struct {
@@ -74,11 +76,15 @@ type Runner struct {
 	requestJournalFailures int
 	// charterProceedsPence is recorded charter proceeds over the Crown
 	// premium taper window, loaded at each refresh.
-	charterProceedsPence int64
-	sourcingHistory      sourcingHistoryCache
-	competition          *store.CompetitionSummary
-	competitionNextLoad  time.Time
-	competitionCoverage  map[string]competitionCoverage
+	charterProceedsPence     int64
+	sourcingHistory          sourcingHistoryCache
+	competition              *store.CompetitionSummary
+	competitionNextLoad      time.Time
+	competitionCoverage      map[string]competitionCoverage
+	underworldDisabled       bool
+	rivalCreditNextLoad      time.Time
+	futuresWarningAfter      time.Time
+	futuresCreditUnavailable bool
 }
 
 func New(api *gameapi.Client, db *store.Store, account store.Account, log *zap.Logger, opts Options) *Runner {
@@ -137,6 +143,12 @@ var financialEvents = map[string]bool{
 	"insurance_claim_paid":            true,
 	"insurance_policy_closed":         true,
 	"marque_prize_paid":               true,
+	"futures_accepted":                true,
+	"futures_settled":                 true,
+	"futures_defaulted":               true,
+	"futures_expired":                 true,
+	"futures_claim_paid":              true,
+	"futures_claim_written_off":       true,
 	"loan_disbursed":                  true,
 	"loan_repayment":                  true,
 	"loan_defaulted":                  true,
@@ -362,6 +374,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err := r.refresh(ctx); err != nil {
 			return err
 		}
+		if err := r.refreshRevenueCalibration(ctx); err != nil {
+			return err
+		}
 		pending := len(messages)
 		refreshPending := pending > 0
 		for ; pending > 0; pending-- {
@@ -384,6 +399,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.assessedShipIDs = r.assessedShipIDs[:0]
 		clear(r.assessedHoldIDs)
 		r.assessHold("")
+		if r.futuresCreditUnavailable {
+			if err := r.hold(ctx, "__futures", "own-credit evidence unavailable; retaining the last validated claims and conservative default reserve"); err != nil {
+				r.log.Warn("cannot record futures own-credit hold")
+			}
+		}
 		changed := false
 		identityReady := r.fresh("whoami") && r.fresh("profile") && r.fresh("player")
 		if financialStale {
@@ -608,7 +628,7 @@ func (r *Runner) holdExpected(ctx context.Context, shipID, reason string) error 
 func (r *Runner) recordHold(ctx context.Context, shipID, reason string, expected bool) error {
 	holdShipID := shipID
 	switch shipID {
-	case "__treasury", "__growth", "__loans", "__underwriting", "__marque":
+	case "__treasury", "__growth", "__loans", "__underwriting", "__marque", "__futures":
 		holdShipID = ""
 	}
 	subjectID := shipID

@@ -304,3 +304,36 @@ func TestReplayLiveWriterPersistsRepeatedAggregateOverflowAsGaps(t *testing.T) {
 		t.Fatalf("successful live gap frames did not count each dataset loss: %g", demotions)
 	}
 }
+
+func TestReplayPassRetainsCalibrationAndActiveMarquePlanningInputs(t *testing.T) {
+	h := newRecoveryHarness(t)
+	r := replayRecorderRunner(t, h)
+	t.Cleanup(func() { r.stopReplay(context.Background()) })
+	at := time.Now().UTC()
+	replayRecorderSeed(t, h, r, at)
+	r.snapshot["_revenue_calibration"] = encode(map[string]int64{"depth": 9500})
+	r.snapshot["_marque_active"] = encode(map[string]letterOfMarque{"observed-marque": {
+		ID: "55555555-5555-4555-8555-000000000001", SeaZoneID: "retained-danger",
+		SponsorCompanyID: h.account.CompanyID, AddedPiracyBPS: 500, CostPence: 1000,
+		ExpiresAt: at.Add(time.Hour), CreatedAt: at.Add(-time.Minute), UpdatedAt: at,
+	}})
+	r.flushReplay(h.ctx, at)
+	replayRecorderWait(t, func() bool { return len(replayRecorderFrames(t, h)) == 1 })
+	frame := replayRecorderFrames(t, h)[0]
+	snapshot := make(map[string]json.RawMessage)
+	for key, dataset := range frame.Datasets {
+		snapshot[key] = dataset.Data
+	}
+	for _, key := range []string{"_revenue_calibration", "_marque_active"} {
+		if !bytes.Equal(snapshot[key], r.snapshot[key]) {
+			t.Fatalf("recorded %s differs from live input: %s, want %s", key, snapshot[key], r.snapshot[key])
+		}
+	}
+	replayed := PlanningInputFor(at, ShipState{}, r.stateCache, snapshot, PlanningSources{
+		Metadata: r.meta, Generation: r.generation,
+	})
+	if replayed.RevenueCalibration["depth"] != 9500 || !replayed.MarqueZones["retained-danger"] {
+		t.Fatalf("recorded pass changed live calibration or marque route exclusions: %+v, %+v",
+			replayed.RevenueCalibration, replayed.MarqueZones)
+	}
+}

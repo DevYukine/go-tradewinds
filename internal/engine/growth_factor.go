@@ -76,7 +76,7 @@ func expansionAgentYard(state AccountState, input PlanningInput, agents []expans
 					destination.BankingRegion != yard.BankingRegion || !regionalWater(state.Catalog, destination) {
 					continue
 				}
-				revenue, _, stress, _, reason := destinationRevenue(input, destination.ID, commodity.ID, 1)
+				revenue, _, stress, _, reason, _ := destinationRevenue(input, destination.ID, commodity.ID, 1, time.Time{})
 				if reason == "" {
 					// A conservative one-ton spread ranks exploration only; the
 					// measured capacity planner still admits the eventual hull.

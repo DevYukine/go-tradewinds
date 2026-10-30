@@ -91,6 +91,8 @@ export function DecisionPanel({
         <p className={styles.note}>
           Recorded evaluations are not realized profit. Destination models end
           at delivery; legacy models retain their original basis.
+          {decisions.some((decision) => decision.id == null) &&
+            " Record IDs were not provided for some evaluations."}
         </p>
         <div className={styles.toolbar}>
           <label>
@@ -138,7 +140,7 @@ export function DecisionPanel({
           label="Recorded planner decisions and modeled economics"
           data={filtered}
           rowKey={(decision, index) =>
-            `${decision.account_id}:${decision.created_at}:${decision.ship_id}:${decision.kind}:${index}`
+            decision.id == null ? `missing:${index}` : String(decision.id)
           }
           empty="No decisions recorded for these filters"
           columns={[
@@ -214,14 +216,19 @@ export function DecisionPanel({
             {
               label: "Modeled net",
               value: (decision) => decision.view.expectedNetPence,
-              render: (decision) => (
-                <span className={styles.primary}>
-                  {money(decision.view.expectedNetPence)}
-                  <small>
-                    {decision.view.netLabel} ({decision.view.basisLabel})
-                  </small>
-                </span>
-              ),
+              render: (decision) =>
+                decision.view.notPriced ? (
+                  <span>
+                    Not priced: {decision.reason || "No reason recorded"}
+                  </span>
+                ) : (
+                  <span className={styles.primary}>
+                    {money(decision.view.expectedNetPence)}
+                    <small>
+                      {decision.view.netLabel} ({decision.view.basisLabel})
+                    </small>
+                  </span>
+                ),
               className: styles.numeric,
             },
             {
@@ -239,7 +246,13 @@ export function DecisionPanel({
                       <dd>{humanize(decision.view.commodity)}</dd>
                     </div>
                   </dl>
-                  <Economics view={decision.view} />
+                  {decision.view.notPriced ? (
+                    <p className={styles.note}>
+                      Not priced: {decision.reason || "No reason recorded"}
+                    </p>
+                  ) : (
+                    <Economics view={decision.view} />
+                  )}
                 </details>
               ),
             },

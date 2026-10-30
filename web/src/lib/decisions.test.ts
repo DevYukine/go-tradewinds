@@ -147,6 +147,39 @@ describe("recorded decision cash", () => {
     expect(money(view.expectedNetPence)).toBe(formatted);
   });
 
+  it.each(["", "observed destination full depth"])(
+    "keeps an uncosted rejection unavailable even with quote source %s",
+    (priceSource) => {
+      const view = buildDecisionView({
+        accepted: false,
+        price_source: priceSource,
+        economics: {
+          basis: "",
+          ...Object.fromEntries(
+            Object.keys(plan.economics).map((key) => [key, 0]),
+          ),
+        },
+      });
+      expect(view.notPriced).toBe(true);
+      expect(view.expectedNetPence).toBeUndefined();
+      expect(view.cashRows).toEqual([]);
+      expect(view.stressRows).toEqual([]);
+      expect(view.gameDays).toBeUndefined();
+      expect(view.dailyPence).toBeUndefined();
+      expect(view.haircutBps).toBeUndefined();
+    },
+  );
+
+  it.each([
+    { basis: "destination", expected_net_pence: 0 },
+    { game_days: 1, expected_net_pence: 0 },
+    { expected_net_pence: -100 },
+  ])("retains a costed rejection: %j", (economics) => {
+    const view = buildDecisionView({ accepted: false, economics });
+    expect(view.notPriced).toBe(false);
+    expect(view.expectedNetPence).toBe(economics.expected_net_pence);
+  });
+
   it.each([
     undefined,
     null,

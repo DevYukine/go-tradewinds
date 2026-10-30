@@ -11,6 +11,7 @@ export type DecisionView = {
   origin: string;
   destination: string;
   commodity: string;
+  notPriced: boolean;
   basis: "destination" | "legacy";
   basisLabel: string;
   netLabel: string;
@@ -31,7 +32,16 @@ export type DecisionView = {
 
 export function buildDecisionView(details: unknown): DecisionView {
   const plan = record(details);
-  const economics = record(plan.economics);
+  const recordedEconomics = record(plan.economics);
+  // A rejected Go plan can carry zero-value economics before valuation.
+  // A quote source alone does not establish a costed route.
+  const notPriced =
+    plan.accepted === false &&
+    !text(recordedEconomics.basis, "") &&
+    !Object.values(recordedEconomics).some(
+      (value) => number(value) !== undefined && value !== 0,
+    );
+  const economics = notPriced ? {} : recordedEconomics;
   const basis = economics.basis === "destination" ? "destination" : "legacy";
   const netLabel =
     basis === "destination"
@@ -92,6 +102,7 @@ export function buildDecisionView(details: unknown): DecisionView {
     origin: text(plan.origin, ""),
     destination: text(plan.destination, ""),
     commodity: text(plan.commodity, ""),
+    notPriced,
     basis,
     basisLabel:
       basis === "destination"

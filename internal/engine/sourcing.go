@@ -690,8 +690,15 @@ func restingBidReservations(snapshot map[string]json.RawMessage) map[string]map[
 }
 
 func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipState, excludedMission string) (PlanningInput, error) {
+	return r.committedPlanningInputExceptLoan(ctx, ship, excludedMission, "")
+}
+
+func (r *Runner) committedPlanningInputExceptLoan(ctx context.Context, ship ShipState, excludedMission, excludedLoan string) (PlanningInput, error) {
 	input := r.planningInput(ship)
-	required, err := r.treasuryReserves(ctx)
+	if loan, exists := r.loanByID(excludedLoan); exists {
+		input.ReserveByRegion[loan.BankingRegion] = max(0, input.ReserveByRegion[loan.BankingRegion]-loanReserve(loan))
+	}
+	required, err := r.treasuryReservesExceptLoan(ctx, excludedLoan)
 	if err != nil {
 		return input, err
 	}
@@ -784,9 +791,9 @@ func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipStat
 		for _, incumbent := range reservations.incumbents {
 			plan := incumbent.plan
 			input.Markets[plan.Origin] = reserveGrowthBook(input.Markets[plan.Origin], plan.Commodity, incumbent.unbought, 0, plan.StoresToBuy)
-			if plan.ContractID == "" {
-				input.Markets[plan.Destination] = reserveGrowthBook(input.Markets[plan.Destination], plan.Commodity, 0, incumbent.outstanding, 0)
-			} else if incumbent.outstanding > 0 {
+			// Pricing consumes destination bid reservations from
+			// ReservedRetainedBidTons, including fresh books, exactly once.
+			if plan.ContractID != "" && incumbent.outstanding > 0 {
 				if !contractsOwned {
 					input.Contracts = append([]Contract(nil), input.Contracts...)
 					contractsOwned = true

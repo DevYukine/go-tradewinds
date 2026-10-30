@@ -96,16 +96,19 @@ type WarningShipEvents struct {
 // WarningInput contains only recorded observations. AssessWarnings never reads
 // the database, contacts the game, or changes controller state.
 type WarningInput struct {
-	Engine      *WarningEngine
-	Metadata    map[string]WarningDataset
-	Ships       []gameapi.ShipDetail
-	ShipDetails map[string]gameapi.ShipDetail
-	ShipEvents  map[string]WarningShipEvents
-	Clock       gameapi.Clock
-	Catalog     gameapi.Catalog
-	Settlements []Settlement
-	Growth      GrowthWindow
-	Secrets     []string
+	Engine       *WarningEngine
+	Metadata     map[string]WarningDataset
+	Ships        []gameapi.ShipDetail
+	ShipDetails  map[string]gameapi.ShipDetail
+	ShipEvents   map[string]WarningShipEvents
+	Clock        gameapi.Clock
+	Catalog      gameapi.Catalog
+	Settlements  []Settlement
+	Growth       GrowthWindow
+	Secrets      []string
+	Rising       gameapi.RisingBoard
+	RisingAt     *time.Time
+	OwnCompanies []string
 }
 
 func AssessWarnings(input WarningInput, at time.Time) WarningAssessment {
@@ -171,17 +174,65 @@ func AssessWarnings(input WarningInput, at time.Time) WarningAssessment {
 	if loss := assessLossStreak(input.Settlements, at); loss != nil {
 		result = append(result, *loss)
 	}
-	growth := input.Growth
-	growthCurrent := growth.WindowHours == 24 && growth.From != nil && growth.To != nil &&
-		!growth.From.After(*growth.To) && !growth.To.After(at) && at.Sub(*growth.To) <= GrowthFreshFor &&
-		growth.OursPence != nil && growth.RivalMedianPence != nil && growth.RivalsMeasured >= FallingBehindRivals
-	if !growthCurrent {
-		assessment.Suppressed = append(assessment.Suppressed, "falling_behind")
-	} else if *growth.OursPence < 0 && *growth.OursPence < *growth.RivalMedianPence {
-		result = append(result, Warning{
-			Code: "falling_behind", Severity: "warning", Since: *growth.From,
-			Facts: map[string]int64{"ours_pence": *growth.OursPence, "median_pence": *growth.RivalMedianPence, "rival_count": int64(growth.RivalsMeasured)},
-		})
+	if input.Rising.RankedPlayers >= 3 {
+		board := input.Rising
+		current := input.RisingAt != nil && !input.RisingAt.After(at) && at.Sub(*input.RisingAt) <= GrowthFreshFor &&
+			board.You != nil && !board.You.WindowStartAt.IsZero() && !board.You.WindowStartAt.After(*input.RisingAt)
+		own := make(map[string]bool, len(input.OwnCompanies)+1)
+		for _, name := range input.OwnCompanies {
+			own[name] = true
+		}
+		if board.You != nil {
+			own[board.You.CompanyName] = true
+		}
+		values := make([]int64, 0, len(board.Entries))
+		for _, entry := range board.Entries {
+			if !own[entry.CompanyName] {
+				values = append(values, entry.GrowthBPS)
+			}
+		}
+		if !current || len(values) == 0 {
+			assessment.Suppressed = append(assessment.Suppressed, "falling_behind")
+		} else {
+			sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+			median := values[len(values)/2]
+			half := false
+			if len(values)%2 == 0 {
+				left := values[len(values)/2-1]
+				half = (left^median)&1 != 0
+				// Floor the mean without overflow; preserve the half-basis-point
+				// remainder for the strict below-median comparison.
+				median = (left & median) + ((left ^ median) >> 1)
+			}
+			ours := board.You.GrowthBPS
+			halfBPS := int64(0)
+			if half {
+				halfBPS = 1
+			}
+			if ours < median || ours == median && half {
+				result = append(result, Warning{
+					Code: "falling_behind", Severity: "warning", Since: board.You.WindowStartAt,
+					Facts: map[string]int64{"ours_growth_bps": ours, "median_growth_bps": median,
+						"median_growth_half_bps": halfBPS, "ranked_players": board.RankedPlayers},
+					Names:  map[string]string{"basis": "rising"},
+					Reason: "Published rising-board growth is below the rival median.",
+				})
+			}
+		}
+	} else {
+		growth := input.Growth
+		growthCurrent := growth.WindowHours == 24 && growth.From != nil && growth.To != nil &&
+			!growth.From.After(*growth.To) && !growth.To.After(at) && at.Sub(*growth.To) <= GrowthFreshFor &&
+			growth.OursPence != nil && growth.RivalMedianPence != nil && growth.RivalsMeasured >= FallingBehindRivals
+		if !growthCurrent {
+			assessment.Suppressed = append(assessment.Suppressed, "falling_behind")
+		} else if *growth.OursPence < 0 && *growth.OursPence < *growth.RivalMedianPence {
+			result = append(result, Warning{
+				Code: "falling_behind", Severity: "warning", Since: *growth.From,
+				Facts: map[string]int64{"ours_pence": *growth.OursPence, "median_pence": *growth.RivalMedianPence, "rival_count": int64(growth.RivalsMeasured)},
+				Names: map[string]string{"basis": "valuation_24h"},
+			})
+		}
 	}
 	credentials := displayCredentials{secrets: input.Secrets, available: true}
 	for i := range result {
@@ -398,6 +449,11 @@ func (s *Store) WarningReport(ctx context.Context, at time.Time) (WarningReport,
 			return ErrResponseTooLarge
 		}
 		owner := CompetitionInput{OwnCompaniesComplete: true}
+		type ownNames struct {
+			names    []string
+			complete bool
+		}
+		ownedBySeason := make(map[int]ownNames)
 		for _, account := range accounts {
 			if !account.Enabled {
 				result.Unmonitored = append(result.Unmonitored, UnmonitoredAccount{AccountID: account.ID, Reason: "disabled"})
@@ -443,9 +499,35 @@ func (s *Store) WarningReport(ctx context.Context, at time.Time) (WarningReport,
 					return err
 				}
 			}
-			input.Growth, err = growthBenchmark(tx, account.ID, owner.OwnCompanies, at, 24*time.Hour)
+			var season int
+			input.Rising, input.RisingAt, season, err = latestRising(tx, account.ID, at)
 			if err != nil {
 				return err
+			}
+			if season == 0 {
+				season, err = currentRivalSeason(tx, at)
+				if err != nil {
+					return err
+				}
+			}
+			owned, cached := ownedBySeason[season]
+			if !cached {
+				names, complete, err := rivalOwnNames(tx, season, at)
+				if err != nil {
+					return err
+				}
+				owned = ownNames{names: names, complete: complete}
+				ownedBySeason[season] = owned
+			}
+			input.OwnCompanies = append(append([]string(nil), owned.names...), owner.OwnCompanies...)
+			input.Growth, err = growthBenchmark(tx, account.ID, input.OwnCompanies, at, 24*time.Hour)
+			if err != nil {
+				return err
+			}
+			if !owned.complete || !owner.OwnCompaniesComplete {
+				// An incomplete identity set cannot safely define rival growth.
+				input.Rising = gameapi.RisingBoard{}
+				input.Growth = GrowthWindow{}
 			}
 			assessment := AssessWarnings(input, at)
 			status.Available, status.Warnings, status.Suppressed = true, assessment.Warnings, assessment.Suppressed

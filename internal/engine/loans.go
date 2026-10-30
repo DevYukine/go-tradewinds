@@ -428,6 +428,9 @@ func (r *Runner) stageLoanRepayment(ctx context.Context, mission *store.Mission,
 	if loan.IsMortgage && mission.ShipID != "__loans" {
 		return false, errors.New("mortgage repayment requires its debt-service intent, never capacity financing")
 	}
+	if loan.IsMortgage && mission.Phase == "loan_prepay" {
+		return false, errors.New("surplus prepayment never repays a mortgage")
+	}
 	data.LoanRepayment = &loanRepaymentIntent{Before: loan, AmountPence: amount}
 	var requested *int64
 	if amount > 0 {
@@ -447,6 +450,28 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 	if mission != nil {
 		if data.Action != nil || time.Now().Before(data.CooldownUntil) {
 			return false, nil
+		}
+		if mission.Phase == "loan_prepay_done" {
+			// Keep the paid loan's durable intent until fresh debt and cash
+			// captures prevent another payment from the pre-mutation snapshot.
+			tasks := []fetchTask{
+				{key: "loans", path: "/v1/loan/list?role=borrower", kind: fetchPages},
+				{key: "vaults", path: "/v1/treasury/vaults", kind: fetchJSON},
+			}
+			if err := r.captureWave(ctx, tasks, nil); err != nil {
+				return false, err
+			}
+			r.stateCache.Loans = decode[[]gameapi.Loan](r.snapshot, "loans")
+			r.stateCache.Vaults = decode[struct {
+				Vaults []Vault `json:"vaults"`
+			}](r.snapshot, "vaults").Vaults
+			if !r.loanAuthority() || !r.fresh("vaults") || data.LoanRepayment == nil {
+				return false, r.hold(ctx, "", "completed surplus repayment awaits fresh debt and cash authority")
+			}
+			loan, exists := r.loanByID(data.LoanRepayment.Before.ID)
+			if !exists || !loanRepaymentObserved(loan, data.LoanRepayment) {
+				return false, r.hold(ctx, "", "completed surplus repayment awaits authoritative repayment evidence")
+			}
 		}
 		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 	}
@@ -492,9 +517,93 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
+// Growth calls this only after no capacity candidate or savings hold wins.
+// Scheduled debt service stays ahead of growth in serviceLoans.
+func (r *Runner) prepayLoans(ctx context.Context) (bool, error) {
+	if !r.opts.Execute {
+		return false, nil
+	}
+	pending, err := r.db.PendingActions(ctx, r.account.ID)
+	if err != nil || len(pending) > 0 {
+		return false, err
+	}
+	if mission, err := r.db.GetMission(ctx, r.account.ID, "__loans"); err != nil || mission != nil {
+		return false, err
+	}
+	for _, loan := range r.stateCache.Loans {
+		if loan.IsMortgage || loan.Status != "active" || loan.BorrowerCompanyID != r.account.CompanyID || loan.OwedPence <= 0 {
+			continue
+		}
+		input, ready, err := r.loanPrepaymentInput(ctx, loan)
+		if err != nil || !ready {
+			return false, err
+		}
+		if input.Balances[loan.BankingRegion]-input.ReserveByRegion[loan.BankingRegion] < loanFullPayment(loan) {
+			continue
+		}
+		mission := &store.Mission{AccountID: r.account.ID, ShipID: "__loans", Phase: "loan_prepay", Generation: uuid.NewString()}
+		data := missionData{Plan: Plan{Kind: "treasury"}, CostsKnown: true}
+		if _, err := r.stageLoanRepayment(ctx, mission, &data, loan, 0); err != nil {
+			return false, err
+		}
+		return r.dispatch(ctx, mission, &data)
+	}
+	return false, nil
+}
+
+func (r *Runner) loanPrepaymentInput(ctx context.Context, loan gameapi.Loan) (PlanningInput, bool, error) {
+	if !r.loanAuthority() {
+		return PlanningInput{}, false, nil
+	}
+	for _, dataset := range []string{"ships", "vaults", "catalog", "clock", "rates", "profile", "factors", "warehouses", "contracts", "orders", "fills"} {
+		if !r.fresh(dataset) {
+			return PlanningInput{}, false, nil
+		}
+	}
+	if r.stateCache.Clock.Paused {
+		return PlanningInput{}, false, nil
+	}
+	if mission, err := r.db.GetMission(ctx, r.account.ID, "__growth"); err != nil || mission != nil {
+		return PlanningInput{}, false, err
+	}
+	target, err := r.liveCapacitySavingsTarget(ctx)
+	if err != nil || target.PortID != "" {
+		return PlanningInput{}, false, err
+	}
+	input, err := r.committedPlanningInputExceptLoan(ctx, ShipState{}, "__loans", loan.ID)
+	if err != nil {
+		return PlanningInput{}, false, err
+	}
+	region := loan.BankingRegion
+	for bankRegion, required := range input.ReserveByRegion {
+		if input.Balances[bankRegion] < required {
+			return input, false, nil
+		}
+	}
+	lot, err := r.capacityLotCash(ctx, time.Now().UTC())
+	if err != nil {
+		return PlanningInput{}, false, err
+	}
+	fleetSize := int64(0)
+	for _, ship := range r.stateCache.Ships {
+		if ship.Ship.Status != "sunk" {
+			fleetSize++
+		}
+	}
+	if lot < 0 || lot > 0 && fleetSize >= math.MaxInt64/lot {
+		return input, false, nil
+	}
+	input.ReserveByRegion[region] = growthCashTotal(input.ReserveByRegion[region], (fleetSize+1)*lot)
+	return input, input.ReserveByRegion[region] != math.MaxInt64, nil
+}
+
 func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (GrowthDecision, map[string]int64, error) {
 	if !r.loanAuthority() || !r.fresh("ships") || !r.fresh("vaults") {
 		return GrowthDecision{}, nil, errors.New("capacity financing waits for fresh loan, fleet and cash authority")
+	}
+	if !cheapCapacityHull(Hull{ID: data.Capacity.BuildClass}) {
+		data.Capacity.Financing.Cancel = true
+		return data.Capacity.Financing.Decision, nil, errors.New("capacity financing requires a cheap reinvestment hull")
 	}
 	financing := data.Capacity.Financing
 	if !financing.BuildBy.IsZero() && !time.Now().Before(financing.BuildBy) {
@@ -698,6 +807,19 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 	if loan.IsMortgage && mission.ShipID != "__loans" {
 		return errors.New("mortgage cannot be repaid as capacity financing")
 	}
+	if mission.ShipID == "__loans" && mission.Phase == "loan_prepay" {
+		if loan.IsMortgage || loan.Status != "active" || intent.AmountPence != 0 {
+			return errors.New("surplus prepayment requires the full active non-mortgage balance")
+		}
+		input, ready, err := r.loanPrepaymentInput(ctx, loan)
+		if err != nil {
+			return err
+		}
+		if !ready || input.Balances[loan.BankingRegion]-input.ReserveByRegion[loan.BankingRegion] < loanFullPayment(loan) {
+			return errors.New("surplus prepayment must preserve growth commitments, reserves and a cash lot for every ship plus one")
+		}
+		return nil
+	}
 	input := r.planningInput(ShipState{})
 	var protected map[string]int64
 	var err error
@@ -834,6 +956,9 @@ func loanResultPhase(mission *store.Mission, data *missionData) {
 		}
 	} else if mission.ShipID == "__growth" {
 		mission.Phase = "growth_finance_repay"
+	} else if mission.Phase == "loan_prepay" {
+		mission.Phase = "loan_prepay_done"
+		return
 	} else {
 		mission.Phase = "done"
 	}

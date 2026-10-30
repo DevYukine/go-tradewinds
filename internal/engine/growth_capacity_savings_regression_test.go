@@ -19,7 +19,7 @@ func TestCapacitySavingsFreshYardObservationReleasesTarget(t *testing.T) {
 			if target := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target"); target.PortID == "" {
 				t.Fatal("positive control did not establish a savings target")
 			}
-			key := recoveryHomePort + "|savings-large-hull"
+			key := recoveryHomePort + "|brigantine"
 			switch observation {
 			case "unavailable quote":
 				quote := runner.stateCache.Quotes[key]
@@ -60,7 +60,7 @@ func TestCapacitySavingsBuildsTargetWhenAffordable(t *testing.T) {
 		t.Fatalf("newly affordable target was not admitted: changed=%t err=%v", changed, err)
 	}
 	_, data := h.mission("__growth")
-	if data.BuildClass != "savings-large-hull" || data.Action == nil || data.Action.Path != "/v1/shipyard/build-ship" {
+	if data.BuildClass != "brigantine" || data.Action == nil || data.Action.Path != "/v1/shipyard/build-ship" {
 		t.Fatalf("saving paid its wait but then selected a smaller hull: %+v", data)
 	}
 	if target := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target"); target.PortID != "" {
@@ -73,9 +73,9 @@ func TestCapacitySavingsAffordableAbsentTargetNeedsDestination(t *testing.T) {
 	for _, destination := range []string{"voyage", "committed mission", "neither"} {
 		t.Run(destination, func(t *testing.T) {
 			h, runner, _, save := capacitySavingsRunnerFixture(t, true)
-			quote := runner.stateCache.Quotes[recoveryHomePort+"|savings-large-hull"]
+			quote := runner.stateCache.Quotes[recoveryHomePort+"|brigantine"]
 			quote.Available = false
-			runner.stateCache.Quotes[recoveryHomePort+"|savings-large-hull"] = quote
+			runner.stateCache.Quotes[recoveryHomePort+"|brigantine"] = quote
 			runner.stateCache.Factors = []string{recoveryHomePort}
 			if destination != "voyage" {
 				ship := &runner.stateCache.Ships[0]
@@ -91,7 +91,7 @@ func TestCapacitySavingsAffordableAbsentTargetNeedsDestination(t *testing.T) {
 				t.Fatalf("absent-yard funding: %s, %v", reason, err)
 			}
 			runner.snapshot["_capacity_savings_target"] = encode(capacitySavingsTarget{
-				PortID: recoveryFarPort, HullID: "savings-large-hull", RequiredPence: evidence.available,
+				PortID: recoveryFarPort, HullID: "brigantine", RequiredPence: evidence.available,
 				CapitalPence:            growthCashTotal(save.QuotedHullPence, save.SlippageReservePence, save.CannonsPence, save.InitialStoresPence),
 				DepthNetPencePerGameDay: save.DepthNetPencePerGameDay, ExpiresAt: time.Now().Add(time.Hour),
 			})
@@ -142,7 +142,7 @@ func TestCapacitySavingsFinancingRefusalKeepsSaving(t *testing.T) {
 		QuantityTons: 1, GameSeconds: 3_600, ProceedsPence: 600_000_000,
 		CompletedAt: time.Now().Add(-13 * time.Hour),
 	})
-	key := recoveryHomePort + "|savings-large-hull"
+	key := recoveryHomePort + "|brigantine"
 	quote := runner.stateCache.Quotes[key]
 	price := *quote.TotalCostPence + 9_000
 	quote.TotalCostPence = &price
@@ -174,7 +174,7 @@ func TestCapacitySavingsFinancingRefusalKeepsSaving(t *testing.T) {
 			t.Fatalf("quoted financing refusal spent the savings: changed=%t err=%v", changed, err)
 		}
 		h.missingMission("__growth")
-		if target := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target"); target.HullID != "savings-large-hull" {
+		if target := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target"); target.HullID != "brigantine" {
 			t.Fatalf("quoted financing refusal erased the winning target: %+v", target)
 		}
 	}
@@ -235,7 +235,7 @@ func TestCapacitySavingsLanePackageMustBeatLiveTarget(t *testing.T) {
 					t.Fatalf("lane funding: %s, %v", reason, err)
 				}
 				runner.snapshot["_capacity_savings_target"] = encode(capacitySavingsTarget{
-					PortID: recoveryFarPort, HullID: "savings-offsite-hull", RequiredPence: evidence.available + 1_000,
+					PortID: recoveryFarPort, HullID: "collier", RequiredPence: evidence.available + 1_000,
 					CapitalPence: 200_000, DepthNetPencePerGameDay: 100_000_000, ExpiresAt: time.Now().Add(time.Hour),
 				})
 			}
@@ -264,7 +264,7 @@ func TestCapacitySavingsExpiredIdentityWaitsForBuildOrHistoryWindow(t *testing.T
 				t.Fatal(err)
 			}
 			target := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target")
-			if target.HullID != "savings-large-hull" {
+			if target.HullID != "brigantine" {
 				t.Fatalf("positive control did not establish a target: %+v", target)
 			}
 			target.ExpiresAt = time.Now().UTC().Add(-time.Second)

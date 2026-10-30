@@ -64,7 +64,7 @@ func register(cfg config.Config, db *store.Store, log *zap.Logger, args []string
 		return err
 	}
 	client := gameapi.New(cfg.APIURL, credentials.APIKey, log)
-	observeBootstrap(client, db, account.ID, log)
+	observeAccountRequests(client, db, account.ID, log)
 	if credentials.APIKey == "" {
 		request := map[string]string{"handle": credentials.Handle, "passphrase": credentials.Passphrase}
 		err := bootstrapAction(ctx, db, client, account.ID, "register", "/v1/player/register", request, nil)
@@ -82,7 +82,7 @@ func register(cfg config.Config, db *store.Store, log *zap.Logger, args []string
 			return err
 		}
 		client = gameapi.New(cfg.APIURL, key, log)
-		observeBootstrap(client, db, account.ID, log)
+		observeAccountRequests(client, db, account.ID, log)
 	}
 
 	var profile struct {
@@ -176,13 +176,119 @@ func prepareAccount(ctx context.Context, db *store.Store, id, handle string) (st
 	}
 	return account, credentials, nil
 }
+func underworldKey(cfg config.Config, db *store.Store, log *zap.Logger, args []string) error {
+	flags := flag.NewFlagSet("underworld-key", flag.ContinueOnError)
+	handle := flags.String("handle", names.DefaultHandle, "Exact registered player handle")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || strings.TrimSpace(*handle) == "" {
+		return errors.New("underworld-key requires a nonempty handle and no positional arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	accountID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(cfg.APIURL+"/player/"+strings.ToLower(*handle))).String()
+	ctx, release, err := db.AcquireAccountContext(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	accounts, err := db.Accounts(ctx)
+	if err != nil {
+		return err
+	}
+	var account store.Account
+	for _, saved := range accounts {
+		if saved.ID == accountID {
+			account = saved
+			break
+		}
+	}
+	if account.ID == "" || account.CompanyID == "" {
+		return errors.New("underworld-key requires an existing company-bound account; resume register first")
+	}
+	credentials, err := db.Credentials(ctx, account.ID)
+	if err != nil {
+		return err
+	}
+	if credentials.Handle != *handle || credentials.Passphrase == "" {
+		return errors.New("underworld-key requires the exact stored handle and passphrase")
+	}
+	if credentials.UnderworldAPIKey != "" {
+		observer := gameapi.New(cfg.APIURL, credentials.UnderworldAPIKey, log)
+		observeAccountRequests(observer, db, account.ID, log)
+		var identity json.RawMessage
+		err := observer.GetOnce(ctx, "/v1/auth/whoami", &identity)
+		var apiErr *gameapi.APIError
+		rejected := errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized &&
+			(apiErr.Code == "revoked_api_key" || apiErr.Code == "expired_api_key" || apiErr.Code == "invalid_api_key")
+		if !rejected {
+			log.Info("underworld observer key already stored; no permanent rejection proved", zap.String("account_id", account.ID))
+			return nil
+		}
+	}
+	// Persist this mint's random identity before sending. Reopening either an
+	// ambiguous request or a committed response must resume the same action,
+	// while independent databases and later key replacements never collide.
+	if credentials.UnderworldMintID == "" {
+		pending, err := db.PendingActions(ctx, account.ID)
+		if err != nil {
+			return err
+		}
+		for _, action := range pending {
+			if action.Method != http.MethodPost || action.Path != "/v1/auth/create-key" {
+				continue
+			}
+			var request struct {
+				CompanyID string   `json:"company_id"`
+				Scopes    []string `json:"scopes"`
+			}
+			if err := json.Unmarshal(action.Body, &request); err != nil {
+				return fmt.Errorf("read pending create-key request: %w", err)
+			}
+			if request.CompanyID == account.CompanyID && slices.Contains(request.Scopes, "underworld") {
+				return fmt.Errorf("reconcile the pending legacy underworld create-key action %s before minting another observer key", action.ID)
+			}
+		}
+		credentials.UnderworldMintID = uuid.NewString()
+		if err := db.SaveAccount(ctx, account, credentials); err != nil {
+			return err
+		}
+	}
+	client := gameapi.New(cfg.APIURL, credentials.APIKey, log)
+	observeAccountRequests(client, db, account.ID, log)
+	key, err := createScopedBootstrapKey(ctx, db, client, account.ID, credentials, account.CompanyID,
+		"Tradewinds underworld observer", []string{"read", "underworld"}, "underworld-key/"+credentials.UnderworldMintID)
+	if err != nil {
+		var rejected *journaledBootstrapRejection
+		if errors.As(err, &rejected) && rejected.Status != http.StatusTooManyRequests {
+			credentials.UnderworldMintID = ""
+			if saveErr := db.SaveAccount(ctx, account, credentials); saveErr != nil {
+				return errors.Join(err, saveErr)
+			}
+		}
+		return fmt.Errorf("create underworld observer key: %w", err)
+	}
+	credentials.UnderworldAPIKey = key
+	credentials.UnderworldMintID = ""
+	if err := db.SaveAccount(ctx, account, credentials); err != nil {
+		return err
+	}
+	log.Info("underworld observer key stored", zap.String("account_id", account.ID))
+	return nil
+}
 
 func createBootstrapKey(ctx context.Context, db *store.Store, client *gameapi.Client, accountID string, credentials store.Credentials, companyID string) (string, error) {
+	step := "key/" + companyID + "/" + strings.Join(automationScopes[:], ",")
+	return createScopedBootstrapKey(ctx, db, client, accountID, credentials, companyID, "Tradewinds fleet automation", automationScopes[:], step)
+}
+
+func createScopedBootstrapKey(ctx context.Context, db *store.Store, client *gameapi.Client, accountID string, credentials store.Credentials, companyID, label string, scopes []string, step string) (string, error) {
 	request := map[string]any{
 		"handle":     credentials.Handle,
 		"passphrase": credentials.Passphrase,
-		"label":      "Tradewinds fleet automation",
-		"scopes":     automationScopes[:],
+		"label":      label,
+		"scopes":     scopes,
 	}
 	if companyID != "" {
 		request["company_id"] = companyID
@@ -190,8 +296,6 @@ func createBootstrapKey(ctx context.Context, db *store.Store, client *gameapi.Cl
 	var result struct {
 		APIKey string `json:"api_key"`
 	}
-	// Changed permissions are a new logical request, not a replay of the old key.
-	step := "key/" + companyID + "/" + strings.Join(automationScopes[:], ",")
 	err := bootstrapAction(ctx, db, client, accountID, step, "/v1/auth/create-key", request, &result)
 	if err != nil {
 		return "", err
@@ -202,15 +306,23 @@ func createBootstrapKey(ctx context.Context, db *store.Store, client *gameapi.Cl
 	return result.APIKey, nil
 }
 
-func observeBootstrap(client *gameapi.Client, db *store.Store, accountID string, log *zap.Logger) {
+func observeAccountRequests(client *gameapi.Client, db *store.Store, accountID string, log *zap.Logger) {
 	client.SetObserver(func(method, path string, status int, duration time.Duration, request, response []byte, errText string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := db.RecordRequest(ctx, accountID, method, path, status, duration, request, response, errText); err != nil {
-			log.Warn("persist bootstrap diagnostic", zap.String("account_id", accountID), zap.Error(err))
+			log.Warn("persist account request diagnostic", zap.String("account_id", accountID), zap.Error(err))
 		}
 	})
 }
+
+// Only a durably recorded rejection proves no key was minted. A failed journal
+// write or an ambiguous HTTP outcome must retain its recovery identity.
+type journaledBootstrapRejection struct {
+	*gameapi.APIError
+}
+
+func (err *journaledBootstrapRejection) Unwrap() error { return err.APIError }
 
 func bootstrapAction(ctx context.Context, db *store.Store, client *gameapi.Client, accountID, step, path string, body any, out any) error {
 	encoded, err := json.Marshal(body)
@@ -255,7 +367,9 @@ func bootstrapAction(ctx context.Context, db *store.Store, client *gameapi.Clien
 		return json.Unmarshal(action.Response, out)
 	}
 	if action.Status >= 400 {
-		return &gameapi.APIError{Status: action.Status, Detail: "previous bootstrap attempt was rejected", Body: action.Response}
+		return &journaledBootstrapRejection{&gameapi.APIError{
+			Status: action.Status, Detail: "previous bootstrap attempt was rejected", Body: action.Response,
+		}}
 	}
 	if time.Since(action.CreatedAt) >= store.ActionReplayWindow {
 		return errors.New("unresolved bootstrap action is near the server's 24-hour idempotency expiry; reconcile it before retrying")
@@ -276,6 +390,9 @@ func bootstrapAction(ctx context.Context, db *store.Store, client *gameapi.Clien
 				}
 				if saveErr := db.CompleteAction(ctx, action.ID, apiErr.Status, apiErr.Body, retryAfter); saveErr != nil {
 					return errors.Join(err, saveErr)
+				}
+				if rejected {
+					return &journaledBootstrapRejection{apiErr}
 				}
 			}
 		}

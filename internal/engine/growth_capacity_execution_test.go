@@ -426,10 +426,12 @@ func TestCapacityGrowthPlanRateAndLotCashFloor(t *testing.T) {
 		if plan.ContractID != "" || basis != "depth" && basis != "gossip" && basis != "retained" {
 			continue
 		}
-		candidateRate := float64(plan.Economics.ExpectedNetPence) / (2 * plan.Economics.GameDays)
-		if plan.Economics.BallastRepeatGameDays > 0 {
-			candidateRate = float64(plan.Economics.BallastRepeatNetPence) / plan.Economics.BallastRepeatGameDays
+		next := plan.Continuation
+		if next == nil || next.GameDays <= 0 {
+			t.Fatalf("capacity earning fixture lacks its onward or ballast forecast: %+v", plan)
 		}
+		candidateRate := (float64(plan.Economics.ExpectedNetPence) + float64(next.NetPence)) /
+			(plan.Economics.GameDays + next.GameDays)
 		if candidateRate > rate {
 			rate = candidateRate
 			stores = max(plan.Economics.StoreCashPence, plan.Economics.ProvisionsPence)
@@ -1057,7 +1059,7 @@ func TestCapacityGrowthComputedLosingRepeatDoesNotUseOutboundProfit(t *testing.T
 			BallastRepeatNetPence: repeatNet, BallastRepeatGameDays: 2,
 		}
 		input := CapacityGrowthInput{
-			Hull: Hull{HoldCapacityTons: 60, MaxCannons: 4}, HullPricePence: 60_000,
+			Hull: Hull{ID: "hoy", HoldCapacityTons: 60, MaxCannons: 4}, HullPricePence: 60_000,
 			SurplusPence: 1_000_000, FleetSize: 1, HasSpareWork: true,
 			LotCashPence: 1_000, MaxPaybackDays: 420,
 			CandidateRatePencePerGameDay: capacityVoyageRate(economics),
@@ -1151,7 +1153,7 @@ func TestCapacityGrowthUnavailableHullStillRequiresAdmissibleExpansion(t *testin
 			refreshExpansionFactor(t, h, runner)
 			runner.opts.CapacityPaybackDays = 0.000001
 			hull := runner.stateCache.Catalog.ShipClasses[0]
-			hull.ID = "unsold-hull"
+			hull.ID = "collier"
 			runner.stateCache.Catalog.ShipClasses = append(runner.stateCache.Catalog.ShipClasses, hull)
 			for key, quote := range runner.stateCache.Quotes {
 				if quote.ShipClass == hull.ID {

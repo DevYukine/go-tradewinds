@@ -374,6 +374,236 @@ type Vault struct {
 	BalancePence  int64  `json:"balance_pence"`
 }
 
+// Leaderboard is the hourly wealth snapshot and its seven-real-day growth board.
+type Leaderboard struct {
+	SeasonNumber  int32               `json:"season_number"`
+	RankedPlayers int64               `json:"ranked_players"`
+	Entries       []LeaderboardEntry  `json:"entries"`
+	Rising        RisingBoard         `json:"rising"`
+	RefreshedAt   *time.Time          `json:"refreshed_at"`
+	NextRefreshAt *time.Time          `json:"next_refresh_at"`
+	You           *LeaderboardOwnRank `json:"you"`
+}
+
+type LeaderboardEntry struct {
+	Rank          int32             `json:"rank"`
+	CompanyName   string            `json:"company_name"`
+	HomePortID    string            `json:"home_port_id"`
+	NetWorthPence int64             `json:"net_worth_pence"`
+	Titles        []HallOfFameTitle `json:"titles"`
+}
+
+type HallOfFameTitle struct {
+	SeasonNumber int32  `json:"season_number"`
+	PlayerRank   int32  `json:"player_rank"`
+	Title        string `json:"title"`
+}
+
+type LeaderboardOwnRank struct {
+	Rank             int32  `json:"rank"`
+	CompanyName      string `json:"company_name"`
+	NetWorthPence    int64  `json:"net_worth_pence"`
+	IsCallingCompany bool   `json:"is_calling_company"`
+}
+
+type RisingBoard struct {
+	Entries       []RisingEntry  `json:"entries"`
+	RankedPlayers int64          `json:"ranked_players"`
+	WindowStartAt *time.Time     `json:"window_start_at"`
+	You           *RisingOwnRank `json:"you"`
+}
+
+// GrowthBPS and GainedPence are signed: companies can lose wealth.
+type RisingEntry struct {
+	Rank          int32     `json:"rank"`
+	CompanyName   string    `json:"company_name"`
+	HomePortID    string    `json:"home_port_id"`
+	GrowthBPS     int64     `json:"growth_bps"`
+	GainedPence   int64     `json:"gained_pence"`
+	WindowStartAt time.Time `json:"window_start_at"`
+}
+
+type RisingOwnRank struct {
+	Rank             int32     `json:"rank"`
+	CompanyName      string    `json:"company_name"`
+	GrowthBPS        int64     `json:"growth_bps"`
+	GainedPence      int64     `json:"gained_pence"`
+	WindowStartAt    time.Time `json:"window_start_at"`
+	IsCallingCompany bool      `json:"is_calling_company"`
+}
+
+type BankResult struct {
+	CompanyID               string           `json:"company_id"`
+	Name                    string           `json:"name"`
+	HomeRegion              string           `json:"home_region"`
+	Status                  string           `json:"status"`
+	DemandRateBPS           int32            `json:"demand_rate_bps"`
+	NoticeRateBPS           int32            `json:"notice_rate_bps"`
+	NoticeGameHours         int32            `json:"notice_game_hours"`
+	Insured                 bool             `json:"insured"`
+	ExchangeFeeBPS          map[string]int32 `json:"exchange_fee_bps"`
+	DepositsPence           int64            `json:"deposits_pence"`
+	ReservesPence           int64            `json:"reserves_pence"`
+	RequiredReservePence    int64            `json:"required_reserve_pence"`
+	LoansOutPence           int64            `json:"loans_out_pence"`
+	UnderwritingLockedPence int64            `json:"underwriting_locked_pence"`
+	LendingHeadroomPence    int64            `json:"lending_headroom_pence"`
+	OverdueWithdrawalsPence int64            `json:"overdue_withdrawals_pence"`
+	CharteredAt             time.Time        `json:"chartered_at"`
+	FailedAt                *time.Time       `json:"failed_at"`
+}
+
+type DepositResult struct {
+	ID                     string    `json:"id"`
+	BankCompanyID          string    `json:"bank_company_id"`
+	BankName               string    `json:"bank_name"`
+	DepositorCompanyID     string    `json:"depositor_company_id"`
+	BankingRegion          string    `json:"banking_region"`
+	BalancePence           int64     `json:"balance_pence"`
+	DepositedPence         int64     `json:"deposited_pence"`
+	InterestCreditedPence  int64     `json:"interest_credited_pence"`
+	WithdrawnPence         int64     `json:"withdrawn_pence"`
+	InsuredPaidPence       int64     `json:"insured_paid_pence"`
+	WrittenOffPence        int64     `json:"written_off_pence"`
+	DailyRateBPS           int32     `json:"daily_rate_bps"`
+	NoticeGameHours        int32     `json:"notice_game_hours"`
+	PendingWithdrawalPence int64     `json:"pending_withdrawal_pence"`
+	PledgedPence           int64     `json:"pledged_pence"`
+	SetOffPence            int64     `json:"set_off_pence"`
+	ExchangeFeesPence      int64     `json:"exchange_fees_pence"`
+	Status                 string    `json:"status"`
+	CreatedAt              time.Time `json:"created_at"`
+}
+
+type WithdrawRequest struct {
+	DepositID   string  `json:"deposit_id"`
+	AmountPence *int64  `json:"amount_pence,omitempty"`
+	ToRegion    *string `json:"to_region,omitempty"`
+}
+
+type CreditReport struct {
+	CompanyID               string     `json:"company_id"`
+	CompanyName             string     `json:"company_name"`
+	ActiveLoans             int64      `json:"active_loans"`
+	ActiveOwedPence         int64      `json:"active_owed_pence"`
+	DefaultedOpenLoans      int64      `json:"defaulted_open_loans"`
+	DefaultedOwedPence      int64      `json:"defaulted_owed_pence"`
+	LoansRepaid             int64      `json:"loans_repaid"`
+	LoansDefaulted          int64      `json:"loans_defaulted"`
+	LoansWrittenOff         int64      `json:"loans_written_off"`
+	LoanWrittenOffPence     int64      `json:"loan_written_off_pence"`
+	LoansWalkedAway         int64      `json:"loans_walked_away"`
+	LoanWalkedAwayPence     int64      `json:"loan_walked_away_pence"`
+	FuturesClaimsOpenPence  int64      `json:"futures_claims_open_pence"`
+	FuturesClaimsTotal      int64      `json:"futures_claims_total"`
+	FuturesClaimsWrittenOff int64      `json:"futures_claims_written_off"`
+	OpenMortgages           int64      `json:"open_mortgages"`
+	LentOutstandingPence    int64      `json:"lent_outstanding_pence"`
+	SmugglingConvictions    int64      `json:"smuggling_convictions"`
+	BankruptAt              *time.Time `json:"bankrupt_at"`
+	LastDefaultAt           *time.Time `json:"last_default_at"`
+	LastConvictionAt        *time.Time `json:"last_conviction_at"`
+}
+
+type FuturesContract struct {
+	ID                string    `json:"id"`
+	PortID            string    `json:"port_id"`
+	CommodityID       string    `json:"commodity_id"`
+	CreatorCompanyID  string    `json:"creator_company_id"`
+	Side              string    `json:"side"`
+	LotTons           int32     `json:"lot_tons"`
+	StrikePricePence  int64     `json:"strike_price_pence"`
+	SellerMarginPence int64     `json:"seller_margin_pence"`
+	BuyerMarginPence  int64     `json:"buyer_margin_pence"`
+	SellerCompanyID   *string   `json:"seller_company_id"`
+	BuyerCompanyID    *string   `json:"buyer_company_id"`
+	Status            string    `json:"status"`
+	MaturesAt         time.Time `json:"matures_at"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+func (contract *FuturesContract) UnmarshalJSON(body []byte) error {
+	type plain FuturesContract
+	var capture struct {
+		plain
+		LotTons           *int32 `json:"lot_tons"`
+		StrikePricePence  *int64 `json:"strike_price_pence"`
+		SellerMarginPence *int64 `json:"seller_margin_pence"`
+		BuyerMarginPence  *int64 `json:"buyer_margin_pence"`
+	}
+	if err := json.Unmarshal(body, &capture); err != nil {
+		return err
+	}
+	if capture.LotTons == nil || capture.StrikePricePence == nil || capture.SellerMarginPence == nil || capture.BuyerMarginPence == nil {
+		return errors.New("futures contract is missing required financial terms")
+	}
+	*contract = FuturesContract(capture.plain)
+	contract.LotTons, contract.StrikePricePence = *capture.LotTons, *capture.StrikePricePence
+	contract.SellerMarginPence, contract.BuyerMarginPence = *capture.SellerMarginPence, *capture.BuyerMarginPence
+	return nil
+}
+
+type SettleFuturesResult struct {
+	FuturesID        string `json:"futures_id"`
+	Status           string `json:"status"`
+	SettledTons      int32  `json:"settled_tons"`
+	PenaltyPaidPence int64  `json:"penalty_paid_pence"`
+	ClaimPence       int64  `json:"claim_pence"`
+}
+
+func (result *SettleFuturesResult) UnmarshalJSON(body []byte) error {
+	type plain SettleFuturesResult
+	var capture struct {
+		plain
+		SettledTons      *int32 `json:"settled_tons"`
+		PenaltyPaidPence *int64 `json:"penalty_paid_pence"`
+		ClaimPence       *int64 `json:"claim_pence"`
+	}
+	if err := json.Unmarshal(body, &capture); err != nil {
+		return err
+	}
+	if capture.SettledTons == nil || capture.PenaltyPaidPence == nil || capture.ClaimPence == nil {
+		return errors.New("futures settlement is missing required financial evidence")
+	}
+	*result = SettleFuturesResult(capture.plain)
+	result.SettledTons, result.PenaltyPaidPence, result.ClaimPence = *capture.SettledTons, *capture.PenaltyPaidPence, *capture.ClaimPence
+	return nil
+}
+
+type WantsResult struct {
+	PortID string            `json:"port_id"`
+	IsCove bool              `json:"is_cove"`
+	Wants  []LiveWantView    `json:"wants"`
+	Board  []CarriedWantView `json:"board"`
+}
+
+type LiveWantView struct {
+	CommodityID   string `json:"commodity_id"`
+	MultipleBPS   int32  `json:"multiple_bps"`
+	RemainingTons int32  `json:"remaining_tons"`
+}
+
+type CarriedWantView struct {
+	PortID       string    `json:"port_id"`
+	CommodityID  string    `json:"commodity_id"`
+	MultipleBPS  int32     `json:"multiple_bps"`
+	ObservedAt   time.Time `json:"observed_at"`
+	AgeGameHours int64     `json:"age_game_hours"`
+}
+
+type CoveBook struct {
+	CommodityID string          `json:"commodity_id"`
+	HouseAsk    *CoveBookLevel  `json:"house_ask"`
+	Bids        []CoveBookLevel `json:"bids"`
+	Asks        []CoveBookLevel `json:"asks"`
+}
+
+type CoveBookLevel struct {
+	PricePence int64 `json:"price_pence"`
+	Quantity   int32 `json:"quantity"`
+}
+
 // Loan is the complete /v1/loan/list and loan mutation response. Money is
 // integer pence; timestamps are real UTC, not accelerated game time.
 // Annual rates are bps per 360 game days; legacy daily rates remain distinct.
@@ -402,6 +632,8 @@ type Loan struct {
 	CollateralCommodityID       *string    `json:"collateral_commodity_id"`
 	CollateralTons              *int32     `json:"collateral_tons"`
 	CollateralContractID        *string    `json:"collateral_contract_id"`
+	CollateralDepositID         *string    `json:"collateral_deposit_id"`
+	DepositLockPence            int64      `json:"deposit_lock_pence"`
 	CollateralValuePence        int64      `json:"collateral_value_pence"`
 	CollateralStatus            string     `json:"collateral_status"`
 	Status                      string     `json:"status"`

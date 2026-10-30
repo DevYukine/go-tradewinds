@@ -125,7 +125,7 @@ func (s *Store) Dashboard(ctx context.Context) (Dashboard, error) {
 				return err
 			}
 		}
-		if err := tx.Table("requests").Select("account_id, method, path, status, duration_ms, error, created_at").
+		if err := tx.Table("requests").Select("id, account_id, method, path, status, duration_ms, error, created_at").
 			Order("created_at DESC, id DESC").Limit(100).Find(&result.Requests).Error; err != nil {
 			return err
 		}

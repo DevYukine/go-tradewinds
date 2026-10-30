@@ -27,16 +27,39 @@ type RetainedBid struct {
 type RetainedQuayBook struct {
 	ObservedAt time.Time                `json:"observed_at"`
 	Bids       map[string][]RetainedBid `json:"bids"`
+	// Only older commodity timestamps need an override. Keeping the common
+	// capture time once preserves the existing snapshot size bound.
+	CommodityObservedAt map[string]time.Time `json:"at,omitempty"`
+}
+
+func (book RetainedQuayBook) observedAt(commodity string) time.Time {
+	if at, exists := book.CommodityObservedAt[commodity]; exists {
+		return at
+	}
+	return book.ObservedAt
 }
 
 type BookDriftSample struct {
-	PortID          string  `json:"port_id"`
-	CommodityID     string  `json:"commodity_id"`
-	AgeGameDays     float64 `json:"age_game_days"`
-	TopBidChangeBPS int64   `json:"top_bid_change_bps"`
+	PortID          string    `json:"port_id"`
+	CommodityID     string    `json:"commodity_id"`
+	AgeGameDays     float64   `json:"age_game_days"`
+	TopBidChangeBPS int64     `json:"top_bid_change_bps"`
+	FromObservedAt  time.Time `json:"from_observed_at,omitempty"`
+	ToObservedAt    time.Time `json:"to_observed_at,omitempty"`
 }
 
 func (r *Runner) recordQuayBooks(markets map[string]json.RawMessage, portIDs []string, catalog Catalog, clock Clock, now time.Time) {
+	shocks, eventsValid := decodeMarketShocks(r.snapshot)
+	_, eventsTracked := r.meta["world_events"]
+	_, eventsRecorded := r.snapshot["world_events"]
+	input := PlanningInput{
+		Now: now, Clock: clock, Metadata: r.meta, Generation: r.generation,
+		MarketShocks: shocks, marketEventsInvalid: !eventsValid && (eventsTracked || eventsRecorded),
+	}
+	_, serverNow, validClock := input.serverBounds()
+	if !validClock {
+		return
+	}
 	observed := decode[map[string]time.Time](r.snapshot, "_book_observed")
 	if observed == nil {
 		observed = make(map[string]time.Time)
@@ -57,27 +80,48 @@ func (r *Runner) recordQuayBooks(markets map[string]json.RawMessage, portIDs []s
 		if meta.Generation != r.generation || !meta.Complete || meta.Stale || meta.Error != "" || !meta.UpdatedAt.After(observed[port]) {
 			continue
 		}
+		from, to, validObservation := input.marketObservationBounds("books/" + port)
+		if !validObservation {
+			continue
+		}
 		observed[port] = meta.UpdatedAt
 		previous := memory[port]
-		next := RetainedQuayBook{ObservedAt: meta.UpdatedAt, Bids: make(map[string][]RetainedBid, len(book.Books))}
-		age, ageOK := quayBookAgeGameDays(meta.UpdatedAt, previous.ObservedAt, clock.Calendar.TimeScale)
+		next := RetainedQuayBook{ObservedAt: to, Bids: make(map[string][]RetainedBid, len(book.Books))}
 		for _, commodity := range book.Books {
 			if commodity.Depth == nil {
 				continue
 			}
+			id := commodity.CommodityID
+			oldAt := previous.observedAt(id)
+			oldBids := previous.Bids[id]
+			shock, shocked := input.marketShockOverlapping(port, id, from, to)
+			if shocked {
+				_, oldShocked := input.marketShockOverlapping(port, id, oldAt, oldAt)
+				if len(oldBids) > 0 && !oldAt.IsZero() && oldAt.Before(shock.StartsAt) && !oldShocked {
+					next.Bids[id] = oldBids
+					if next.CommodityObservedAt == nil {
+						next.CommodityObservedAt = make(map[string]time.Time)
+					}
+					next.CommodityObservedAt[id] = oldAt
+				}
+				continue
+			}
 			bids := retainedBookBids(commodity.Depth.Bids, owned)
-			next.Bids[commodity.CommodityID] = bids
-			oldBids := previous.Bids[commodity.CommodityID]
+			next.Bids[id] = bids
+			age, ageOK := quayBookAgeGameDays(to, oldAt, clock.Calendar.TimeScale)
+			_, crossedShock := input.marketShockOverlapping(port, id, oldAt, to)
 			if ageOK && age >= bookDriftMinGameDays && len(oldBids) > 0 && len(bids) > 0 &&
 				oldBids[0].PricePence > 0 && oldBids[0].PricePence <= maximumPence &&
-				!quayBidFilledByUs(fills, port, commodity.CommodityID, previous.ObservedAt, meta.UpdatedAt) {
+				!crossedShock && !input.marketEventUnavailable() &&
+				!quayBidFilledByUs(fills, port, id, oldAt, to) {
 				change := (bids[0].PricePence - oldBids[0].PricePence) * 10_000
 				if change < 0 {
 					change -= oldBids[0].PricePence - 1
 				}
 				drift = append(drift, BookDriftSample{
-					PortID: port, CommodityID: commodity.CommodityID, AgeGameDays: age,
+					PortID: port, CommodityID: id, AgeGameDays: age,
 					TopBidChangeBPS: change / oldBids[0].PricePence,
+					FromObservedAt:  oldAt, ToObservedAt: to,
 				})
 			}
 		}
@@ -91,12 +135,22 @@ func (r *Runner) recordQuayBooks(markets map[string]json.RawMessage, portIDs []s
 	}
 	if clock.Calendar.TimeScale > 0 {
 		for port, book := range memory {
-			age, ok := quayBookAgeGameDays(now, book.ObservedAt, clock.Calendar.TimeScale)
-			if !ok || age > retainedBookMaxGameDays {
+			for commodity := range book.Bids {
+				age, valid := quayBookAgeGameDays(serverNow, book.observedAt(commodity), clock.Calendar.TimeScale)
+				if !valid || age > retainedBookMaxGameDays {
+					delete(book.Bids, commodity)
+					delete(book.CommodityObservedAt, commodity)
+				}
+			}
+			if len(book.Bids) == 0 {
 				delete(memory, port)
 			}
 		}
 	}
+	drift = slices.DeleteFunc(drift, func(sample BookDriftSample) bool {
+		_, overlaps := input.marketShockOverlapping(sample.PortID, sample.CommodityID, sample.FromObservedAt, sample.ToObservedAt)
+		return overlaps
+	})
 	if len(drift) > bookDriftSampleLimit {
 		drift = drift[len(drift)-bookDriftSampleLimit:]
 	}
@@ -164,19 +218,17 @@ func retainedAdverseDriftBPS(samples []BookDriftSample) float64 {
 	return max(100, rates[int(math.Ceil(float64(n)*0.75))-1])
 }
 
-func fresherQuayBestBid(in PlanningInput, destination, commodity string, rememberedAt time.Time) int64 {
+func fresherQuayBestBid(in PlanningInput, destination, commodity string, rememberedAt, arrival time.Time) int64 {
 	meta := in.Metadata["books/"+destination]
-	age, ageOK := quayBookAgeGameDays(in.Now, meta.UpdatedAt, in.Clock.Calendar.TimeScale)
-	if !meta.Complete || meta.Stale || meta.Error != "" || !ageOK || age > 6.0/24 ||
-		!meta.UpdatedAt.After(rememberedAt) || in.Markets[destination].Visibility != "quay" {
+	from, observedAt, bounded := in.marketObservationBounds("books/" + destination)
+	_, upper, clockOK := in.serverBounds()
+	age, ageOK := quayBookAgeGameDays(upper, observedAt, in.Clock.Calendar.TimeScale)
+	if !meta.Complete || meta.Stale || meta.Error != "" || !bounded || !clockOK || !ageOK || age > 6.0/24 ||
+		!observedAt.After(rememberedAt) || in.Markets[destination].Visibility != "quay" {
 		return 0
 	}
-	if meta.UpstreamAsOf != nil {
-		_, upper, clockOK := in.serverBounds()
-		upstreamAge, upstreamOK := quayBookAgeGameDays(upper, *meta.UpstreamAsOf, in.Clock.Calendar.TimeScale)
-		if !clockOK || !upstreamOK || upstreamAge > 6.0/24 {
-			return 0
-		}
+	if _, reason := in.marketObservationPolicy(destination, commodity, from, observedAt, arrival); reason != "" {
+		return 0
 	}
 	entry := bookCommodity(in.Markets[destination], commodity)
 	if entry == nil || entry.Depth == nil {
@@ -191,13 +243,29 @@ func fresherQuayBestBid(in PlanningInput, destination, commodity string, remembe
 	return best
 }
 
-func retainedDestinationRevenue(in PlanningInput, destination, commodity string, quantity, bidCap int64) (int64, int64, int64, string, bool) {
+func retainedDestinationRevenue(in PlanningInput, destination, commodity string, quantity, bidCap int64, arrival time.Time) (int64, int64, int64, string, string, bool) {
 	book, exists := in.QuayBookMemory[destination]
-	age, ageOK := quayBookAgeGameDays(in.Now, book.ObservedAt, in.Clock.Calendar.TimeScale)
-	if !exists || !ageOK || age > retainedBookMaxGameDays {
-		return 0, 0, 0, "", false
+	observedAt := book.observedAt(commodity)
+	_, currentUpper, clockOK := in.serverBounds()
+	currentAge, currentAgeOK := quayBookAgeGameDays(currentUpper, observedAt, in.Clock.Calendar.TimeScale)
+	ageAt := currentUpper
+	required, reason := in.marketObservationPolicy(destination, commodity, observedAt, observedAt, arrival)
+	if reason != "" {
+		return 0, 0, 0, "", reason, false
 	}
-	if quayBid := fresherQuayBestBid(in, destination, commodity, book.ObservedAt); quayBid > 0 && (bidCap == 0 || quayBid < bidCap) {
+	for _, shock := range in.MarketShocks[destination][commodity] {
+		if observedAt.Before(shock.StartsAt) && !ageAt.Before(shock.StartsAt) &&
+			(arrival.IsZero() || arrival.After(shock.ExpiresAt)) && arrival.After(ageAt) {
+			// Pre-event levels must survive the whole remaining voyage. This
+			// additional aging is specific to expiring event replacements.
+			ageAt = arrival
+		}
+	}
+	age, ageOK := quayBookAgeGameDays(ageAt, observedAt, in.Clock.Calendar.TimeScale)
+	if !exists || !clockOK || !currentAgeOK || currentAge > retainedBookMaxGameDays || !ageOK {
+		return 0, 0, 0, "", "retained destination bids are absent or too old", false
+	}
+	if quayBid := fresherQuayBestBid(in, destination, commodity, observedAt, arrival); quayBid > 0 && (bidCap == 0 || quayBid < bidCap) {
 		bidCap = quayBid
 	}
 	var levels [retainedBookBidLimit]Level
@@ -210,28 +278,15 @@ func retainedDestinationRevenue(in PlanningInput, destination, commodity string,
 		}
 		levels[i] = Level{PricePence: price, RemainingQuantity: bid.RemainingQuantity}
 	}
-	// Missions consume the best remembered bids first, not a proportional share
-	// of every level. The retained snapshot itself stays unchanged.
-	slices.SortStableFunc(levels[:n], func(left, right Level) int {
-		return cmp.Compare(right.PricePence, left.PricePence)
-	})
-	reserved := max(int64(0), in.ReservedRetainedBidTons[destination][commodity])
-	for i, level := range levels[:n] {
-		if level.PricePence <= 0 || level.PricePence > maximumPence || level.RemainingQuantity <= 0 {
-			continue
-		}
-		take := min(reserved, level.RemainingQuantity)
-		levels[i].RemainingQuantity -= take
-		reserved -= take
-	}
+	reserveBidLevels(levels[:n], in.ReservedRetainedBidTons[destination][commodity])
 	fill, err := WalkDepth(levels[:n], quantity, false)
 	if err != nil {
-		return 0, 0, 0, "", false
+		return 0, 0, 0, "", "unreserved retained destination bids cannot fill the whole lot", false
 	}
 	haircut := math.Ceil(age * retainedAdverseDriftBPS(in.BookDrift))
 	if haircut > 6_000 {
 		// A larger age haircut cannot be covered by the 6,000 bps stress cap.
-		return 0, 0, 0, "", false
+		return 0, 0, 0, "", "retained destination age haircut exceeds the stress cap", false
 	}
 	h := int64(haircut)
 	stressBPS := max(h, min(int64(6_000), 2*h+300))
@@ -239,5 +294,27 @@ func retainedDestinationRevenue(in PlanningInput, destination, commodity string,
 	stress := ceilBPS(fill.GrossPence, stressBPS) - ageHaircut
 	limit := fill.LimitPence * (10_000 - stressBPS) / 10_000
 	source := fmt.Sprintf("%s%.1f game days old; %d bps age haircut", retainedBookSource, age, h)
-	return fill.GrossPence - ageHaircut, limit, stress, source, true
+	revenue := fill.GrossPence - ageHaircut
+	return revenue, limit, eventPriceStress(revenue, stress, required), source, "", required
+}
+
+// reserveBidLevels consumes the best bids first. Callers must own the slice.
+func reserveBidLevels(levels []Level, reserved int64) {
+	if reserved <= 0 {
+		return
+	}
+	slices.SortStableFunc(levels, func(left, right Level) int {
+		return cmp.Compare(right.PricePence, left.PricePence)
+	})
+	for i, level := range levels {
+		if level.PricePence <= 0 || level.PricePence > maximumPence || level.RemainingQuantity <= 0 {
+			continue
+		}
+		take := min(reserved, level.RemainingQuantity)
+		levels[i].RemainingQuantity -= take
+		reserved -= take
+		if reserved == 0 {
+			return
+		}
+	}
 }

@@ -59,6 +59,9 @@ vi.mock("./ui", async (original) => {
 function row(overrides: Partial<RivalRow> = {}): RivalRow {
   return {
     company_name: "Kraken",
+    company_id: (overrides.company_name ?? "Kraken")
+      .toLowerCase()
+      .replaceAll(" ", "-"),
     rank: 1,
     net_worth_pence: 436501259,
     change_pence: -11764585,
@@ -67,6 +70,14 @@ function row(overrides: Partial<RivalRow> = {}): RivalRow {
     shared_ports: 5,
     hunch: "most_dangerous",
     fact: { kind: "shared_lanes", count: 14, total: 16 },
+    credit: null,
+    credit_observed_at: null,
+    rising_rank: null,
+    growth_bps: null,
+    gained_pence: null,
+    observed_ships_24h: {},
+    observed_ships_7d: {},
+    expansion_contributions: [],
     ...overrides,
   };
 }
@@ -141,6 +152,12 @@ function fixture(): RivalReport {
       },
     }),
     rivals,
+    rising: {
+      entries: [],
+      ranked_players: 0,
+      window_start_at: null,
+      you: null,
+    },
     growth: [6, 24].map((window_hours) => ({
       window_hours,
       from:
@@ -213,6 +230,44 @@ describe("rival company ledger", () => {
     state.now = Date.parse("2026-10-27T02:00:00Z");
   });
 
+  it("discloses partial seven-day sightings independently of daily traffic coverage", () => {
+    state.data!.observed_ships_7d_truncated = true;
+    state.data!.events_truncated = false;
+    expect(plain(render())).toContain(
+      "seven-day ship sightings have partial coverage because the event limit was reached; counts are a lower bound",
+    );
+    state.data!.observed_ships_7d_truncated = false;
+    expect(plain(render())).not.toContain(
+      "seven-day ship sightings have partial coverage",
+    );
+  });
+
+  it("renders missing sightings and contributions from an older API explicitly", () => {
+    for (const rival of state.data!.rivals) {
+      delete rival.company_id;
+      delete rival.observed_ships_24h;
+      delete rival.observed_ships_7d;
+      delete rival.expansion_contributions;
+    }
+    const text = plain(companyTable(render()));
+    expect(text).toContain("Kraken");
+    expect(text).toContain("Meridian");
+    expect(text).toContain("24 real h: Not observed");
+    expect(text).toContain("7 real d: Not observed");
+    expect(text).toContain("Expansion contributions");
+    expect(tableState.props!.data).toHaveLength(5);
+  });
+
+  it("shows rising publication freshness independently of official valuation", () => {
+    state.data!.rising_refreshed_at = "2026-10-26T01:28:00Z";
+    state.data!.rising_stale = true;
+    expect(plain(render())).toContain("Publication: 26 Oct, 01:28 UTC (stale)");
+    state.data!.rising_stale = false;
+    expect(plain(render())).toContain("Publication: 26 Oct, 01:28 UTC.");
+    delete state.data!.rising_refreshed_at;
+    delete state.data!.rising_stale;
+    expect(plain(render())).toContain("Publication: Not observed (stale)");
+  });
   it("shows two growth windows above the hunches with matched publications and numeric comparisons", () => {
     const html = render();
     const table = growthTable(html);
@@ -308,10 +363,10 @@ describe("rival company ledger", () => {
     expect(plain(hunches)).toContain(
       "Not making profitMeridian: Net worth below zero",
     );
-    expect(html).not.toContain("<details");
+    expect(hunches).not.toContain("<details");
   });
 
-  it("shows five columns with exactly one text chip and one key fact per row", () => {
+  it("shows the overview columns with exactly one text chip and one key fact per row", () => {
     const html = render();
     const body = companyTable(html).match(/<tbody>(.*?)<\/tbody>/s)?.[1] ?? "";
     const rows = [...body.matchAll(/<tr>(.*?)<\/tr>/gs)].map(
@@ -319,7 +374,7 @@ describe("rival company ledger", () => {
     );
     expect(rows).toHaveLength(5);
     for (const entry of rows) {
-      expect(entry.match(/<td(?:\s[^>]*)?>/g)).toHaveLength(5);
+      expect(entry.match(/<td(?:\s[^>]*)?>/g)).toHaveLength(12);
       expect(entry.match(/class="badge badge-/g)).toHaveLength(1);
     }
     const headings =
@@ -328,7 +383,20 @@ describe("rival company ledger", () => {
       [...headings.matchAll(/<th(?:\s[^>]*)?>(.*?)<\/th>/gs)].map((match) =>
         plain(match[1]),
       ),
-    ).toEqual(["Company", "Hunch", "Key fact", "Net worth", "24 h change"]);
+    ).toEqual([
+      "Company",
+      "Hunch",
+      "Key fact",
+      "Net worth",
+      "24 h change",
+      "Rising rank",
+      "7 d growth",
+      "7 d gained",
+      "Loan debt",
+      "Credit history",
+      "Observed ships",
+      "Expansion contributions",
+    ]);
     expect(
       [...rows[0].matchAll(/<td(?:\s[^>]*)?>(.*?)<\/td>/gs)][2][1],
     ).toContain("On 14 of our 16 lanes");
@@ -339,7 +407,11 @@ describe("rival company ledger", () => {
     expect(rows[0].match(/On 14 of our 16 lanes/g)).toHaveLength(1);
     expect(rows[3]).toContain("+938.88 Cr");
     expect(rows[4]).toContain("Not ranked");
-    expect(rows[4].match(/Not recorded/g)).toHaveLength(2);
+    const unobservedCells = [
+      ...rows[4].matchAll(/<td(?:\s[^>]*)?>(.*?)<\/td>/gs),
+    ];
+    expect(plain(unobservedCells[3][1])).toBe("Not observed");
+    expect(plain(unobservedCells[4][1])).toBe("Not observed");
     expect(rows[4]).toContain("2 ships seen in 24 h");
     expect(html).toContain('aria-label="Rival companies table"');
     expect(html).toContain('tabindex="0"');
@@ -661,15 +733,108 @@ describe("rival company ledger", () => {
     expect(html).toContain("2 ships seen in 24 h");
   });
 
-  it("keys a company by its exact name across changed ranks and report times", () => {
+  it("keys a company by its observed id across changed names, ranks and report times", () => {
     render();
     const first = tableState.props!;
     const key = first.rowKey(first.data[0], 0);
     state.data!.generated_at = "2026-10-27T02:00:30Z";
-    state.data!.rivals[0] = { ...state.data!.rivals[0], rank: 7 };
+    state.data!.rivals[0] = {
+      ...state.data!.rivals[0],
+      company_name: "Kraken Trading",
+      rank: 7,
+    };
     render();
-    expect(key).toBe("Kraken");
+    expect(key).toBe("kraken");
     expect(tableState.props!.rowKey(tableState.props!.data[0], 4)).toBe(key);
+  });
+
+  it("keeps name-only observations stable until a company id is observed", () => {
+    state.data!.rivals[0].company_id = null;
+    render();
+    const first = tableState.props!;
+    const key = first.rowKey(first.data[0], 0);
+    expect(key).toBe("name:Kraken");
+    state.data!.rivals = [
+      row({ company_name: "New rival" }),
+      { ...state.data!.rivals[0], rank: 7 },
+    ];
+    render();
+    expect(tableState.props!.rowKey(tableState.props!.data[1], 99)).toBe(key);
+  });
+
+  it.each(["Rising rank", "7 d growth", "7 d gained"])(
+    "sorts the published %s numerically with missing observations last",
+    (column) => {
+      state.data!.rivals = [
+        row({
+          company_name: "Two",
+          rising_rank: 2,
+          growth_bps: 2,
+          gained_pence: 2,
+        }),
+        row({
+          company_name: "Ten",
+          rising_rank: 10,
+          growth_bps: 10,
+          gained_pence: 10,
+        }),
+        row({ company_name: "Unknown" }),
+        row({
+          company_name: "One",
+          rising_rank: 1,
+          growth_bps: 1,
+          gained_pence: 1,
+        }),
+      ];
+      for (const descending of [false, true]) {
+        const body =
+          companyTable(render([{ id: column, desc: descending }])).match(
+            /<tbody>(.*?)<\/tbody>/s,
+          )?.[1] ?? "";
+        const names = [
+          ...body.matchAll(/<tr><td[^>]*><strong>(.*?)<\/strong>/gs),
+        ].map((match) => plain(match[1]));
+        expect(names).toEqual(
+          descending
+            ? ["Ten", "Two", "One", "Unknown"]
+            : ["One", "Two", "Ten", "Unknown"],
+        );
+      }
+    },
+  );
+
+  it("keeps our published rising rank visible when outside the listed leaders", () => {
+    state.data!.rising = {
+      entries: [
+        {
+          rank: 1,
+          company_name: "Kraken",
+          home_port_id: "london",
+          growth_bps: 1250,
+          gained_pence: 9876543,
+          window_start_at: "2026-10-20T01:28:00Z",
+        },
+      ],
+      ranked_players: 25,
+      window_start_at: "2026-10-20T01:28:00Z",
+      you: {
+        rank: 25,
+        company_name: "The Pokemon Pirates",
+        growth_bps: -50,
+        gained_pence: -100,
+        window_start_at: "2026-10-20T01:28:00Z",
+        is_calling_company: true,
+      },
+    };
+    const html = render();
+    const rising = html
+      .match(/<table\b[^>]*>.*?<\/table>/gs)!
+      .find((table) => table.includes("Rising board"))!;
+    expect(rising).toContain('data-is-us="true"');
+    expect(plain(rising)).toContain("The Pokemon PiratesOur company");
+    expect(plain(rising)).toContain("-0.50%");
+    expect(plain(rising)).toContain("-1.00 Cr");
+    expect(rising.match(/The Pokemon Pirates/g)).toHaveLength(1);
   });
 
   it.each([

@@ -10,7 +10,7 @@ import (
 	"github.com/DevYukine/go-tradewinds/internal/store"
 )
 
-const capacityMeasuredTestHull = "measured-brig"
+const capacityMeasuredTestHull = "cutter"
 
 func capacityMeasuredFixture(t *testing.T, scale int64, ages ...time.Duration) (*recoveryHarness, *Runner, time.Time) {
 	t.Helper()
@@ -118,7 +118,7 @@ func TestCapacityMeasuredHullDaysClipCreationAndExcludeSunk(t *testing.T) {
 	}
 }
 
-func TestCapacityMeasuredSampleFloor(t *testing.T) {
+func TestCapacityMeasuredSampleFloorDoesNotGateCashReinvestment(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name string
@@ -144,23 +144,18 @@ func TestCapacityMeasuredSampleFloor(t *testing.T) {
 				t.Fatalf("sample boundary: %+v reason %q error %v", input, reason, err)
 			}
 			changed, err := runner.considerCapacityGrowthAt(h.ctx, &evidence, recoveryHomePort, capacityMeasuredTestHull)
-			if err != nil || changed == test.hold {
-				t.Fatalf("sample boundary admission: changed %t error %v holds %v", changed, err, runner.holding)
+			if err != nil || !changed {
+				t.Fatalf("cash reinvestment waited for a measured sample: changed %t error %v holds %v", changed, err, runner.holding)
 			}
-			if test.hold {
-				h.missingMission("__growth")
-				requireReviewHold(t, runner, capacityMeasuredNetReason, true)
-			} else {
-				_, data := h.mission("__growth")
-				if data.Capacity == nil || data.Action == nil || data.Action.Stage != "build" {
-					t.Fatalf("measured sample did not admit a real capacity intent: %+v", data)
-				}
+			_, data := h.mission("__growth")
+			if data.Capacity == nil || data.Action == nil || data.Action.Stage != "build" {
+				t.Fatalf("cash reinvestment did not admit a real capacity intent: %+v", data)
 			}
 		})
 	}
 }
 
-func TestCapacityMeasuredUncertaintyHolds(t *testing.T) {
+func TestCapacityMeasuredUnknownCostsDoNotGateCashButFutureCompletionHolds(t *testing.T) {
 	t.Parallel()
 	for _, future := range []bool{false, true} {
 		t.Run(fmt.Sprintf("future_completion_%t", future), func(t *testing.T) {
@@ -178,20 +173,24 @@ func TestCapacityMeasuredUncertaintyHolds(t *testing.T) {
 				GameSeconds: 1, CompletedAt: completed,
 			})
 			evidence := capacityMeasuredEvidence(t, h, runner, asOf)
-			if changed, err := runner.considerCapacityGrowthAt(h.ctx, &evidence, recoveryHomePort, capacityMeasuredTestHull); err != nil || changed {
-				t.Fatalf("uncertain measurement admitted growth: changed %t error %v", changed, err)
+			changed, err := runner.considerCapacityGrowthAt(h.ctx, &evidence, recoveryHomePort, capacityMeasuredTestHull)
+			if err != nil || changed == future {
+				t.Fatalf("cash reinvestment uncertainty admission: changed %t error %v", changed, err)
 			}
-			h.missingMission("__growth")
-			reason := capacityMeasuredNetReason
 			if future {
-				reason = "capacity growth rejects future-dated settlement evidence"
+				h.missingMission("__growth")
+				requireReviewHold(t, runner, "capacity growth rejects future-dated settlement evidence", false)
+			} else {
+				_, data := h.mission("__growth")
+				if data.Capacity == nil || data.Action == nil || data.Action.Stage != "build" {
+					t.Fatalf("unknown historical costs blocked a cash-funded cheap hull: %+v", data)
+				}
 			}
-			requireReviewHold(t, runner, reason, !future)
 		})
 	}
 }
 
-func TestCapacityMeasuredRateCapsPlannerAndDepthRates(t *testing.T) {
+func TestCapacityMeasuredCashRateDoesNotWaitForMeasuredEarnings(t *testing.T) {
 	t.Parallel()
 	for _, measured := range []int64{5_000, 10_000_000, -5_000} {
 		t.Run(fmt.Sprintf("measured_%d", measured), func(t *testing.T) {
@@ -234,12 +233,12 @@ func TestCapacityMeasuredRateCapsPlannerAndDepthRates(t *testing.T) {
 				t.Fatalf("fixture must straddle measured rates, predicted %v", predicted)
 			}
 			decision, _, err := runner.capacityAtYard(h.ctx, port, hull, quote, input, &evidence)
-			used := min(predicted, float64(measured))
-			if err != nil || (decision.Accepted != (measured > 0)) {
-				t.Fatalf("measured rate admission: %+v, %v", decision, err)
+			used := predicted
+			if err != nil || !decision.Accepted {
+				t.Fatalf("cash-funded cheap hull waited for measured net: %+v, %v", decision, err)
 			}
-			if measured > 0 && (decision.IncrementalNetPencePerGameDay != used-100 || decision.DepthNetPencePerGameDay != used-100) {
-				t.Fatalf("candidate or debt-backed depth escaped measured cap %v: %+v", used, decision)
+			if decision.IncrementalNetPencePerGameDay != used-100 || decision.DepthNetPencePerGameDay != used-100 {
+				t.Fatalf("cash-funded rate was capped by measured earnings %d: %+v", measured, decision)
 			}
 			rows, err := h.db.History(h.ctx, h.account.ID, "decisions", 100)
 			if err != nil {
@@ -488,5 +487,39 @@ func TestCapacityMeasuredLowNetReleasesUnsupportedSavingsForCheapHull(t *testing
 	}
 	if target := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target"); target.PortID != "" {
 		t.Fatalf("low measured net retained an inadmissible save-up target: %+v", target)
+	}
+}
+
+func TestCapacityMortgageOnlyUsesMeasuredNetFromCandidateClass(t *testing.T) {
+	t.Parallel()
+	for _, classNet := range []int64{8_600, 9_000} {
+		t.Run(fmt.Sprintf("class_net_%d", classNet), func(t *testing.T) {
+			h, runner, asOf := capacityMeasuredFixture(t, 60, 48*time.Hour, 48*time.Hour)
+			runner.stateCache.Ships[0].Ship.ShipClass = "hoy"
+			runner.stateCache.Ships[1].Ship.ShipClass = "cutter"
+			persistGrowthWindowSettlement(t, h, store.Settlement{
+				ID: "mortgage-hoy-income", Kind: "spot", CostsKnown: true, QuantityTons: 1,
+				ProceedsPence: classNet, GameSeconds: 1, CompletedAt: asOf.Add(-time.Minute),
+			}, growthSettlementAction{Path: "/v1/market/place-order", ShipID: runner.stateCache.Ships[0].Ship.ID})
+			persistGrowthWindowSettlement(t, h, store.Settlement{
+				ID: "mortgage-other-income", Kind: "spot", CostsKnown: true, QuantityTons: 1,
+				ProceedsPence: 30_000_000, GameSeconds: 1, CompletedAt: asOf.Add(-time.Minute),
+			}, growthSettlementAction{Path: "/v1/market/place-order", ShipID: runner.stateCache.Ships[1].Ship.ID})
+			persistGrowthWindowSettlement(t, h, store.Settlement{
+				ID: "mortgage-other-unknown", Kind: "aborted", GameSeconds: 1, CompletedAt: asOf.Add(-time.Minute),
+			}, growthSettlementAction{Path: "/v1/market/place-order", ShipID: runner.stateCache.Ships[1].Ship.ID})
+			input := capacityGrowthAcceptanceInput()
+			input.HullPricePence, input.InitialStoresPence, input.IncrementalDailyUpkeepPence = 60_000, 0, 0
+			input.Mortgage, input.MaxPaybackDays = mortgageTestTerms(), 1_000_000
+			input, err := runner.capacityClassInput(h.ctx, input, "hoy", asOf)
+			if err != nil || !input.MeasuredNetAvailable || input.SampleHullGameDays != 30 ||
+				input.MeasuredRatePencePerGameDay != float64(classNet)/30 {
+				t.Fatalf("another class contaminated measured mortgage net: %+v, %v", input, err)
+			}
+			decision := EvaluateCapacityGrowth(input)
+			if decision.Accepted != (classNet == 9_000) {
+				t.Fatalf("another class funded mortgage service: %+v", decision)
+			}
+		})
 	}
 }

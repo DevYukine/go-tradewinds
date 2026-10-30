@@ -10,15 +10,15 @@ func TestEvaluateMarqueAcceptance(t *testing.T) {
 	t.Parallel()
 	base := MarqueInput{
 		Quote: MarqueQuote{
-			CostPence:             500_000,
-			ExpectedNetPrizePence: 830_000,
+			CostPence:             50_000,
+			ExpectedNetPrizePence: 83_000,
 			LadenPassagesPerDay:   3,
 			MarqueBPSInForce:      0,
 			AddedPiracyBPS:        500,
 		},
 		Exposed:          false,
 		InForceCostPence: 0,
-		LiquidPence:      11_394_526,
+		LiquidPence:      1_139_452,
 	}
 	reasons := make(map[string]string)
 	for _, tc := range []struct {
@@ -39,32 +39,35 @@ func TestEvaluateMarqueAcceptance(t *testing.T) {
 		{name: "zone marque bps exceeded", change: func(in *MarqueInput) {
 			in.Quote.MarqueBPSInForce = 4_600
 		}},
-		{name: "expected prize below one point four times cost", change: func(in *MarqueInput) {
-			in.Quote.ExpectedNetPrizePence = 690_000
+		{name: "expected prize below one point five times cost", change: func(in *MarqueInput) {
+			in.Quote.ExpectedNetPrizePence = 74_999
 		}},
 		{name: "single marque exceeds five percent of liquidity", change: func(in *MarqueInput) {
-			in.LiquidPence = 9_000_000
+			in.LiquidPence = 900_000
 		}},
-		{name: "in-force cost exceeds ten percent of liquidity", change: func(in *MarqueInput) {
-			in.InForceCostPence = 700_000
+		{name: "one active marque blocks another", change: func(in *MarqueInput) {
+			in.InForceCostPence = 1
 		}},
-		{name: "three expired marques below realized return floor", change: func(in *MarqueInput) {
-			in.ExpiredCount = 3
-			in.ExpiredPrizePence = 200_000
-			in.ExpiredCostPence = 300_000
+		{name: "three expired marques each below cost", change: func(in *MarqueInput) {
+			in.LosingCount = 3
+			in.ExpiredPrizePence = 59_999
+			in.ExpiredCostPence = 60_000
 		}},
-		{name: "expected prize exactly one point four times cost", wantAccepted: true, change: func(in *MarqueInput) {
-			in.Quote.ExpectedNetPrizePence = 700_000
+		{name: "expected prize exactly one point five times cost", wantAccepted: true, change: func(in *MarqueInput) {
+			in.Quote.ExpectedNetPrizePence = 75_000
 		}},
-		{name: "three expired marques exactly at realized return floor", wantAccepted: true, change: func(in *MarqueInput) {
-			in.ExpiredCount = 3
-			in.ExpiredPrizePence = 240_000
-			in.ExpiredCostPence = 300_000
+		{name: "three expired marques exactly at cost", wantAccepted: true, change: func(in *MarqueInput) {
+			in.ExpiredPrizePence = 60_000
+			in.ExpiredCostPence = 60_000
 		}},
-		{name: "two expired marques with zero prize", wantAccepted: true, change: func(in *MarqueInput) {
-			in.ExpiredCount = 2
+		{name: "two losing marques with zero prize", wantAccepted: true, change: func(in *MarqueInput) {
+			in.LosingCount = 2
 			in.ExpiredPrizePence = 0
-			in.ExpiredCostPence = 300_000
+			in.ExpiredCostPence = 50_000
+		}},
+		{name: "lifetime unrecovered spending exceeds cap", change: func(in *MarqueInput) {
+			in.LosingCount = 2
+			in.ExpiredCostPence = 50_001
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

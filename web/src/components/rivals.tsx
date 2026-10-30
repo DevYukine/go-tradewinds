@@ -4,7 +4,17 @@ import { useMemo } from "react";
 import { useNow } from "@/app/providers";
 import { useRivals } from "@/lib/data";
 import { count, dateTime, humanize, money } from "@/lib/format";
-import { hunchLabel, hunchRank, hunchTone, rivalFactText } from "@/lib/rivals";
+import {
+  hunchLabel,
+  hunchRank,
+  hunchTone,
+  observedShipsText,
+  rivalCreditFacts,
+  rivalExpansionText,
+  rivalFactText,
+  rivalLoanDebt,
+  rivalPercent,
+} from "@/lib/rivals";
 import type { RivalRow } from "@/lib/types";
 import { Badge, DataTable, type Column } from "./ui";
 import chartStyles from "./performance.module.css";
@@ -52,7 +62,10 @@ export function RivalsView({ accountID }: { accountID: string }) {
         label: "Net worth",
         value: (row) => row.net_worth_pence ?? undefined,
         className: "numeric",
-        render: (row) => money(row.net_worth_pence),
+        render: (row) =>
+          row.net_worth_pence == null
+            ? "Not observed"
+            : money(row.net_worth_pence),
       },
       {
         label: "24 h change",
@@ -71,15 +84,109 @@ export function RivalsView({ accountID }: { accountID: string }) {
             }
           >
             {row.change_pence != null && row.change_pence > 0 ? "+" : ""}
-            {money(row.change_pence)}
+            {row.change_pence == null
+              ? "Not observed"
+              : money(row.change_pence)}
           </span>
         ),
+      },
+      {
+        label: "Rising rank",
+        value: (row) => row.rising_rank ?? undefined,
+        className: "numeric",
+        render: (row) =>
+          row.rising_rank == null ? "Not observed" : count(row.rising_rank),
+      },
+      {
+        label: "7 d growth",
+        value: (row) => row.growth_bps ?? undefined,
+        className: "numeric",
+        render: (row) => rivalPercent(row.growth_bps),
+      },
+      {
+        label: "7 d gained",
+        value: (row) => row.gained_pence ?? undefined,
+        className: "numeric",
+        render: (row) =>
+          row.gained_pence == null ? "Not observed" : money(row.gained_pence),
+      },
+      {
+        label: "Loan debt",
+        value: (row) => rivalLoanDebt(row.credit),
+        className: "numeric",
+        render: (row) =>
+          row.credit == null
+            ? "Not observed"
+            : money(rivalLoanDebt(row.credit)),
+      },
+      {
+        label: "Credit history",
+        value: (row) =>
+          row.credit == null
+            ? "Not observed"
+            : rivalCreditFacts(row.credit)
+                .map(([label, value]) => `${label} ${value}`)
+                .join("; "),
+        render: (row) => (
+          <details className={styles.details}>
+            <summary>
+              {row.credit == null ? "Not observed" : "Credit history"}
+            </summary>
+            {row.credit != null && (
+              <>
+                <p className={styles.caption}>
+                  Credit observed:{" "}
+                  {row.credit_observed_at
+                    ? dateTime(row.credit_observed_at)
+                    : "Not observed"}
+                  . Lifetime defaults, walk-aways and write-offs may overlap;
+                  they are not added to current loan debt.
+                </p>
+                <dl className={styles.facts}>
+                  {rivalCreditFacts(row.credit).map(([label, value]) => (
+                    <div key={label}>
+                      <dt>{label}</dt>
+                      <dd>{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </>
+            )}
+          </details>
+        ),
+      },
+      {
+        label: "Observed ships",
+        value: (row) =>
+          `24 h: ${observedShipsText(row.observed_ships_24h)}; 7 d: ${observedShipsText(row.observed_ships_7d)}`,
+        render: (row) => (
+          <>
+            <span>24 real h: {observedShipsText(row.observed_ships_24h)}</span>
+            <small className="cell-subtitle">
+              7 real d: {observedShipsText(row.observed_ships_7d)}
+            </small>
+          </>
+        ),
+      },
+      {
+        label: "Expansion contributions",
+        value: (row) => rivalExpansionText(row.expansion_contributions),
+        render: (row) => rivalExpansionText(row.expansion_contributions),
       },
     ],
     [now],
   );
   const report = query.data;
   const growth = report?.growth ?? [];
+  const rising = report?.rising;
+  const risingRows = useMemo(() => {
+    const entries = rising?.entries ?? [];
+    const you = rising?.you;
+    return you &&
+      !entries.some((entry) => entry.company_name === you.company_name)
+      ? [...entries, you].sort((left, right) => left.rank - right.rank)
+      : entries;
+  }, [rising]);
   const ourChange = report?.our?.change_pence;
   const overdue =
     report?.next_refresh_at && now > Date.parse(report.next_refresh_at);
@@ -123,6 +230,9 @@ export function RivalsView({ accountID }: { accountID: string }) {
         !report.overlap_known ? "lane and port overlap is unknown" : "",
         report.events_truncated
           ? "the event limit was reached, so observations are a lower bound"
+          : "",
+        report.observed_ships_7d_truncated
+          ? "seven-day ship sightings have partial coverage because the event limit was reached; counts are a lower bound"
           : "",
         roughRow?.hunch === "most_dangerous"
           ? "the rough-play headline uses the strongest evidence; its Most dangerous chip takes precedence, while other Plays rough chips flag their own evidence"
@@ -274,6 +384,57 @@ export function RivalsView({ accountID }: { accountID: string }) {
               })}
             </tbody>
           </table>
+          <table className={`${styles.growth} ${styles.rising}`}>
+            <caption>
+              <strong>Rising board</strong>
+              <span className={styles.caption}>
+                Publication:{" "}
+                {report.rising_refreshed_at
+                  ? dateTime(report.rising_refreshed_at)
+                  : "Not observed"}
+                {report.rising_stale !== false && " (stale)"}. Published growth
+                over 7 real days, not realized profit. Window start:{" "}
+                {rising?.window_start_at
+                  ? dateTime(rising.window_start_at)
+                  : "Not observed"}
+                . Ranked players:{" "}
+                {rising ? count(rising.ranked_players) : "Not observed"}.
+              </span>
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Rank</th>
+                <th scope="col">Company</th>
+                <th scope="col">Growth</th>
+                <th scope="col">Gained value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {risingRows.length === 0 && (
+                <tr>
+                  <td colSpan={4}>Rising board not yet published.</td>
+                </tr>
+              )}
+              {risingRows.map((entry) => {
+                const isUs = entry.company_name === rising?.you?.company_name;
+                return (
+                  <tr key={entry.company_name} data-is-us={isUs || undefined}>
+                    <th scope="row">{count(entry.rank)}</th>
+                    <td>
+                      <strong>{entry.company_name}</strong>
+                      {isUs && (
+                        <small className="cell-subtitle">Our company</small>
+                      )}
+                    </td>
+                    <td className="numeric">
+                      {rivalPercent(entry.growth_bps)}
+                    </td>
+                    <td className="numeric">{money(entry.gained_pence)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
           <dl className={styles.hunches}>
             {verdicts.map(({ label, verdict, gap }) => (
               <div key={label}>
@@ -299,14 +460,17 @@ export function RivalsView({ accountID }: { accountID: string }) {
             notices,{" "}
             {report.coverage === "partial" ? "partial" : "not observed"}; our 24
             h change: {ourChange != null && ourChange > 0 ? "+" : ""}
-            {money(ourChange)}; hunches from recorded evidence, not certainties.
+            {money(ourChange)}; hunches from recorded evidence, not certainties.{" "}
+            Ship classes are observed sightings over 24 real h and 7 real d, not
+            a fleet census. Expansion contributions are published tons and
+            shares, not bonus income.
             {coverageCaveats && <> Coverage: {coverageCaveats}.</>}
           </p>
           {(report.valuation_at || report.rivals.length > 0) && (
             <DataTable
               label="Rival companies"
               data={report.rivals}
-              rowKey={(row) => row.company_name}
+              rowKey={(row) => row.company_id ?? `name:${row.company_name}`}
               columns={columns}
               empty="No rival companies recorded in standings or port notices"
             />

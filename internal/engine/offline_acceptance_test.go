@@ -64,13 +64,13 @@ func TestOfflineIncidentLadderFlagAndFundingBoundary(t *testing.T) {
 func TestOfflineIncidentSizeSelectsBestAcceptedWholeTon(t *testing.T) {
 	in, candidate := offlineIncidentInput(t, 20_000)
 	in.NextRungReceiptStress = true
-	best := sizePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 30, 0, 0)
+	best := sizePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 30, 0, 0, 0)
 	if !best.Accepted || best.Quantity != 30 || best.SellLimitPence != 44_726 || best.Economics.PriceUncertaintyStressPence != 323_490 {
 		t.Fatalf("profitable incident ladder lot was undersized or repriced: %+v", best)
 	}
 	in, candidate = offlineIncidentInput(t, 40_000)
 	in.NextRungReceiptStress = true
-	if got := sizePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 30, 0, 0); got.Accepted {
+	if got := sizePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 30, 0, 0, 0); got.Accepted {
 		t.Fatalf("sizing escaped the receipt stress floor: %+v", got)
 	}
 }

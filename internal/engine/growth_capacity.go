@@ -24,7 +24,7 @@ const capacityHistoryWindow = 24 * time.Hour
 const capacityMeasuredGameDays = 30
 const capacityMinimumHullGameDays = 24
 
-const capacityMeasuredNetReason = "capacity growth waits for measured per-hull net"
+const capacityMeasuredNetReason = "capacity mortgage requires measured per-class net covering at least 1.25x debt service"
 
 const capacityNoSpareWorkReason = "capacity growth needs an executable profitable voyage after incumbent commitments"
 
@@ -64,6 +64,10 @@ func cheapCapacityHull(hull Hull) bool {
 // quote reserves and a cash lot for every ship.
 func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 	decision := GrowthDecision{}
+	if !cheapCapacityHull(in.Hull) {
+		decision.Reason = "capacity growth reinvests only in hoy, cutter, brigantine and collier hulls"
+		return decision
+	}
 	guns := min(int64(4), in.Hull.MaxCannons)
 	if in.Hull.CanSealDispatches || in.HullPricePence <= 0 || guns < 1 || in.Hull.HoldCapacityTons <= 2*guns {
 		decision.Reason = "capacity growth requires a priced trading hull with room for cannons and cargo"
@@ -91,15 +95,17 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 		InitialStoresPence:     in.InitialStoresPence,
 		IncrementalUpkeepPence: in.IncrementalDailyUpkeepPence,
 		Mortgage:               in.Mortgage,
-		EvidenceBasis:          "accepted non-charter voyage rate capped by measured trailing-30-game-day fleet net per live hull-game-day",
+		EvidenceBasis:          "accepted non-charter voyage rate; cheap-hull fleet reinvestment is not gated by measured earnings",
 	}
-	if cheapCapacityHull(in.Hull) {
-		decision.EvidenceBasis = "accepted non-charter voyage rate; cheap-hull fleet reinvestment is not gated by measured earnings"
-		if in.Mortgage != nil && in.MeasuredNetAvailable {
-			decision.EvidenceBasis = "accepted non-charter voyage rate capped by measured trailing-30-game-day per-hull net for mortgage debt service"
-		} else if in.Mortgage != nil {
-			decision.EvidenceBasis = "accepted non-charter voyage rate; missing measured per-hull net does not block cheap-hull mortgage reinvestment; two installments reserved"
+	if in.Mortgage != nil {
+		decision.EvidenceBasis = "accepted non-charter voyage rate capped by measured trailing-30-game-day per-class net for mortgage debt service"
+		servicePerGameDay := float64(*in.Mortgage.InstallmentPence) / 10
+		if !in.MeasuredNetAvailable || math.IsNaN(in.MeasuredRatePencePerGameDay) ||
+			math.IsInf(in.MeasuredRatePencePerGameDay, 0) || in.MeasuredRatePencePerGameDay < 1.25*servicePerGameDay {
+			decision.Reason = capacityMeasuredNetReason
+			return decision
 		}
+		in.CandidateRatePencePerGameDay = min(in.CandidateRatePencePerGameDay, in.MeasuredRatePencePerGameDay)
 	}
 	if in.FleetSize < 0 || in.LotCashPence < 0 ||
 		in.LotCashPence > 0 && int64(in.FleetSize) >= math.MaxInt64/in.LotCashPence {
@@ -261,7 +267,7 @@ func (r *Runner) liveCapacitySavingsTarget(ctx context.Context) (capacitySavings
 		expired[target.PortID+"|"+target.HullID] = target.ExpiresAt.Add(capacityHistoryWindow)
 		r.snapshot["_capacity_savings_expired"] = encode(expired)
 	}
-	if target.PortID == "" || target.HullID == "" || target.CapitalPence <= 0 || target.RequiredPence <= 0 ||
+	if !cheapCapacityHull(Hull{ID: target.HullID}) || target.PortID == "" || target.CapitalPence <= 0 || target.RequiredPence <= 0 ||
 		target.DepthNetPencePerGameDay <= 0 || math.IsNaN(target.DepthNetPencePerGameDay) ||
 		math.IsInf(target.DepthNetPencePerGameDay, 0) || !now.Before(target.ExpiresAt) {
 		return capacitySavingsTarget{}, r.setCapacitySavingsTarget(ctx, capacitySavingsTarget{})
@@ -375,7 +381,10 @@ func (r *Runner) holdCapacityGrowth(ctx context.Context, reason string) (bool, e
 	if err := r.decision(ctx, "", "capacity_growth", reason, decision); err != nil {
 		return false, err
 	}
-	return false, r.recordHold(ctx, "", reason, expectedGrowthAdmission(reason))
+	if err := r.recordHold(ctx, "", reason, expectedGrowthAdmission(reason)); err != nil {
+		return false, err
+	}
+	return r.prepayLoans(ctx)
 }
 
 // Admission decisions may wait quietly; missing authority and integrity
@@ -552,6 +561,42 @@ func (r *Runner) capacityFleetInput(ctx context.Context, evidence *growthEvidenc
 	return input, "", nil
 }
 
+func (r *Runner) capacityClassInput(ctx context.Context, input CapacityGrowthInput, hullID string, asOf time.Time) (CapacityGrowthInput, error) {
+	input.MeasuredNetAvailable = false
+	input.MeasuredRatePencePerGameDay = 0
+	input.SampleHullGameDays = 0
+	scale := float64(r.stateCache.Clock.Calendar.TimeScale)
+	if scale <= 0 || r.stateCache.Clock.Paused {
+		return input, nil
+	}
+	window := time.Duration(float64(capacityMeasuredGameDays) * float64(24*time.Hour) / scale)
+	windowStart := asOf.Add(-window)
+	var shipIDs []string
+	completeHullAges := true
+	for _, ship := range r.stateCache.Ships {
+		if ship.Ship.Status == "sunk" || ship.Ship.ShipClass != hullID {
+			continue
+		}
+		shipIDs = append(shipIDs, ship.Ship.ID)
+		created := ship.Ship.CreatedAt
+		if created == nil || created.IsZero() || created.After(asOf) {
+			completeHullAges = false
+			continue
+		}
+		input.SampleHullGameDays += asOf.Sub(maxTime(windowStart, *created)).Seconds() * scale / 86_400
+	}
+	if len(shipIDs) == 0 || !completeHullAges || input.SampleHullGameDays < capacityMinimumHullGameDays {
+		return input, nil
+	}
+	history, err := r.db.EconomicHistoryWindowForShips(ctx, r.account.ID, shipIDs, asOf, window)
+	if err != nil {
+		return input, err
+	}
+	input.MeasuredNetAvailable = !history.UnknownCosts && !history.FutureCompletion
+	input.MeasuredRatePencePerGameDay = float64(history.NetPence) / input.SampleHullGameDays
+	return input, nil
+}
+
 func (r *Runner) capacityLotCash(ctx context.Context, asOf time.Time) (int64, error) {
 	deliveries, err := r.db.CapacityDeliveryHistory(ctx, r.account.ID, asOf)
 	if err != nil {
@@ -575,10 +620,13 @@ func (r *Runner) capacityLotCash(ctx context.Context, asOf time.Time) (int64, er
 	return lots[middle], nil
 }
 
-// capacityVoyageRate prices a hull from the planner's expected net. The stress
-// net is an illustrative capital-loss scenario, not an expected cost, so it
-// must not decide whether a hull earns its keep.
+// Capacity deliberately uses the same onward opportunity cost as voyage
+// selection. Legacy standalone economics retain their separately costed repeat;
+// diagnostic stress remains neither a receipt nor an expected expense.
 func capacityVoyageRate(economics Economics) float64 {
+	if economics.RankScoreSet {
+		return economics.RankScorePencePerGameDay
+	}
 	if economics.BallastRepeatGameDays > 0 {
 		return float64(economics.BallastRepeatNetPence) / economics.BallastRepeatGameDays
 	}
@@ -606,6 +654,9 @@ func betterCapacityEarningPlan(candidate, other Plan) bool {
 }
 
 func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote YardQuote, input CapacityGrowthInput, evidence *growthEvidence) (GrowthDecision, map[string]int64, error) {
+	if !cheapCapacityHull(hull) {
+		return EvaluateCapacityGrowth(CapacityGrowthInput{Hull: hull}), nil, nil
+	}
 	planning, err := r.committedPlanningInputExcept(ctx, growthCandidate(port, hull), "__growth")
 	if err != nil {
 		return GrowthDecision{}, nil, err
@@ -638,11 +689,11 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 	}
 	predictedRate := capacityVoyageRate(earningPlan.Economics)
 	input.CandidateRatePencePerGameDay = predictedRate
-	if !cheapCapacityHull(hull) {
-		input.CandidateRatePencePerGameDay = min(predictedRate, input.MeasuredRatePencePerGameDay)
-	}
-	if input.Mortgage != nil && input.MeasuredNetAvailable {
-		input.CandidateRatePencePerGameDay = min(predictedRate, input.MeasuredRatePencePerGameDay)
+	if input.Mortgage != nil {
+		input, err = r.capacityClassInput(ctx, input, hull.ID, evidence.asOf)
+		if err != nil {
+			return GrowthDecision{}, nil, err
+		}
 	}
 	input.InitialStoresPence = max(earningPlan.Economics.StoreCashPence, earningPlan.Economics.ProvisionsPence)
 	decision := EvaluateCapacityGrowth(input)
@@ -655,19 +706,15 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		if decision.CashShortfallPence > 0 || !cashFunded || cashFees > quote.Mortgage.TotalRepayablePence-quote.Mortgage.PrincipalPence {
 			financed := input
 			financed.Mortgage = quote.Mortgage
-			if financed.MeasuredNetAvailable {
-				financed.CandidateRatePencePerGameDay = min(predictedRate, financed.MeasuredRatePencePerGameDay)
+			financed, err = r.capacityClassInput(ctx, financed, hull.ID, evidence.asOf)
+			if err != nil {
+				return GrowthDecision{}, nil, err
 			}
 			mortgage := EvaluateCapacityGrowth(financed)
 			if mortgage.Accepted || mortgage.EconomicallyViable && (!decision.EconomicallyViable || mortgage.CashShortfallPence < decision.CashShortfallPence) {
 				input, decision = financed, mortgage
 			}
 		}
-	}
-	if !cheapCapacityHull(hull) && !input.MeasuredNetAvailable {
-		decision.Accepted = false
-		decision.EconomicallyViable = false
-		decision.Reason = capacityMeasuredNetReason
 	}
 	decision.Competition = earningPlan.Competition
 	// Only the best candidate is recorded by the caller; record every yard and
@@ -724,8 +771,8 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		decision.Competition = earningPlan.Competition
 	}
 	depthRate := capacityVoyageRate(depthPlan.Economics)
-	if cheapCapacityHull(hull) && (input.Mortgage == nil || !input.MeasuredNetAvailable) {
-		decision.DepthNetPencePerGameDay = max(0, depthRate-float64(input.IncrementalDailyUpkeepPence)-mortgageInterestPerGameDay(decision.Mortgage))
+	if input.Mortgage == nil {
+		decision.DepthNetPencePerGameDay = max(0, depthRate-float64(input.IncrementalDailyUpkeepPence))
 	} else if input.MeasuredNetAvailable {
 		decision.DepthNetPencePerGameDay = max(0, min(depthRate, input.MeasuredRatePencePerGameDay)-float64(input.IncrementalDailyUpkeepPence)-mortgageInterestPerGameDay(decision.Mortgage))
 	}
@@ -801,7 +848,7 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 			if hullID != "" && hull.ID != hullID {
 				continue
 			}
-			if hull.CanSealDispatches || hull.Phase > r.stateCache.Clock.UnlockedPhase {
+			if !cheapCapacityHull(hull) || hull.CanSealDispatches || hull.Phase > r.stateCache.Clock.UnlockedPhase {
 				continue
 			}
 			quote, err := r.growthQuote(port, hull)
@@ -1029,8 +1076,13 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 		if err := r.holdExpected(ctx, "", bestDecision.Reason); err != nil {
 			return false, err
 		}
-		if r.opts.Execute && canExpand && portID == "" {
-			return r.considerExpansionAgent(ctx)
+		if r.opts.Execute && portID == "" {
+			if changed, err := r.prepayLoans(ctx); changed || err != nil {
+				return changed, err
+			}
+			if canExpand {
+				return r.considerExpansionAgent(ctx)
+			}
 		}
 		return false, nil
 	}
@@ -1094,6 +1146,9 @@ func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) erro
 	if intent == nil || intent.BuildPort != data.BuildPort || intent.BuildClass != data.BuildClass ||
 		intent.QuoteLimitPence <= 0 || intent.AdmittedAt.IsZero() {
 		return errors.New("capacity build requires its matching durable yard, hull and quote ceiling")
+	}
+	if !cheapCapacityHull(Hull{ID: intent.BuildClass}) {
+		return errors.New("capacity build requires a cheap reinvestment hull")
 	}
 	if intent.Financing != nil {
 		if intent.Financing.Cancel || len(intent.Financing.Loans) != len(intent.Financing.Quotes) {
@@ -1174,8 +1229,7 @@ func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) erro
 			if err != nil {
 				return err
 			}
-			plans := PlanVoyages(planning)
-			if len(plans) > 0 && plans[0].Accepted {
+			if hasAcceptedVoyage(planning) {
 				return errors.New("capacity build must reuse an idle ship's currently executable profitable lane first")
 			}
 		}

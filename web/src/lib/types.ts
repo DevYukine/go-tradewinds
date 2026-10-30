@@ -46,7 +46,23 @@ export type EngineWarning = {
   | { code: "loss_streak"; facts: { count: number; net_pence: number } }
   | {
       code: "falling_behind";
-      facts: { ours_pence: number; median_pence: number; rival_count: number };
+      facts: (
+        | { ours_pence: number; median_pence: number; rival_count: number }
+        | {
+            ours_growth_bps: number;
+            median_growth_bps: number;
+            ranked_players: number;
+          }
+      ) &
+        Partial<{
+          ours_pence: number;
+          median_pence: number;
+          rival_count: number;
+          ours_growth_bps: number;
+          median_growth_bps: number;
+          median_growth_half_bps: number;
+          ranked_players: number;
+        }>;
     }
 );
 
@@ -179,8 +195,53 @@ export type RivalFact =
   | { kind: "short_history"; hours?: number | null }
   | { kind: "negative_worth" | "no_baseline" };
 
+export interface RivalCredit {
+  company_id: string;
+  company_name: string;
+  active_loans: number;
+  active_owed_pence: number;
+  defaulted_open_loans: number;
+  defaulted_owed_pence: number;
+  loans_repaid: number;
+  loans_defaulted: number;
+  loans_written_off: number;
+  loan_written_off_pence: number;
+  loans_walked_away: number;
+  loan_walked_away_pence: number;
+  open_mortgages: number;
+  futures_claims_open_pence: number;
+  futures_claims_total: number;
+  futures_claims_written_off: number;
+  lent_outstanding_pence: number;
+  smuggling_convictions: number;
+  last_default_at: string | null;
+  bankrupt_at: string | null;
+  last_conviction_at: string | null;
+}
+
+export interface RivalRisingEntry {
+  rank: number;
+  company_name: string;
+  home_port_id: string;
+  growth_bps: number;
+  gained_pence: number;
+  window_start_at: string;
+}
+
+export interface RivalRisingBoard {
+  entries: RivalRisingEntry[];
+  ranked_players: number;
+  window_start_at: string | null;
+  you:
+    | (Omit<RivalRisingEntry, "home_port_id"> & {
+        is_calling_company: boolean;
+      })
+    | null;
+}
+
 export interface RivalRow {
   company_name: string;
+  company_id?: string | null;
   rank: number | null;
   net_worth_pence: number | null;
   change_pence: number | null;
@@ -189,6 +250,20 @@ export interface RivalRow {
   shared_ports: number | null;
   hunch: RivalHunch;
   fact: RivalFact;
+  credit: RivalCredit | null;
+  credit_observed_at: string | null;
+  rising_rank: number | null;
+  growth_bps: number | null;
+  gained_pence: number | null;
+  observed_ships_24h?: Record<string, number> | null;
+  observed_ships_7d?: Record<string, number> | null;
+  expansion_contributions?:
+    | {
+        target_phase: number;
+        tons: number;
+        share_bps: number;
+      }[]
+    | null;
 }
 
 export interface RivalVerdict {
@@ -231,10 +306,14 @@ export interface RivalReport {
   own_companies_complete: boolean;
   overlap_known: boolean;
   events_truncated: boolean;
+  observed_ships_7d_truncated?: boolean;
   our: RivalRow | null;
   rivals: RivalRow[];
   verdicts: RivalVerdicts;
   growth: GrowthWindow[];
+  rising: RivalRisingBoard;
+  rising_refreshed_at?: string | null;
+  rising_stale?: boolean;
 }
 
 export interface CompetitionCompany {
@@ -325,6 +404,7 @@ export interface Economics {
 }
 
 export interface Decision {
+  id: number;
   account_id: string;
   ship_id: string;
   kind: string;
@@ -342,6 +422,7 @@ export interface GameEvent {
 }
 
 export interface RequestLog {
+  id: number;
   account_id: string;
   method: string;
   path: string;

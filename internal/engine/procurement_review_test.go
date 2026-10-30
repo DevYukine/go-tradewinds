@@ -129,7 +129,7 @@ func TestProcurementReviewUsesCurrentDifferentialBills(t *testing.T) {
 				ship.Ship.Status = "anchored_roadstead"
 				ship.Ship.BerthedAt = nil
 			}
-			proceed, err := runner.procurementDepartureDecision(ship, recoveryFarPort, &data)
+			proceed, err := runner.procurementDepartureDecision(runner.planningInput(ship), ship, recoveryFarPort, &data)
 			if err != nil || proceed != test.wantProceed {
 				t.Fatalf("recovery decision = %t, %v; want %t using current differential bills", proceed, err, test.wantProceed)
 			}
@@ -159,7 +159,7 @@ func TestProcurementReviewUnknownBerthTimingUsesOnlyDecisiveBounds(t *testing.T)
 			origin.BerthDuesPerDayPence = 20_000
 			runner.stateCache.Ports[recoveryHomePort] = origin
 			runner.stateCache.Markets[recoveryHomePort] = procurementReviewBook(recoveryHomePort, []Level{{PricePence: test.localPrice, RemainingQuantity: 20}})
-			proceed, err := runner.procurementDepartureDecision(ship, recoveryFarPort, &data)
+			proceed, err := runner.procurementDepartureDecision(runner.planningInput(ship), ship, recoveryFarPort, &data)
 			if proceed != test.wantProceed || (err != nil) != test.wantError || ship.Ship.BerthedAt != nil {
 				t.Fatalf("unknown berth recovery = %t, %v; want %t, error %t without invented berth time", proceed, err, test.wantProceed, test.wantError)
 			}
@@ -188,7 +188,7 @@ func TestProcurementReviewKeepsMeasuredPartialLiquidity(t *testing.T) {
 			if err != nil || revenue != test.wantRevenue || full != test.wantFull {
 				t.Fatalf("measured local liquidity = %dp, full %t, %v; want %dp, full %t", revenue, full, err, test.wantRevenue, test.wantFull)
 			}
-			proceed, err := runner.procurementDepartureDecision(ship, recoveryFarPort, &data)
+			proceed, err := runner.procurementDepartureDecision(runner.planningInput(ship), ship, recoveryFarPort, &data)
 			if err != nil || proceed != test.wantProceed {
 				t.Fatalf("partial liquidity changed destination admission = %t, %v; want %t", proceed, err, test.wantProceed)
 			}
@@ -236,7 +236,7 @@ func TestProcurementReviewMissingOrInvalidEvidenceStillHolds(t *testing.T) {
 				detail.BerthDuesPerDayPence = -1
 				runner.stateCache.Ports[recoveryFarPort] = detail
 			}
-			if proceed, err := runner.procurementDepartureDecision(ship, recoveryFarPort, &data); proceed || err == nil {
+			if proceed, err := runner.procurementDepartureDecision(runner.planningInput(ship), ship, recoveryFarPort, &data); proceed || err == nil {
 				t.Fatalf("unknown or invalid %s permitted an irreversible recovery choice: proceed %t error %v", gate, proceed, err)
 			}
 		})
@@ -328,7 +328,7 @@ func procurementReviewGossipHarness(t *testing.T) (*recoveryHarness, *Runner, *p
 		t.Fatalf("fresh gossip did not admit exactly a one-ton spot probe: %+v", plans)
 	}
 	plan := plans[0]
-	revenue, _, stress, source, reason := destinationRevenue(runner.planningInput(ship), recoveryFarPort, recoveryGrain, 1)
+	revenue, _, stress, source, reason, _ := destinationRevenue(runner.planningInput(ship), recoveryFarPort, recoveryGrain, 1, time.Time{})
 	if reason != "" || revenue != 500 || stress <= 0 || plan.PriceSource != source {
 		t.Fatalf("probe must retain the planner's estimate provenance and separate price stress: %+v, revenue %d stress %d reason %s", plan, revenue, stress, reason)
 	}
@@ -501,7 +501,7 @@ func procurementReviewSettlement(t *testing.T, data missionData, ledger []map[st
 func TestProcurementReviewBetterRecoveryStillSettlesActualLoss(t *testing.T) {
 	t.Parallel()
 	runner, ship, data := procurementReviewRunner(20)
-	proceed, err := runner.procurementDepartureDecision(ship, recoveryFarPort, &data)
+	proceed, err := runner.procurementDepartureDecision(runner.planningInput(ship), ship, recoveryFarPort, &data)
 	if err != nil || !proceed {
 		t.Fatalf("9500p destination less current 1000p future bill must beat local 6000p: proceed %t error %v", proceed, err)
 	}
@@ -557,7 +557,7 @@ func TestProcurementReviewActualUnwindFeedsPermanentEconomicHistory(t *testing.T
 			}
 			h.putMission(ship.Ship.ID, "procurement-review-unwind", "depart", data)
 			mission, data := h.mission(ship.Ship.ID)
-			if proceed, err := runner.procurementDepartureDecision(ship, recoveryHomePort, &data); err != nil || proceed {
+			if proceed, err := runner.procurementDepartureDecision(runner.planningInput(ship), ship, recoveryHomePort, &data); err != nil || proceed {
 				t.Fatalf("fresh superior local liquidation did not select unwind: proceed %t error %v", proceed, err)
 			}
 			if changed, err := runner.unwindProcurement(h.ctx, ship, mission, &data, "current executable local recovery is better"); err != nil || !changed {
@@ -617,7 +617,7 @@ func TestProcurementReviewStaleGossipAllowsFreshDestinationDepth(t *testing.T) {
 	actionLogRefresh(t, h, runner)
 	ship = harnessShip(t, runner, ship.Ship.ID)
 	input := runner.planningInput(ship)
-	revenue, _, stress, source, reason := destinationRevenue(input, recoveryFarPort, recoveryGrain, 2)
+	revenue, _, stress, source, reason, _ := destinationRevenue(input, recoveryFarPort, recoveryGrain, 2, time.Time{})
 	if reason != "" || revenue != 1_000 || stress != 0 || source == plan.PriceSource ||
 		!input.fresh("books/"+recoveryFarPort) {
 		t.Fatalf("independently observed destination depth was incorrectly rejected with stale gossip: revenue %d stress %d source %s reason %s", revenue, stress, source, reason)

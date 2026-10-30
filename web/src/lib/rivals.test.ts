@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { rivalFactText } from "./rivals";
-import type { RivalFact } from "./types";
+import {
+  observedShipsText,
+  rivalCreditFacts,
+  rivalExpansionText,
+  rivalFactText,
+  rivalLoanDebt,
+  rivalPercent,
+} from "./rivals";
+import type { RivalCredit, RivalFact } from "./types";
 
 describe("recorded rival wording", () => {
   it.each<RivalFact>([
@@ -109,5 +116,83 @@ describe("recorded rival wording", () => {
     );
     expect(rivalFactText({ ...fact, commodity: "" })).toBe("Not recorded");
     expect(rivalFactText({ ...fact, region: "" })).toBe("Not recorded");
+  });
+});
+
+describe("rival overview facts", () => {
+  const credit: RivalCredit = {
+    company_id: "kraken",
+    company_name: "Kraken",
+    active_loans: 2,
+    active_owed_pence: 1001,
+    defaulted_open_loans: 1,
+    defaulted_owed_pence: 300,
+    loans_repaid: 7,
+    loans_defaulted: 4,
+    loans_written_off: 2,
+    loan_written_off_pence: 700,
+    loans_walked_away: 3,
+    loan_walked_away_pence: 500,
+    open_mortgages: 1,
+    futures_claims_open_pence: 41,
+    futures_claims_total: 5,
+    futures_claims_written_off: 2,
+    lent_outstanding_pence: 9009,
+    smuggling_convictions: 6,
+    last_default_at: "2026-10-20T01:28:00Z",
+    bankrupt_at: null,
+    last_conviction_at: null,
+  };
+
+  it.each([
+    [1250, "12.50%"],
+    [50, "0.50%"],
+    [-50, "-0.50%"],
+    [0, "0.00%"],
+    [null, "Not observed"],
+    [undefined, "Not observed"],
+  ])("formats %s growth basis points as %s", (bps, expected) => {
+    expect(rivalPercent(bps)).toBe(expected);
+  });
+
+  it("adds only active and open-default loan debt, not overlapping lifetime losses", () => {
+    expect(rivalLoanDebt(credit)).toBe(1301);
+    expect(rivalLoanDebt(null)).toBeUndefined();
+    expect(
+      rivalLoanDebt({
+        ...credit,
+        active_owed_pence: 0,
+        defaulted_owed_pence: 0,
+      }),
+    ).toBe(0);
+  });
+
+  it("retains every published credit counter and the observed timestamps", () => {
+    const facts = Object.fromEntries(rivalCreditFacts(credit));
+    expect(facts["Active loan debt"]).toBe("10.01 Cr");
+    expect(facts["Defaulted loan debt"]).toBe("3.00 Cr");
+    expect(facts.Defaults).toBe("4");
+    expect(facts["Write-offs"]).toBe("2; 7.00 Cr lifetime");
+    expect(facts["Walk-aways"]).toBe("3; 5.00 Cr lifetime");
+    expect(facts["Open mortgages"]).toBe("1");
+    expect(facts["Open futures claims"]).toBe("0.41 Cr");
+    expect(facts["Futures claims"]).toBe("5 total; 2 written off");
+    expect(facts["Outstanding lending"]).toBe("90.09 Cr");
+    expect(facts["Smuggling convictions"]).toBe("6");
+    expect(facts["Last default"]).toBe("20 Oct, 01:28 UTC");
+    expect(facts.Bankruptcy).toBe("Not observed");
+    expect(facts["Last conviction"]).toBe("Not observed");
+  });
+
+  it("labels class observations without inferring owned fleet size", () => {
+    expect(observedShipsText({ hoy: 2, cutter: 1 })).toBe("Cutter 1; Hoy 2");
+    expect(observedShipsText({})).toBe("Not observed");
+  });
+
+  it("shows published expansion tons and shares without treating a bonus as income", () => {
+    expect(
+      rivalExpansionText([{ target_phase: 3, tons: 123, share_bps: 4567 }]),
+    ).toBe("Phase 3: 123 t (45.67% share)");
+    expect(rivalExpansionText([])).toBe("Not observed");
   });
 });

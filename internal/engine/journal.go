@@ -23,13 +23,15 @@ type durableAction struct {
 	Path   string `json:"path"`
 	// Nested JSON marshaling must not normalize an already-journaled request.
 	// The mission stores bytes; the action journal still sends the original JSON.
-	Body             []byte    `json:"body"`
-	CreatedAt        time.Time `json:"created_at"`
-	Before           ShipState `json:"before"`
-	FinancialSession string    `json:"financial_session"`
-	FinancialEpoch   uint64    `json:"financial_epoch"`
-	ControlEpoch     uint64    `json:"control_epoch"`
-	MaintenanceDock  bool      `json:"maintenance_dock,omitempty"`
+	Body                []byte    `json:"body"`
+	CreatedAt           time.Time `json:"created_at"`
+	Before              ShipState `json:"before"`
+	FinancialSession    string    `json:"financial_session"`
+	FinancialEpoch      uint64    `json:"financial_epoch"`
+	ControlEpoch        uint64    `json:"control_epoch"`
+	MaintenanceDock     bool      `json:"maintenance_dock,omitempty"`
+	FuturesStockBefore  *int64    `json:"futures_stock_before,omitempty"`
+	FuturesObserveAfter time.Time `json:"futures_observe_after,omitempty"`
 }
 
 var errFinancialCaptureInvalidated = errors.New("financial event invalidated the captured funds")
@@ -39,6 +41,8 @@ const neverSentFinancialEvent = "never_sent_financial_event"
 
 const neverSentPrecondition = "never_sent_precondition"
 const neverSentControlEvent = "never_sent_control_event"
+const neverSentFuturesTerms = "never_sent_futures_terms"
+const neverSentMarqueQuote = "never_sent_marque_quote_increase"
 
 var errActionPrecondition = errors.New("new action preconditions changed")
 
@@ -105,8 +109,16 @@ func (r *Runner) stageAction(ctx context.Context, mission *store.Mission, data *
 	if path == "/v1/company/settings" {
 		method = http.MethodPatch
 	}
+	actionID := ActionID(r.account.ID, mission.Generation, stage, data.Sequence)
+	if data.Futures != nil && stage == "futures-create" {
+		intent, err := r.futuresIntent(ctx, data)
+		if err != nil {
+			return err
+		}
+		actionID = intent.ActionID
+	}
 	data.Action = &durableAction{
-		ID:               ActionID(r.account.ID, mission.Generation, stage, data.Sequence),
+		ID:               actionID,
 		Stage:            stage,
 		Method:           method,
 		Path:             path,
@@ -117,6 +129,10 @@ func (r *Runner) stageAction(ctx context.Context, mission *store.Mission, data *
 		FinancialEpoch:   r.capturedFinancial,
 		ControlEpoch:     r.capturedControl,
 		MaintenanceDock:  maintenanceDock,
+	}
+	if data.Futures != nil && (stage == "futures-stock" || stage == "futures-close-stock") {
+		_, unlocked := r.futuresWarehouse()
+		data.Action.FuturesStockBefore = &unlocked
 	}
 	if stage == "provision" || stage == "dock" {
 		if err := r.incomeActionReady(ctx, ship, data, data.Action); err != nil {
@@ -164,12 +180,55 @@ func (r *Runner) stagedControlValid(action *durableAction) bool {
 // Only an intent without a journal entry, or with committed local no-send
 // proof, may be released. Retain the mission's actual cargo and obligations so
 // its existing stage planner can re-evaluate fresh state before a new request.
-func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission, data *missionData) (bool, error) {
+func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission, data *missionData, kind string) (bool, error) {
+	if data.Futures != nil {
+		exists, err := r.db.HasAction(ctx, r.account.ID, data.Action.ID)
+		if err != nil {
+			return false, err
+		}
+		if (kind == neverSentFinancialEvent || kind == neverSentControlEvent) && !exists {
+			data.Action.FinancialSession = r.financialSession
+			data.Action.FinancialEpoch = r.capturedFinancial
+			data.Action.ControlEpoch = r.capturedControl
+			return true, r.saveMission(ctx, mission, data)
+		}
+		if data.Action.Stage == "futures-create" {
+			if kind == neverSentFuturesTerms {
+				if err := r.db.RecordFuturesOutcome(ctx, r.account.ID, data.Futures.IntentID, "rejected", encode(map[string]string{"kind": kind})); err != nil {
+					return false, err
+				}
+			} else if exists {
+				nextID := ActionID(r.account.ID, mission.Generation, data.Action.Stage, data.Sequence+1)
+				if err := r.db.ReadmitFuturesIntent(ctx, r.account.ID, data.Futures.IntentID, nextID); err != nil {
+					return false, err
+				}
+			}
+		}
+		if kind == neverSentFuturesTerms {
+			mission.Phase = "futures_stopped"
+		} else if data.Action.Stage == "futures-lease" {
+			data.Futures.SetupAttempted = false
+		}
+		data.Action = nil
+		data.Sequence++
+		if kind == neverSentPrecondition || kind == neverSentFuturesTerms {
+			data.CooldownUntil = maxTime(data.CooldownUntil, time.Now().UTC().Add(5*time.Second))
+			return false, r.saveMission(ctx, mission, data)
+		}
+		return true, r.saveMission(ctx, mission, data)
+	}
 	if err := r.hold(ctx, mission.ShipID, "never-sent action's preconditions were invalidated; authoritative resynchronization and replanning precede new spending"); err != nil {
 		return false, err
 	}
 	if data.Plan.Kind == "maintenance" && data.Action.Stage == "offshore" {
 		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+	}
+	if kind == neverSentMarqueQuote {
+		// The issue endpoint has no price cap. Retire the frozen admission and
+		// wait out the cached quote's TTL before normal admission can spend again.
+		data.Marque = nil
+		mission.Phase = "done"
+		data.CooldownUntil = maxTime(data.CooldownUntil, time.Now().UTC().Add(marqueQuoteInterval))
 	}
 	data.Action = nil
 	data.Sequence++
@@ -179,6 +238,9 @@ func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission,
 // dispatch always uses the journal's immutable request, including on the first
 // attempt. It never reconstructs a request from a newly calculated plan.
 func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *missionData) (changed bool, err error) {
+	if data.Futures != nil {
+		defer r.futuresErrorHold(ctx, &changed, &err)
+	}
 	if data.Passage == nil && data.Action != nil && passengerStage(data.Action.Stage) {
 		return r.quarantinePassage(ctx, mission, data, errors.New("passenger journal action lacks its durable passage intent"))
 	}
@@ -205,18 +267,37 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 	// Account ownership serializes dispatch: an absent exact journal entry
 	// means this call, not an earlier process, will create the pending row.
 	firstSend := !exists
+	if firstSend && data.Futures != nil && action.Stage == "futures-settle" {
+		if changed, err := r.reconcileFuturesAction(ctx, mission, data, nil); changed || err != nil {
+			return changed, err
+		}
+	}
 	if firstSend && time.Now().Before(data.CooldownUntil) {
 		return false, r.hold(ctx, mission.ShipID, "unresolved staged action waiting for persisted retry cooldown")
 	}
 	if firstSend && (!r.stagedFundsValid(action) || !r.stagedControlValid(action)) {
-		return r.replanUnsentAction(ctx, mission, data)
+		kind := neverSentFinancialEvent
+		if !r.stagedControlValid(action) {
+			kind = neverSentControlEvent
+		}
+		return r.replanUnsentAction(ctx, mission, data, kind)
 	}
 	if firstSend {
 		if err := r.newActionPreflight(ctx, mission, data); err != nil {
+			if data.Futures != nil && !errors.Is(err, errFuturesPrecondition) && !errors.Is(err, errFuturesTerms) {
+				return false, err
+			}
 			if holdErr := r.hold(ctx, mission.ShipID, err.Error()); holdErr != nil {
 				return false, holdErr
 			}
-			return r.replanUnsentAction(ctx, mission, data)
+			kind := neverSentPrecondition
+			if errors.Is(err, errFuturesTerms) {
+				kind = neverSentFuturesTerms
+			}
+			if errors.Is(err, errMarqueQuoteIncreased) {
+				kind = neverSentMarqueQuote
+			}
+			return r.replanUnsentAction(ctx, mission, data, kind)
 		}
 	}
 	persisted, err := r.db.BeginAction(ctx, &store.Action{ID: action.ID, AccountID: r.account.ID, Method: action.Method, Path: action.Path, Body: action.Body})
@@ -236,8 +317,12 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 		if err := json.Unmarshal(persisted.Response, &evidence); err != nil {
 			return false, fmt.Errorf("invalid reconciliation evidence for %s: %w", persisted.ID, err)
 		}
-		if evidence.Kind == neverSentFinancialEvent || evidence.Kind == neverSentPrecondition || evidence.Kind == neverSentControlEvent {
-			return r.replanUnsentAction(ctx, mission, data)
+		if evidence.Kind == neverSentFinancialEvent || evidence.Kind == neverSentPrecondition ||
+			evidence.Kind == neverSentControlEvent || evidence.Kind == neverSentFuturesTerms || evidence.Kind == neverSentMarqueQuote {
+			return r.replanUnsentAction(ctx, mission, data, evidence.Kind)
+		}
+		if data.Futures != nil {
+			return r.reconcileFuturesAction(ctx, mission, data, persisted)
 		}
 		if passengerStage(action.Stage) {
 			return r.reconcilePassengerAction(ctx, mission, data, persisted)
@@ -282,6 +367,10 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 			return false, r.holdUnresolvedAction(ctx, mission.ShipID, action, "passenger action awaits bounded request-specific GET evidence before replay")
 		}
 	}
+	if data.Futures != nil && !r.opts.FuturesPilotEnabled &&
+		(action.Stage == "futures-create" || action.Stage == "futures-lease" || action.Stage == "futures-stock") {
+		return false, r.hold(ctx, mission.ShipID, "futures pilot disabled; unresolved request and coverage retained without a resend")
+	}
 	if time.Now().Before(data.CooldownUntil) {
 		r.wakeBy(data.CooldownUntil)
 		return false, r.hold(ctx, mission.ShipID, "unresolved action waiting for persisted retry cooldown")
@@ -298,6 +387,7 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 		entry.Write(r.scrubOutcomeFields(ctx, fields, actionOutcomeTexts(mission, data, action))...)
 	}
 	var response json.RawMessage
+	var preflightFailure error
 	r.lastMutationStatus.Store(0)
 	if firstSend {
 		err = r.api.DoWithPreflight(requestContext, persisted.Method, persisted.Path, persisted.Body, persisted.ID, &response, func() error {
@@ -308,7 +398,11 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 				return errFinancialCaptureInvalidated
 			}
 			if err := r.newActionPreflight(requestContext, mission, data); err != nil {
-				return fmt.Errorf("%w: %s", errActionPrecondition, err)
+				if data.Futures != nil && !errors.Is(err, errFuturesPrecondition) && !errors.Is(err, errFuturesTerms) {
+					preflightFailure = err
+					return err
+				}
+				return fmt.Errorf("%w: %w", errActionPrecondition, err)
 			}
 			if !r.stagedControlValid(action) {
 				return errControlCaptureInvalidated
@@ -328,6 +422,12 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 			}
 			if errors.Is(err, errActionPrecondition) {
 				kind = neverSentPrecondition
+				if errors.Is(err, errFuturesTerms) {
+					kind = neverSentFuturesTerms
+				}
+				if errors.Is(err, errMarqueQuoteIncreased) {
+					kind = neverSentMarqueQuote
+				}
 				if holdErr := r.hold(ctx, mission.ShipID, err.Error()); holdErr != nil {
 					return false, holdErr
 				}
@@ -342,15 +442,37 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 			if err := r.db.ReconcileAction(ctx, persisted.ID, evidence); err != nil {
 				return false, err
 			}
-			return r.replanUnsentAction(ctx, mission, data)
+			return r.replanUnsentAction(ctx, mission, data, kind)
 		}
 	} else {
 		err = r.api.DoWithPreflight(requestContext, persisted.Method, persisted.Path, persisted.Body, persisted.ID, &response, func() error {
 			if r.capturedControl != r.publishedControl.Load() {
 				return errControlCaptureInvalidated
 			}
+			if data.Futures != nil {
+				if err := r.futuresAuthority(); err != nil {
+					return err
+				}
+				if action.Stage == "futures-stock" {
+					if !r.fresh("books/amsterdam") {
+						return fmt.Errorf("%w: pending procurement requires current bounded customs", errFuturesPrecondition)
+					}
+					return r.futuresOrderPreflight(action)
+				}
+				if action.Stage == "futures-settle" || action.Stage == "futures-close-stock" || action.Stage == "futures-close-lease" {
+					if err := r.futuresPreflight(requestContext, data); err != nil {
+						if !errors.Is(err, errFuturesPrecondition) && !errors.Is(err, errFuturesTerms) {
+							preflightFailure = err
+						}
+						return err
+					}
+				}
+			}
 			return nil
 		})
+	}
+	if preflightFailure != nil {
+		return false, preflightFailure
 	}
 	if ctx.Err() != nil {
 		return false, ctx.Err()
@@ -938,6 +1060,9 @@ func (r *Runner) spendingPort(ship ShipState) (Port, error) {
 // This applies only to a proven first send. Attempted requests and stored
 // outcomes must retain their exact journal identity despite later state changes.
 func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission, data *missionData) error {
+	if data.Futures != nil {
+		return r.futuresPreflight(ctx, data)
+	}
 	if _, _, ok := r.serverBounds(); !ok || r.stateCache.Clock.Paused || r.stateCache.Clock.Calendar.TimeScale <= 0 {
 		return errors.New("new action requires current successful server clock authority")
 	}
@@ -1205,7 +1330,7 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		if data.Relocation != nil {
 			return r.relocationDepartureReady(ctx, ship, data)
 		}
-		proceed, err := r.procurementDepartureDecision(ship, request.Destination, data)
+		proceed, err := r.committedProcurementDepartureDecision(ctx, ship, request.Destination, data)
 		if err != nil {
 			return err
 		}
@@ -1372,6 +1497,9 @@ func (r *Runner) reconcileObservedAction(ctx context.Context, mission *store.Mis
 	}
 	if passengerStage(data.Action.Stage) {
 		return r.reconcilePassengerAction(ctx, mission, data, action)
+	}
+	if data.Futures != nil {
+		return r.reconcileFuturesAction(ctx, mission, data, action)
 	}
 	if data.Action.Stage == "loan-accept" || data.Action.Stage == "loan-repay" {
 		return r.reconcileLoanAction(ctx, mission, data, action)

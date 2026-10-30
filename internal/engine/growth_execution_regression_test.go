@@ -847,10 +847,15 @@ func TestGrowthResidualOperatingQuoteReservesOtherUnboughtAndOutstandingLotsOnce
 		t.Fatal(err)
 	}
 	asks := bookCommodity(input.Markets[recoveryHomePort], recoveryGrain)
-	bids := bookCommodity(input.Markets[recoveryFarPort], recoveryGrain)
+	// Destination bids stay immutable; pricing applies their scalar reservation exactly once.
+	availableBids := int64(10_000) - other.Quantity - 3
+	revenue, _, _, _, reason, _ := destinationRevenue(input, recoveryFarPort, recoveryGrain, availableBids, time.Time{})
 	if depthCapacity(asks.Depth.Asks, 100, true) != max(0, 20-other.Quantity) ||
-		depthCapacity(bids.Depth.Bids, 1_000, false) != 10_000-other.Quantity-3 {
+		reason != "" || revenue != availableBids*1_000 {
 		t.Fatal("owned residual lot omitted or duplicated an incumbent source/destination reservation")
+	}
+	if _, _, _, _, reason, _ := destinationRevenue(input, recoveryFarPort, recoveryGrain, availableBids+1, time.Time{}); reason == "" {
+		t.Fatal("owned residual lot reused another incumbent's reserved destination bid")
 	}
 	if err := runner.growthAllocationReady(w.h.ctx, ship, &data, data.Action); err == nil {
 		t.Fatal("old cheap first-send allocation consumed asks already committed to an incumbent")

@@ -35,6 +35,8 @@ func command(args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
 		fmt.Println(`Tradewinds
   register [--handle Yukine --company 'The Pokemon Pirates' --home le_havre]
+  underworld-key [--handle Yukine]
+  futures-rearm --account <account-id>
   accounts
   run [--execute]
 
@@ -42,7 +44,7 @@ Credentials are encrypted in PostgreSQL.
 run observes by default; --execute enables trading and fleet growth.`)
 		return nil
 	}
-	if args[0] != "register" && args[0] != "accounts" && args[0] != "run" {
+	if args[0] != "register" && args[0] != "underworld-key" && args[0] != "futures-rearm" && args[0] != "accounts" && args[0] != "run" {
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 
@@ -68,6 +70,10 @@ run observes by default; --execute enables trading and fleet growth.`)
 	switch args[0] {
 	case "register":
 		return register(cfg, db, log, args[1:])
+	case "underworld-key":
+		return underworldKey(cfg, db, log, args[1:])
+	case "futures-rearm":
+		return futuresRearm(db, log, args[1:])
 	case "accounts":
 		if len(args) != 1 {
 			return errors.New("accounts takes no arguments")
@@ -84,6 +90,24 @@ run observes by default; --execute enables trading and fleet growth.`)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func futuresRearm(db *store.Store, log *zap.Logger, args []string) error {
+	flags := flag.NewFlagSet("futures-rearm", flag.ContinueOnError)
+	accountID := flags.String("account", "", "Exact configured account ID")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *accountID == "" {
+		return errors.New("futures-rearm requires --account and no positional arguments")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := engine.RearmUnusedFuturesPilot(ctx, db, *accountID); err != nil {
+		return err
+	}
+	log.Info("unused futures pilot explicitly re-armed", zap.String("account_id", *accountID))
+	return nil
 }
 
 func run(cfg config.Config, db *store.Store, log *zap.Logger, args []string) error {
@@ -110,6 +134,15 @@ func run(cfg config.Config, db *store.Store, log *zap.Logger, args []string) err
 	)
 	app.Run()
 	return app.Err()
+}
+
+type underworldReader struct {
+	client *gameapi.Client
+}
+
+func (reader underworldReader) Get(ctx context.Context, path string, out any) error {
+	// A transport retry would spend a second read from the same arrival.
+	return reader.client.GetOnce(ctx, path, out)
 }
 
 func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Config, db *store.Store, log *zap.Logger, execute bool) {
@@ -159,6 +192,12 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 					continue
 				}
 				client := gameapi.New(cfg.APIURL, credentials.APIKey, accountLog.Named("api"))
+				var underworld engine.UnderworldAPI
+				if credentials.UnderworldAPIKey != "" {
+					observer := gameapi.New(cfg.APIURL, credentials.UnderworldAPIKey, accountLog.Named("underworld"))
+					observeAccountRequests(observer, db, account.ID, accountLog)
+					underworld = underworldReader{client: observer}
+				}
 				engineLog := accountLog.Named("engine")
 				runner := engine.New(client, db, account, engineLog, engine.Options{
 					Execute:             execute,
@@ -166,9 +205,11 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 					MaxPaybackDays:      cfg.MaxPaybackDays,
 					CapacityPaybackDays: cfg.CapacityPaybackDays,
 					MarquesEnabled:      cfg.MarquesEnabled,
+					FuturesPilotEnabled: cfg.FuturesPilotEnabled,
 					ReplayRetentionDays: cfg.ReplayRetentionDays,
 					ReplayMaxGiB:        cfg.ReplayMaxGiB,
 					GameVersion:         gameVersion.Current,
+					UnderworldAPI:       underworld,
 				})
 				runners = append(runners, accountRunner{runner: runner, log: engineLog})
 			}

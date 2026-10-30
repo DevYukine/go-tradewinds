@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -65,6 +67,113 @@ func TestCompetitionVoyageRanking(t *testing.T) {
 	rankPlans(plans, competitionPlanning())
 	if plans[len(plans)-1].Accepted {
 		t.Fatal("competition promoted a rejected voyage")
+	}
+}
+
+func TestRankContinuationCachesQuayForecastAndLeavesInputUntouched(t *testing.T) {
+	in := moneyRankInput(t, time.Now().UTC())
+	presence, dark := moneyRankAlternatives(t, in)
+	second := presence
+	second.Commodity = "other-cargo"
+	before := encode(in)
+	plans := []Plan{presence, second, dark}
+	rankPlans(plans, in)
+	if plans[0].Continuation == nil || plans[0].Continuation != plans[1].Continuation {
+		t.Fatalf("same-quay alternatives did not share the planning-pass forecast: %+v", plans)
+	}
+	if !reflect.DeepEqual(before, encode(in)) {
+		t.Fatal("onward planning mutated observed ship, market or reservation state")
+	}
+	// A later pass must not reuse a continuation whose fixed freight vanished.
+	in.Contracts = nil
+	rankPlans(plans, in)
+	for _, plan := range plans {
+		if plan.Destination == "hamburg" && (plan.Continuation == nil || plan.Continuation.NetPence >= 0) {
+			t.Fatalf("a prior pass's freight survived its removal: %+v", plan)
+		}
+	}
+}
+
+func TestRankContinuationSearchStopsAfterThreeFirstLegs(t *testing.T) {
+	in := moneyRankInput(t, time.Now().UTC())
+	presence, dark := moneyRankAlternatives(t, in)
+	plans := []Plan{dark, dark, dark, presence}
+	rankPlans(plans, in)
+	for _, plan := range plans {
+		if plan.Destination == "hamburg" && (plan.Continuation == nil || plan.Continuation.NetPence >= 0) {
+			t.Fatalf("fourth outward candidate triggered an unbounded onward search: %+v", plan)
+		}
+	}
+}
+
+func TestRankInnerSearchReturnsAtMostThreeAdmittedLanes(t *testing.T) {
+	in := moneyRankInput(t, time.Now().UTC())
+	freight := in.Contracts[0]
+	in.Contracts = nil
+	for i := range 6 {
+		candidate := freight
+		candidate.ID = fmt.Sprintf("onward-freight-%d", i)
+		in.Contracts = append(in.Contracts, candidate)
+	}
+	in.Ship.Ship.CurrentPortID = "hamburg"
+	in.singleLegOnly = true
+	plans := PlanVoyages(in)
+	if len(plans) != 3 {
+		t.Fatalf("bounded inner search returned %d lanes, want three", len(plans))
+	}
+	for _, plan := range plans {
+		if !plan.Accepted || plan.Continuation != nil || plan.Economics.ExpectedNetPence != 500 {
+			t.Fatalf("inner search skipped admission or recursively ranked another continuation: %+v", plan)
+		}
+	}
+}
+
+func TestRankInnerSizingCanRejectOneTonAndAdmitProfitableLargerLot(t *testing.T) {
+	in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 200, 10, 30)
+	origin := in.Ports["amsterdam"]
+	origin.BerthDuesPerDayPence = 800
+	in.Ports["amsterdam"] = origin
+	in.singleLegOnly = true
+	plans := PlanVoyages(in)
+	if len(plans) == 0 || !plans[0].Accepted || plans[0].Quantity != 10 || plans[0].Economics.ExpectedNetPence != 790 {
+		t.Fatalf("one-ton shortlist quote replaced proper whole-ton admission: %+v", plans)
+	}
+}
+
+func TestRankOnwardDeadlineIncludesFirstLegDuration(t *testing.T) {
+	in := moneyRankInput(t, time.Now().UTC())
+	deadline := in.Now.Add(gameDuration(1.25, in.Clock.Calendar.TimeScale) - time.Second)
+	in.Contracts[0].ExpiresAt = &deadline
+	presence, _ := moneyRankAlternatives(t, in)
+	if presence.Continuation == nil || presence.Continuation.NetPence >= 0 {
+		t.Fatalf("freight expiring before outward arrival financed a continuation: %+v", presence)
+	}
+}
+
+func TestCalibrationRegimeBoundarySurvivesRunnerRestart(t *testing.T) {
+	h := newRecoveryHarness(t)
+	first := h.runner(primaryTestKey)
+	if err := first.refreshRevenueCalibration(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	since := decode[time.Time](first.snapshot, "_revenue_calibration_since")
+	if since.IsZero() {
+		t.Fatal("calibration did not establish its deployment boundary")
+	}
+	second := h.runner(primaryTestKey)
+	snapshot, err := h.db.Snapshot(h.ctx, h.account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.snapshot = snapshot
+	if err := second.refreshRevenueCalibration(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := decode[time.Time](second.snapshot, "_revenue_calibration_since"); !got.Equal(since) {
+		t.Fatalf("restart reset calibration boundary from %v to %v", since, got)
+	}
+	if len(decode[map[string]int64](second.snapshot, "_revenue_calibration")) != 0 {
+		t.Fatal("new pricing regime inherited pre-deployment calibration")
 	}
 }
 
@@ -366,5 +475,295 @@ func TestCompetitionCapacityAtYardAdmissionUnchanged(t *testing.T) {
 	got.Competition, got.DepthCompetition = want.Competition, want.DepthCompetition
 	if err != nil || !reflect.DeepEqual(got, want) || !reflect.DeepEqual(required, gotRequired) {
 		t.Fatalf("competition changed yard admission, stores or funding: %+v vs %+v, %v", got, want, err)
+	}
+}
+
+func TestMoneyCalibrationFixedFreightRewardIsNotCargoRevenue(t *testing.T) {
+	for _, kind := range []string{"spot+freight", "charter+freight", "freight"} {
+		t.Run(kind, func(t *testing.T) {
+			in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 1000, 2, 30)
+			in.RevenueCalibration = map[string]int64{"depth": 9000, "contract": 9000}
+			in.marketEventsInvalid = true
+			in.Contracts = []Contract{
+				{ID: "fixed-reward", ContractType: "freight", Status: "open", IssuerCompanyID: "other",
+					OriginPortID: "amsterdam", DestPortID: "hamburg", CommodityID: "grain", QuantityRequired: 1, RewardPence: 1000},
+				{ID: "calibrated-charter", ContractType: "charter", Status: "open", OriginPortID: "hamburg",
+					CommodityID: "canvas_sails", RemainingQuantity: 1, RewardPerTonPence: new(int64(1000))},
+			}
+			for _, plan := range PlanVoyages(in) {
+				if plan.Kind != kind || kind != "freight" && plan.Commodity != "canvas_sails" {
+					continue
+				}
+				wantRevenue, wantRaw, wantStress := int64(1900), int64(2000), int64(0)
+				if kind == "spot+freight" {
+					wantStress = 225
+				}
+				if kind == "freight" {
+					wantRevenue, wantRaw = 1000, 1000
+				}
+				if !plan.Accepted || plan.Economics.RevenuePence != wantRevenue ||
+					plan.Economics.UncalibratedRevenuePence == nil || *plan.Economics.UncalibratedRevenuePence != wantRaw ||
+					plan.Economics.PriceUncertaintyStressPence != wantStress {
+					t.Fatalf("cargo calibration/stress changed the fixed freight reward: %+v", plan)
+				}
+				return
+			}
+			t.Fatalf("missing %s fixture quote", kind)
+		})
+	}
+}
+
+func TestMoneyRankRejectedStressLanesCannotCrowdOutOnwardFreight(t *testing.T) {
+	in := moneyInput(t, time.Now().UTC(), "canvas_sails", 800, 1000, 10, 30)
+	for i := range 2 {
+		commodity := fmt.Sprintf("stressed-cargo-%d", i)
+		in.Catalog.Ports[1].Imports = append(in.Catalog.Ports[1].Imports, commodity)
+		for _, port := range []string{"amsterdam", "hamburg"} {
+			extra := moneyMarket(t, port, commodity, 800, 1000, 1000)
+			book := in.Markets[port]
+			book.Books = append(book.Books, extra.Books[0])
+			in.Markets[port] = book
+		}
+	}
+	in.Contracts = []Contract{{
+		ID: "admissible-onward-freight", ContractType: "freight", Status: "open", IssuerCompanyID: "other",
+		OriginPortID: "amsterdam", DestPortID: "hamburg", CommodityID: "grain", QuantityRequired: 10, RewardPence: 100,
+	}}
+	in.singleLegOnly, in.marketEventsInvalid = true, true
+	plans := PlanVoyages(in)
+	if len(plans) == 0 || !plans[0].Accepted || plans[0].ContractID != "admissible-onward-freight" {
+		t.Fatalf("rejected event-stressed gross margins displaced admissible onward work: %+v", plans)
+	}
+}
+
+func TestMoneyRankBallastAndRepeatUseIdenticalReturnCosts(t *testing.T) {
+	in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 1000, 1, 30)
+	in.Catalog.ShipClasses[0].CrewRequired = 8
+	in.Ship.Stores.ProvisionsTons = 20
+	origin := in.Ports["amsterdam"]
+	origin.QueuedShips, origin.BerthDuesPerDayPence = 3, 79
+	in.Ports["amsterdam"] = origin
+	plan := moneySpot(t, in, "canvas_sails")
+	hull, _ := findHull(in.Catalog, in.Ship.Ship.ShipClass)
+	next := ballastContinuation(in, plan, hull)
+	if !plan.Accepted || next == nil || plan.Economics.BallastRepeatGameDays <= 0 ||
+		math.Abs(plan.Economics.BallastRepeatGameDays-plan.Economics.GameDays-next.GameDays) > 1e-12 ||
+		plan.Economics.BallastRepeatNetPence != plan.Economics.ExpectedNetPence+next.NetPence {
+		t.Fatalf("rank ballast and repeat forecast disagree on return time or expense: %+v, %+v", plan, next)
+	}
+}
+
+func TestMoneyRankCompetitionStillAppliesToNegativeCombinedScores(t *testing.T) {
+	in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 1000, 1, 30)
+	high := in.Catalog.Ports[1]
+	high.BankingRegion = "high"
+	in.Catalog.Ports[1] = high
+	low := high
+	low.ID, low.BankingRegion = "low-port", "low"
+	in.Catalog.Ports = append(in.Catalog.Ports, low)
+	in.Ports[low.ID] = in.Ports["hamburg"]
+	back := in.Routes[routeKey("hamburg", "amsterdam", "hoy")]
+	back.FromPort = low.ID
+	key := routeKey(low.ID, "amsterdam", "hoy")
+	in.Routes[key], in.Metadata["routes/"+key] = back, sourcingFreshMeta(in.Now)
+	origin := in.Ports["amsterdam"]
+	origin.BerthDuesPerDayPence = 4000
+	in.Ports["amsterdam"] = origin
+	in.Competition = competitionFixture()
+	plans := []Plan{
+		{Kind: "spot", Accepted: true, Origin: "amsterdam", Destination: "hamburg", Economics: Economics{ExpectedNetPence: 100, GameDays: 1, NetPencePerGameDay: 100}},
+		{Kind: "spot", Accepted: true, Origin: "amsterdam", Destination: low.ID, Economics: Economics{ExpectedNetPence: 99, GameDays: 1, NetPencePerGameDay: 99}},
+	}
+	delete(in.Metadata, "books/hamburg")
+	rankPlans(plans, in)
+	if plans[0].Destination != low.ID || !plans[0].competitionComparable || planRankScore(plans[0].Economics) >= 0 {
+		t.Fatalf("nonpositive two-leg scores disabled the competition tolerance: %+v", plans)
+	}
+}
+
+func TestMoneyRankFundingKeepsLiveAndOfflineScoresInSync(t *testing.T) {
+	for _, continued := range []bool{false, true} {
+		t.Run(fmt.Sprint(continued), func(t *testing.T) {
+			plan := Plan{Kind: "spot", Accepted: true, Economics: Economics{
+				PurchasePence: 100, RevenuePence: 300, ExpectedNetPence: 200, StressNetPence: 200,
+				GameDays: 1, NetPencePerGameDay: 200, RankScoreSet: continued, RankScorePencePerGameDay: 12345,
+				BallastRepeatGameDays: 2, BallastRepeatNetPence: 100,
+			}}
+			if continued {
+				plan.Continuation = &Continuation{Destination: "return", NetPence: 100, GameDays: 1}
+			}
+			got := addFundingFees(plan, 10)
+			want := 190.0
+			if continued {
+				want = 145
+			}
+			if !got.Accepted || planRankScore(got.Economics) != want || got.Economics.RankScoreSet != continued {
+				t.Fatalf("live funding left a stale continuation or single-leg score: %+v", got)
+			}
+			if !continued && (got.Economics.RankScorePencePerGameDay != 0 || capacityVoyageRate(got.Economics) != 45) {
+				t.Fatalf("funding retained continuation-rank metadata or lost the costed return: %+v", got)
+			}
+			in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 200, 1, 30)
+			got.Origin, got.Destination, got.Commodity, got.Quantity, got.BuyLimitPence = "amsterdam", "hamburg", "canvas_sails", 1, 100
+			offline, _ := PlanFunding(in, got)
+			want = 200
+			if continued {
+				want = 150
+			}
+			if !offline.Accepted || planRankScore(offline.Economics) != want || offline.Economics.RankScoreSet != continued {
+				t.Fatalf("offline re-quote failed to refund fees and refresh the score: %+v", offline)
+			}
+			if !continued && (offline.Economics.RankScorePencePerGameDay != 0 || capacityVoyageRate(offline.Economics) != 50) {
+				t.Fatalf("offline funding retained continuation-rank metadata or lost the costed return: %+v", offline)
+			}
+		})
+	}
+}
+
+func TestMoneyRankScoreSurvivesPlanSerialization(t *testing.T) {
+	for _, score := range []float64{-100, 0, 300} {
+		before := Plan{Accepted: true, Economics: Economics{
+			GameDays: 1, ExpectedNetPence: 1000, NetPencePerGameDay: 1000, RankScorePencePerGameDay: score, RankScoreSet: true,
+		}}
+		var after Plan
+		if err := json.Unmarshal(encode(before), &after); err != nil {
+			t.Fatal(err)
+		}
+		if got := planRankScore(after.Economics); got != score || capacityVoyageRate(after.Economics) != score {
+			t.Fatalf("restart replaced computed %.0f score with single-leg economics: %+v", score, after)
+		}
+	}
+}
+
+func TestMoneyRankAdmissionOnlyDoesNotSearchContinuations(t *testing.T) {
+	in := moneyRankInput(t, time.Now().UTC())
+	if !hasAcceptedVoyage(in) {
+		t.Fatal("admission-only lookup lost an executable outward leg")
+	}
+	for _, plan := range planVoyages(in) {
+		if plan.Continuation != nil || plan.Economics.RankScoreSet {
+			t.Fatalf("admission-only planning computed an unnecessary onward forecast: %+v", plan)
+		}
+	}
+}
+
+func TestMoneyCalibrationGrowthCharterRevenueIsScaledOnce(t *testing.T) {
+	h := newRecoveryHarness(t)
+	runner := h.runner(primaryTestKey)
+	in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 1000, 1, 30)
+	in.RevenueCalibration = map[string]int64{"contract": 9500}
+	in.Contracts = []Contract{{
+		ID: "growth-calibration-charter", ContractType: "charter", Status: "open", OriginPortID: "hamburg",
+		CommodityID: "canvas_sails", RemainingQuantity: 1000, RewardPerTonPence: new(int64(1000)),
+	}}
+	hull, _ := findHull(in.Catalog, in.Ship.Ship.ShipClass)
+	origin, _ := findPort(in.Catalog, "amsterdam")
+	plan := evaluatePlan(in, hull, origin, Plan{
+		Kind: "charter", Origin: "amsterdam", Destination: "hamburg", Commodity: "canvas_sails", ContractID: in.Contracts[0].ID, Quantity: 1,
+	}, 1000, 0)
+	if !plan.Accepted || plan.Economics.RevenuePence != 950 {
+		t.Fatalf("fixture lacks a once-calibrated charter: %+v", plan)
+	}
+	evidence := &growthEvidence{asOf: in.Now, markets: in.Markets, lanes: map[string]store.GrowthHistory{}}
+	if _, _, err := runner.evaluateGrowthCandidate(h.ctx, origin, hull, &plan, in, YardQuote{}, 0, evidence); err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Accepted || plan.Economics.RevenuePence != 950 {
+		t.Fatalf("marginal growth reprice calibrated the charter twice: %+v", plan)
+	}
+}
+
+func TestMoneyRankOnwardShortlistUsesNetCostsForCargoAndFreight(t *testing.T) {
+	in := moneyInput(t, time.Now().UTC(), "canvas_sails", 1000, 1200, 10, 1000)
+	origin := in.Ports["amsterdam"]
+	origin.BerthDuesPerDayPence = 2000
+	in.Ports["amsterdam"] = origin
+	for i := range 2 {
+		commodity := fmt.Sprintf("costed-cargo-%d", i)
+		in.Catalog.Ports[1].Imports = append(in.Catalog.Ports[1].Imports, commodity)
+		for _, port := range []string{"amsterdam", "hamburg"} {
+			extra := moneyMarket(t, port, commodity, 1000, 1200, 1000)
+			book := in.Markets[port]
+			book.Books = append(book.Books, extra.Books[0])
+			in.Markets[port] = book
+		}
+	}
+	in.Contracts = []Contract{{
+		ID: "higher-net-freight", ContractType: "freight", Status: "open", IssuerCompanyID: "other",
+		OriginPortID: "amsterdam", DestPortID: "hamburg", CommodityID: "grain", QuantityRequired: 10, RewardPence: 2200,
+	}}
+	in.singleLegOnly = true
+	plans := PlanVoyages(in)
+	if len(plans) == 0 || !plans[0].Accepted || plans[0].ContractID != "higher-net-freight" {
+		t.Fatalf("optimistic cargo gross margins crowded out higher-net freight: %+v", plans)
+	}
+}
+
+func TestMoneyCalibrationAllFreightRewardsSurviveIncomeRepricing(t *testing.T) {
+	for _, kind := range []string{"spot+freight", "charter+freight"} {
+		t.Run(kind, func(t *testing.T) {
+			in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 1000, 3, 30)
+			in.RevenueCalibration = map[string]int64{"depth": 9000, "contract": 9000}
+			in.marketEventsInvalid = true
+			in.Contracts = []Contract{
+				{ID: "first-freight", ContractType: "freight", Status: "open", IssuerCompanyID: "other",
+					OriginPortID: "amsterdam", DestPortID: "hamburg", CommodityID: "grain", QuantityRequired: 1, RewardPence: 1000},
+				{ID: "second-freight", ContractType: "freight", Status: "open", IssuerCompanyID: "other",
+					OriginPortID: "amsterdam", DestPortID: "hamburg", CommodityID: "grain", QuantityRequired: 1, RewardPence: 2000},
+				{ID: "cargo-charter", ContractType: "charter", Status: "open", OriginPortID: "hamburg",
+					CommodityID: "canvas_sails", RemainingQuantity: 1, RewardPerTonPence: new(int64(1000))},
+			}
+			plan := priceIncomePlan(in, Plan{
+				Kind: kind, ShipID: in.Ship.Ship.ID, Origin: "amsterdam", Destination: "hamburg",
+				Commodity: "canvas_sails", Quantity: 1, ContractID: "cargo-charter",
+				FreightIDs: []string{"first-freight", "second-freight"},
+			}, 0)
+			wantStress := int64(0)
+			if kind == "spot+freight" {
+				wantStress = 225
+			}
+			if !plan.Accepted || plan.Economics.RevenuePence != 3900 || plan.Economics.RevenueCalibrationBPS != 9000 ||
+				plan.Economics.UncalibratedRevenuePence == nil || *plan.Economics.UncalibratedRevenuePence != 4000 ||
+				plan.Economics.RevenueCalibrationReason != "" || plan.Economics.PriceUncertaintyStressPence != wantStress {
+				t.Fatalf("income reprice calibrated a fixed reward or stressed the freight receipts: %+v", plan)
+			}
+		})
+	}
+}
+
+func TestMoneyCalibrationMissingFreightTermsPreserveRevenueAndReason(t *testing.T) {
+	for _, kind := range []string{"spot+freight", "charter+freight"} {
+		t.Run(kind, func(t *testing.T) {
+			in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 1000, 3, 30)
+			in.RevenueCalibration = map[string]int64{"depth": 9000, "contract": 9000}
+			in.marketEventsInvalid = true
+			in.Contracts = []Contract{{
+				ID: "known-freight", ContractType: "freight", Status: "open", IssuerCompanyID: "other",
+				OriginPortID: "amsterdam", DestPortID: "hamburg", CommodityID: "grain", QuantityRequired: 1, RewardPence: 1000,
+			}}
+			hull, _ := findHull(in.Catalog, in.Ship.Ship.ShipClass)
+			origin, _ := findPort(in.Catalog, "amsterdam")
+			revenue, wantStress := int64(4000), int64(0)
+			if kind == "spot+freight" {
+				revenue, wantStress = 3000, 250
+			}
+			plan := pricePlan(in, hull, origin, Plan{
+				Kind: kind, ShipID: in.Ship.Ship.ID, Origin: "amsterdam", Destination: "hamburg",
+				Commodity: "canvas_sails", Quantity: 1, FreightIDs: []string{"known-freight", "missing-freight"},
+			}, revenue, 2)
+			if !plan.Accepted || plan.Economics.RevenuePence != 4000 || plan.Economics.RevenueCalibrationBPS != 10000 ||
+				plan.Economics.UncalibratedRevenuePence == nil || *plan.Economics.UncalibratedRevenuePence != 4000 ||
+				plan.Economics.RevenueCalibrationReason == "" || plan.Economics.PriceUncertaintyStressPence != wantStress {
+				t.Fatalf("missing fixed terms silently calibrated an unknown receipt split: %+v", plan)
+			}
+			var restored Plan
+			if err := json.Unmarshal(encode(plan), &restored); err != nil {
+				t.Fatal(err)
+			}
+			if restored.Economics.RevenueCalibrationReason != plan.Economics.RevenueCalibrationReason ||
+				restored.Economics.RevenueCalibrationBPS != 10000 || restored.Economics.RevenuePence != 4000 {
+				t.Fatalf("persisted plan lost its explicit calibration hold: %+v", restored)
+			}
+		})
 	}
 }

@@ -282,7 +282,7 @@ func TestMarqueFirstSendRefreshRejectsChangedPriceOrAdmission(t *testing.T) {
 			case "floor":
 				proxy.quote.FloorApplied = true
 			case "return":
-				proxy.quote.ExpectedNetPrizePence = 13_999
+				proxy.quote.ExpectedNetPrizePence = 14_999
 			}
 			proxy.mu.Unlock()
 			if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed {
@@ -296,20 +296,101 @@ func TestMarqueFirstSendRefreshRejectsChangedPriceOrAdmission(t *testing.T) {
 	}
 }
 
-func TestMarqueFirstSendAcceptsTenPercentPriceIncrease(t *testing.T) {
+func TestMarqueFirstSendRejectsOnePennyPriceIncrease(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
 	proxy := newMarqueExecutionAPI(h)
 	runner := h.runner(primaryTestKey)
 	mission, data := stageMarqueExecution(t, h, runner)
 	proxy.mu.Lock()
-	proxy.quote.CostPence = 11_000
+	proxy.quote.CostPence++
 	proxy.mu.Unlock()
 	if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed {
-		t.Fatalf("ten percent boundary should remain admitted: changed=%v err=%v", changed, err)
+		t.Fatalf("one-penny increase should replan without sending: changed=%v err=%v", changed, err)
 	}
-	if h.api.mutationCount("/v1/fleet/issue-marque") != 1 {
-		t.Fatal("admitted ten percent price increase was not issued")
+	if h.api.mutationCount("/v1/fleet/issue-marque") != 0 {
+		t.Fatal("price above the admitted quote was issued")
+	}
+}
+
+func TestMarquePriceIncreaseRetiresAdmissionAndLetsShipsWork(t *testing.T) {
+	for _, finalPreflight := range []bool{false, true} {
+		t.Run(fmt.Sprintf("final_preflight=%t", finalPreflight), func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			proxy := newMarqueExecutionAPI(h)
+			row := sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)
+			row["ship"].(map[string]any)["status"] = "berthed"
+			row["voyage"], row["route_legs"] = nil, []any{}
+			h.api.setFleet([]map[string]any{row})
+			runner := h.runner(primaryTestKey)
+			mission, data := stageMarqueExecution(t, h, runner)
+			proxy.mu.Lock()
+			if finalPreflight {
+				proxy.finalPriceIncrease = true
+			} else {
+				proxy.quote.CostPence++
+			}
+			proxy.mu.Unlock()
+			before := time.Now().UTC()
+			if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed {
+				t.Fatalf("retire increased quote without sending: changed=%t err=%v", changed, err)
+			}
+			mission, data = h.mission("__marque")
+			if data.Action != nil || data.Marque != nil || data.Sequence != 1 || mission.Phase != "done" ||
+				data.CooldownUntil.Before(before.Add(30*time.Minute)) || data.CooldownUntil.After(time.Now().Add(30*time.Minute)) {
+				t.Fatalf("price rejection did not durably retire admission with a bounded delay: phase=%s data=%+v", mission.Phase, data)
+			}
+			proxy.mu.Lock()
+			reads := proxy.quoteReads
+			proxy.mu.Unlock()
+			restarted := h.runner(primaryTestKey)
+			refreshMarqueExecution(t, h, restarted)
+			for range 2 {
+				if changed, err := restarted.work(h.ctx); err != nil || !changed {
+					t.Fatalf("retired marque blocked unrelated ship work: changed=%t err=%v holds=%v", changed, err, restarted.holding)
+				}
+			}
+			_, retired := h.mission("__marque")
+			if retired.Action != nil || retired.Marque != nil || retired.Sequence != 1 || !retired.CooldownUntil.Equal(data.CooldownUntil) {
+				t.Fatal("restart restaged the stale admission or lost its retry deadline")
+			}
+			proxy.mu.Lock()
+			newReads := proxy.quoteReads
+			proxy.mu.Unlock()
+			if newReads != reads || h.api.mutationCount("/v1/fleet/issue-marque") != 0 || len(h.pending()) != 0 ||
+				h.api.mutationCount("/v1/shipyard/modify-ship") != 1 {
+				t.Fatal("price rejection repeated requotes or payments, or starved the ship's refit")
+			}
+
+			mission, retired = h.mission("__marque")
+			retired.CooldownUntil = time.Now().Add(-time.Second)
+			if err := restarted.saveMission(h.ctx, mission, &retired); err != nil {
+				t.Fatal(err)
+			}
+			if changed, err := restarted.driveMarque(h.ctx, mission, &retired); err != nil || !changed {
+				t.Fatalf("expired retry delay did not release the retired mission: changed=%t err=%v", changed, err)
+			}
+			meta := restarted.meta["marque_quotes/"+marqueExecutionZone]
+			meta.UpdatedAt, meta.AttemptedAt = time.Now().Add(-31*time.Minute), time.Now().Add(-31*time.Minute)
+			restarted.meta["marque_quotes/"+marqueExecutionZone] = meta
+			if changed, err := restarted.considerMarque(h.ctx); err != nil || changed {
+				t.Fatalf("expired cached quote was admitted again: changed=%t err=%v", changed, err)
+			}
+			proxy.mu.Lock()
+			proxy.finalPriceIncrease = false
+			proxy.quote.CostPence = 11_001
+			proxy.mu.Unlock()
+			mission, admitted := stageMarqueExecution(t, h, restarted)
+			if admitted.Marque.Quote.CostPence != 11_001 {
+				t.Fatal("fresh price did not pass through a new frozen admission")
+			}
+			if _, err := restarted.dispatch(h.ctx, mission, &admitted); err != nil {
+				t.Fatal(err)
+			}
+			if h.api.mutationCount("/v1/fleet/issue-marque") != 1 || len(h.pending()) != 0 {
+				t.Fatal("fresh admission failed to issue exactly one paid marque")
+			}
+		})
 	}
 }
 
@@ -651,5 +732,162 @@ func TestMarqueOnlyDomainRefusalPersistsSixHourZoneBackoff(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMarqueActiveHistorySurvivesListOmissionAndAwaitsFinalPrize(t *testing.T) {
+	t.Parallel()
+	h := newRecoveryHarness(t)
+	proxy := newMarqueExecutionAPI(h)
+	now := time.Now().UTC()
+	issued := letterOfMarque{ID: uuid.NewString(), SeaZoneID: marqueExecutionZone, AddedPiracyBPS: 500,
+		CostPence: 90_000, CreatedAt: now.Add(-time.Hour), UpdatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	proxy.mu.Lock()
+	proxy.issued["observed"] = issued
+	proxy.mu.Unlock()
+	runner := h.runner(primaryTestKey)
+	refreshMarqueExecution(t, h, runner)
+	proxy.mu.Lock()
+	proxy.hideMarques = true
+	proxy.mu.Unlock()
+	runner = h.runner(primaryTestKey)
+	refreshMarqueExecution(t, h, runner)
+	input, _, err := runner.marqueEvidence(h.ctx)
+	if err != nil || input.InForceCount != 1 || input.InForceCostPence != issued.CostPence {
+		t.Fatalf("omitted active issue lost its permanent charge: %+v %v", input, err)
+	}
+	if !runner.planningInput(ShipState{}).MarqueZones[issued.SeaZoneID] {
+		t.Fatal("list omission reopened our own active marque zone to the fleet")
+	}
+	if changed, err := runner.considerMarque(h.ctx); err != nil || changed {
+		t.Fatalf("list omission allowed a second marque: %t %v", changed, err)
+	}
+	data := missionData{Marque: &marqueIntent{Quote: proxy.quote, BankingRegion: "north"}}
+	if err := runner.marquePreflight(h.ctx, &data, false); err == nil || !strings.Contains(err.Error(), "already active") {
+		t.Fatalf("send preflight ignored omitted active issue: %v", err)
+	}
+	downstream := h.api.server.Config.Handler
+	h.api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/v1/world/clock" {
+			h.api.mu.Lock()
+			doc := h.api.clockDocument()
+			h.api.mu.Unlock()
+			doc["real_utc"] = issued.ExpiresAt.Add(time.Hour)
+			h.api.writeJSON(w, http.StatusOK, doc)
+			return
+		}
+		downstream.ServeHTTP(w, req)
+	})
+	refreshMarqueExecution(t, h, runner)
+	if _, _, err := runner.marqueEvidence(h.ctx); err == nil || !strings.Contains(err.Error(), "final prize") {
+		t.Fatalf("unlisted expiry released unknown lifetime loss: %v", err)
+	}
+	proxy.mu.Lock()
+	issued.PrizeEarnedPence = issued.CostPence
+	issued.UpdatedAt = issued.ExpiresAt.Add(time.Hour)
+	proxy.issued["observed"] = issued
+	proxy.hideMarques = false
+	proxy.mu.Unlock()
+	refreshMarqueExecution(t, h, runner)
+	if changed, err := runner.considerMarque(h.ctx); err != nil || !changed {
+		t.Fatalf("authoritative profitable expiry did not release admission: %t %v", changed, err)
+	}
+}
+
+func TestMarqueLossStopSurvivesLaterPrizeCorrections(t *testing.T) {
+	t.Parallel()
+	h := newRecoveryHarness(t)
+	proxy := newMarqueExecutionAPI(h)
+	now := time.Now().UTC()
+	proxy.mu.Lock()
+	for range 3 {
+		id := uuid.NewString()
+		proxy.issued[id] = letterOfMarque{ID: id, SeaZoneID: marqueExecutionZone, AddedPiracyBPS: 500,
+			CostPence: 10_000, PrizeEarnedPence: 9_900, CreatedAt: now.Add(-2 * time.Hour),
+			ExpiresAt: now.Add(-time.Hour), UpdatedAt: now}
+	}
+	proxy.mu.Unlock()
+	runner := h.runner(primaryTestKey)
+	refreshMarqueExecution(t, h, runner)
+	proxy.mu.Lock()
+	for id, issued := range proxy.issued {
+		issued.PrizeEarnedPence = 10_100
+		proxy.issued[id] = issued
+	}
+	proxy.mu.Unlock()
+	runner = h.runner(primaryTestKey)
+	refreshMarqueExecution(t, h, runner)
+	input, _, err := runner.marqueEvidence(h.ctx)
+	if err != nil || !input.Stopped || input.ExpiredPrizePence <= input.ExpiredCostPence {
+		t.Fatalf("later authoritative profit erased the loss stop: %+v %v", input, err)
+	}
+	if changed, err := runner.considerMarque(h.ctx); err != nil || changed {
+		t.Fatalf("permanently stopped pilot resumed: %t %v", changed, err)
+	}
+}
+
+// The owner's stop counts individually losing marques; a large winner does not
+// cancel three losers, and one large loser among winners is not three losers.
+func TestMarqueLossStopCountsIndividuallyLosingMarques(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		prizes  []int64
+		losing  int
+		stopped bool
+	}{
+		{name: "three losers after a large winner", prizes: []int64{50_000, 9_900, 9_900, 9_900}, losing: 3, stopped: true},
+		{name: "one large loser among winners", prizes: []int64{0, 10_100, 10_100}, losing: 1, stopped: false},
+		{name: "two losers", prizes: []int64{9_900, 9_900, 10_000}, losing: 2, stopped: false},
+		{name: "three at cost are not losers", prizes: []int64{10_000, 10_000, 10_000}, losing: 0, stopped: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newRecoveryHarness(t)
+			proxy := newMarqueExecutionAPI(h)
+			now := time.Now().UTC()
+			proxy.mu.Lock()
+			for _, prize := range tc.prizes {
+				id := uuid.NewString()
+				proxy.issued[id] = letterOfMarque{ID: id, SeaZoneID: marqueExecutionZone, AddedPiracyBPS: 500,
+					CostPence: 10_000, PrizeEarnedPence: prize, CreatedAt: now.Add(-2 * time.Hour),
+					ExpiresAt: now.Add(-time.Hour), UpdatedAt: now}
+			}
+			proxy.mu.Unlock()
+			runner := h.runner(primaryTestKey)
+			refreshMarqueExecution(t, h, runner)
+			input, _, err := runner.marqueEvidence(h.ctx)
+			if err != nil || input.Stopped != tc.stopped || input.LosingCount != tc.losing {
+				t.Fatalf("stopped = %t losing = %d, want %t %d: %+v %v",
+					input.Stopped, input.LosingCount, tc.stopped, tc.losing, input, err)
+			}
+		})
+	}
+}
+
+func TestMarqueAbsentHistoryRequiresExpiredReplayWindowAndFreshList(t *testing.T) {
+	t.Parallel()
+	h := newRecoveryHarness(t)
+	newMarqueExecutionAPI(h)
+	runner := h.runner(primaryTestKey)
+	mission, data := stageMarqueExecution(t, h, runner)
+	action, err := h.db.BeginAction(h.ctx, &store.Action{ID: data.Action.ID, AccountID: h.account.ID,
+		Method: data.Action.Method, Path: data.Action.Path, Body: data.Action.Body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := runner.reconcileMarque(h.ctx, mission, &data, action); err != nil || changed {
+		t.Fatalf("absence inside the replay window was treated as final: %t %v", changed, err)
+	}
+	action.CreatedAt = time.Now().Add(-2 * store.ActionReplayWindow)
+	meta := runner.meta["marques"]
+	meta.Stale = true
+	runner.meta["marques"] = meta
+	if changed, err := runner.reconcileMarque(h.ctx, mission, &data, action); err != nil || changed {
+		t.Fatalf("stale history retired an ambiguous old issue: %t %v", changed, err)
+	}
+	if data.Action == nil || len(h.pending()) != 1 || h.api.mutationCount("/v1/fleet/issue-marque") != 0 {
+		t.Fatal("unresolved absent issue lost its journal identity or was resent")
 	}
 }

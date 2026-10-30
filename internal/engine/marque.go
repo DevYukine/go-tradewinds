@@ -17,6 +17,10 @@ import (
 
 const marqueQuoteInterval = 30 * time.Minute
 
+const marqueUnrecoveredLimitPence int64 = 100_000
+
+var errMarqueQuoteIncreased = errors.New("marque cost increased above its admitted quote")
+
 type MarqueQuote struct {
 	SeaZoneID             string  `json:"sea_zone_id"`
 	AddedPiracyBPS        int64   `json:"added_piracy_bps"`
@@ -55,13 +59,16 @@ func (quote *MarqueQuote) UnmarshalJSON(data []byte) error {
 }
 
 type MarqueInput struct {
-	Quote             MarqueQuote
-	Exposed           bool
-	InForceCostPence  int64
-	LiquidPence       int64
-	ExpiredCount      int
+	Quote            MarqueQuote
+	Exposed          bool
+	InForceCount     int
+	InForceCostPence int64
+	LiquidPence      int64
+	// LosingCount counts expired marques whose prize was below their own cost.
+	LosingCount       int
 	ExpiredPrizePence int64
 	ExpiredCostPence  int64
+	Stopped           bool
 }
 
 type MarqueDecision struct {
@@ -73,20 +80,22 @@ func EvaluateMarque(in MarqueInput) MarqueDecision {
 	switch {
 	case in.Exposed:
 		return MarqueDecision{Reason: "zone exposes our fleet or an underwritten voyage to our own privateers"}
+	case in.Stopped || in.LosingCount >= 3:
+		return MarqueDecision{Reason: "the marque pilot stopped permanently after three expired marques each returned less than their cost"}
+	case in.InForceCount > 0 || in.InForceCostPence > 0:
+		return MarqueDecision{Reason: "one marque is already active; the pilot cannot add another"}
 	case in.Quote.FloorApplied:
 		return MarqueDecision{Reason: "the price floor, not measured traffic, sets this quote"}
 	case in.Quote.LadenPassagesPerDay < 1:
 		return MarqueDecision{Reason: "fewer than one laden passage per game day was observed"}
 	case in.Quote.MarqueBPSInForce+in.Quote.AddedPiracyBPS > 5_000:
 		return MarqueDecision{Reason: "the new marque would exceed the zone's 5,000 bps cap"}
-	case in.Quote.ExpectedNetPrizePence*10 < in.Quote.CostPence*14:
-		return MarqueDecision{Reason: "expected prize after the Admiral's tenth is below 1.4 times cost"}
+	case in.Quote.ExpectedNetPrizePence*2 < in.Quote.CostPence*3:
+		return MarqueDecision{Reason: "expected prize after the Admiral's tenth is below 1.5 times cost"}
+	case in.ExpiredCostPence-in.ExpiredPrizePence+in.Quote.CostPence > marqueUnrecoveredLimitPence:
+		return MarqueDecision{Reason: "lifetime unrecovered marque spending including this issue would exceed 100,000 pence"}
 	case in.Quote.CostPence*20 > in.LiquidPence:
 		return MarqueDecision{Reason: "one marque would spend more than five percent of liquid funds"}
-	case (in.InForceCostPence+in.Quote.CostPence)*10 > in.LiquidPence:
-		return MarqueDecision{Reason: "in-force marques would cost more than ten percent of liquid funds"}
-	case in.ExpiredCount >= 3 && in.ExpiredPrizePence*10 < in.ExpiredCostPence*8:
-		return MarqueDecision{Reason: "at least three expired marques returned less than eighty percent of cost"}
 	default:
 		return MarqueDecision{Accepted: true, Reason: "unexposed measured traffic supports the expected prize within liquidity and realized-return limits"}
 	}
@@ -347,12 +356,54 @@ func (r *Runner) recordMarques(ctx context.Context) error {
 			return errors.New("permanent marque outcomes are invalid; preserve history before adding risk")
 		}
 	}
+	// A later list omission cannot release an observed charge or active zone.
+	// Only a fresh expired record provides the final prize for lifetime accounting.
+	active := make(map[string]letterOfMarque)
+	if raw := r.snapshot["_marque_active"]; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &active); err != nil || active == nil {
+			return errors.New("retained active marques are invalid; preserve their cost before adding risk")
+		}
+	}
 	now, _, validClock := r.serverBounds()
 	marques := decode[[]letterOfMarque](r.snapshot, "marques")
 	if validClock && r.fresh("marques") {
 		mergeMarqueOutcomes(outcomes, marques, now)
+		for _, marque := range marques {
+			if now.Before(marque.ExpiresAt) {
+				active[marque.ID] = marque
+			} else {
+				delete(active, marque.ID)
+			}
+		}
+	}
+	var expiredCost, expiredPrize int64
+	losing := 0
+	for id, outcome := range outcomes {
+		if outcome.ID != id || outcome.CostPence < 0 || outcome.CostPence > maximumPence ||
+			outcome.PrizePence < 0 || outcome.PrizePence > maximumPence {
+			return errors.New("permanent marque outcomes contain invalid cost or prize evidence")
+		}
+		expiredCost = growthCashTotal(expiredCost, outcome.CostPence)
+		expiredPrize = growthCashTotal(expiredPrize, outcome.PrizePence)
+		if outcome.PrizePence < outcome.CostPence {
+			losing++
+		}
+	}
+	for id, marque := range active {
+		if marque.ID != id || !validMarque(marque) {
+			return errors.New("retained active marques contain invalid identity, cost or term evidence")
+		}
+	}
+	if expiredCost > maximumPence || expiredPrize > maximumPence {
+		return errors.New("marque history exceeds the supported money range")
+	}
+	// Owner rule: three individually losing marques over the lifetime end the
+	// pilot. The stop is permanent even if later list corrections change prizes.
+	if losing >= 3 {
+		r.snapshot["_marque_stopped"] = encode(true)
 	}
 	r.snapshot["_marque_outcomes"] = encode(outcomes)
+	r.snapshot["_marque_active"] = encode(active)
 	pending := decode[marquePending](r.snapshot, "_marque_pending")
 	mission, data, err := r.loadMission(ctx, "__marque")
 	if err != nil {
@@ -382,9 +433,7 @@ func (r *Runner) recordMarques(ctx context.Context) error {
 		pending = marquePending{}
 	}
 	if pending.IssuedID != "" {
-		if validClock && !pending.ExpiresAt.IsZero() && !now.Before(pending.ExpiresAt) {
-			pending = marquePending{}
-		} else if r.fresh("marques") {
+		if r.fresh("marques") {
 			for _, marque := range marques {
 				if marque.ID == pending.IssuedID {
 					pending = marquePending{}
@@ -435,19 +484,38 @@ func (r *Runner) marqueEvidence(ctx context.Context) (MarqueInput, map[string]bo
 	if !valid {
 		return input, nil, errors.New("marque evaluation requires authoritative server time")
 	}
-	for _, marque := range decode[[]letterOfMarque](r.snapshot, "marques") {
+	active := decode[map[string]letterOfMarque](r.snapshot, "_marque_active")
+	marques := decode[[]letterOfMarque](r.snapshot, "marques")
+	for _, marque := range marques {
 		if now.Before(marque.ExpiresAt) {
-			input.InForceCostPence = growthCashTotal(input.InForceCostPence, marque.CostPence)
+			if active == nil {
+				active = make(map[string]letterOfMarque)
+			}
+			active[marque.ID] = marque
 		}
 	}
+	for id, marque := range active {
+		if !validMarque(marque) || marque.ID != id {
+			return input, nil, errors.New("retained active marques contain invalid identity, cost or term evidence")
+		}
+		if !now.Before(marque.ExpiresAt) {
+			return input, nil, errors.New("an expired marque awaits its authoritative final prize before adding risk")
+		}
+		input.InForceCount++
+		input.InForceCostPence = growthCashTotal(input.InForceCostPence, marque.CostPence)
+	}
 	for id, outcome := range decode[map[string]marqueOutcome](r.snapshot, "_marque_outcomes") {
-		if outcome.ID != id || outcome.CostPence < 0 || outcome.PrizePence < 0 {
+		if outcome.ID != id || outcome.CostPence < 0 || outcome.CostPence > maximumPence ||
+			outcome.PrizePence < 0 || outcome.PrizePence > maximumPence {
 			return input, nil, errors.New("permanent marque outcomes contain invalid cost or prize evidence")
 		}
-		input.ExpiredCount++
+		if outcome.PrizePence < outcome.CostPence {
+			input.LosingCount++
+		}
 		input.ExpiredCostPence = growthCashTotal(input.ExpiredCostPence, outcome.CostPence)
 		input.ExpiredPrizePence = growthCashTotal(input.ExpiredPrizePence, outcome.PrizePence)
 	}
+	input.Stopped = decode[bool](r.snapshot, "_marque_stopped")
 	if input.InForceCostPence > maximumPence || input.ExpiredCostPence > maximumPence || input.ExpiredPrizePence > maximumPence {
 		return input, nil, errors.New("marque history exceeds the supported money range")
 	}
@@ -491,6 +559,9 @@ func (r *Runner) marqueHomeFunds(ctx context.Context, self bool) (string, int64,
 }
 
 func (r *Runner) considerMarque(ctx context.Context) (bool, error) {
+	if !r.opts.MarquesEnabled {
+		return false, nil
+	}
 	target, err := r.liveCapacitySavingsTarget(ctx)
 	if err != nil {
 		return false, err
@@ -554,6 +625,10 @@ func (r *Runner) considerMarque(ctx context.Context) (bool, error) {
 
 func (r *Runner) driveMarque(ctx context.Context, mission *store.Mission, data *missionData) (bool, error) {
 	if !r.opts.Execute || data.Action != nil {
+		return false, nil
+	}
+	if time.Now().Before(data.CooldownUntil) {
+		r.wakeBy(data.CooldownUntil)
 		return false, nil
 	}
 	if mission.Phase == "done" || data.Marque == nil || data.LastActionID != "" {
@@ -627,8 +702,8 @@ func (r *Runner) marquePreflight(ctx context.Context, data *missionData, request
 	if !validMarqueQuote(quote, intent.Quote.SeaZoneID) || !validMarqueQuote(intent.Quote, intent.Quote.SeaZoneID) {
 		return errors.New("marque quote has invalid pricing terms")
 	}
-	if quote.CostPence*10 > intent.Quote.CostPence*11 {
-		return errors.New("marque cost increased more than ten percent above its admitted quote")
+	if quote.CostPence > intent.Quote.CostPence {
+		return errMarqueQuoteIncreased
 	}
 	if until := decode[map[string]time.Time](r.snapshot, "_marque_backoffs")[quote.SeaZoneID]; time.Now().Before(until) {
 		return errors.New("marque zone remains in its six-real-hour refusal backoff")
@@ -689,7 +764,21 @@ func (r *Runner) reconcileMarque(ctx context.Context, mission *store.Mission, da
 		match = &copy
 	}
 	if match == nil {
-		return false, nil
+		// The complete endpoint includes historical issues. Only a list captured
+		// after the replay deadline proves an absent issue cannot still be sent.
+		if action.CreatedAt.IsZero() || r.meta["marques"].UpdatedAt.Before(action.CreatedAt.Add(store.ActionReplayWindow)) {
+			return false, nil
+		}
+		if action.State != store.ActionComplete {
+			evidence := encode(map[string]any{
+				"kind": "authoritative_marque_absent", "sea_zone_id": intent.Quote.SeaZoneID,
+				"not_before": intent.NotBefore, "before_ids": intent.BeforeIDs, "observed_at": r.meta["marques"].UpdatedAt,
+			})
+			if err := r.db.ReconcileAction(ctx, action.ID, evidence); err != nil {
+				return false, err
+			}
+		}
+		return r.applyReconciliation(ctx, mission, data)
 	}
 	if action.State != store.ActionComplete {
 		evidence := encode(map[string]any{"kind": "authoritative_marque", "marque": match, "observed_at": r.meta["marques"].UpdatedAt})

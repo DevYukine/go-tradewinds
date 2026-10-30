@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,11 +24,11 @@ func (s *Store) RecordRequest(ctx context.Context, accountID, method, path strin
 	if err != nil {
 		return err
 	}
-	requestJSON, err := redactJSON(request, secrets, maxDiagnosticBytes)
+	requestJSON, err := redactJSON(BoundEventPayload(request), secrets, maxDiagnosticBytes)
 	if err != nil {
 		return err
 	}
-	responseJSON, err := redactJSON(response, secrets, maxDiagnosticBytes)
+	responseJSON, err := redactJSON(BoundEventPayload(response), secrets, maxDiagnosticBytes)
 	if err != nil {
 		return err
 	}
@@ -54,9 +55,16 @@ func (s *Store) RecordRequest(ctx context.Context, accountID, method, path strin
 	}
 	db, cancel := s.query(ctx)
 	defer cancel()
+	endpoint, _ := url.ParseRequestURI(row.Path)
+	creditRequest := row.Method == "GET" && endpoint != nil && endpoint.Path == "/v1/loan/credit"
 	err = db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&row).Error; err != nil {
 			return err
+		}
+		if creditRequest {
+			if err := recordRivalCredit(tx, row, endpoint, now); err != nil {
+				return err
+			}
 		}
 		return tx.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "account_id"}, {Name: "name"}},
@@ -69,15 +77,36 @@ func (s *Store) RecordRequest(ctx context.Context, accountID, method, path strin
 	if err != nil {
 		return err
 	}
-	// Standings are derived from the committed raw response in their own
-	// transaction, so a payload the parser rejects keeps the raw row needed
-	// to diagnose it.
-	if row.Method == "GET" && row.Path == "/v1/world/leaderboard" && status == 200 && errText == "" {
+	// Derive permanent publications and explicit identities only after the raw
+	// response commits, preserving rejected payloads for diagnosis.
+	if row.Method == "GET" && endpoint != nil && status == 200 && errText == "" && !creditRequest {
+		permanent := row.Response
+		switch endpoint.Path {
+		case "/v1/world/leaderboard", "/v1/world/monopolies", "/v1/bank/list", "/v1/loan/requests", "/v1/future/list":
+			if len(response) > maxDiagnosticBytes {
+				permanent, err = redactJSON(response, secrets, MaxSnapshotBytes)
+				if err != nil {
+					return err
+				}
+			}
+		default:
+			return nil
+		}
 		err = db.Transaction(func(tx *gorm.DB) error {
-			return recordStandings(tx, accountID, row.Response, now)
+			if endpoint.Path == "/v1/world/leaderboard" {
+				if err := recordRising(tx, accountID, permanent, now); err != nil {
+					return err
+				}
+				return recordStandings(tx, accountID, permanent, now)
+			}
+			season, err := currentRivalSeason(tx, now)
+			if err != nil {
+				return err
+			}
+			return recordRivalCompanies(tx, season, endpoint.Path, permanent, now)
 		})
 		if err != nil {
-			return fmt.Errorf("standings history: %w", err)
+			return fmt.Errorf("rival observations: %w", err)
 		}
 	}
 	return nil

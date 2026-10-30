@@ -1,5 +1,84 @@
 import { count, dateTime, humanize, money } from "./format";
-import type { RivalFact, RivalHunch } from "./types";
+import type { RivalCredit, RivalFact, RivalHunch, RivalRow } from "./types";
+
+export function rivalPercent(bps: number | null | undefined): string {
+  return bps == null || !Number.isFinite(bps)
+    ? "Not observed"
+    : `${(bps / 100).toFixed(2)}%`;
+}
+
+export function rivalLoanDebt(credit: RivalCredit | null): number | undefined {
+  return credit == null
+    ? undefined
+    : credit.active_owed_pence + credit.defaulted_owed_pence;
+}
+
+export function rivalCreditFacts(credit: RivalCredit): [string, string][] {
+  return [
+    ["Active loans", count(credit.active_loans)],
+    ["Active loan debt", money(credit.active_owed_pence)],
+    ["Open defaulted loans", count(credit.defaulted_open_loans)],
+    ["Defaulted loan debt", money(credit.defaulted_owed_pence)],
+    ["Loans repaid", count(credit.loans_repaid)],
+    ["Defaults", count(credit.loans_defaulted)],
+    [
+      "Write-offs",
+      `${count(credit.loans_written_off)}; ${money(credit.loan_written_off_pence)} lifetime`,
+    ],
+    [
+      "Walk-aways",
+      `${count(credit.loans_walked_away)}; ${money(credit.loan_walked_away_pence)} lifetime`,
+    ],
+    ["Open mortgages", count(credit.open_mortgages)],
+    ["Open futures claims", money(credit.futures_claims_open_pence)],
+    [
+      "Futures claims",
+      `${count(credit.futures_claims_total)} total; ${count(credit.futures_claims_written_off)} written off`,
+    ],
+    ["Outstanding lending", money(credit.lent_outstanding_pence)],
+    ["Smuggling convictions", count(credit.smuggling_convictions)],
+    [
+      "Last default",
+      credit.last_default_at
+        ? dateTime(credit.last_default_at)
+        : "Not observed",
+    ],
+    [
+      "Bankruptcy",
+      credit.bankrupt_at ? dateTime(credit.bankrupt_at) : "Not observed",
+    ],
+    [
+      "Last conviction",
+      credit.last_conviction_at
+        ? dateTime(credit.last_conviction_at)
+        : "Not observed",
+    ],
+  ];
+}
+
+export function observedShipsText(
+  ships: Record<string, number> | null | undefined,
+): string {
+  return (
+    Object.entries(ships ?? {})
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([shipClass, seen]) => `${humanize(shipClass)} ${count(seen)}`)
+      .join("; ") || "Not observed"
+  );
+}
+
+export function rivalExpansionText(
+  contributions: RivalRow["expansion_contributions"],
+): string {
+  return (
+    (contributions ?? [])
+      .map(
+        (contribution) =>
+          `Phase ${count(contribution.target_phase)}: ${count(contribution.tons)} t (${rivalPercent(contribution.share_bps)} share)`,
+      )
+      .join("; ") || "Not observed"
+  );
+}
 
 const hunches: Record<RivalHunch, { label: string; rank: number }> = {
   most_dangerous: { label: "Most dangerous", rank: 0 },

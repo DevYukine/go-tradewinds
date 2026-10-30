@@ -21,8 +21,8 @@ func TestCapacitySavingsLaneBuildHonorsExactAffordableTarget(t *testing.T) {
 			// C has B's useful hold for half its hull price. Both ordinary lane
 			// selection and unrestricted capacity selection should prefer C;
 			// merely falling back to unrestricted capacity cannot satisfy B.
-			const savedHull = "savings-large-hull"
-			const alternativeHull = "savings-lane-alternative"
+			const savedHull = "brigantine"
+			const alternativeHull = "cutter"
 			alternative, exists := findHull(runner.stateCache.Catalog, savedHull)
 			if !exists {
 				t.Fatal("fixture has no saved hull")

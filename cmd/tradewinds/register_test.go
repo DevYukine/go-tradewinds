@@ -696,6 +696,335 @@ func TestBootstrapInterruptedThrottleWaitSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestUnderworldReaderNeverRetriesTransientResponse(t *testing.T) {
+	var mu sync.Mutex
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		mu.Unlock()
+		if r.Method != http.MethodGet {
+			t.Errorf("observer sent %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"code":"unavailable","detail":"try a later visit"}`))
+	}))
+	defer server.Close()
+	reader := underworldReader{client: gameapi.New(server.URL, "observer-only-key", zap.NewNop())}
+	var response json.RawMessage
+	if err := reader.Get(context.Background(), "/v1/underworld/wants?port_id=flushing", &response); err == nil {
+		t.Fatal("transient upstream failure was hidden")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if requests != 1 {
+		t.Fatalf("one arrival attempted %d HTTP reads", requests)
+	}
+}
+
+func TestUnderworldKeyDoesNotCreateMissingAccount(t *testing.T) {
+	db, _, _ := registrationStore(t)
+	err := underworldKey(config.Config{APIURL: "https://tradewinds.invalid"}, db, zap.NewNop(), []string{"-handle", "Unregistered"})
+	if err == nil || !strings.Contains(err.Error(), "existing company-bound account") {
+		t.Fatalf("missing registration was not rejected: %v", err)
+	}
+	accounts, err := db.Accounts(context.Background())
+	if err != nil || len(accounts) != 0 {
+		t.Fatalf("observer command created an account: %+v %v", accounts, err)
+	}
+}
+
+func TestUnderworldKeyReplacesOnlyPermanentlyRejectedStoredKeys(t *testing.T) {
+	for _, test := range []struct {
+		status  int
+		code    string
+		replace bool
+	}{
+		{401, "revoked_api_key", true},
+		{401, "expired_api_key", true},
+		{401, "invalid_api_key", true},
+		{401, "other_auth_error", false},
+		{403, "missing_scope", false},
+		{503, "unavailable", false},
+		{200, "", false},
+	} {
+		t.Run(test.code, func(t *testing.T) {
+			db, _, _ := registrationStore(t)
+			credentials := store.Credentials{Handle: names.DefaultHandle, Passphrase: "observer-mint-passphrase",
+				APIKey: "main-automation-key", UnderworldAPIKey: "old-observer-key"}
+			companyID := uuid.NewString()
+			var ids []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/v1/auth/whoami":
+					if r.Header.Get("Authorization") == "Bearer old-observer-key" {
+						w.WriteHeader(test.status)
+						_ = json.NewEncoder(w).Encode(map[string]string{"code": test.code})
+					} else {
+						_, _ = w.Write([]byte(`{"scopes":["read","underworld"]}`))
+					}
+				case "/v1/auth/create-key":
+					ids = append(ids, r.Header.Get("Idempotency-Key"))
+					w.WriteHeader(http.StatusCreated)
+					_, _ = w.Write([]byte(`{"api_key":"new-observer-key"}`))
+				default:
+					t.Errorf("unexpected observer bootstrap request: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			accountID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(server.URL+"/player/"+strings.ToLower(credentials.Handle))).String()
+			account := store.Account{ID: accountID, Label: credentials.Handle, CompanyID: companyID, Enabled: true}
+			ctx := context.Background()
+			if err := db.SaveAccount(ctx, account, credentials); err != nil {
+				t.Fatal(err)
+			}
+			legacyID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(accountID+"/bootstrap/key/"+companyID+"/read,underworld")).String()
+			if _, err := db.BeginAction(ctx, &store.Action{ID: legacyID, AccountID: accountID,
+				Method: http.MethodPost, Path: "/v1/auth/create-key", Body: json.RawMessage(`{"legacy":true}`)}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.CompleteAction(ctx, legacyID, http.StatusCreated, json.RawMessage(`{"api_key":"old-observer-key"}`), nil); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				if err := underworldKey(config.Config{APIURL: server.URL}, db, zap.NewNop(), nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stored, err := db.Credentials(ctx, accountID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantKey := credentials.UnderworldAPIKey
+			wantMints := 0
+			if test.replace {
+				wantKey = "new-observer-key"
+				wantMints = 1
+			}
+			if stored.UnderworldAPIKey != wantKey || stored.APIKey != credentials.APIKey ||
+				stored.Passphrase != credentials.Passphrase || stored.UnderworldMintID != "" || len(ids) != wantMints {
+				t.Fatalf("replacement policy changed credentials or mint count: observer=%q pending=%q mints=%d",
+					stored.UnderworldAPIKey, stored.UnderworldMintID, len(ids))
+			}
+			if len(ids) > 0 && (ids[0] == "" || ids[0] == legacyID) {
+				t.Fatal("replacement reused the deterministic legacy mint identity")
+			}
+		})
+	}
+}
+
+func TestUnderworldKeyMintResumesInFlightAndRotatesIdentityForNextMint(t *testing.T) {
+	db, _, _ := registrationStore(t)
+	credentials := store.Credentials{Handle: names.DefaultHandle, Passphrase: "observer-retry-passphrase", APIKey: "main-key"}
+	var attempts []bootstrapAttempt
+	revoke := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/auth/whoami":
+			if revoke {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"code":"revoked_api_key"}`))
+			} else {
+				_, _ = w.Write([]byte(`{"scopes":["read","underworld"]}`))
+			}
+		case "/v1/auth/create-key":
+			payload, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+			}
+			attempts = append(attempts, bootstrapAttempt{ID: r.Header.Get("Idempotency-Key"), Body: payload})
+			if len(attempts) == 1 {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"code":"idempotency_request_in_flight"}`))
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			if revoke {
+				_, _ = w.Write([]byte(`{"api_key":"replacement-observer-key"}`))
+			} else {
+				_, _ = w.Write([]byte(`{"api_key":"first-observer-key"}`))
+			}
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	accountID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(server.URL+"/player/"+strings.ToLower(credentials.Handle))).String()
+	account := store.Account{ID: accountID, Label: credentials.Handle, CompanyID: uuid.NewString(), Enabled: true}
+	ctx := context.Background()
+	if err := db.SaveAccount(ctx, account, credentials); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{APIURL: server.URL}
+	var apiErr *gameapi.APIError
+	if err := underworldKey(cfg, db, zap.NewNop(), nil); !errors.As(err, &apiErr) || apiErr.Status != 409 {
+		t.Fatalf("expected unresolved mint, got %v", err)
+	}
+	pending, err := db.PendingActions(ctx, accountID)
+	if err != nil || len(pending) != 1 || pending[0].ID != attempts[0].ID {
+		t.Fatalf("mint identity was not durably journaled: %+v %v", pending, err)
+	}
+	stored, err := db.Credentials(ctx, accountID)
+	if err != nil || stored.UnderworldMintID == "" || stored.UnderworldAPIKey != "" {
+		t.Fatalf("pending mint recovery identity missing: %v", err)
+	}
+	if err := underworldKey(cfg, db, zap.NewNop(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 2 || attempts[0].ID != attempts[1].ID || !bytes.Equal(attempts[0].Body, attempts[1].Body) {
+		t.Fatal("in-flight mint retry changed its durable identity or payload")
+	}
+	revoke = true
+	if err := underworldKey(cfg, db, zap.NewNop(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 3 || attempts[2].ID == attempts[1].ID || attempts[2].ID == "" {
+		t.Fatal("a new mint after revocation reused the preceding mint identity")
+	}
+	stored, err = db.Credentials(ctx, accountID)
+	if err != nil || stored.UnderworldAPIKey != "replacement-observer-key" || stored.UnderworldMintID != "" ||
+		stored.APIKey != credentials.APIKey {
+		t.Fatalf("replacement was not committed without altering the main key: %v", err)
+	}
+}
+
+func TestUnderworldKeyRefusesPendingLegacyMint(t *testing.T) {
+	db, _, _ := registrationStore(t)
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		t.Errorf("legacy recovery must not send another request: %s", r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	ctx := context.Background()
+	accountID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(server.URL+"/player/"+strings.ToLower(names.DefaultHandle))).String()
+	account := store.Account{ID: accountID, Label: names.DefaultHandle, CompanyID: uuid.NewString(), Enabled: true}
+	credentials := store.Credentials{Handle: names.DefaultHandle, Passphrase: "legacy-observer-passphrase", APIKey: "main-key"}
+	if err := db.SaveAccount(ctx, account, credentials); err != nil {
+		t.Fatal(err)
+	}
+	id := uuid.NewSHA1(uuid.NameSpaceURL, []byte(accountID+"/bootstrap/key/"+account.CompanyID+"/read,underworld")).String()
+	body, err := json.Marshal(map[string]any{
+		"handle": credentials.Handle, "passphrase": credentials.Passphrase, "company_id": account.CompanyID,
+		"label": "Tradewinds underworld observer", "scopes": []string{"read", "underworld"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.BeginAction(ctx, &store.Action{ID: id, AccountID: accountID,
+		Method: http.MethodPost, Path: "/v1/auth/create-key", Body: body}); err != nil {
+		t.Fatal(err)
+	}
+	if err := underworldKey(config.Config{APIURL: server.URL}, db, zap.NewNop(), nil); err == nil ||
+		!strings.Contains(err.Error(), "reconcile the pending legacy underworld create-key") {
+		t.Fatalf("legacy unresolved mint was not held for reconciliation: %v", err)
+	}
+	stored, err := db.Credentials(ctx, accountID)
+	if err != nil || stored != credentials || requests != 0 {
+		t.Fatalf("legacy hold changed credentials or sent a request: %v requests=%d", err, requests)
+	}
+	pending, err := db.PendingActions(ctx, accountID)
+	if err != nil || len(pending) != 1 || pending[0].ID != id || !bytes.Equal(pending[0].Body, body) {
+		t.Fatalf("legacy hold changed the unresolved journal: %+v %v", pending, err)
+	}
+}
+
+func TestUnderworldKeyMintRetiresOnlyDefinitiveJournaledRejection(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		status    int
+		code      string
+		journaled bool
+		retire    bool
+	}{
+		{"new forbidden", 403, "forbidden", false, true},
+		{"stored forbidden", 403, "forbidden", true, true},
+		{"rate limited", 429, "rate_limit_exceeded", false, false},
+		{"ambiguous conflict", 409, "idempotency_request_in_flight", false, false},
+		{"unsettleable reused key", 422, "idempotency_key_reused", false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, _, _ := registrationStore(t)
+			var ids []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/auth/create-key" {
+					t.Errorf("unexpected request: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				ids = append(ids, r.Header.Get("Idempotency-Key"))
+				w.Header().Set("Content-Type", "application/json")
+				if !test.journaled && len(ids) == 1 {
+					if test.status == 429 {
+						w.Header().Set("Retry-After", "1")
+					}
+					w.WriteHeader(test.status)
+					_ = json.NewEncoder(w).Encode(map[string]string{"code": test.code})
+					return
+				}
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"api_key":"observer-after-rejection"}`))
+			}))
+			defer server.Close()
+			ctx := context.Background()
+			accountID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(server.URL+"/player/"+strings.ToLower(names.DefaultHandle))).String()
+			account := store.Account{ID: accountID, Label: names.DefaultHandle, CompanyID: uuid.NewString(), Enabled: true}
+			credentials := store.Credentials{Handle: names.DefaultHandle, Passphrase: "rejected-mint-passphrase",
+				APIKey: "main-key", UnderworldMintID: uuid.NewString()}
+			if err := db.SaveAccount(ctx, account, credentials); err != nil {
+				t.Fatal(err)
+			}
+			oldID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(accountID+"/bootstrap/underworld-key/"+credentials.UnderworldMintID)).String()
+			if test.journaled {
+				body, err := json.Marshal(map[string]any{
+					"handle": credentials.Handle, "passphrase": credentials.Passphrase, "company_id": account.CompanyID,
+					"label": "Tradewinds underworld observer", "scopes": []string{"read", "underworld"},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.BeginAction(ctx, &store.Action{ID: oldID, AccountID: accountID,
+					Method: http.MethodPost, Path: "/v1/auth/create-key", Body: body}); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.CompleteAction(ctx, oldID, test.status, json.RawMessage(`{"code":"forbidden"}`), nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := config.Config{APIURL: server.URL}
+			var apiErr *gameapi.APIError
+			if err := underworldKey(cfg, db, zap.NewNop(), nil); !errors.As(err, &apiErr) || apiErr.Status != test.status {
+				t.Fatalf("unexpected mint rejection: %v", err)
+			}
+			stored, err := db.Credentials(ctx, accountID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantMintID := credentials.UnderworldMintID
+			if test.retire {
+				wantMintID = ""
+			}
+			if stored.UnderworldMintID != wantMintID || stored.APIKey != credentials.APIKey || stored.UnderworldAPIKey != "" {
+				t.Fatal("mint identity was incorrectly retired or retained")
+			}
+			if test.retire {
+				if err := underworldKey(cfg, db, zap.NewNop(), nil); err != nil {
+					t.Fatalf("definitely rejected mint could not be replaced: %v", err)
+				}
+				if len(ids) == 0 || ids[len(ids)-1] == oldID || ids[len(ids)-1] == "" {
+					t.Fatal("replacement reused the definitely rejected identity")
+				}
+			}
+		})
+	}
+}
+
 func registrationStore(t *testing.T) (*store.Store, *sql.DB, string) {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")

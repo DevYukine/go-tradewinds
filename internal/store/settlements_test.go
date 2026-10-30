@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"testing"
@@ -12,6 +13,30 @@ import (
 
 	"github.com/pressly/goose/v3"
 )
+
+func TestRevenueCalibrationExcludesPlansStartedBeforeCutover(t *testing.T) {
+	database, _, _ := integrationStore(t)
+	const accountID = "calibration-cross-cutover"
+	saveTestAccount(t, database, accountID)
+	since := time.Date(2026, 10, 28, 11, 0, 0, 0, time.UTC)
+	for i := range 10 {
+		moneyCalibrationSettlement(t, database, accountID, fmt.Sprintf("new-regime-%d", i), "depth",
+			since.Add(time.Duration(i+1)*time.Minute), 10000, 9600, nil)
+		moneyCalibrationSettlement(t, database, accountID, fmt.Sprintf("old-regime-%d", i), "depth",
+			since.Add(time.Hour+time.Duration(i)*time.Minute), 10000, 1000, func(row *Settlement) {
+				row.StartedAt = since.Add(-time.Minute)
+			})
+	}
+	got, err := database.RevenueCalibration(context.Background(), accountID, since, since.Add(2*time.Hour))
+	if err != nil || got["depth"] != 9600 {
+		t.Fatalf("pre-cutover plans contaminated the new pricing regime: %v, %v", got, err)
+	}
+	for _, bounds := range [][2]time.Time{{{}, since}, {since, {}}, {since, since.Add(-time.Second)}} {
+		if _, err := database.RevenueCalibration(context.Background(), accountID, bounds[0], bounds[1]); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("invalid calibration window %v did not fail explicitly: %v", bounds, err)
+		}
+	}
+}
 
 func TestSettlementPlanRoundTripAndImmutableReplay(t *testing.T) {
 	database, _, _ := integrationStore(t)
@@ -137,5 +162,42 @@ func TestSettlementPlanMigrationUpDownPreservesLegacyRows(t *testing.T) {
 	}
 	if err := database.PutSettlement(ctx, &legacy); err != nil {
 		t.Fatalf("legacy replay changed after migration: %v", err)
+	}
+}
+
+func TestRevenueCalibrationExcludesMixedFreightBeforeLatestWindow(t *testing.T) {
+	database, _, _ := integrationStore(t)
+	const accountID = "calibration-mixed-freight"
+	saveTestAccount(t, database, accountID)
+	since := time.Date(2026, 10, 28, 11, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		basis, cargoKind, mixedKind string
+		wantBPS                     int64
+	}{
+		{"depth", "spot", "spot+freight", 9500},
+		{"contract", "charter", "charter+freight", 9600},
+	} {
+		for i := range 10 {
+			moneyCalibrationSettlement(t, database, accountID, fmt.Sprintf("%s-cargo-%d", tc.basis, i), tc.basis,
+				since.Add(time.Duration(i+1)*time.Minute), 10000, tc.wantBPS, func(row *Settlement) {
+					row.Kind = tc.cargoKind
+				})
+		}
+		for i := range 21 {
+			moneyCalibrationSettlement(t, database, accountID, fmt.Sprintf("%s-mixed-%d", tc.basis, i), tc.basis,
+				since.Add(time.Hour+time.Duration(i)*time.Minute), 110000, 109000, func(row *Settlement) {
+					row.Kind = tc.mixedKind
+					row.Lane = "amsterdam|hamburg|canvas_sails|" + tc.mixedKind
+				})
+		}
+		rows, err := database.SettlementHistory(context.Background(), accountID, "amsterdam|hamburg|canvas_sails|"+tc.mixedKind, 1)
+		if err != nil || len(rows) != 1 || rows[0].ProceedsPence != 109000 ||
+			rows[0].PlannedRevenuePence == nil || *rows[0].PlannedRevenuePence != 110000 {
+			t.Fatalf("mixed settlement history lost its combined cargo and freight receipts: %+v, %v", rows, err)
+		}
+	}
+	got := moneyReadCalibration(t, database, accountID, since, since.Add(2*time.Hour))
+	if got["depth"] != 9500 || got["contract"] != 9600 {
+		t.Fatalf("newer mixed receipts diluted or displaced the cargo-only calibration window: %v", got)
 	}
 }

@@ -1,16 +1,12 @@
 package engine
 
-// Acceptance contracts for the E2 valuation overhaul (planner.go/freight.go),
-// written before the implementation: destination-ending voyages are valued and
-// ranked at their real delivery boundary, the empty return leg is at most an
-// explicitly costed repeat forecast and never an acceptance gate or a hidden
-// duration/cost input, a whole-ton store top-up stays a cash funding
-// requirement while only the consumed share becomes voyage expense, and
-// same-destination cargo and sealed freight are sized jointly before the
-// shared-cost profitability gate. Scenarios use only existing Plan and
-// Economics fields on purpose so the file compiles before the new basis,
-// store-cash and ballast-repeat fields arrive; the implementer updates
-// consumers, never these tests.
+// Acceptance contracts for the E2 valuation overhaul (planner.go/freight.go):
+// destination-ending voyages are valued and admitted at their real delivery
+// boundary. Ranking compares those admitted deliveries with a separately recorded
+// continuation, never by hiding its duration or costs in the outward economics.
+// A whole-ton store top-up stays a cash funding requirement while only the
+// consumed share becomes voyage expense, and same-destination cargo and sealed
+// freight are sized jointly before the shared-cost profitability gate.
 //
 // Every failing assertion names the structural bug it exposes, and each case
 // carries its causal control: funded/underfunded pairs, standalone-loss
@@ -144,20 +140,8 @@ func valuationPlanFor(t *testing.T, plans []Plan, destination string) Plan {
 	return Plan{}
 }
 
-func valuationRank(plans []Plan, destination string) int {
-	for i, plan := range plans {
-		if plan.Destination == destination {
-			return i
-		}
-	}
-	return -1
-}
-
-// A plan's delivery-boundary valuation must not move when only the empty
-// return leg changes: the return belongs to the separate, explicitly costed
-// repeat forecast, never to the outbound delivery's duration, expense,
-// arrival or ranking. Today the round-trip valuation charges the return to
-// the delivery plan.
+// Changing the empty return leg affects only the continuation and combined
+// rank score, never the outbound delivery's duration, expense or arrival.
 func TestValuationDeliveryBoundaryIgnoresUnneededReturnLeg(t *testing.T) {
 	t.Parallel()
 	in := valuationInput(t)
@@ -193,18 +177,18 @@ func TestValuationDeliveryBoundaryIgnoresUnneededReturnLeg(t *testing.T) {
 		t.Fatalf("arrival at the delivery port moved with the return leg: before %s after %s",
 			before.ExpectedArrival, after.ExpectedArrival)
 	}
-	if valuationRank(basePlans, "dunkirk") != valuationRank(stretched, "dunkirk") {
-		t.Fatalf("empty return distance re-ranked destination deliveries: rank before %d after %d",
-			valuationRank(basePlans, "dunkirk"), valuationRank(stretched, "dunkirk"))
+	if before.Continuation == nil || after.Continuation == nil {
+		t.Fatalf("both deliveries must record their separate continuation: before %+v after %+v", before, after)
+	}
+	if after.Continuation.GameDays <= before.Continuation.GameDays ||
+		after.Economics.RankScorePencePerGameDay >= before.Economics.RankScorePencePerGameDay {
+		t.Fatalf("longer empty return did not reduce the combined rank: before %+v after %+v", before, after)
 	}
 }
 
-// One-way duration and cost must compare the two destinations at their
-// delivery boundaries. portsmouth is a 30nm delivery with a 120nm open
-// return and earns a slightly lower bid; dunkirk is a 120nm delivery with a
-// 30nm return. Round-trip valuation is blind to the difference (both round
-// trips sail 150nm) and wrongly crowns the distant port on raw net.
-func TestValuationRanksDestinationsByOneWayDeliveryEconomics(t *testing.T) {
+// The nearer delivery retains its better one-way rate, but the farther
+// delivery wins the two-leg rank because its return is much shorter.
+func TestValuationRanksContinuationWithoutChangingDeliveryEconomics(t *testing.T) {
 	t.Parallel()
 	in := valuationInput(t)
 	plans := PlanVoyages(in)
@@ -213,8 +197,8 @@ func TestValuationRanksDestinationsByOneWayDeliveryEconomics(t *testing.T) {
 	if !near.Accepted || !far.Accepted {
 		t.Fatalf("both funded deliveries must stay costed controls: near %+v far %+v", near, far)
 	}
-	if plans[0].Destination != "portsmouth" {
-		t.Fatalf("round-trip cost/duration picked the distant destination: first %+v", plans[0])
+	if plans[0].Destination != "dunkirk" {
+		t.Fatalf("continuation rank ignored the shorter return: first %+v", plans[0])
 	}
 	if near.Economics.GameDays >= far.Economics.GameDays {
 		t.Fatalf("delivery durations ignore the one-way distance ratio: near %.9f far %.9f",
@@ -223,6 +207,19 @@ func TestValuationRanksDestinationsByOneWayDeliveryEconomics(t *testing.T) {
 	if near.Economics.NetPencePerGameDay <= far.Economics.NetPencePerGameDay {
 		t.Fatalf("per-day contribution contradicts one-way delivery economics: near %+v far %+v",
 			near.Economics, far.Economics)
+	}
+	for _, plan := range []Plan{near, far} {
+		if plan.Continuation == nil {
+			t.Fatalf("delivery lacks a continuation forecast: %+v", plan)
+		}
+		want := float64(plan.Economics.ExpectedNetPence+plan.Continuation.NetPence) /
+			(plan.Economics.GameDays + plan.Continuation.GameDays)
+		if math.Abs(plan.Economics.RankScorePencePerGameDay-want) > 1e-9 {
+			t.Fatalf("combined rank %.9f, want %.9f for %+v", plan.Economics.RankScorePencePerGameDay, want, plan)
+		}
+	}
+	if far.Economics.RankScorePencePerGameDay <= near.Economics.RankScorePencePerGameDay {
+		t.Fatalf("shorter return did not improve the farther delivery's combined rank: near %+v far %+v", near, far)
 	}
 }
 

@@ -89,7 +89,8 @@ export function DiagnosticsView({
       if (row.account_id !== account.id) {
         continue;
       }
-      const key = `${row.event_id ?? ""}:${row.created_at}:${row.method ?? row.ship_id ?? ""}:${row.path ?? row.kind ?? ""}:${text(row.reason, "")}`;
+      const id = kind === "events" ? row.event_id : row.id;
+      const key = id == null ? `missing:${unique.size}` : `id:${id}`;
       unique.set(key, row);
     }
     return [...unique.values()].sort(
@@ -129,6 +130,15 @@ export function DiagnosticsView({
 
   return (
     <div className={`${styles.workspace} ${viewStyles.diagnostics}`}>
+      {journal &&
+        all.some(
+          (row) => (kind === "events" ? row.event_id : row.id) == null,
+        ) && (
+          <p className="notice" role="status">
+            Record IDs were not provided for some entries; repeated observations
+            cannot be deduplicated.
+          </p>
+        )}
       <div
         className={styles.tabs}
         role="group"
@@ -251,7 +261,9 @@ export function DiagnosticsView({
                 searchable={false}
                 data={filtered}
                 rowKey={(row, index) =>
-                  text(row.event_id, `${row.created_at}:${index}`)
+                  row.event_id == null
+                    ? `missing:${index}`
+                    : String(row.event_id)
                 }
                 empty={
                   history.isPending
@@ -314,7 +326,7 @@ export function DiagnosticsView({
                 searchable={false}
                 data={filtered}
                 rowKey={(row, index) =>
-                  `${row.created_at}:${row.method}:${row.path}:${index}`
+                  row.id == null ? `missing:${index}` : String(row.id)
                 }
                 empty={
                   history.isPending
@@ -396,7 +408,7 @@ export function DiagnosticsView({
                 searchable={false}
                 data={filtered}
                 rowKey={(row, index) =>
-                  `${row.created_at}:${row.ship_id}:${index}`
+                  row.id == null ? `missing:${index}` : String(row.id)
                 }
                 empty="No matching decisions recorded"
                 columns={[

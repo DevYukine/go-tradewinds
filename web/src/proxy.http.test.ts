@@ -274,7 +274,7 @@ async function runMode(context: TestContext, mode: "dev" | "start") {
     );
     pending.add(cancel);
     socket.once("connect", () => {
-      // HTTP/1.1 without Host is rejected by Node before middleware can run.
+      // HTTP/1.1 without Host is rejected by Node before proxy can run.
       socket.write(
         `GET ${path} HTTP/1.0\r\nConnection: close\r\nX-Forwarded-Host: localhost:3400\r\n\r\n`,
       );

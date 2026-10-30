@@ -349,3 +349,27 @@ func TestMarqueDecodeRejectsMissingPricingAndPrizeEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestMarqueActiveCountAndPermanentStopOverrideProfitableQuote(t *testing.T) {
+	t.Parallel()
+	base := MarqueInput{Quote: MarqueQuote{CostPence: 10_000, ExpectedNetPrizePence: 15_000,
+		AddedPiracyBPS: 500, LadenPassagesPerDay: 2}, LiquidPence: 1_000_000}
+	for _, tc := range []struct {
+		name   string
+		change func(*MarqueInput)
+	}{
+		{"zero-cost active marque", func(in *MarqueInput) { in.InForceCount = 1 }},
+		{"stopped despite corrected profit", func(in *MarqueInput) {
+			in.Stopped = true
+			in.LosingCount, in.ExpiredCostPence, in.ExpiredPrizePence = 0, 30_000, 30_001
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := base
+			tc.change(&input)
+			if decision := EvaluateMarque(input); decision.Accepted || decision.Reason == "" {
+				t.Fatalf("pilot limit did not reject a profitable quote: %+v", decision)
+			}
+		})
+	}
+}

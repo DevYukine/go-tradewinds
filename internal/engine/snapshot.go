@@ -304,6 +304,15 @@ func (r *Runner) refresh(ctx context.Context) error {
 	if err := r.captureWave(ctx, tasks, nil); err != nil {
 		return err
 	}
+	if err := r.refreshFuturesCredit(ctx); err != nil {
+		return err
+	}
+	if err := r.refreshRivalCredit(ctx); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		r.logRivalCreditError(ctx, "refresh", err)
+	}
 	if meta := r.meta["rnd_status"]; rndStatusRequested && meta.Generation == r.generation && meta.Complete && !meta.Stale && meta.Error == "" {
 		reason, details := rndDecision(decode[gameapi.RndStatus](r.snapshot, "rnd_status"))
 		if err := r.decision(ctx, "", "rnd", reason, details); err != nil {
@@ -311,6 +320,9 @@ func (r *Runner) refresh(ctx context.Context) error {
 		}
 	}
 	state := r.state()
+	if err := r.refreshUnderworld(ctx, state); err != nil {
+		return err
+	}
 	versionChanged := false
 	if r.opts.GameVersion != nil {
 		current := r.opts.GameVersion()

@@ -12,7 +12,7 @@ import (
 
 func capacitySavingsSpendMarker(runner *Runner) {
 	runner.snapshot["_capacity_savings_target"] = encode(capacitySavingsTarget{
-		PortID: recoveryHomePort, HullID: "savings-large-hull", RequiredPence: 1_000_000,
+		PortID: recoveryHomePort, HullID: "brigantine", RequiredPence: 1_000_000,
 		CapitalPence: 500_000, DepthNetPencePerGameDay: 100_000,
 		ExpiresAt: time.Now().UTC().Add(time.Hour),
 	})

@@ -141,7 +141,11 @@ type Economics struct {
 	Basis                       string   `json:"basis,omitempty"`
 	RevenueBasis                string   `json:"revenue_basis,omitempty"`
 	RevenueAgeGameHours         *float64 `json:"revenue_age_game_hours,omitempty"`
+	RevenueCalibrationBPS       int64    `json:"revenue_calibration_bps"`
+	RevenueCalibrationReason    string   `json:"revenue_calibration_reason,omitempty"`
 	RevenuePence                int64    `json:"revenue_pence"`
+	UncalibratedRevenuePence    *int64   `json:"uncalibrated_revenue_pence,omitempty"`
+	RevenueQuantityTons         int64    `json:"revenue_quantity_tons,omitempty"`
 	PurchasePence               int64    `json:"purchase_pence"`
 	CustomsPence                int64    `json:"customs_pence"`
 	ProvisionsPence             int64    `json:"provisions_pence"`
@@ -161,9 +165,17 @@ type Economics struct {
 	StressNetPence              int64    `json:"stress_net_pence"`
 	GameDays                    float64  `json:"game_days"`
 	NetPencePerGameDay          float64  `json:"net_pence_per_game_day"`
+	RankScorePencePerGameDay    float64  `json:"rank_score_pence_per_game_day"`
 	BallastRepeatGameDays       float64  `json:"ballast_repeat_game_days,omitempty"`
 	BallastRepeatNetPence       int64    `json:"ballast_repeat_net_pence"`
 	ProbabilityEstimate         *float64 `json:"probability_estimate"`
+	RankScoreSet                bool     `json:"rank_score_set,omitempty"`
+}
+
+type Continuation struct {
+	Destination string  `json:"destination"`
+	NetPence    int64   `json:"net_pence"`
+	GameDays    float64 `json:"game_days"`
 }
 
 type Plan struct {
@@ -187,10 +199,21 @@ type Plan struct {
 	PriceSource           string              `json:"price_source"`
 	ExpectedArrival       time.Time           `json:"expected_arrival"`
 	Competition           CompetitionEvidence `json:"competition"`
+	Continuation          *Continuation       `json:"continuation,omitempty"`
 	competitionComparable bool
 	playerBidStress       bool
 	sunkFundingFeesPence  int64
 	nextRungReceiptStress bool
+	onwardSizing          planSizing
+	onwardPriority        float64
+	EventPriceStress      bool `json:"event_price_stress,omitempty"`
+}
+
+type planSizing struct {
+	maximum       int64
+	rewardPerTon  int64
+	freightReward int64
+	extraTons     int64
 }
 
 type PlayerBidSellFill struct {
@@ -199,6 +222,12 @@ type PlayerBidSellFill struct {
 	Side        string    `json:"side"`
 	Quantity    int64     `json:"quantity"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+type planningHazardBound struct {
+	bps       int64
+	source    string
+	available bool
 }
 
 type PlanningInput struct {
@@ -232,6 +261,9 @@ type PlanningInput struct {
 	BookObservedAt            map[string]time.Time
 	QuayBookMemory            map[string]RetainedQuayBook
 	BookDrift                 []BookDriftSample
+	RevenueCalibration        map[string]int64
+	MarketShocks              map[string]map[string][]MarketShock
+	marketEventsInvalid       bool
 	SourcingHistoryError      string
 	Metadata                  map[string]DatasetMeta
 	Generation                string
@@ -244,6 +276,9 @@ type PlanningInput struct {
 	Competition               *store.CompetitionSummary
 	ignorePlayerBids          bool
 	pinnedHazard              *Economics
+	singleLegOnly             bool
+	onwardDelay               time.Duration
+	hazardBounds              map[string]planningHazardBound
 }
 
 func (in PlanningInput) fresh(dataset string) bool {
@@ -273,7 +308,7 @@ func (in PlanningInput) fresh(dataset string) bool {
 
 func (in PlanningInput) deadlineOpen(deadline *time.Time) bool {
 	_, upper, ok := in.serverBounds()
-	return ok && (deadline == nil || upper.Before(*deadline))
+	return ok && (deadline == nil || upper.Add(in.onwardDelay).Before(*deadline))
 }
 
 func reject(plan Plan, reason string) Plan {
@@ -295,8 +330,8 @@ func betterPlan(candidate, other Plan) bool {
 		candidate.Competition.PreferenceShips != other.Competition.PreferenceShips {
 		return candidate.Competition.PreferenceShips < other.Competition.PreferenceShips
 	}
-	if candidate.Economics.NetPencePerGameDay != other.Economics.NetPencePerGameDay {
-		return candidate.Economics.NetPencePerGameDay > other.Economics.NetPencePerGameDay
+	if candidateRate, otherRate := planRankScore(candidate.Economics), planRankScore(other.Economics); candidateRate != otherRate {
+		return candidateRate > otherRate
 	}
 	if candidate.Economics.ExpectedNetPence != other.Economics.ExpectedNetPence {
 		return candidate.Economics.ExpectedNetPence > other.Economics.ExpectedNetPence
@@ -323,8 +358,23 @@ func betterPlan(candidate, other Plan) bool {
 }
 
 // PlanVoyages returns accepted and rejected alternatives, accepted first and
-// ranked by operating contribution per game day to delivery. No side effects.
+// ranked by two-leg contribution per game day. Admission remains single-leg.
 func PlanVoyages(in PlanningInput) []Plan {
+	plans := planVoyages(in)
+	rankPlans(plans, in)
+	return plans
+}
+
+func hasAcceptedVoyage(in PlanningInput) bool {
+	for _, plan := range planVoyages(in) {
+		if plan.Accepted {
+			return true
+		}
+	}
+	return false
+}
+
+func planVoyages(in PlanningInput) []Plan {
 	in.Markets = withoutOwnOrders(in.Markets, in.OwnedOrderIDs)
 	ship := in.Ship
 	if (ship.Ship.Status != "berthed" && ship.Ship.Status != "anchored_roadstead") || ship.Ship.ConvoyID != "" || ship.Voyage != nil {
@@ -349,6 +399,7 @@ func PlanVoyages(in PlanningInput) []Plan {
 	if !exists {
 		return []Plan{reject(Plan{ShipID: ship.Ship.ID, Kind: "hold"}, "current port is absent from catalog")}
 	}
+	in.hazardBounds = make(map[string]planningHazardBound, len(in.Catalog.Ports))
 	var plans []Plan
 	for _, contract := range in.Contracts {
 		if contract.ContractType == "charter" && contract.OriginPortID != origin.ID {
@@ -357,7 +408,7 @@ func PlanVoyages(in PlanningInput) []Plan {
 				plans = append(plans, reject(plan, "charter is closed, gossiped, lacks typed reward or is already filled"))
 				continue
 			}
-			plans = append(plans, sizePlan(in, hull, origin, plan, contract.RemainingQuantity, *contract.RewardPerTonPence, 0))
+			plans = append(plans, sizePlan(in, hull, origin, plan, contract.RemainingQuantity, *contract.RewardPerTonPence, 0, 0))
 		}
 		if contract.ContractType == "freight" && contract.OriginPortID == origin.ID {
 			plan := Plan{Kind: "freight", ShipID: ship.Ship.ID, Origin: origin.ID, Destination: contract.DestPortID, Commodity: contract.CommodityID, ContractID: contract.ID, FreightIDs: []string{contract.ID}}
@@ -381,7 +432,7 @@ func PlanVoyages(in PlanningInput) []Plan {
 				continue
 			}
 			plan := Plan{Kind: "spot", ShipID: ship.Ship.ID, Origin: origin.ID, Destination: destination.ID, Commodity: commodity.CommodityID}
-			plans = append(plans, sizePlan(in, hull, origin, plan, ship.EffectiveHoldCapacityTons-ship.CargoUsedTons, 0, 0))
+			plans = append(plans, sizePlan(in, hull, origin, plan, ship.EffectiveHoldCapacityTons-ship.CargoUsedTons, 0, 0, 0))
 		}
 	}
 	// Share voyage costs before the profitability gate. A rejected standalone
@@ -427,31 +478,45 @@ func PlanVoyages(in PlanningInput) []Plan {
 			mixedBase.FreightIDs = []string{freight.ID}
 			mixedBase.Economics = Economics{CollateralPence: freight.CollateralPence}
 			mixedBase.TargetStoresTons = 0
-			bestMixed := reject(mixedBase, "compatible freight has no funded positive-contribution mixed-hold size")
 			mixedMaximum := min(maximum, ship.EffectiveHoldCapacityTons-ship.CargoUsedTons-freight.QuantityRequired)
-			for quantity := int64(1); quantity <= mixedMaximum; quantity++ {
-				mixed := mixedBase
-				mixed.Quantity = quantity
-				cargoRevenue := quantity * rewardPerTon
-				if plan.Kind == "spot" {
-					var reason string
-					cargoRevenue, mixed.SellLimitPence, mixed.Economics.PriceUncertaintyStressPence, mixed.PriceSource, reason = destinationRevenue(in, mixed.Destination, mixed.Commodity, quantity)
-					if reason != "" {
-						continue
-					}
-				}
-				mixed = evaluatePlan(in, hull, origin, mixed, cargoRevenue+freight.RewardPence, freight.QuantityRequired)
-				if quantity == 1 || betterPlan(mixed, bestMixed) {
-					bestMixed = mixed
-				}
-			}
-			plans = append(plans, bestMixed)
+			plans = append(plans, sizePlan(in, hull, origin, mixedBase, mixedMaximum, rewardPerTon, freight.RewardPence, freight.QuantityRequired))
 		}
 	}
 	if len(plans) == 0 {
 		plans = append(plans, reject(Plan{Kind: "hold", ShipID: ship.Ship.ID}, "no observed charter, executable destination book or local freight"))
 	}
-	rankPlans(plans, in)
+	if in.singleLegOnly {
+		// One-ton quotes use full destination costs. Only cost-dominated
+		// rejections may compete for sizing into a profitable larger lot.
+		for i := range plans {
+			if plans[i].onwardSizing.maximum == 0 {
+				plans[i].onwardPriority = math.Inf(-1)
+				if plans[i].Accepted {
+					plans[i].onwardPriority = plans[i].Economics.NetPencePerGameDay
+				}
+			}
+		}
+		slices.SortStableFunc(plans, func(left, right Plan) int {
+			return cmp.Compare(right.onwardPriority, left.onwardPriority)
+		})
+		plans = plans[:min(3, len(plans))]
+		full := in
+		full.singleLegOnly = false
+		for i, plan := range plans {
+			if sizing := plan.onwardSizing; sizing.maximum > 0 {
+				plans[i] = sizePlan(full, hull, origin, plan, sizing.maximum, sizing.rewardPerTon, sizing.freightReward, sizing.extraTons)
+			}
+		}
+	}
+	slices.SortStableFunc(plans, func(left, right Plan) int {
+		if betterPlan(left, right) {
+			return -1
+		}
+		if betterPlan(right, left) {
+			return 1
+		}
+		return 0
+	})
 	return plans
 }
 
@@ -469,13 +534,29 @@ func portTrades(port Port, commodity string) bool {
 	return false
 }
 
-func sizePlan(in PlanningInput, hull Hull, origin Port, plan Plan, maximum, rewardPerTon, extraTons int64) Plan {
+func sizePlan(in PlanningInput, hull Hull, origin Port, plan Plan, maximum, rewardPerTon, freightReward, extraTons int64) Plan {
 	best := reject(plan, "no whole-ton size has positive destination contribution and adequate reserves")
 	maximum = min(maximum, in.Ship.EffectiveHoldCapacityTons-in.Ship.CargoUsedTons-extraTons)
+	if in.singleLegOnly && maximum > 0 {
+		plan.Quantity = 1
+		plan = evaluatePlan(in, hull, origin, plan, rewardPerTon+freightReward, extraTons)
+		plan.onwardSizing = planSizing{maximum, rewardPerTon, freightReward, extraTons}
+		plan.onwardPriority = math.Inf(-1)
+		if plan.Economics.GameDays > 0 && (plan.Accepted ||
+			plan.Reason == "non-positive destination contribution after measured depth, buyer customs, consumed provisions and harbour bills" ||
+			plan.Reason == "below 2% minimum margin on purchase plus customs") {
+			unitContribution := float64(plan.Economics.RevenuePence) - float64(freightReward) -
+				float64(plan.Economics.PurchasePence) - float64(plan.Economics.CustomsPence) - float64(plan.Economics.HazardPence)
+			plan.onwardPriority = (float64(plan.Economics.ExpectedNetPence) +
+				unitContribution*float64(maximum-1)) / plan.Economics.GameDays
+		}
+		return plan
+	}
+	plan.onwardSizing = planSizing{}
 	for quantity := int64(1); quantity <= maximum; quantity++ {
 		candidate := plan
 		candidate.Quantity = quantity
-		candidate = evaluatePlan(in, hull, origin, candidate, quantity*rewardPerTon, extraTons)
+		candidate = evaluatePlan(in, hull, origin, candidate, quantity*rewardPerTon+freightReward, extraTons)
 		if quantity == 1 || betterPlan(candidate, best) {
 			best = candidate
 		}
@@ -495,24 +576,19 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 	if originBook.Visibility != "quay" {
 		return reject(plan, "local full depth requires quay visibility")
 	}
-	// Fully laden speed is a conservative delivery-time bound. Loading,
-	// unloading, berth locks and observed destination queues belong to this
-	// delivery; an optional empty return belongs only to the repeat forecast.
-	sailingDays := float64(outward.TotalDistanceNM) / (float64(hull.BaseSpeedCentiknots) / 100 * 0.8) / 24
-	// Two 30-minute berth locks and two minutes per ton for each cargo operation.
-	portDays := 1.0/24 + float64((plan.Quantity+extraTons)*4)/1_440
+	// Delivery includes the laden sailing bound, handling and current queues.
 	destinationDetail := in.Ports[plan.Destination]
 	if destinationDetail.EffectiveBerths <= 0 {
 		return reject(plan, "destination berth capacity is unavailable")
 	}
-	portDays += float64(destinationDetail.QueuedShips+1) / float64(destinationDetail.EffectiveBerths) * 0.25
+	sailingDays, portDays := deliveryGameDays(outward, hull, destinationDetail, plan.Quantity+extraTons)
 	gameDays := sailingDays + portDays
 	outwardDays := sailingDays
 	_, upper, ok := in.serverBounds()
 	if !ok {
 		return reject(plan, "current server clock authority is unavailable")
 	}
-	arrival := upper.Add(gameDuration(outwardDays+portDays, in.Clock.Calendar.TimeScale))
+	arrival := upper.Add(in.onwardDelay).Add(gameDuration(outwardDays+portDays, in.Clock.Calendar.TimeScale))
 	plan.ExpectedArrival = arrival
 	if plan.Deadline != nil && !arrival.Add(gameDuration(1, in.Clock.Calendar.TimeScale)).Before(*plan.Deadline) {
 		return reject(plan, "charter deadline lacks one game day of delivery slack")
@@ -564,15 +640,63 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 		customs += plan.Quantity
 		plan.BuyLimitPence = fill.LimitPence
 	}
-	if plan.Kind == "spot" {
+	fixedFreightRevenue := int64(0)
+	freightTermsKnown := true
+	for _, id := range plan.FreightIDs {
+		found := false
+		for _, contract := range in.Contracts {
+			if contract.ID == id && contract.ContractType == "freight" {
+				fixedFreightRevenue = growthCashTotal(fixedFreightRevenue, contract.RewardPence)
+				found = true
+			}
+		}
+		freightTermsKnown = freightTermsKnown && found
+	}
+	cargoRevenue := revenue - fixedFreightRevenue
+	if strings.HasPrefix(plan.Kind, "spot") {
+		var observedCargoRevenue int64
 		var reason string
-		revenue, plan.SellLimitPence, priceStress, plan.PriceSource, reason = destinationRevenue(in, plan.Destination, plan.Commodity, plan.Quantity)
+		observedCargoRevenue, plan.SellLimitPence, priceStress, plan.PriceSource, reason, plan.EventPriceStress = destinationRevenue(in, plan.Destination, plan.Commodity, plan.Quantity, arrival)
 		if reason != "" {
 			return reject(plan, reason)
+		}
+		cargoRevenue = observedCargoRevenue
+		if plan.Kind == "spot" {
+			revenue = cargoRevenue
+		} else {
+			revenue += cargoRevenue
 		}
 	} else if plan.PriceSource == "" {
 		plan.PriceSource = "live contract terms"
 	}
+	uncalibratedRevenue := revenue
+	calibrationReason := ""
+	if !freightTermsKnown || fixedFreightRevenue == math.MaxInt64 {
+		calibrationReason = "fixed freight terms are unavailable; cargo revenue calibration skipped"
+	}
+	revenueBasis := ""
+	switch {
+	case plan.PriceSource == "observed destination full depth":
+		revenueBasis = "depth"
+	case plan.PriceSource == "live contract terms":
+		revenueBasis = "contract"
+	case plan.PriceSource == playerBidGossipSource || plan.PriceSource == "recent observed gossip; one-ton probe; unverified bid size":
+		revenueBasis = "gossip"
+	case strings.HasPrefix(plan.PriceSource, retainedBookSource):
+		revenueBasis = "retained"
+	}
+	calibrationBPS := int64(10_000)
+	if factor, present := in.RevenueCalibration[revenueBasis]; present && calibrationReason == "" {
+		calibrationBPS = max(9000, min(10_000, factor))
+	}
+	// A fixed freight reward is not exposed to cargo-price forecast error.
+	if calibrationReason == "" {
+		calibratedCargoRevenue := cargoRevenue/10_000*calibrationBPS + cargoRevenue%10_000*calibrationBPS/10_000
+		revenue = revenue - cargoRevenue + calibratedCargoRevenue
+		cargoRevenue = calibratedCargoRevenue
+	}
+	priceStress = priceStress/10_000*calibrationBPS + priceStress%10_000*calibrationBPS/10_000
+	priceStress = eventPriceStress(cargoRevenue, priceStress, plan.EventPriceStress)
 	// Whole-ton purchases fund safety stock, but only the fraction consumed is
 	// expense. Existing stores have the same measured replacement cost.
 	consumed := float64(hull.CrewRequired)/100*sailingDays + float64(hull.CrewRequired)/200*portDays
@@ -603,9 +727,15 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 		hazardPence = in.pinnedHazard.HazardPence
 		hazardSource = in.pinnedHazard.HazardSource
 	} else {
-		var available bool
-		hazardBPS, hazardSource, available = planHazard(in, outward)
-		if !available {
+		bound, cached := in.hazardBounds[plan.Destination]
+		if !cached {
+			bound.bps, bound.source, bound.available = planHazard(in, outward)
+			if in.hazardBounds != nil {
+				in.hazardBounds[plan.Destination] = bound
+			}
+		}
+		hazardBPS, hazardSource = bound.bps, bound.source
+		if !bound.available {
 			return reject(plan, hazardUnavailable)
 		}
 		risk := growthCashTotal(purchase, customs, plan.Economics.CollateralPence)
@@ -617,26 +747,15 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 	}
 	expectedNet -= hazardPence
 	collateral := plan.Economics.CollateralPence
-	revenueBasis := ""
-	switch {
-	case plan.PriceSource == "observed destination full depth":
-		revenueBasis = "depth"
-	case plan.PriceSource == "live contract terms":
-		revenueBasis = "contract"
-	case plan.PriceSource == playerBidGossipSource || plan.PriceSource == "recent observed gossip; one-ton probe; unverified bid size":
-		revenueBasis = "gossip"
-	case strings.HasPrefix(plan.PriceSource, retainedBookSource):
-		revenueBasis = "retained"
-	}
 	var revenueObservedAt time.Time
 	switch revenueBasis {
 	case "depth":
-		revenueObservedAt = in.Metadata["books/"+plan.Destination].UpdatedAt
+		_, revenueObservedAt, _ = in.marketObservationBounds("books/" + plan.Destination)
 	case "retained":
-		revenueObservedAt = in.QuayBookMemory[plan.Destination].ObservedAt
+		revenueObservedAt = in.QuayBookMemory[plan.Destination].observedAt(plan.Commodity)
 	}
 	var revenueAge *float64
-	if age, valid := quayBookAgeGameDays(in.Now, revenueObservedAt, in.Clock.Calendar.TimeScale); valid {
+	if age, valid := quayBookAgeGameDays(upper, revenueObservedAt, in.Clock.Calendar.TimeScale); valid {
 		hours := age * 24
 		revenueAge = &hours
 	}
@@ -644,7 +763,11 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 		Basis:                       "destination",
 		RevenueBasis:                revenueBasis,
 		RevenueAgeGameHours:         revenueAge,
+		RevenueCalibrationBPS:       calibrationBPS,
+		RevenueCalibrationReason:    calibrationReason,
 		RevenuePence:                revenue,
+		UncalibratedRevenuePence:    new(uncalibratedRevenue),
+		RevenueQuantityTons:         plan.Quantity,
 		PurchasePence:               purchase,
 		CustomsPence:                customs,
 		ProvisionsPence:             provisionExpense,
@@ -661,7 +784,7 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 		GameDays:                    gameDays,
 		NetPencePerGameDay:          float64(expectedNet) / gameDays,
 	}
-	plan.Economics.BallastRepeatGameDays, plan.Economics.BallastRepeatNetPence = ballastRepeatEconomics(in, hull, origin, plan, outward, portDays)
+	plan.Economics.BallastRepeatGameDays, plan.Economics.BallastRepeatNetPence = ballastRepeatEconomics(in, hull, origin, plan, portDays)
 	plan.Economics.StoreCashPence = growthCargoCash(Plan{
 		Quantity: plan.StoresToBuy, BuyLimitPence: plan.StoresLimitPence,
 	}, originBook.CustomsBPS)
@@ -672,19 +795,22 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 		plan.playerBidStress = true
 		if expectedNet-priceStress <= 0 {
 			if plan.Quantity == 1 {
-				playerRevenue, _, _, _, _ := destinationRevenue(in, plan.Destination, plan.Commodity, 1)
+				playerRevenue, _, _, _, _, _ := destinationRevenue(in, plan.Destination, plan.Commodity, 1, arrival)
 				in.ignorePlayerBids = true
-				probeRevenue, limit, stress, source, reason := destinationRevenue(in, plan.Destination, plan.Commodity, 1)
+				_, limit, stress, source, reason, _ := destinationRevenue(in, plan.Destination, plan.Commodity, 1, arrival)
 				if reason == "" {
 					plan.PriceSource = source
 					plan.SellLimitPence = limit
 					plan.Economics.PriceUncertaintyStressPence = stress
 					plan.playerBidStress = false
-					return pricePlan(in, hull, origin, plan, revenue-playerRevenue+probeRevenue, extraTons)
+					return pricePlan(in, hull, origin, plan, uncalibratedRevenue-playerRevenue, extraTons)
 				}
 			}
 			return reject(plan, "player bid lot is not net-positive at the stressed gossip NPC bid")
 		}
+	}
+	if plan.EventPriceStress && expectedNet-priceStress < 0 {
+		return reject(plan, "market event price does not cover the 25% revenue stress")
 	}
 	if revenueBasis == "retained" && expectedNet-priceStress <= 0 {
 		return reject(plan, "retained quay book lot is not net-positive after price uncertainty stress")
@@ -705,6 +831,9 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 	plan.Reason = "positive destination contribution after Lloyd's hazard bound and minimum margin; price stress remains diagnostic"
 	if plan.sunkFundingFeesPence > 0 {
 		plan.Reason = "non-negative remaining destination contribution; paid funding fees are sunk"
+	}
+	if plan.EventPriceStress {
+		plan.Reason = "positive destination contribution after Lloyd's hazard bound, minimum margin and 25% market event revenue stress"
 	}
 	return plan
 }
@@ -804,7 +933,23 @@ func ballastRepeatStoreTarget(in PlanningInput, hull Hull, plan Plan) (float64, 
 	return target, nil
 }
 
-func ballastRepeatEconomics(in PlanningInput, hull Hull, origin Port, plan Plan, outward Route, portDays float64) (float64, int64) {
+func ballastLegEconomics(in PlanningInput, hull Hull, origin string, back Route) (float64, int64, int64, bool) {
+	detail := in.Ports[origin]
+	if detail.EffectiveBerths <= 0 || hull.BaseSpeedCentiknots <= 0 {
+		return 0, 0, 0, false
+	}
+	sailingDays := float64(back.TotalDistanceNM) / (float64(hull.BaseSpeedCentiknots) / 100 * 0.8) / 24
+	portDays := 30.0/1_440 + float64(detail.QueuedShips+1)/float64(detail.EffectiveBerths)*0.25
+	consumed := float64(hull.CrewRequired)/100*sailingDays + float64(hull.CrewRequired)/200*portDays
+	provisions, err := provisionsExpense(in.Markets[origin], consumed)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	berth := int64(math.Ceil(float64(detail.BerthDuesPerDayPence) * max(0.25, portDays)))
+	return sailingDays + portDays, provisions, berth, true
+}
+
+func ballastRepeatEconomics(in PlanningInput, hull Hull, origin Port, plan Plan, portDays float64) (float64, int64) {
 	// Fixed freight cannot be cloned into repeat revenue, and gossip has no
 	// measured demand. Neither is a repeatable capital-underwriting basis.
 	if len(plan.FreightIDs) > 0 ||
@@ -816,19 +961,12 @@ func ballastRepeatEconomics(in PlanningInput, hull Hull, origin Port, plan Plan,
 		return 0, 0
 	}
 	back := in.Routes[routeKey(plan.Destination, origin.ID, hull.ID)]
-	originDetail := in.Ports[origin.ID]
-	returnDays := float64(back.TotalDistanceNM) / (float64(hull.BaseSpeedCentiknots) / 100 * 0.8) / 24
-	returnPortDays := 30.0/1_440 + float64(originDetail.QueuedShips+1)/float64(originDetail.EffectiveBerths)*0.25
-	totalPortDays := portDays + returnPortDays
-	sailingDays := float64(outward.TotalDistanceNM) / (float64(hull.BaseSpeedCentiknots) / 100 * 0.8) / 24
-	consumed := float64(hull.CrewRequired)/100*(sailingDays+returnDays) +
-		float64(hull.CrewRequired)/200*totalPortDays
-	repeatProvisions, err := provisionsExpense(in.Markets[origin.ID], consumed)
-	if err != nil {
+	returnDays, returnProvisions, returnBerth, ok := ballastLegEconomics(in, hull, origin.ID, back)
+	if !ok {
 		return 0, 0
 	}
-	returnBerth := int64(math.Ceil(float64(originDetail.BerthDuesPerDayPence) * max(0.25, returnPortDays)))
-	repeatNet := plan.Economics.ExpectedNetPence - (repeatProvisions - plan.Economics.ProvisionsPence) - returnBerth
+	repeatProvisions := plan.Economics.ProvisionsPence + returnProvisions
+	repeatNet := plan.Economics.ExpectedNetPence - returnProvisions - returnBerth
 	destination, exists := findPort(in.Catalog, plan.Destination)
 	if !exists || origin.BankingRegion == "" || destination.BankingRegion == "" {
 		return 0, 0
@@ -858,29 +996,56 @@ func ballastRepeatEconomics(in PlanningInput, hull Hull, origin Port, plan Plan,
 		}
 		repeatNet -= gross - replacementCash
 	}
-	return plan.Economics.GameDays + returnDays + returnPortDays, repeatNet
+	return plan.Economics.GameDays + returnDays, repeatNet
 }
 
-func destinationRevenue(in PlanningInput, destination, commodity string, quantity int64) (int64, int64, int64, string, string) {
+// deliveryGameDays uses fully laden speed, two berth locks, four minutes per ton
+// for loading/unloading, and the observed destination queue. Durations are game days.
+func deliveryGameDays(route Route, hull Hull, destination PortDetail, tons int64) (sailingDays, portDays float64) {
+	sailingDays = float64(route.TotalDistanceNM) / (float64(hull.BaseSpeedCentiknots) / 100 * 0.8) / 24
+	portDays = 1.0/24 + float64(tons*4)/1_440
+	portDays += float64(destination.QueuedShips+1) / float64(destination.EffectiveBerths) * 0.25
+	return sailingDays, portDays
+}
+
+func destinationRevenue(in PlanningInput, destination, commodity string, quantity int64, arrival time.Time) (int64, int64, int64, string, string, bool) {
 	_, upper, ok := in.serverBounds()
 	if !ok {
-		return 0, 0, 0, "", "current server clock authority is unavailable"
+		return 0, 0, 0, "", "current server clock authority is unavailable", false
 	}
+	var eventReason string
 	if in.fresh("books/" + destination) {
 		book := in.Markets[destination]
 		if book.Visibility == "quay" {
+			from, to, valid := in.marketObservationBounds("books/" + destination)
+			if !valid {
+				return 0, 0, 0, "", "destination book has no bounded server observation time", false
+			}
+			required, reason := in.marketObservationPolicy(destination, commodity, from, to, arrival)
+			if reason != "" {
+				revenue, limit, stress, source, retainedReason, retainedStress := retainedDestinationRevenue(in, destination, commodity, quantity, 0, arrival)
+				if retainedReason == "" {
+					return revenue, limit, stress, source, "", retainedStress
+				}
+				return 0, 0, 0, "", reason + "; no usable pre-event retained bids", false
+			}
 			entry := bookCommodity(book, commodity)
 			if entry == nil || entry.Depth == nil {
-				return 0, 0, 0, "", "fresh destination quay book lacks commodity bid depth"
+				return 0, 0, 0, "", "fresh destination quay book lacks commodity bid depth", false
 			}
-			fill, err := WalkDepth(entry.Depth.Bids, quantity, false)
+			levels := entry.Depth.Bids
+			if reserved := in.ReservedRetainedBidTons[destination][commodity]; reserved > 0 {
+				levels = slices.Clone(levels)
+				reserveBidLevels(levels, reserved)
+			}
+			fill, err := WalkDepth(levels, quantity, false)
 			if err != nil {
-				return 0, 0, 0, "", "fresh destination quay bids cannot fill the whole lot"
+				return 0, 0, 0, "", "fresh destination quay bids cannot fill the whole lot", false
 			}
 			stress := int64(0)
 			if in.NextRungReceiptStress {
 				var nextBid int64
-				for _, level := range entry.Depth.Bids {
+				for _, level := range levels {
 					if level.IsNPC && level.RemainingQuantity > 0 && level.PricePence < fill.LimitPence {
 						nextBid = max(nextBid, level.PricePence)
 					}
@@ -889,10 +1054,11 @@ func destinationRevenue(in PlanningInput, destination, commodity string, quantit
 					stress = max(0, fill.GrossPence-quantity*nextBid)
 				}
 			}
-			return fill.GrossPence, fill.LimitPence, stress, "observed destination full depth", ""
+			return fill.GrossPence, fill.LimitPence, eventPriceStress(fill.GrossPence, stress, required), "observed destination full depth", "", required
 		}
 	}
 	var bid, playerPrice, npcBid, fresherBid int64
+	var bidStress, playerStress bool
 	reserved := in.ReservedPlayerBidTons[destination][commodity]
 	for portID, detail := range in.Ports {
 		if !in.fresh("ports/" + portID) {
@@ -913,10 +1079,18 @@ func destinationRevenue(in PlanningInput, destination, commodity string, quantit
 					price.BestBidPence == nil || *price.BestBidPence <= 0 {
 					continue
 				}
+				required, reason := in.marketObservationPolicy(destination, commodity, price.SnapshotAt, price.SnapshotAt, arrival)
+				if reason != "" {
+					eventReason = reason
+					continue
+				}
 				if bid == 0 || *price.BestBidPence < bid {
 					bid = *price.BestBidPence
+					bidStress = required
+				} else if *price.BestBidPence == bid {
+					bidStress = bidStress || required
 				}
-				if price.SnapshotAt.After(in.QuayBookMemory[destination].ObservedAt) &&
+				if price.SnapshotAt.After(in.QuayBookMemory[destination].observedAt(commodity)) &&
 					(fresherBid == 0 || *price.BestBidPence < fresherBid) {
 					fresherBid = *price.BestBidPence
 				}
@@ -932,9 +1106,12 @@ func destinationRevenue(in PlanningInput, destination, commodity string, quantit
 					}
 				}
 				playerBid, tons := playerBidCapacity(price, reportReserved)
-				if !in.ignorePlayerBids && isNPCBid && quantity > 0 && tons >= quantity &&
-					(playerPrice == 0 || playerBid < playerPrice) {
-					playerPrice = playerBid
+				if !in.ignorePlayerBids && isNPCBid && quantity > 0 && tons >= quantity {
+					if playerPrice == 0 || playerBid < playerPrice {
+						playerPrice, playerStress = playerBid, required
+					} else if playerBid == playerPrice {
+						playerStress = playerStress || required
+					}
 				}
 			}
 		}
@@ -944,18 +1121,26 @@ func destinationRevenue(in PlanningInput, destination, commodity string, quantit
 		revenue := checkedPenceProduct(quantity, playerPrice)
 		stressedRevenue := checkedPenceProduct(quantity, npcStressPrice)
 		if revenue == math.MaxInt64 || stressedRevenue == math.MaxInt64 {
-			return 0, 0, 0, "", "gossip player bid value exceeds integer-pence bounds"
+			return 0, 0, 0, "", "gossip player bid value exceeds integer-pence bounds", false
 		}
-		return revenue, npcStressPrice, max(0, revenue-stressedRevenue), playerBidGossipSource, ""
+		stress := eventPriceStress(revenue, max(0, revenue-stressedRevenue), playerStress)
+		return revenue, npcStressPrice, stress, playerBidGossipSource, "", playerStress
 	}
-	if revenue, limit, stress, source, ok := retainedDestinationRevenue(in, destination, commodity, quantity, fresherBid); ok {
-		return revenue, limit, stress, source, ""
+	revenue, limit, stress, source, reason, required := retainedDestinationRevenue(in, destination, commodity, quantity, fresherBid, arrival)
+	if reason == "" {
+		return revenue, limit, stress, source, "", required
+	}
+	if strings.Contains(reason, "market event") {
+		eventReason = reason
 	}
 	// Without sufficient player quantity, gossip remains a one-ton probe.
 	if quantity == 1 && bid > 0 {
-		return bid, max(1, bid*3/4), ceilBPS(bid, 2_500), "recent observed gossip; one-ton probe; unverified bid size", ""
+		return bid, max(1, bid*3/4), ceilBPS(bid, 2_500), "recent observed gossip; one-ton probe; unverified bid size", "", bidStress
 	}
-	return 0, 0, 0, "", "destination has neither executable full depth, unreserved retained quay bids nor recent observed gossip with enough unreserved player bid quantity"
+	if eventReason != "" {
+		return 0, 0, 0, "", eventReason + "; no usable pre-event retained bids", false
+	}
+	return 0, 0, 0, "", "destination has neither executable full depth, unreserved retained quay bids nor recent observed gossip with enough unreserved player bid quantity", false
 }
 
 const playerBidGossipSource = "recent observed gossip; player bid quantity; stressed NPC bid floor"

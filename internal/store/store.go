@@ -441,6 +441,17 @@ func (s *Store) SaveSnapshot(ctx context.Context, accountID string, data map[str
 	}
 	row := snapshotRow{AccountID: accountID, Data: encoded, UpdatedAt: time.Now().UTC()}
 	return s.writeOwned(ctx, accountID, func(tx *gorm.DB) error {
+		var profile struct {
+			Company struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"company"`
+		}
+		if json.Unmarshal(data["profile"], &profile) == nil {
+			if err := recordConfiguredCompanyIdentity(tx, accountID, profile.Company.ID, scrubText(profile.Company.Name, secrets), row.UpdatedAt); err != nil {
+				return err
+			}
+		}
 		return tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "account_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{"data", "updated_at"}),

@@ -3,11 +3,14 @@ package store
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest/observer"
 )
@@ -39,6 +42,8 @@ func TestPassengerQuarantineMigrationUnreadableMissionDoesNotBlockStartup(t *tes
 	}
 	// Recreate the actual upgrade boundary, with unreadable missions belonging to
 	// an unrelated account. Migration must retain them, not block all startup.
+	// Later migrations did not exist at that boundary, so roll them back first.
+	rollBackMigrationsAfter(t, db, passengerQuarantineMigrationVersion)
 	if err := db.db.Exec("DROP TABLE passenger_quarantine_archives").Error; err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +70,34 @@ func TestPassengerQuarantineMigrationUnreadableMissionDoesNotBlockStartup(t *tes
 	warnings := logs.FilterMessage("passenger quarantine migration retained unreadable recovery rows").All()
 	if len(warnings) != 1 || warnings[0].ContextMap()["skipped_rows"] != int64(2) {
 		t.Fatalf("unreadable recovery rows not visibly summarized: %+v", warnings)
+	}
+}
+
+// rollBackMigrationsAfter runs the real Down steps of every SQL migration newer
+// than version. The Go migrations are registered as stubs only so goose knows
+// their versions; none of them is rolled back here.
+func rollBackMigrationsAfter(t *testing.T, db *Store, version int64) {
+	t.Helper()
+	migrationFS, err := fs.Sub(migrations, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := &goose.GoFunc{RunTx: func(context.Context, *sql.Tx) error {
+		return errors.New("go migrations are not rolled back by this fixture")
+	}}
+	provider, err := goose.NewProvider(goose.DialectPostgres, db.sqlDB, migrationFS,
+		goose.WithDisableGlobalRegistry(true),
+		goose.WithGoMigrations(
+			goose.NewGoMigration(5, stub, stub),
+			goose.NewGoMigration(8, stub, stub),
+			goose.NewGoMigration(passengerQuarantineMigrationVersion, stub, stub),
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(context.Background(), version); err != nil {
+		t.Fatal(err)
 	}
 }
 

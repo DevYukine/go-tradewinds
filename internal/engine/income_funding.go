@@ -67,12 +67,16 @@ func addFundingFees(plan Plan, fees int64) Plan {
 		plan.Economics.BallastRepeatNetPence -= fees
 	}
 	plan.Economics.NetPencePerGameDay = float64(plan.Economics.ExpectedNetPence) / plan.Economics.GameDays
+	refreshPlanRank(&plan)
 	remainingNet := plan.Economics.ExpectedNetPence + plan.sunkFundingFeesPence
 	if remainingNet < 0 || remainingNet == 0 && plan.sunkFundingFeesPence == 0 {
 		return reject(plan, "non-positive destination contribution after measured funding fees")
 	}
 	if plan.playerBidStress && remainingNet-plan.Economics.PriceUncertaintyStressPence <= 0 {
 		return reject(plan, "player bid lot is not net-positive at the stressed gossip NPC bid after funding fees")
+	}
+	if plan.EventPriceStress && remainingNet-plan.Economics.PriceUncertaintyStressPence < 0 {
+		return reject(plan, "market event price does not cover the 25% revenue stress after funding fees")
 	}
 	if plan.Economics.RevenueBasis == "retained" && remainingNet-plan.Economics.PriceUncertaintyStressPence <= 0 {
 		return reject(plan, "retained quay book lot is not net-positive after price uncertainty stress and funding fees")
@@ -206,13 +210,7 @@ func priceIncomePlan(in PlanningInput, pinned Plan, paidFees int64) Plan {
 		if !found {
 			return rejected("pinned charter no longer has fresh matching uncommitted demand")
 		}
-	} else if strings.HasPrefix(plan.Kind, "spot") {
-		var reason string
-		revenue, plan.SellLimitPence, plan.Economics.PriceUncertaintyStressPence, plan.PriceSource, reason = destinationRevenue(in, plan.Destination, plan.Commodity, plan.Quantity)
-		if reason != "" {
-			return rejected(reason)
-		}
-	} else if plan.Kind != "freight" {
+	} else if !strings.HasPrefix(plan.Kind, "spot") && plan.Kind != "freight" {
 		return rejected("pinned income kind is not an ordinary shipment")
 	}
 	for i, id := range plan.FreightIDs {

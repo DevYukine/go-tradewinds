@@ -86,7 +86,6 @@ export function DataTable<T extends RowData>({
         id: column.label,
         header: column.label,
         accessorFn: column.value,
-        cell: ({ row }) => column.render(row.original),
         enableSorting: Boolean(column.value),
         enableGlobalFilter: Boolean(column.value) && column.filter !== false,
         enableHiding: index !== 0,
@@ -275,17 +274,17 @@ export function DataTable<T extends RowData>({
           <tbody>
             {table.getRowModel().rows.map((row) => (
               <tr key={row.id}>
-                {row.getVisibleCells().map((cell) => (
-                  <td
-                    key={cell.id}
-                    className={
-                      columns.find((column) => column.label === cell.column.id)
-                        ?.className
-                    }
-                  >
-                    <table.FlexRender cell={cell} />
-                  </td>
-                ))}
+                {row.getVisibleCells().map((cell) => {
+                  const column = columns.find(
+                    (column) => column.label === cell.column.id,
+                  );
+                  return (
+                    <td key={cell.id} className={column?.className}>
+                      {/* Render callbacks are not component types; preserve native details on refresh. */}
+                      {column?.render(row.original)}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>

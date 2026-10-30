@@ -363,7 +363,7 @@ func (r *Runner) refreshHazardQuotes(ctx context.Context, state AccountState) er
 			// needed. They schedule requests, never authorize or persist trades.
 			local.Contracts = taperedContracts(state.Contracts, state.Catalog, r.charterProceedsPence, ship.EffectiveHoldCapacityTons)
 			local.pinnedHazard = &Economics{}
-			plans := PlanVoyages(local)
+			plans := planVoyages(local)
 			for index := range plans {
 				plan := &plans[index]
 				key := hazardHullKey(ship.Ship.ID, plan.Origin, plan.Destination)

@@ -66,6 +66,9 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 	if data.Action == nil {
 		return false, fmt.Errorf("mission %s has no attached response stage", mission.ShipID)
 	}
+	if data.Futures != nil {
+		return r.consumeFuturesResult(ctx, mission, data, status, response)
+	}
 	if passengerStage(data.Action.Stage) {
 		return r.consumePassengerResult(ctx, mission, data, status, response)
 	}

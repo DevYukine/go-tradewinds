@@ -1,4 +1,5 @@
 import { count, money } from "./format";
+import { rivalPercent } from "./rivals";
 import type { EngineWarning } from "./types";
 
 export function warningTime(value: string): string {
@@ -47,9 +48,18 @@ export function warningText(
     case "loss_streak":
       message = `Last ${count(warning.facts.count)} settlements lost ${money(Math.abs(warning.facts.net_pence))} since ${warningTime(warning.since)}.`;
       break;
-    case "falling_behind":
-      message = `Our 24 h value change is ${money(warning.facts.ours_pence)}; rival median ${money(warning.facts.median_pence)} (${count(warning.facts.rival_count)} rivals).`;
+    case "falling_behind": {
+      const median = warning.facts.median_growth_bps;
+      const medianText =
+        warning.facts.median_growth_half_bps === 1 && median != null
+          ? `${((median + 0.5) / 100).toFixed(3)}%`
+          : rivalPercent(median);
+      message =
+        warning.names.basis === "rising"
+          ? `Our published rising growth over 7 real days is ${rivalPercent(warning.facts.ours_growth_bps)}; rival median ${medianText} (${count(warning.facts.ranked_players)} ranked players).`
+          : `Our 24 h value change is ${money(warning.facts.ours_pence)}; rival median ${money(warning.facts.median_pence)} (${count(warning.facts.rival_count)} rivals).`;
       break;
+    }
   }
   return accountLabel ? `${accountLabel}: ${message}` : message;
 }

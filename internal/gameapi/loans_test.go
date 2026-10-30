@@ -104,6 +104,7 @@ func TestLoanAnnualAndLegacyDailyDecoding(t *testing.T) {
 		"is_mortgage":false, "recourse":true, "collateral_kind":"ship_lien", "collateral_ship_id":"ship-1",
 		"collateral_port_id":"amsterdam", "collateral_commodity_id":"grain", "collateral_tons":25,
 		"collateral_contract_id":"contract-1", "collateral_value_pence":2500000,
+		"collateral_deposit_id":null, "deposit_lock_pence":0,
 		"collateral_status":"pledged", "status":"active", "outstanding_principal_pence":700000,
 		"accrued_interest_pence":101, "owed_pence":700101, "principal_repaid_pence":50000,
 		"interest_paid_pence":102, "collateral_credit_pence":103, "extinguished_pence":104,
@@ -123,6 +124,7 @@ func TestLoanAnnualAndLegacyDailyDecoding(t *testing.T) {
 		"arrears_pence":0, "arrears_due_by":null, "is_mortgage":false, "recourse":false, "collateral_kind":"unsecured",
 		"collateral_ship_id":null, "collateral_port_id":null, "collateral_commodity_id":null,
 		"collateral_tons":null, "collateral_contract_id":null, "collateral_value_pence":0,
+		"collateral_deposit_id":null, "deposit_lock_pence":0,
 		"collateral_status":"none", "status":"repaid", "outstanding_principal_pence":0,
 		"accrued_interest_pence":0, "owed_pence":0, "principal_repaid_pence":750000,
 		"interest_paid_pence":67500, "collateral_credit_pence":0, "extinguished_pence":0,
@@ -150,6 +152,58 @@ func TestLoanAnnualAndLegacyDailyDecoding(t *testing.T) {
 				t.Fatalf("legacy nullable fields or daily rate changed: %+v", loan)
 			}
 			assertLoanJSON(t, fixture, loan)
+		})
+	}
+}
+
+func TestLoanDepositCollateralDecoding(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		raw      string
+		wantID   string
+		wantLock int64
+	}{
+		{"omitted", `{}`, "", 0},
+		{"explicit null and zero", `{"collateral_deposit_id":null,"deposit_lock_pence":0}`, "", 0},
+		{"pledged deposit", `{"collateral_deposit_id":"33333333-3333-4333-8333-333333333333","deposit_lock_pence":2147483649}`, "33333333-3333-4333-8333-333333333333", 2147483649},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var loan gameapi.Loan
+			if err := json.Unmarshal([]byte(test.raw), &loan); err != nil {
+				t.Fatal(err)
+			}
+			if test.wantID == "" {
+				if loan.CollateralDepositID != nil {
+					t.Fatalf("unpledged deposit identity = %q, want nil", *loan.CollateralDepositID)
+				}
+			} else if loan.CollateralDepositID == nil || *loan.CollateralDepositID != test.wantID {
+				t.Fatalf("pledged deposit identity = %v, want %q", loan.CollateralDepositID, test.wantID)
+			}
+			if loan.DepositLockPence != test.wantLock {
+				t.Fatalf("deposit lock = %d, want %d", loan.DepositLockPence, test.wantLock)
+			}
+			raw, err := json.Marshal(loan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatal(err)
+			}
+			wantIDJSON := "null"
+			if test.wantID != "" {
+				wantIDJSON = `"` + test.wantID + `"`
+			}
+			if got := string(fields["collateral_deposit_id"]); got != wantIDJSON {
+				t.Fatalf("encoded collateral_deposit_id = %q, want %q", got, wantIDJSON)
+			}
+			wantLockJSON, err := json.Marshal(test.wantLock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(fields["deposit_lock_pence"]); got != string(wantLockJSON) {
+				t.Fatalf("encoded deposit_lock_pence = %q, want %s", got, wantLockJSON)
+			}
 		})
 	}
 }

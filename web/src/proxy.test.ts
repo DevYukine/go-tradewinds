@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAllowedHosts, isAllowedHost } from "./lib/allowed-hosts";
-import type { middleware } from "./middleware";
+import type { proxy } from "./proxy";
 
 const defaults = ["127.0.0.1:3400", "localhost:3400", "[::1]:3400"];
 
@@ -62,14 +62,14 @@ describe("exact dashboard authority allowlist", () => {
   });
 });
 
-describe("dashboard middleware with real Next requests", () => {
-  let runMiddleware: typeof middleware;
+describe("dashboard proxy with real Next requests", () => {
+  let runProxy: typeof proxy;
 
   beforeEach(async () => {
     vi.stubEnv("DASHBOARD_ALLOWED_HOSTS", " Fleet.Example:443 ");
     vi.resetModules();
     // Reload after stubbing env because the allowlist is captured at import.
-    ({ middleware: runMiddleware } = await import("./middleware"));
+    ({ proxy: runProxy } = await import("./proxy"));
   });
 
   afterEach(() => {
@@ -83,7 +83,7 @@ describe("dashboard middleware with real Next requests", () => {
       const request = new NextRequest("http://foreign.example/ledger", {
         headers: { host },
       });
-      const response = runMiddleware(request);
+      const response = runProxy(request);
       expect(response).toBeInstanceOf(NextResponse);
       expect(response.status).toBe(200);
       expect(response.headers.get("x-middleware-next")).toBe("1");
@@ -109,7 +109,7 @@ describe("dashboard middleware with real Next requests", () => {
     const request = new NextRequest("http://localhost:3400/ledger", {
       headers,
     });
-    const response = runMiddleware(request);
+    const response = runProxy(request);
     expect(response).toBeInstanceOf(NextResponse);
     expect(response.status).toBe(403);
     expect(response.headers.get("x-middleware-next")).toBeNull();
@@ -119,14 +119,14 @@ describe("dashboard middleware with real Next requests", () => {
     expect(await response.text()).toBe("Forbidden host\n");
   });
 
-  it("captures configured authorities once at middleware import", () => {
+  it("captures configured authorities once at proxy import", () => {
     vi.stubEnv("DASHBOARD_ALLOWED_HOSTS", "replacement.example:443");
-    const configured = runMiddleware(
+    const configured = runProxy(
       new NextRequest("https://fleet.example/", {
         headers: { host: "fleet.example:443" },
       }),
     );
-    const replacement = runMiddleware(
+    const replacement = runProxy(
       new NextRequest("https://replacement.example/", {
         headers: { host: "replacement.example:443" },
       }),

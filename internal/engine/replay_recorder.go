@@ -21,7 +21,7 @@ const (
 )
 
 var replayPassRunnerKeys = []string{
-	"_ship_idle", "_book_observed", "_book_refresh", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase", "_game_version",
+	"_ship_idle", "_book_observed", "_book_refresh", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_marque_active", "_underwriting_pending", "_competition", "_revenue_calibration", "_charter_proceeds", "_route_phase", "_game_version",
 }
 
 var replaySweepRunnerKeys = []string{

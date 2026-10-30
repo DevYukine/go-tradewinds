@@ -409,7 +409,7 @@ func TestGrowthCycle3ReservedCoastalWorkDoesNotVetoOceanicBuild(t *testing.T) {
 	h := newRecoveryHarness(t)
 	h.seedLaneProofs()
 	const oceanPort = "cycle3-ocean-port"
-	const oceanHull = "cycle3-ocean-hull"
+	const oceanHull = "collier"
 	h.api.setFactorPorts(recoveryHomePort, recoveryFarPort, oceanPort)
 	h.api.setAutoRemit(true, 1_000_000)
 	incumbent := sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)

@@ -6,9 +6,38 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/store"
 )
+
+// Procurement can finish later than admission. Recompute the upper-bound arrival
+// from current route and queue evidence rather than reusing the admitted ETA.
+func procurementArrival(in PlanningInput, plan Plan, quantity int64) time.Time {
+	hull, exists := findHull(in.Catalog, in.Ship.Ship.ShipClass)
+	destination := in.Ports[plan.Destination]
+	_, upper, validClock := in.serverBounds()
+	if !exists || hull.BaseSpeedCentiknots <= 0 || !validClock || in.Clock.Calendar.TimeScale <= 0 ||
+		!in.fresh("ports/"+plan.Destination) || destination.EffectiveBerths <= 0 {
+		return time.Time{}
+	}
+	route, err := observedPlanningRoute(in, plan.Origin, plan.Destination, hull)
+	if err != nil {
+		return time.Time{}
+	}
+	tons := quantity
+	for _, id := range plan.FreightIDs {
+		for _, contract := range in.Contracts {
+			if contract.ID == id && contract.ContractType == "freight" {
+				tons = growthCashTotal(tons, max(0, contract.QuantityRequired))
+				break
+			}
+		}
+	}
+	tons = max(tons, in.Ship.CargoUsedTons)
+	sailingDays, portDays := deliveryGameDays(route, hull, destination, tons)
+	return upper.Add(gameDuration(max(sailingDays+portDays, plan.Economics.GameDays), in.Clock.Calendar.TimeScale))
+}
 
 // acquiredRevenue uses the actual partial IOC quantity. The successful purchase
 // stage is never reopened when a charter closes or destination evidence ages.
@@ -53,7 +82,7 @@ func acquiredRevenue(in PlanningInput, plan Plan, bought int64, obligations []fr
 		revenue += min(bought, charter.RemainingQuantity) * *charter.RewardPerTonPence
 	}
 	if strings.HasPrefix(plan.Kind, "spot") && bought > 0 {
-		gross, _, _, _, reason := destinationRevenue(in, plan.Destination, plan.Commodity, bought)
+		gross, _, _, _, reason, _ := destinationRevenue(in, plan.Destination, plan.Commodity, bought, procurementArrival(in, plan, bought))
 		if reason != "" {
 			return revenue, reason
 		}
@@ -62,11 +91,19 @@ func acquiredRevenue(in PlanningInput, plan Plan, bought int64, obligations []fr
 	return revenue, ""
 }
 
+func (r *Runner) committedProcurementDepartureDecision(ctx context.Context, ship ShipState, destination string, data *missionData) (bool, error) {
+	input, err := r.committedPlanningInput(ctx, ship)
+	if err != nil {
+		return false, err
+	}
+	return r.procurementDepartureDecision(input, ship, destination, data)
+}
+
 // procurementDepartureDecision has no persistence or mutation effects. False
 // without an error selects executable local liquidation; an error preserves the
 // mission on hold. Navigation, stores and freight deadlines remain safety gates
 // in both departure preparation and first-send preflight.
-func (r *Runner) procurementDepartureDecision(ship ShipState, destination string, data *missionData) (bool, error) {
+func (r *Runner) procurementDepartureDecision(input PlanningInput, ship ShipState, destination string, data *missionData) (bool, error) {
 	if data.Relocation != nil || data.ReturnJourney || data.Plan.Kind == "recovery" {
 		return true, nil
 	}
@@ -124,7 +161,6 @@ func (r *Runner) procurementDepartureDecision(ship ShipState, destination string
 	if ship.Ship.CurrentPortID != data.Plan.Origin {
 		return false, errors.New("paid cargo and its authoritative procurement origin disagree")
 	}
-	input := r.planningInput(ship)
 	if ship.CargoManifest[data.Plan.Commodity] < data.BoughtQuantity {
 		return false, errors.New("paid cargo quantity is not fully evidenced by the actual manifest")
 	}
@@ -132,13 +168,28 @@ func (r *Runner) procurementDepartureDecision(ship ShipState, destination string
 	if err != nil {
 		return false, fmt.Errorf("local procurement recovery: %w", err)
 	}
-	revenue, err := procurementDestinationRevenue(input, data.Plan, data.BoughtQuantity)
+	eventPaidSpot := data.Plan.Accepted && data.Plan.EventPriceStress && strings.HasPrefix(data.Plan.Kind, "spot")
+	var revenue int64
+	var destinationSource string
+	if eventPaidSpot {
+		var reason string
+		revenue, _, _, destinationSource, reason, _ = destinationRevenue(input, data.Plan.Destination, data.Plan.Commodity, data.BoughtQuantity, procurementArrival(input, data.Plan, data.BoughtQuantity))
+		if reason != "" {
+			err = errors.New("destination procurement recovery lacks current bounded receipt evidence")
+		}
+	} else {
+		revenue, err = procurementDestinationRevenue(input, data.Plan, data.BoughtQuantity)
+	}
+	unpricedEventCargo := false
 	if err != nil {
 		accepted, ok := paidSpotRevenue(input, data.Plan, data.BoughtQuantity)
-		if !ok {
+		if ok {
+			revenue = accepted
+		} else if eventPaidSpot {
+			unpricedEventCargo = true
+		} else {
 			return false, err
 		}
-		revenue = accepted
 	}
 	// Both exits settle the current origin stay. Paid invoices, acquisition,
 	// existing stores and fixed fleet upkeep are not another continuation bill.
@@ -150,7 +201,8 @@ func (r *Runner) procurementDepartureDecision(ship ShipState, destination string
 	if !exists || !originExists || !destinationExists {
 		return false, errors.New("current recovery hull or harbour classification is unavailable")
 	}
-	if _, err := observedPlanningRoute(input, origin.ID, destination, hull); err != nil {
+	route, err := observedPlanningRoute(input, origin.ID, destination, hull)
+	if err != nil {
 		return false, errors.New("current recovery route or its costs are unavailable")
 	}
 	_, upper, clockOK := input.serverBounds()
@@ -203,6 +255,40 @@ func (r *Runner) procurementDepartureDecision(ship ShipState, destination string
 		maximumLocalBills >= float64(math.MaxInt64) {
 		return false, errors.New("remaining procurement recovery bills exceed integer-pence bounds")
 	}
+	if unpricedEventCargo || eventPaidSpot && strings.HasPrefix(destinationSource, retainedBookSource) {
+		// A lost shock quote is not a permanent receipt floor. Paid cost is
+		// sunk when an estimated destination recovery can price the choice.
+		if !liquidatable {
+			return true, nil
+		}
+		recoveryFloor := data.AcquisitionPence
+		if strings.HasPrefix(destinationSource, retainedBookSource) {
+			// This is a labelled retained/pre-event estimate, not executable
+			// receipts. Deduct the new destination stay and consumed stores.
+			if hull.BaseSpeedCentiknots <= 0 || destinationDetail.EffectiveBerths <= 0 {
+				return true, nil
+			}
+			sailingDays, portDays := deliveryGameDays(route, hull, destinationDetail, max(data.BoughtQuantity, ship.CargoUsedTons))
+			consumed := float64(hull.CrewRequired)/100*sailingDays + float64(hull.CrewRequired)/200*portDays
+			provisions, err := provisionsExpense(input.Markets[origin.ID], consumed)
+			if err != nil {
+				return true, nil
+			}
+			recoveryFloor = revenue - int64(destinationBills)
+			if recoveryFloor < math.MinInt64+provisions {
+				recoveryFloor = math.MinInt64
+			} else {
+				recoveryFloor -= provisions
+			}
+		} else if !data.CostsKnown || data.AcquisitionPence <= 0 {
+			// With no destination estimate, only actual known acquisition
+			// supplies the conservative fallback floor.
+			return true, nil
+		}
+		// Use the highest possible extra local bill so the floor holds even
+		// when the elapsed origin berth stay is not authoritative.
+		return local-int64(maximumLocalBills) < recoveryFloor, nil
+	}
 	destinationRecovery := revenue - int64(destinationBills)
 	if !liquidatable {
 		if destinationRecovery > 0 {
@@ -231,15 +317,30 @@ func paidSpotRevenue(in PlanningInput, plan Plan, quantity int64) (int64, bool) 
 	if !strings.HasPrefix(plan.Kind, "spot") || !plan.Accepted || !in.fresh("clock") || quantity <= 0 {
 		return 0, false
 	}
+	arrival := procurementArrival(in, plan, quantity)
 	if in.fresh("books/" + plan.Destination) {
+		from, to, bounded := in.marketObservationBounds("books/" + plan.Destination)
+		if !bounded {
+			return 0, false
+		}
+		if _, eventReason := in.marketObservationPolicy(plan.Destination, plan.Commodity, from, to, arrival); eventReason != "" {
+			revenue, _, _, _, reason, _ := destinationRevenue(in, plan.Destination, plan.Commodity, quantity, arrival)
+			return revenue, reason == ""
+		}
 		receipts, _, err := procurementBidRevenue(in, plan.Destination, plan.Commodity, quantity)
 		if err != nil {
 			return 0, false
 		}
 		return receipts, true
 	}
+	if plan.EventPriceStress {
+		// An admitted shock bid is not a permanent liquidation floor after
+		// presence is lost. Only a current bounded whole-lot quote can replace it.
+		revenue, _, _, _, reason, _ := destinationRevenue(in, plan.Destination, plan.Commodity, quantity, arrival)
+		return revenue, reason == ""
+	}
 	perTon := plan.SellLimitPence
-	if _, gossipFloor, _, _, reason := destinationRevenue(in, plan.Destination, plan.Commodity, 1); reason == "" {
+	if _, gossipFloor, _, _, reason, _ := destinationRevenue(in, plan.Destination, plan.Commodity, 1, arrival); reason == "" {
 		perTon = min(perTon, gossipFloor)
 	}
 	if perTon <= 0 {
@@ -270,7 +371,26 @@ func procurementBidRevenue(in PlanningInput, port, commodity string, quantity in
 	if len(entry.Depth.Bids) == 0 {
 		return 0, false, nil
 	}
-	fill, err := WalkDepth(entry.Depth.Bids, quantity, false)
+	levels := entry.Depth.Bids
+	if reserved := in.ReservedRetainedBidTons[port][commodity]; reserved > 0 {
+		levels = append([]Level(nil), levels...)
+		reserveBidLevels(levels, reserved)
+		remaining := false
+		for _, level := range levels {
+			if level.PricePence > 0 && level.PricePence <= maximumPence && level.RemainingQuantity > 0 {
+				remaining = true
+				break
+			}
+		}
+		if !remaining {
+			for _, level := range entry.Depth.Bids {
+				if level.PricePence > 0 && level.PricePence <= maximumPence && level.RemainingQuantity > 0 {
+					return 0, false, nil
+				}
+			}
+		}
+	}
+	fill, err := WalkDepth(levels, quantity, false)
 	if err != nil {
 		if fill.Quantity > 0 && fill.Quantity < quantity {
 			return fill.GrossPence, false, nil

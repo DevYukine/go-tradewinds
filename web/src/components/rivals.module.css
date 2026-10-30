@@ -80,3 +80,34 @@
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
+
+.rising tr[data-is-us="true"] {
+  background: color-mix(in srgb, var(--route) 10%, var(--surface));
+}
+
+.details {
+  min-width: 18rem;
+  max-width: 32rem;
+  white-space: normal;
+}
+
+.facts {
+  display: grid;
+  gap: 8px;
+  margin-block: 12px;
+}
+
+.facts > div {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

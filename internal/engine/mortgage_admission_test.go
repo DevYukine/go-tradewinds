@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"testing"
 	"time"
+
+	"github.com/DevYukine/go-tradewinds/internal/store"
 )
 
 func TestMortgageCashIntentCannotSwitchToDebtAtPreflight(t *testing.T) {
@@ -71,36 +73,30 @@ func TestMortgagePrefersCheaperRemittanceOfExistingCash(t *testing.T) {
 	}
 }
 
-func TestMortgageAvailableMeasuredNetCapsCheapDebtButMissingNetDoesNotWait(t *testing.T) {
+func TestMortgageRequiresMeasuredClassNetBeforeBorrowing(t *testing.T) {
 	t.Parallel()
 	for _, available := range []bool{false, true} {
-		t.Run(map[bool]string{false: "unmeasured reinvestment", true: "measured zero cannot service debt"}[available], func(t *testing.T) {
+		t.Run(map[bool]string{false: "unmeasured class", true: "measured zero cannot service debt"}[available], func(t *testing.T) {
 			h, runner, _ := newMortgageFixture(t)
-			_, _, _, _, evidence := loanCapacityDecision(t, h, runner)
-			input, reason, err := runner.capacityFleetInput(h.ctx, evidence)
-			if err != nil || reason != "" {
-				t.Fatalf("fleet input: %s %v", reason, err)
-			}
-			port, _ := findPort(runner.stateCache.Catalog, recoveryHomePort)
-			hull, _ := findHull(runner.stateCache.Catalog, recoveryHull)
-			grown := append(append([]ShipState(nil), runner.stateCache.Ships...), growthCandidate(port, hull))
-			input.IncrementalDailyUpkeepPence = DailyUpkeep(grown, runner.stateCache.Catalog, len(runner.stateCache.Factors)) - DailyUpkeep(runner.stateCache.Ships, runner.stateCache.Catalog, len(runner.stateCache.Factors))
-			input.MeasuredNetAvailable, input.MeasuredRatePencePerGameDay = available, 0
-			quote, err := runner.growthQuote(port, hull)
-			if err != nil {
-				t.Fatal(err)
-			}
-			decision, required, err := runner.capacityAtYard(h.ctx, port, hull, quote, input, evidence)
-			if err != nil {
-				t.Fatal(err)
-			}
 			if available {
-				if decision.Accepted || decision.Mortgage != nil {
-					t.Fatalf("known zero net used predicted earnings to introduce mortgage debt: %+v", decision)
+				asOf := time.Now().UTC()
+				scale := max(int64(1), runner.stateCache.Clock.Calendar.TimeScale)
+				window, err := runner.db.EconomicHistoryWindow(h.ctx, runner.account.ID, "", asOf, 30*24*time.Hour/time.Duration(scale))
+				if err != nil || window.NetPence <= 0 {
+					t.Fatalf("mortgage fixture lacks measured income: %+v, %v", window, err)
 				}
-			} else if !decision.Accepted || decision.Mortgage == nil || mortgageReserve(decision.Mortgage) != 4_600 || required[port.BankingRegion] != evidence.required[port.BankingRegion]+growthCapital(decision)+4_600 {
-				t.Fatalf("missing measured net hoarded cash or lost two installments: %+v %v", decision, required)
+				persistGrowthWindowSettlement(t, h, store.Settlement{
+					ID: "mortgage-zero-class-net", Kind: "aborted", CostsKnown: true,
+					AcquisitionPence: window.NetPence, GameSeconds: 1, CompletedAt: asOf.Add(-time.Minute),
+				})
+			} else {
+				runner.stateCache.Ships[0].Ship.CreatedAt = nil
 			}
+			_, _, decision, _, _ := loanCapacityDecision(t, h, runner)
+			if decision.Accepted || decision.Mortgage != nil {
+				t.Fatalf("missing or zero class earnings introduced mortgage debt: %+v", decision)
+			}
+			h.missingMission("__growth")
 		})
 	}
 }

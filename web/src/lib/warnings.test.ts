@@ -131,6 +131,41 @@ describe("warning presentation", () => {
     );
   });
 
+  it("formats published rising facts without requiring valuation cash fields", () => {
+    expect(
+      warningText({
+        ...common,
+        code: "falling_behind",
+        names: { basis: "rising" },
+        facts: {
+          ours_growth_bps: -50,
+          median_growth_bps: 0,
+          ranked_players: 3,
+        },
+      }),
+    ).toBe(
+      "Our published rising growth over 7 real days is -0.50%; rival median 0.00% (3 ranked players).",
+    );
+  });
+  it.each([
+    [100, "1.005%"],
+    [-101, "-1.005%"],
+  ])("retains the half basis point in median %s", (median, expected) => {
+    expect(
+      warningText({
+        ...common,
+        code: "falling_behind",
+        names: { basis: "rising" },
+        facts: {
+          ours_growth_bps: median,
+          median_growth_bps: median,
+          median_growth_half_bps: 1,
+          ranked_players: 4,
+        },
+      }),
+    ).toContain(`rival median ${expected} (4 ranked players)`);
+  });
+
   it("uses UTC for settlement times and keeps unavailable times explicit", () => {
     expect(warningTime("2026-10-27T13:20:00+02:00")).toBe("11:20");
     expect(warningTime("not a timestamp")).toBe("Not recorded");

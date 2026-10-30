@@ -35,10 +35,18 @@ func PlanningInputFor(now time.Time, ship ShipState, state AccountState, snapsho
 			marqueZones[marque.SeaZoneID] = true
 		}
 	}
+	for _, marque := range decode[map[string]letterOfMarque](snapshot, "_marque_active") {
+		if !validClock || lower.Before(marque.ExpiresAt) {
+			marqueZones[marque.SeaZoneID] = true
+		}
+	}
 	if pending := decode[marquePending](snapshot, "_marque_pending"); pending.SeaZoneID != "" &&
 		(pending.ExpiresAt.IsZero() || !validClock || lower.Before(pending.ExpiresAt)) {
 		marqueZones[pending.SeaZoneID] = true
 	}
+	shocks, eventsValid := decodeMarketShocks(snapshot)
+	_, eventsTracked := sources.Metadata["world_events"]
+	_, eventsRecorded := snapshot["world_events"]
 	return PlanningInput{
 		Now:                   now,
 		CompanyID:             sources.CompanyID,
@@ -54,6 +62,9 @@ func PlanningInputFor(now time.Time, ship ShipState, state AccountState, snapsho
 		BookObservedAt:        decode[map[string]time.Time](snapshot, "_book_observed"),
 		QuayBookMemory:        decode[map[string]RetainedQuayBook](snapshot, "_quay_book_memory"),
 		BookDrift:             decode[[]BookDriftSample](snapshot, "_book_drift"),
+		RevenueCalibration:    decode[map[string]int64](snapshot, "_revenue_calibration"),
+		MarketShocks:          shocks,
+		marketEventsInvalid:   !eventsValid && (eventsTracked || eventsRecorded),
 		Routes:                state.Routes,
 		Contracts:             taperedContracts(state.Contracts, state.Catalog, sources.CharterProceedsPence, ship.EffectiveHoldCapacityTons),
 		Balances:              balances,
@@ -175,6 +186,7 @@ func PlanFunding(input PlanningInput, plan Plan) (Plan, []FundingTransfer) {
 		quote := fundVoyage(input, plan)
 		plan, transfers = quote.plan, quote.transfers
 	}
+	refreshPlanRank(&plan)
 	out := make([]FundingTransfer, len(transfers))
 	for i, transfer := range transfers {
 		out[i] = FundingTransfer{Rate: transfer.Rate, Gross: transfer.Gross, Net: transfer.Net}

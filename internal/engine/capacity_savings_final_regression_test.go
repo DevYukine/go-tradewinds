@@ -21,7 +21,7 @@ func TestCapacitySavingsEqualNetAffordableTargetLosesToBetterCandidate(t *testin
 			h, runner, _, _ := capacitySavingsRunnerFixture(t, test.income)
 			port, _ := findPort(runner.stateCache.Catalog, recoveryHomePort)
 			small, _ := findHull(runner.stateCache.Catalog, recoveryHull)
-			const savedHull = "savings-large-hull"
+			const savedHull = "brigantine"
 			// Identical operating characteristics force equal voyage earnings
 			// and marginal upkeep; B retains its more expensive real yard quote.
 			for i := range runner.stateCache.Catalog.ShipClasses {
@@ -221,7 +221,7 @@ func TestCapacitySavingsInvalidatedStagePreservesAffordableTarget(t *testing.T) 
 				runner.stateCache.Vaults[i].BalancePence += 2_000_000
 			}
 			port, _ := findPort(runner.stateCache.Catalog, recoveryHomePort)
-			hull, _ := findHull(runner.stateCache.Catalog, "savings-large-hull")
+			hull, _ := findHull(runner.stateCache.Catalog, "brigantine")
 			evidence := growthEvidence{workingByRegion: make(map[string]int64)}
 			if reason, err := runner.growthFunding(h.ctx, &evidence); err != nil || reason != "" {
 				t.Fatalf("lane proof and funding must be valid: %s, %v", reason, err)

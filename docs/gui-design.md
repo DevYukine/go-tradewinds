@@ -97,13 +97,13 @@ Use sentence case, plain verbs and specific labels. Do not render em dashes, en 
 
 ### Dashboard ingress
 
-The Next middleware checks the incoming Host before any API rewrite changes it. Only `127.0.0.1:3400`, `localhost:3400` and `[::1]:3400` are allowed by default, case-insensitively. Remote deployments must use an authenticated reverse proxy and explicitly add its dashboard authorities, including any port, through comma-separated `DASHBOARD_ALLOWED_HOSTS`. This allowlist is not authentication. The gate applies to every path in both development and production; the Go API retains its own authority check.
+The Next proxy (`web/src/proxy.ts`) checks the incoming Host before any API rewrite changes it. Only `127.0.0.1:3400`, `localhost:3400` and `[::1]:3400` are allowed by default, case-insensitively. Remote deployments must use an authenticated reverse proxy and explicitly add its dashboard authorities, including any port, through comma-separated `DASHBOARD_ALLOWED_HOSTS`. This allowlist is not authentication. The gate applies to every path in both development and production; the Go API retains its own authority check.
 
 ## Research and implementation references
 
 - [React: choosing state structure](https://react.dev/learn/choosing-the-state-structure): avoid redundant, duplicated and contradictory state.
 - [Next.js: server and client components](https://nextjs.org/docs/app/getting-started/server-and-client-components): keep browser-only map code behind a client boundary and keep credentials on the server.
-- [Next.js: ingress execution order](https://nextjs.org/docs/app/api-reference/file-conventions/proxy#execution-order): the middleware convention retained here runs before configured rewrites; the current docs call its successor Proxy.
+- [Next.js: ingress execution order](https://nextjs.org/docs/app/api-reference/file-conventions/proxy#execution-order): the proxy runs before configured rewrites.
 - [TanStack Query: important defaults](https://tanstack.com/query/latest/docs/framework/react/guides/important-defaults): explicit freshness, independent polling intervals, structural sharing, focus/reconnect behavior and bounded retries.
 - [TanStack Table: React state](https://tanstack.com/table/latest/docs/framework/react/guide/table-state): version 9 atomic state, controlled slices and selective subscriptions. Stable npm release checked during research: 9.3.1.
 - [Tailwind: theme variables](https://tailwindcss.com/docs/theme): one semantic design-token system, not conflicting component-level colours.

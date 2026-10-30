@@ -19,12 +19,12 @@ func TestCapacitySavingsUnevaluatedYardPreservesMarker(t *testing.T) {
 				t.Fatal(err)
 			}
 			target := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target")
-			if target.HullID != "savings-large-hull" {
+			if target.HullID != "brigantine" {
 				t.Fatalf("positive control did not establish the target: %+v", target)
 			}
 			target.ExpiresAt = time.Now().UTC().Add(time.Minute)
 			runner.snapshot["_capacity_savings_target"] = encode(target)
-			quoteKey := recoveryHomePort + "|savings-large-hull"
+			quoteKey := recoveryHomePort + "|brigantine"
 			switch observation {
 			case "stale quote", "stale book":
 				key := "yard_quotes/" + quoteKey
@@ -69,7 +69,7 @@ func TestCapacitySavingsFreshViableTargetWithoutAffordableAlternative(t *testing
 		t.Fatal(err)
 	}
 	target := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target")
-	if target.HullID != "savings-large-hull" {
+	if target.HullID != "brigantine" {
 		t.Fatalf("positive control did not establish the target: %+v", target)
 	}
 	target.ExpiresAt = time.Now().UTC().Add(time.Minute)
@@ -78,7 +78,7 @@ func TestCapacitySavingsFreshViableTargetWithoutAffordableAlternative(t *testing
 	small := runner.stateCache.Quotes[smallKey]
 	small.Available = false
 	runner.stateCache.Quotes[smallKey] = small
-	largeKey := recoveryHomePort + "|savings-large-hull"
+	largeKey := recoveryHomePort + "|brigantine"
 	large := runner.stateCache.Quotes[largeKey]
 	price := *large.TotalCostPence + 100
 	large.TotalCostPence = &price
@@ -115,11 +115,11 @@ func TestCapacitySavingsRepeatedFreshWinsNeverExtendExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target")
-	if target.HullID != "savings-large-hull" {
+	if target.HullID != "brigantine" {
 		t.Fatalf("positive control did not establish the target: %+v", target)
 	}
 	// A later quote raises the wait without changing the saved port/hull.
-	key := recoveryHomePort + "|savings-large-hull"
+	key := recoveryHomePort + "|brigantine"
 	quote := runner.stateCache.Quotes[key]
 	price := *quote.TotalCostPence + 100
 	quote.TotalCostPence = &price
@@ -152,7 +152,7 @@ func TestCapacitySavingsStoredComparisonHonorsCurrentWindow(t *testing.T) {
 	}
 	window := capacityHistoryWindow.Seconds() * float64(runner.stateCache.Clock.Calendar.TimeScale) / 86_400
 	target := capacitySavingsTarget{
-		PortID: recoveryFarPort, HullID: "savings-offsite-hull", CapitalPence: 200_000,
+		PortID: recoveryFarPort, HullID: "collier", CapitalPence: 200_000,
 		RequiredPence: int64(math.Ceil(rate * (window + 1))), DepthNetPencePerGameDay: 1e15,
 		ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}
@@ -180,7 +180,7 @@ func TestCapacitySavingsStoredComparisonPreservesDepthPreference(t *testing.T) {
 	buy.Competition.PreferenceShips = 1
 	for _, preference := range []float64{0, 100} {
 		target := capacitySavingsTarget{
-			PortID: recoveryFarPort, HullID: "savings-offsite-hull", RequiredPence: 1,
+			PortID: recoveryFarPort, HullID: "collier", RequiredPence: 1,
 			CapitalPence:            growthCashTotal(buy.QuotedHullPence, buy.SlippageReservePence, buy.CannonsPence, buy.InitialStoresPence),
 			DepthNetPencePerGameDay: 1.04 * buy.IncrementalNetPencePerGameDay,
 			DepthPreferenceShips:    preference, ExpiresAt: time.Now().UTC().Add(time.Hour),
@@ -226,7 +226,7 @@ func TestCapacitySavingsLaneComparisonIgnoresCapacityOnlyPause(t *testing.T) {
 					net = 100_000_000
 				}
 				if err := runner.setCapacitySavingsTarget(h.ctx, capacitySavingsTarget{
-					PortID: recoveryFarPort, HullID: "savings-offsite-hull", RequiredPence: evidence.available + 1_000,
+					PortID: recoveryFarPort, HullID: "collier", RequiredPence: evidence.available + 1_000,
 					CapitalPence: 200_000, DepthNetPencePerGameDay: net, ExpiresAt: time.Now().UTC().Add(time.Hour),
 				}); err != nil {
 					t.Fatal(err)
@@ -238,7 +238,7 @@ func TestCapacitySavingsLaneComparisonIgnoresCapacityOnlyPause(t *testing.T) {
 			if outcome == "marker beats lane" {
 				h.missingMission("__growth")
 				h.missingMission("__treasury")
-				if got := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target"); got.HullID != "savings-offsite-hull" {
+				if got := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target"); got.HullID != "collier" {
 					t.Fatalf("losing lane erased the marker: %+v", got)
 				}
 				history, err := h.db.History(h.ctx, h.account.ID, "decisions", 300)
@@ -283,7 +283,7 @@ func TestCapacitySavingsBuildReceiptClearsDurableMarker(t *testing.T) {
 		recoveryHomePort + "|expired-hull": time.Now().UTC().Add(capacityHistoryWindow),
 	})
 	if err := runner.setCapacitySavingsTarget(h.ctx, capacitySavingsTarget{
-		PortID: recoveryFarPort, HullID: "another-savings-hull", RequiredPence: 1_000_000,
+		PortID: recoveryFarPort, HullID: "collier", RequiredPence: 1_000_000,
 		CapitalPence: 200_000, DepthNetPencePerGameDay: 1_000_000, ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}); err != nil {
 		t.Fatal(err)
@@ -331,7 +331,7 @@ func TestCapacitySavingsNamedBuildReconciliationClearsDurableMarker(t *testing.T
 				recoveryHomePort + "|expired-hull": time.Now().UTC().Add(capacityHistoryWindow),
 			})
 			if err := runner.setCapacitySavingsTarget(h.ctx, capacitySavingsTarget{
-				PortID: recoveryFarPort, HullID: "another-savings-hull", RequiredPence: 1_000_000,
+				PortID: recoveryFarPort, HullID: "collier", RequiredPence: 1_000_000,
 				CapitalPence: 200_000, DepthNetPencePerGameDay: 1_000_000, ExpiresAt: time.Now().UTC().Add(time.Hour),
 			}); err != nil {
 				t.Fatal(err)
@@ -389,7 +389,7 @@ func TestCapacitySavingsBuildRefusalDropsOnlyMatchingTarget(t *testing.T) {
 			case "different port":
 				target.PortID = recoveryFarPort
 			case "different hull":
-				target.HullID = "another-savings-hull"
+				target.HullID = "collier"
 			}
 			if err := runner.setCapacitySavingsTarget(h.ctx, target); err != nil {
 				t.Fatal(err)

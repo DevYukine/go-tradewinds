@@ -38,7 +38,7 @@ func (r *Runner) assessShip(shipID string) {
 		return
 	}
 	switch shipID {
-	case "__treasury", "__growth", "__loans", "__underwriting", "__marque":
+	case "__treasury", "__growth", "__loans", "__underwriting", "__marque", "__futures":
 		r.assessHold(shipID)
 		return
 	}

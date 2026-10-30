@@ -602,7 +602,11 @@ func (r *Runner) evaluateGrowthCandidate(ctx context.Context, port Port, hull Hu
 	}
 	destinationBook := reserveGrowthBook(evidence.markets[plan.Destination], plan.Commodity, 0, reservedDestination, 0)
 	quoted.Markets = map[string]Market{port.ID: originBook, plan.Destination: destinationBook}
-	*plan = pricePlan(quoted, hull, port, *plan, plan.Economics.RevenuePence, 0)
+	revenue := int64(0)
+	if plan.Economics.UncalibratedRevenuePence != nil {
+		revenue = *plan.Economics.UncalibratedRevenuePence
+	}
+	*plan = pricePlan(quoted, hull, port, *plan, revenue, 0)
 	if !plan.Accepted {
 		return GrowthDecision{Reason: "marginal repeat lot: " + plan.Reason}, nil, nil
 	}
@@ -850,6 +854,9 @@ func (r *Runner) growthAtYard(ctx context.Context, port Port, hull Hull, quote Y
 }
 
 func (r *Runner) growthBuildReady(ctx context.Context, data *missionData) error {
+	if !cheapCapacityHull(Hull{ID: data.BuildClass}) {
+		return errors.New("new build requires a cheap reinvestment hull")
+	}
 	for _, dataset := range []string{"vaults", "ships", "catalog", "clock", "zones", "rates", "factors", "profile", "warehouses", "contracts"} {
 		if !r.fresh(dataset) {
 			return fmt.Errorf("new build requires current successful %s authority", dataset)
@@ -887,8 +894,7 @@ func (r *Runner) growthBuildReady(ctx context.Context, data *missionData) error 
 			if err != nil {
 				return err
 			}
-			plans := PlanVoyages(input)
-			if len(plans) > 0 && plans[0].Accepted {
+			if hasAcceptedVoyage(input) {
 				return errors.New("new build must reuse an idle ship's currently executable profitable lane first")
 			}
 		}
@@ -938,7 +944,7 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 	if len(pending) > 0 {
 		return r.holdCapacityGrowth(ctx, "capacity growth waits for every unresolved account action")
 	}
-	for _, id := range []string{"__treasury", "__underwriting", "__marque"} {
+	for _, id := range []string{"__treasury", "__underwriting", "__marque", "__futures"} {
 		mission, data, err := r.loadMission(ctx, id)
 		if err != nil {
 			return false, err
@@ -982,11 +988,14 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		plans := PlanVoyages(input)
-		if len(plans) > 0 && plans[0].Accepted {
-			if !r.opts.Execute {
+		if !r.opts.Execute {
+			if hasAcceptedVoyage(input) {
 				return r.holdCapacityGrowth(ctx, "capacity growth must reuse an idle ship's currently executable profitable lane first")
 			}
+			continue
+		}
+		plans := PlanVoyages(input)
+		if len(plans) > 0 && plans[0].Accepted {
 			return r.startVoyage(ctx, ship, plans[0])
 		}
 	}
@@ -1014,6 +1023,9 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 			continue
 		}
 		for _, hull := range r.stateCache.Catalog.ShipClasses {
+			if !cheapCapacityHull(hull) {
+				continue
+			}
 			quote, err := r.growthQuote(port, hull)
 			if err != nil {
 				continue

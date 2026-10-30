@@ -7,24 +7,26 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/DevYukine/go-tradewinds/internal/gameapi"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 type standingCapture struct {
-	SeasonNumber  int             `json:"season_number"`
-	RefreshedAt   *time.Time      `json:"refreshed_at"`
-	NextRefreshAt *time.Time      `json:"next_refresh_at"`
-	Entries       []standingEntry `json:"entries"`
-	You           *standingEntry  `json:"you"`
+	SeasonNumber  int                  `json:"season_number"`
+	RefreshedAt   *time.Time           `json:"refreshed_at"`
+	NextRefreshAt *time.Time           `json:"next_refresh_at"`
+	Entries       []standingEntry      `json:"entries"`
+	You           *standingEntry       `json:"you"`
+	Rising        *gameapi.RisingBoard `json:"rising"`
 }
 
 type standingEntry struct {
-	Rank          int      `json:"rank"`
-	CompanyName   string   `json:"company_name"`
-	HomePortID    string   `json:"home_port_id"`
-	NetWorthPence *int64   `json:"net_worth_pence"`
-	Titles        []string `json:"titles"`
+	Rank          int             `json:"rank"`
+	CompanyName   string          `json:"company_name"`
+	HomePortID    string          `json:"home_port_id"`
+	NetWorthPence *int64          `json:"net_worth_pence"`
+	Titles        json.RawMessage `json:"titles"`
 }
 
 type standingRow struct {
@@ -104,6 +106,74 @@ func recordStandings(tx *gorm.DB, accountID string, raw json.RawMessage, observe
 		}).Error
 	}
 	return nil
+}
+
+type risingPublication struct {
+	AccountID     string
+	SeasonNumber  int
+	RefreshedAt   time.Time
+	NextRefreshAt *time.Time
+	Board         json.RawMessage `gorm:"type:jsonb"`
+	ObservedAt    time.Time
+}
+
+func (risingPublication) TableName() string { return "rising_publications" }
+
+func recordRising(tx *gorm.DB, accountID string, raw json.RawMessage, observedAt time.Time) error {
+	var capture standingCapture
+	if json.Unmarshal(raw, &capture) != nil || capture.SeasonNumber < 1 || capture.RefreshedAt == nil || capture.RefreshedAt.IsZero() {
+		return nil
+	}
+	if capture.Rising == nil || capture.Rising.RankedPlayers < 0 {
+		return nil
+	}
+	board := capture.Rising
+	seen := make(map[int32]bool, len(board.Entries))
+	for _, entry := range board.Entries {
+		if entry.Rank < 1 || entry.CompanyName == "" || entry.WindowStartAt.IsZero() || entry.WindowStartAt.After(*capture.RefreshedAt) || seen[entry.Rank] {
+			return nil
+		}
+		seen[entry.Rank] = true
+	}
+	if board.You != nil && (board.You.Rank < 1 || board.You.CompanyName == "" ||
+		board.You.WindowStartAt.IsZero() || board.You.WindowStartAt.After(*capture.RefreshedAt)) {
+		return nil
+	}
+	if board.Entries == nil {
+		board.Entries = make([]gameapi.RisingEntry, 0)
+	}
+	encoded, err := json.Marshal(board)
+	if err != nil {
+		return err
+	}
+	return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&risingPublication{
+		AccountID: accountID, SeasonNumber: capture.SeasonNumber, RefreshedAt: capture.RefreshedAt.UTC(),
+		NextRefreshAt: capture.NextRefreshAt, Board: encoded, ObservedAt: observedAt.UTC(),
+	}).Error
+}
+
+func latestRising(tx *gorm.DB, accountID string, at time.Time) (gameapi.RisingBoard, *time.Time, int, error) {
+	board := gameapi.RisingBoard{Entries: make([]gameapi.RisingEntry, 0)}
+	var publication risingPublication
+	if err := tx.Raw(`SELECT * FROM rising_publications WHERE refreshed_at <= ?
+		AND season_number = (SELECT max(season_number) FROM (
+			SELECT season_number FROM rising_publications WHERE refreshed_at <= ?
+			UNION ALL SELECT season_number FROM standings_history WHERE refreshed_at <= ?
+		) AS publications)
+		ORDER BY refreshed_at DESC, (account_id = ?) DESC LIMIT 1`, at, at, at, accountID).
+		Scan(&publication).Error; err != nil {
+		return board, nil, 0, err
+	}
+	if publication.RefreshedAt.IsZero() {
+		return board, nil, 0, nil
+	}
+	if err := json.Unmarshal(publication.Board, &board); err != nil {
+		return board, nil, 0, err
+	}
+	if publication.AccountID != accountID {
+		board.You = nil
+	}
+	return board, &publication.RefreshedAt, publication.SeasonNumber, nil
 }
 
 type StandingPoint struct {

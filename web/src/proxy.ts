@@ -4,7 +4,7 @@ import { createAllowedHosts, isAllowedHost } from "@/lib/allowed-hosts";
 
 const allowedHosts = createAllowedHosts(process.env.DASHBOARD_ALLOWED_HOSTS);
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   if (!isAllowedHost(request.headers.get("host"), allowedHosts)) {
     return new NextResponse("Forbidden host\n", {
       status: 403,
@@ -16,5 +16,4 @@ export function middleware(request: NextRequest) {
 
 export const config = {
   matcher: "/:path*",
-  runtime: "nodejs",
 };

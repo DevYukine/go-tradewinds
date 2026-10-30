@@ -39,13 +39,20 @@ type RivalEvidence struct {
 
 type RivalsInput struct {
 	CompetitionInput
-	Standings            []RivalValuation
-	OurCompanyName       string
-	Monopolies           json.RawMessage
-	MonopoliesObservedAt time.Time
-	MonopoliesComplete   bool
-	MonopoliesError      string
-	Evidence             []RivalEvidence
+	Standings              []RivalValuation
+	OurCompanyName         string
+	Monopolies             json.RawMessage
+	MonopoliesObservedAt   time.Time
+	MonopoliesComplete     bool
+	MonopoliesError        string
+	Evidence               []RivalEvidence
+	Rising                 gameapi.RisingBoard
+	RisingSeason           int
+	RisingRefreshedAt      *time.Time
+	ShipSightingsTruncated bool
+	Companies              []RivalCompanyObservation
+	ShipSightings          []gameapi.SailingNotice
+	Expansion              map[string][]RivalExpansionContribution
 }
 
 type RivalHunch string
@@ -79,15 +86,24 @@ type RivalFact struct {
 }
 
 type RivalRow struct {
-	CompanyName   string     `json:"company_name"`
-	Rank          *int       `json:"rank"`
-	NetWorthPence *int64     `json:"net_worth_pence"`
-	ChangePence   *int64     `json:"change_pence"`
-	BaselinePence *int64     `json:"baseline_pence"`
-	SharedLanes   *int64     `json:"shared_lanes"`
-	SharedPorts   *int64     `json:"shared_ports"`
-	Hunch         RivalHunch `json:"hunch"`
-	Fact          RivalFact  `json:"fact"`
+	CompanyName            string                       `json:"company_name"`
+	Rank                   *int                         `json:"rank"`
+	NetWorthPence          *int64                       `json:"net_worth_pence"`
+	ChangePence            *int64                       `json:"change_pence"`
+	BaselinePence          *int64                       `json:"baseline_pence"`
+	SharedLanes            *int64                       `json:"shared_lanes"`
+	SharedPorts            *int64                       `json:"shared_ports"`
+	Hunch                  RivalHunch                   `json:"hunch"`
+	Fact                   RivalFact                    `json:"fact"`
+	CompanyID              *string                      `json:"company_id"`
+	Credit                 *gameapi.CreditReport        `json:"credit"`
+	CreditObservedAt       *time.Time                   `json:"credit_observed_at"`
+	RisingRank             *int32                       `json:"rising_rank"`
+	GrowthBPS              *int64                       `json:"growth_bps"`
+	GainedPence            *int64                       `json:"gained_pence"`
+	ObservedShips24h       map[string]int               `json:"observed_ships_24h"`
+	ObservedShips7d        map[string]int               `json:"observed_ships_7d"`
+	ExpansionContributions []RivalExpansionContribution `json:"expansion_contributions"`
 }
 
 type RivalVerdict struct {
@@ -118,22 +134,26 @@ type GrowthWindow struct {
 }
 
 type RivalReport struct {
-	AccountID            string         `json:"account_id"`
-	GeneratedAt          time.Time      `json:"generated_at"`
-	SeasonNumber         int            `json:"season_number"`
-	ValuationAt          *time.Time     `json:"valuation_at"`
-	NextRefreshAt        *time.Time     `json:"next_refresh_at"`
-	BaselineAt           *time.Time     `json:"baseline_at"`
-	From                 time.Time      `json:"from"`
-	To                   time.Time      `json:"to"`
-	Coverage             string         `json:"coverage"`
-	OwnCompaniesComplete bool           `json:"own_companies_complete"`
-	OverlapKnown         bool           `json:"overlap_known"`
-	EventsTruncated      bool           `json:"events_truncated"`
-	Our                  *RivalRow      `json:"our"`
-	Rivals               []RivalRow     `json:"rivals"`
-	Verdicts             RivalVerdicts  `json:"verdicts"`
-	Growth               []GrowthWindow `json:"growth"`
+	AccountID                string              `json:"account_id"`
+	GeneratedAt              time.Time           `json:"generated_at"`
+	SeasonNumber             int                 `json:"season_number"`
+	ValuationAt              *time.Time          `json:"valuation_at"`
+	NextRefreshAt            *time.Time          `json:"next_refresh_at"`
+	BaselineAt               *time.Time          `json:"baseline_at"`
+	From                     time.Time           `json:"from"`
+	To                       time.Time           `json:"to"`
+	Coverage                 string              `json:"coverage"`
+	OwnCompaniesComplete     bool                `json:"own_companies_complete"`
+	OverlapKnown             bool                `json:"overlap_known"`
+	EventsTruncated          bool                `json:"events_truncated"`
+	Our                      *RivalRow           `json:"our"`
+	Rivals                   []RivalRow          `json:"rivals"`
+	Verdicts                 RivalVerdicts       `json:"verdicts"`
+	Growth                   []GrowthWindow      `json:"growth"`
+	Rising                   gameapi.RisingBoard `json:"rising"`
+	RisingRefreshedAt        *time.Time          `json:"rising_refreshed_at"`
+	RisingStale              bool                `json:"rising_stale"`
+	ObservedShips7dTruncated bool                `json:"observed_ships_7d_truncated"`
 }
 
 type rivalLane struct {
@@ -161,6 +181,15 @@ func AggregateRivals(input RivalsInput) RivalReport {
 			NotProfitable: RivalVerdict{Reason: "no_baseline"},
 		},
 	}
+	result.Rising = input.Rising
+	result.RisingRefreshedAt = input.RisingRefreshedAt
+	result.RisingStale = input.RisingRefreshedAt == nil || input.RisingRefreshedAt.After(at) ||
+		at.Sub(*input.RisingRefreshedAt) > GrowthFreshFor
+	result.ObservedShips7dTruncated = input.ShipSightingsTruncated
+	if result.Rising.Entries == nil {
+		result.Rising.Entries = make([]gameapi.RisingEntry, 0)
+	}
+	result.SeasonNumber = input.RisingSeason
 	var latest RivalValuation
 	for _, value := range input.Standings {
 		if value.SeasonNumber < 1 || value.Rank < 1 || value.CompanyName == "" || value.RefreshedAt.IsZero() || value.RefreshedAt.After(at) {
@@ -272,6 +301,7 @@ func AggregateRivals(input RivalsInput) RivalReport {
 			rows[name] = RivalRow{CompanyName: name, Hunch: rivalNotRanked, Fact: RivalFact{Kind: "ships_seen", Count: &ships}}
 		}
 	}
+	rivalOverviewRows(input, rows)
 	conduct := rivalConduct(input)
 	for name, row := range rows {
 		if result.OverlapKnown {
@@ -659,6 +689,7 @@ func (s *Store) Rivals(ctx context.Context, accountID string, at time.Time) (Riv
 			Ports      json.RawMessage
 			Metadata   json.RawMessage
 			Monopolies json.RawMessage
+			Expansion  json.RawMessage
 		}
 		var size int64
 		if err := tx.Table("snapshots").Select("COALESCE(octet_length(data::text), 0)").Where("account_id = ?", accountID).Scan(&size).Error; err != nil {
@@ -667,7 +698,7 @@ func (s *Store) Rivals(ctx context.Context, accountID string, at time.Time) (Riv
 		if size > 2*MaxSnapshotBytes {
 			return ErrResponseTooLarge
 		}
-		if err := tx.Table("snapshots").Select("data -> 'catalog' AS catalog, data -> 'ports' AS ports, data -> '_meta' AS metadata, data -> 'monopolies' AS monopolies").
+		if err := tx.Table("snapshots").Select("data -> 'catalog' AS catalog, data -> 'ports' AS ports, data -> '_meta' AS metadata, data -> 'monopolies' AS monopolies, data -> 'expansion' AS expansion").
 			Where("account_id = ?", accountID).Scan(&snapshot).Error; err != nil {
 			return err
 		}
@@ -703,10 +734,18 @@ func (s *Store) Rivals(ctx context.Context, accountID string, at time.Time) (Riv
 				input.MonopoliesComplete = false
 			}
 		}
-		if err := competitionSailings(tx, &input.CompetitionInput); err != nil {
+		if err := rivalEvidence(tx, &input); err != nil {
 			return err
 		}
-		if err := rivalEvidence(tx, &input); err != nil {
+		input.Rising, input.RisingRefreshedAt, input.RisingSeason, err = latestRising(tx, accountID, input.At)
+		if err != nil {
+			return err
+		}
+		season := publications.SeasonNumber
+		if input.RisingSeason > season {
+			season = input.RisingSeason
+		}
+		if err := rivalOverviewInput(tx, &input, season, snapshot.Expansion, snapshot.Metadata); err != nil {
 			return err
 		}
 		result = AggregateRivals(input)
@@ -875,6 +914,23 @@ func scrubRivals(report *RivalReport, credentials displayCredentials) {
 	}
 	row := func(value *RivalRow) {
 		value.CompanyName = displayText(value.CompanyName, credentials)
+		if value.CompanyID != nil {
+			id := displayText(*value.CompanyID, credentials)
+			value.CompanyID = &id
+		}
+		if value.Credit != nil {
+			value.Credit.CompanyID = displayText(value.Credit.CompanyID, credentials)
+			value.Credit.CompanyName = displayText(value.Credit.CompanyName, credentials)
+		}
+		for _, counts := range []map[string]int{value.ObservedShips24h, value.ObservedShips7d} {
+			for class, count := range counts {
+				clean := displayText(class, credentials)
+				if clean != class {
+					delete(counts, class)
+					counts[clean] += count
+				}
+			}
+		}
 		fact(&value.Fact)
 	}
 	if report.Our != nil {
@@ -897,6 +953,14 @@ func scrubRivals(report *RivalReport, credentials displayCredentials) {
 			name := displayText(*report.Growth[i].TopRival, credentials)
 			report.Growth[i].TopRival = &name
 		}
+	}
+	for i := range report.Rising.Entries {
+		entry := &report.Rising.Entries[i]
+		entry.CompanyName = displayText(entry.CompanyName, credentials)
+		entry.HomePortID = displayText(entry.HomePortID, credentials)
+	}
+	if report.Rising.You != nil {
+		report.Rising.You.CompanyName = displayText(report.Rising.You.CompanyName, credentials)
 	}
 }
 

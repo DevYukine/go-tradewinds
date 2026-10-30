@@ -142,8 +142,20 @@ func obligationReserves(state AccountState, snapshot map[string]json.RawMessage,
 }
 
 func (r *Runner) treasuryReserves(ctx context.Context) (map[string]int64, error) {
+	return r.treasuryReservesExceptLoan(ctx, "")
+}
+
+func (r *Runner) treasuryReservesExceptLoan(ctx context.Context, excludedLoan string) (map[string]int64, error) {
 	state := r.stateCache
 	required := obligationReserves(state, r.snapshot, r.opts.ReservePence)
+	if loan, exists := r.loanByID(excludedLoan); exists {
+		required[loan.BankingRegion] = max(0, required[loan.BankingRegion]-loanReserve(loan))
+	}
+	futuresCash, err := r.db.FuturesCashReserve(ctx, r.account.ID)
+	if err != nil {
+		return nil, err
+	}
+	required["north_sea"] = growthCashTotal(required["north_sea"], futuresCash)
 	for _, ship := range state.Ships {
 		if ship.Ship.Status == "sunk" {
 			continue

@@ -82,6 +82,10 @@ func validateBorrowerLoans(raw json.RawMessage, companyID string) error {
 		}
 		switch loan.CollateralKind {
 		case "ship_lien", "warehouse_goods", "contract_receivable", "unsecured":
+		case "deposit":
+			if loan.CollateralDepositID == nil || strings.TrimSpace(*loan.CollateralDepositID) == "" {
+				return fmt.Errorf("borrower loan row %d has unknown pledged deposit identity", index)
+			}
 		default:
 			return fmt.Errorf("borrower loan row %d has unknown collateral kind", index)
 		}

@@ -51,7 +51,7 @@ func TestQuayBookMemoryCapturePredicateKeepsLastGood(t *testing.T) {
 			}
 			runner := Runner{
 				generation: in.Generation,
-				meta:       map[string]DatasetMeta{"books/portsmouth": meta},
+				meta:       map[string]DatasetMeta{"books/portsmouth": meta, "clock": sourcingFreshMeta(in.Now)},
 				snapshot: map[string]json.RawMessage{
 					"_book_observed":    encode(map[string]time.Time{"portsmouth": previous.ObservedAt}),
 					"_quay_book_memory": encode(in.QuayBookMemory),
@@ -91,7 +91,7 @@ func TestQuayBookMemoryExcludesOwnOrdersAndKeepsBestTen(t *testing.T) {
 	book.Books[0].Depth.Bids = levels
 	runner := Runner{
 		generation: in.Generation,
-		meta:       map[string]DatasetMeta{"books/portsmouth": sourcingFreshMeta(in.Now)},
+		meta:       map[string]DatasetMeta{"books/portsmouth": sourcingFreshMeta(in.Now), "clock": sourcingFreshMeta(in.Now)},
 		snapshot:   map[string]json.RawMessage{"orders": json.RawMessage(`[{"id":"our-bid"}]`)},
 	}
 	runner.recordQuayBooks(map[string]json.RawMessage{"portsmouth": encode(book)}, []string{"portsmouth"}, in.Catalog, in.Clock, in.Now)
@@ -120,11 +120,14 @@ func TestQuayBookMemoryAgeBoundaryAndPruning(t *testing.T) {
 			book := in.QuayBookMemory["portsmouth"]
 			book.ObservedAt = book.ObservedAt.Add(-extraAge)
 			in.QuayBookMemory["portsmouth"] = book
-			_, _, _, _, reason := destinationRevenue(in, "portsmouth", "provisions", 20)
+			_, _, _, _, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 20, time.Time{})
 			if (reason == "") != (extraAge == 0) {
 				t.Fatalf("12 game day pricing boundary changed at +%s: %s", extraAge, reason)
 			}
-			runner := Runner{snapshot: map[string]json.RawMessage{"_quay_book_memory": encode(in.QuayBookMemory)}}
+			runner := Runner{
+				generation: in.Generation, meta: map[string]DatasetMeta{"clock": sourcingFreshMeta(in.Now)},
+				snapshot: map[string]json.RawMessage{"_quay_book_memory": encode(in.QuayBookMemory)},
+			}
 			runner.recordQuayBooks(nil, nil, in.Catalog, in.Clock, in.Now)
 			_, exists := decode[map[string]RetainedQuayBook](runner.snapshot, "_quay_book_memory")["portsmouth"]
 			if exists != (extraAge == 0) {
@@ -149,7 +152,7 @@ func TestQuayBookMemoryAgeHaircutAndStressPence(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("%.1f game days", tc.age), func(t *testing.T) {
 			in := retainedBookInput(t, tc.age, RetainedBid{PricePence: 1_000_001, RemainingQuantity: 20})
-			revenue, limit, stress, source, reason := destinationRevenue(in, "portsmouth", "provisions", 1)
+			revenue, limit, stress, source, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 1, time.Time{})
 			wantSource := fmt.Sprintf("our quay book %.1f game days old; %d bps age haircut", tc.age, tc.haircut)
 			if reason != "" || revenue != tc.revenue || stress != tc.stress || limit != tc.limit || source != wantSource {
 				t.Fatalf("wrong aged value: revenue %dp, limit %dp, stress %dp, source %q, reason %q", revenue, limit, stress, source, reason)
@@ -166,7 +169,7 @@ func TestQuayBookMemoryReservationsConsumeBestBids(t *testing.T) {
 	)
 	before := encode(in.QuayBookMemory)
 	in.ReservedRetainedBidTons = map[string]map[string]int64{"portsmouth": {"provisions": 20}}
-	revenue, limit, stress, _, reason := destinationRevenue(in, "portsmouth", "provisions", 20)
+	revenue, limit, stress, _, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 20, time.Time{})
 	if reason != "" || revenue != 75_200 || limit != 3_400 || stress != 7_200 {
 		t.Fatalf("second ship reused the first ship's best twenty tons: %dp, %dp, %dp, %q", revenue, limit, stress, reason)
 	}
@@ -174,7 +177,7 @@ func TestQuayBookMemoryReservationsConsumeBestBids(t *testing.T) {
 		t.Fatal("planning depleted the persisted retained depth")
 	}
 	in.ReservedRetainedBidTons["portsmouth"]["provisions"] = 31
-	if _, _, _, _, reason := destinationRevenue(in, "portsmouth", "provisions", 20); reason == "" {
+	if _, _, _, _, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 20, time.Time{}); reason == "" {
 		t.Fatal("insufficient remaining depth was extrapolated")
 	}
 }
@@ -222,7 +225,7 @@ func TestQuayBookMemoryRevenuePrecedence(t *testing.T) {
 				BestPlayerBidPence: &playerBid, BestPlayerBidQuantity: &tc.playerTons,
 			}}}}
 			in.Ports["le_havre"] = home
-			_, _, _, source, reason := destinationRevenue(in, "portsmouth", "provisions", tc.quantity)
+			_, _, _, source, reason, _ := destinationRevenue(in, "portsmouth", "provisions", tc.quantity, time.Time{})
 			if (reason != "") != tc.wantReject || !strings.HasPrefix(source, tc.wantSource) {
 				t.Fatalf("pricing precedence changed: source %q, reason %q", source, reason)
 			}
@@ -272,12 +275,12 @@ func TestQuayBookMemoryMeasuredP75StartsAtThirty(t *testing.T) {
 	for range 29 {
 		in.BookDrift = append(in.BookDrift, BookDriftSample{AgeGameDays: 2, TopBidChangeBPS: -800})
 	}
-	revenue, _, _, source, reason := destinationRevenue(in, "portsmouth", "provisions", 1)
+	revenue, _, _, source, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 1, time.Time{})
 	if reason != "" || revenue != 94_000 || !strings.HasSuffix(source, "600 bps age haircut") {
 		t.Fatalf("29 samples changed the floor: %dp, %q, %q", revenue, source, reason)
 	}
 	in.BookDrift = append(in.BookDrift, BookDriftSample{AgeGameDays: 2, TopBidChangeBPS: -800})
-	revenue, limit, stress, source, reason := destinationRevenue(in, "portsmouth", "provisions", 1)
+	revenue, limit, stress, source, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 1, time.Time{})
 	if reason != "" || revenue != 76_000 || limit != 49_000 || stress != 27_000 || !strings.HasSuffix(source, "2400 bps age haircut") {
 		t.Fatalf("thirty samples did not use measured adverse drift per day: %dp, %dp, %dp, %q, %q", revenue, limit, stress, source, reason)
 	}
@@ -298,7 +301,7 @@ func TestQuayBookMemoryMeasuredP75StartsAtThirty(t *testing.T) {
 	for range 30 {
 		in.BookDrift = append(in.BookDrift, BookDriftSample{AgeGameDays: 2, TopBidChangeBPS: -2_000})
 	}
-	_, limit, _, _, reason = destinationRevenue(in, "portsmouth", "provisions", 1)
+	_, limit, _, _, reason, _ = destinationRevenue(in, "portsmouth", "provisions", 1, time.Time{})
 	if reason != "" || limit != 40_000 {
 		t.Fatalf("retained price stress was not capped at 6000 bps: limit %dp, reason %q", limit, reason)
 	}
@@ -313,7 +316,7 @@ func TestQuayBookMemoryDriftRetainsLatestTwoHundred(t *testing.T) {
 	}
 	runner := Runner{
 		generation: in.Generation,
-		meta:       map[string]DatasetMeta{"books/portsmouth": sourcingFreshMeta(in.Now)},
+		meta:       map[string]DatasetMeta{"books/portsmouth": sourcingFreshMeta(in.Now), "clock": sourcingFreshMeta(in.Now)},
 		snapshot: map[string]json.RawMessage{
 			"_quay_book_memory": encode(in.QuayBookMemory),
 			"_book_drift":       encode(history),
@@ -336,6 +339,7 @@ func TestQuayBookMemoryEncodingFitsSnapshotBudget(t *testing.T) {
 	t.Parallel()
 	in := sourcingInputFixture(t)
 	runner := Runner{generation: in.Generation, meta: make(map[string]DatasetMeta), snapshot: make(map[string]json.RawMessage)}
+	runner.meta["clock"] = sourcingFreshMeta(in.Now)
 	markets := make(map[string]json.RawMessage)
 	var ports []string
 	for port := range 30 {
@@ -389,10 +393,10 @@ func TestQuayBookMemoryRunnerReservesUnsettledMissionsNotOwnBids(t *testing.T) {
 		t.Fatalf("unsettled remaining tons or retained runner input lost: %+v", input.ReservedRetainedBidTons)
 	}
 	delete(input.Metadata, "books/"+recoveryFarPort)
-	if _, _, _, _, reason := destinationRevenue(input, recoveryFarPort, recoveryGrain, 6); reason == "" {
+	if _, _, _, _, reason, _ := destinationRevenue(input, recoveryFarPort, recoveryGrain, 6, time.Time{}); reason == "" {
 		t.Fatal("second ship reused the first ship's reserved bids")
 	}
-	if _, _, _, source, reason := destinationRevenue(input, recoveryFarPort, recoveryGrain, 5); reason != "" || !strings.HasPrefix(source, retainedBookSource) {
+	if _, _, _, source, reason, _ := destinationRevenue(input, recoveryFarPort, recoveryGrain, 5, time.Time{}); reason != "" || !strings.HasPrefix(source, retainedBookSource) {
 		t.Fatalf("own resting bids incorrectly consumed retained external depth: source %q, reason %q", source, reason)
 	}
 	data.Settlement = &store.Settlement{}
@@ -416,13 +420,15 @@ func TestQuayBookMemoryDriftRequiresHalfGameDay(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			in := retainedBookInput(t, 0.5, RetainedBid{PricePence: 1_000, RemainingQuantity: 20})
 			at := in.Now.Add(-tc.shortBy)
+			clock := in.Clock
+			clock.RealUTC = at
 			runner := Runner{
 				generation: in.Generation,
-				meta:       map[string]DatasetMeta{"books/portsmouth": sourcingFreshMeta(at)},
+				meta:       map[string]DatasetMeta{"books/portsmouth": sourcingFreshMeta(at), "clock": sourcingFreshMeta(at)},
 				snapshot:   map[string]json.RawMessage{"_quay_book_memory": encode(in.QuayBookMemory)},
 			}
 			book := sourcingFixture[Market](t, `{"visibility":"quay","books":[{"commodity_id":"provisions","depth":{"bids":[{"price_pence":900,"remaining_quantity":20}]}}]}`)
-			runner.recordQuayBooks(map[string]json.RawMessage{"portsmouth": encode(book)}, []string{"portsmouth"}, in.Catalog, in.Clock, at)
+			runner.recordQuayBooks(map[string]json.RawMessage{"portsmouth": encode(book)}, []string{"portsmouth"}, in.Catalog, clock, at)
 			drift := decode[[]BookDriftSample](runner.snapshot, "_book_drift")
 			if len(drift) != tc.want {
 				t.Fatalf("sample interval boundary: got %+v, want %d samples", drift, tc.want)
@@ -448,7 +454,10 @@ func TestQuayBookMemoryPassRefetchesDoNotInflateP75(t *testing.T) {
 		at := in.Now.Add(time.Duration(pass+1) * 72 * time.Second)
 		book.Books[0].Depth.Bids[0].PricePence--
 		runner.meta["books/portsmouth"] = sourcingFreshMeta(at)
-		runner.recordQuayBooks(map[string]json.RawMessage{"portsmouth": encode(book)}, []string{"portsmouth"}, in.Catalog, in.Clock, at)
+		runner.meta["clock"] = sourcingFreshMeta(at)
+		clock := in.Clock
+		clock.RealUTC = at
+		runner.recordQuayBooks(map[string]json.RawMessage{"portsmouth": encode(book)}, []string{"portsmouth"}, in.Catalog, clock, at)
 	}
 	drift := decode[[]BookDriftSample](runner.snapshot, "_book_drift")
 	if len(drift) != 0 || retainedAdverseDriftBPS(drift) != 100 {
@@ -500,7 +509,7 @@ func TestQuayBookMemoryDriftExcludesOurBidConsumption(t *testing.T) {
 			}
 			runner := Runner{
 				generation: in.Generation,
-				meta:       map[string]DatasetMeta{"books/portsmouth": sourcingFreshMeta(in.Now)},
+				meta:       map[string]DatasetMeta{"books/portsmouth": sourcingFreshMeta(in.Now), "clock": sourcingFreshMeta(in.Now)},
 				snapshot: map[string]json.RawMessage{
 					"_quay_book_memory": encode(in.QuayBookMemory),
 					"fills":             encode([]PlayerBidSellFill{fill}),
@@ -531,7 +540,7 @@ func TestQuayBookMemoryRejectsHaircutBeyondStressCap(t *testing.T) {
 			for range 30 {
 				in.BookDrift = append(in.BookDrift, BookDriftSample{AgeGameDays: 1, TopBidChangeBPS: -tc.rate})
 			}
-			revenue, limit, stress, source, reason := destinationRevenue(in, "portsmouth", "provisions", 20)
+			revenue, limit, stress, source, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 20, time.Time{})
 			if (reason == "") != tc.want {
 				t.Fatalf("age haircut above the stress cap remained usable: revenue %dp, limit %dp, stress %dp, source %q, reason %q", revenue, limit, stress, source, reason)
 			}
@@ -580,7 +589,7 @@ func TestQuayBookMemoryCapsRevenueAtFresherThinBids(t *testing.T) {
 				}}}}
 				in.Ports["le_havre"] = detail
 			}
-			revenue, limit, stress, source, reason := destinationRevenue(in, "portsmouth", "provisions", 20)
+			revenue, limit, stress, source, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 20, time.Time{})
 			if tc.reject {
 				if reason == "" {
 					t.Fatalf("current full depth was extrapolated: revenue %dp, source %q", revenue, source)
@@ -612,7 +621,7 @@ func TestQuayBookMemoryFresherCapPreservesLowerLevels(t *testing.T) {
 		CommodityID: "provisions", SnapshotAt: at, BestBidPence: &bid,
 	}}}}
 	in.Ports["le_havre"] = detail
-	revenue, limit, stress, _, reason := destinationRevenue(in, "portsmouth", "provisions", 20)
+	revenue, limit, stress, _, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 20, time.Time{})
 	if reason != "" || revenue != 65_800 || limit != 2_550 || stress != 6_300 {
 		t.Fatalf("capping the top price raised lower retained levels: revenue %dp, limit %dp, stress %dp, reason %q", revenue, limit, stress, reason)
 	}

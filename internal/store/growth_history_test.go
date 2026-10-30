@@ -366,3 +366,51 @@ func TestEconomicHistoryWindowKeepsExactNetAndTradingUncertainty(t *testing.T) {
 		}
 	}
 }
+
+func TestLoanCapacityClassHistoryIsolatedAndBounded(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	ctx := context.Background()
+	const accountID = "loan-class-history"
+	const otherAccountID = "loan-class-other-account"
+	saveTestAccount(t, db, accountID)
+	saveTestAccount(t, db, otherAccountID)
+	asOf := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	window := 12 * time.Hour
+	for _, fixture := range []struct {
+		row    Settlement
+		shipID string
+		path   string
+	}{
+		{Settlement{ID: "class-start", CostsKnown: true, Kind: "spot", ProceedsPence: 1_000, CompletedAt: asOf.Add(-window)}, "hoy-a", "/v1/market/place-order"},
+		{Settlement{ID: "class-loss", CostsKnown: true, Kind: "aborted", AcquisitionPence: 100, CompletedAt: asOf.Add(-time.Hour)}, "hoy-a", "/v1/market/place-order"},
+		{Settlement{ID: "class-end", CostsKnown: true, Kind: "spot", ProceedsPence: 300, CompletedAt: asOf}, "hoy-b", "/v1/market/place-order"},
+		{Settlement{ID: "class-control", Kind: "aborted", FeesPence: 50, CompletedAt: asOf.Add(-time.Hour)}, "hoy-a", "/v1/shipyard/modify-ship"},
+		{Settlement{ID: "class-old", CostsKnown: true, Kind: "spot", ProceedsPence: 1_000_000, CompletedAt: asOf.Add(-window - time.Microsecond)}, "hoy-a", "/v1/market/place-order"},
+		{Settlement{ID: "class-other-profit", CostsKnown: true, Kind: "spot", ProceedsPence: 30_000_000, CompletedAt: asOf}, "cutter", "/v1/market/place-order"},
+		{Settlement{ID: "class-other-unknown", Kind: "aborted", CompletedAt: asOf}, "cutter", "/v1/market/place-order"},
+		{Settlement{ID: "class-future", CostsKnown: true, Kind: "spot", ProceedsPence: 1_000_000, CompletedAt: asOf.Add(time.Microsecond)}, "hoy-future", "/v1/market/place-order"},
+	} {
+		fixture.row.AccountID = accountID
+		putGrowthHistoryEvidence(t, db, fixture.row, growthSettlementAction{ShipID: fixture.shipID, Path: fixture.path})
+	}
+	putGrowthHistoryEvidence(t, db, Settlement{
+		ID: "class-foreign-account", AccountID: otherAccountID, CostsKnown: true,
+		Kind: "spot", ProceedsPence: 30_000_000, CompletedAt: asOf,
+	}, growthSettlementAction{ShipID: "hoy-a", Path: "/v1/market/place-order"})
+	history, err := db.EconomicHistoryWindowForShips(ctx, accountID, []string{"hoy-a", "hoy-b", "hoy-a"}, asOf, window)
+	if err != nil || history.NetPence != 1_150 || history.UnknownCosts || history.FutureCompletion {
+		t.Fatalf("class history mixed identities, duplicated ships or lost window losses: %+v, %v", history, err)
+	}
+	var closeouts []string
+	if err := json.Unmarshal(history.ControlCloseoutIDs, &closeouts); err != nil || len(closeouts) != 1 || closeouts[0] != "class-control" {
+		t.Fatalf("class history lost its exempt control identity: %v, %v", closeouts, err)
+	}
+	future, err := db.EconomicHistoryWindowForShips(ctx, accountID, []string{"hoy-future"}, asOf, window)
+	if err != nil || !future.FutureCompletion || future.NetPence != 0 {
+		t.Fatalf("future class settlement was counted or hidden: %+v, %v", future, err)
+	}
+	empty, err := db.EconomicHistoryWindowForShips(ctx, accountID, nil, asOf, window)
+	if err != nil || empty.NetPence != 0 || empty.UnknownCosts || empty.FutureCompletion {
+		t.Fatalf("empty class silently used the entire fleet: %+v, %v", empty, err)
+	}
+}

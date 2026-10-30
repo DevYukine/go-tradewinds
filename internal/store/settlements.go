@@ -43,18 +43,20 @@ type Settlement struct {
 	ExpensesPence    int64  `json:"expenses_pence"`
 	// Exploration expense prices consumed stores and probe costs separately
 	// from actual cash P&L. Nil legacy rows retain the full-cash upper bound.
-	ExplorationExpensePence *int64    `json:"exploration_expense_pence,omitempty"`
-	PlannedNetPence         *int64    `json:"planned_net_pence,omitempty"`
-	PlannedRevenuePence     *int64    `json:"planned_revenue_pence,omitempty"`
-	RevenueBasis            *string   `json:"revenue_basis,omitempty"`
-	RevenueAgeGameHours     *float64  `json:"revenue_age_game_hours,omitempty"`
-	HazardBPS               *int64    `json:"hazard_bps,omitempty"`
-	HazardSource            *string   `json:"hazard_source,omitempty"`
-	CargoShortfallPence     *int64    `json:"cargo_shortfall_pence,omitempty"`
-	DepartedCargoPence      *int64    `json:"departed_cargo_pence,omitempty"`
-	StartedAt               time.Time `json:"started_at"`
-	CompletedAt             time.Time `json:"completed_at"`
-	CreatedAt               time.Time `json:"created_at"`
+	ExplorationExpensePence *int64 `json:"exploration_expense_pence,omitempty"`
+	PlannedNetPence         *int64 `json:"planned_net_pence,omitempty"`
+	// The uncalibrated quote is absent when the purchased lot differs from
+	// the forecast quantity; such receipts cannot calibrate a full-lot price.
+	PlannedRevenuePence *int64    `json:"planned_revenue_pence,omitempty"`
+	RevenueBasis        *string   `json:"revenue_basis,omitempty"`
+	RevenueAgeGameHours *float64  `json:"revenue_age_game_hours,omitempty"`
+	HazardBPS           *int64    `json:"hazard_bps,omitempty"`
+	HazardSource        *string   `json:"hazard_source,omitempty"`
+	CargoShortfallPence *int64    `json:"cargo_shortfall_pence,omitempty"`
+	DepartedCargoPence  *int64    `json:"departed_cargo_pence,omitempty"`
+	StartedAt           time.Time `json:"started_at"`
+	CompletedAt         time.Time `json:"completed_at"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
 func (Settlement) TableName() string { return "settlements" }
@@ -339,7 +341,39 @@ func (s *Store) EconomicHistoryWindow(ctx context.Context, accountID, lane strin
 	return s.economicHistory(ctx, accountID, lane, asOf.UTC(), window, true)
 }
 
+// EconomicHistoryWindowForShips keeps ship identity encrypted while measuring
+// one hull class. The guarded replay fails rather than returning partial net.
+func (s *Store) EconomicHistoryWindowForShips(ctx context.Context, accountID string, shipIDs []string, asOf time.Time, window time.Duration) (GrowthHistory, error) {
+	if !validID(accountID) || asOf.IsZero() || window <= 0 {
+		return GrowthHistory{}, fmt.Errorf("ship economic history window: %w", ErrInvalidInput)
+	}
+	ships := make(map[string]bool, len(shipIDs))
+	for _, shipID := range shipIDs {
+		if !validID(shipID) {
+			return GrowthHistory{}, fmt.Errorf("ship economic history identity: %w", ErrInvalidInput)
+		}
+		ships[shipID] = true
+	}
+	ids := make([]string, 0)
+	if len(ships) > 0 {
+		rows, err := s.replaySettlementsWhere(ctx, accountID, "completed_at >= ?", asOf.Add(-window))
+		if err != nil {
+			return GrowthHistory{}, err
+		}
+		for _, row := range rows {
+			if ships[row.ShipID] {
+				ids = append(ids, row.ID)
+			}
+		}
+	}
+	return s.economicHistoryForSettlements(ctx, accountID, "", asOf.UTC(), window, true, ids)
+}
+
 func (s *Store) economicHistory(ctx context.Context, accountID, lane string, asOf time.Time, window time.Duration, excludeControlCloseoutUnknowns bool) (GrowthHistory, error) {
+	return s.economicHistoryForSettlements(ctx, accountID, lane, asOf, window, excludeControlCloseoutUnknowns, nil)
+}
+
+func (s *Store) economicHistoryForSettlements(ctx context.Context, accountID, lane string, asOf time.Time, window time.Duration, excludeControlCloseoutUnknowns bool, settlementIDs []string) (GrowthHistory, error) {
 	var result GrowthHistory
 	if !validID(accountID) || len(lane) > 1024 {
 		return result, fmt.Errorf("economic history query: %w", ErrInvalidInput)
@@ -347,6 +381,9 @@ func (s *Store) economicHistory(ctx context.Context, accountID, lane string, asO
 	db, cancel := s.query(ctx)
 	defer cancel()
 	scope := db.Model(&settlementRow{}).Select("*, true AS in_window").Where("account_id = ?", accountID)
+	if settlementIDs != nil {
+		scope = scope.Where("id IN ?", settlementIDs)
+	}
 	if lane != "" {
 		scope = scope.Where("lane_lookup = ?", s.privateLookup("settlement-lane", "", lane))
 	}
@@ -423,6 +460,51 @@ func (s *Store) CapacityDeliveryHistory(ctx context.Context, accountID string, a
 		return nil, err
 	}
 	return deliveries, nil
+}
+
+// RevenueCalibration separates pricing regimes and revenue sources. Mixed
+// freight/cargo receipts and dirty rows are excluded before taking each basis's
+// latest twenty actual-to-uncalibrated revenue ratios.
+func (s *Store) RevenueCalibration(ctx context.Context, accountID string, since, asOf time.Time) (map[string]int64, error) {
+	if !validID(accountID) || since.IsZero() || asOf.IsZero() || asOf.Before(since) {
+		return nil, fmt.Errorf("revenue calibration window: %w", ErrInvalidInput)
+	}
+	db, cancel := s.query(ctx)
+	defer cancel()
+	var rows []struct {
+		Basis string
+		BPS   int64
+	}
+	err := db.Raw(`
+		WITH eligible AS (
+			SELECT revenue_basis AS basis,
+				proceeds_pence::numeric * 10000 / planned_revenue_pence AS ratio_bps,
+				ROW_NUMBER() OVER (PARTITION BY revenue_basis ORDER BY completed_at DESC, id) AS recent
+			FROM settlements
+			WHERE account_id = ? AND started_at >= ? AND completed_at >= ? AND completed_at <= ?
+				AND costs_known AND NOT proceeds_unknown AND planned_revenue_pence > 0
+				AND revenue_basis IS NOT NULL AND BTRIM(revenue_basis) <> ''
+				AND COALESCE(cargo_shortfall_pence, 0) = 0
+				AND kind IN ('spot', 'charter', 'freight', 'recovery')
+		), ordered AS (
+			SELECT basis, ratio_bps,
+				ROW_NUMBER() OVER (PARTITION BY basis ORDER BY ratio_bps) AS position,
+				COUNT(*) OVER (PARTITION BY basis) AS samples
+			FROM eligible WHERE recent <= 20
+		)
+		SELECT basis, CASE WHEN MAX(samples) < 10 THEN 10000 ELSE
+			LEAST(10000, GREATEST(9000, TRUNC(AVG(ratio_bps)
+				FILTER (WHERE position IN ((samples + 1) / 2, (samples + 2) / 2)))))
+			END::bigint AS bps
+		FROM ordered GROUP BY basis`, accountID, since, since, asOf).Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("revenue calibration: %w", err)
+	}
+	result := make(map[string]int64, len(rows))
+	for _, row := range rows {
+		result[row.Basis] = row.BPS
+	}
+	return result, nil
 }
 
 // RelocationProbes looks up only the caller's bounded evidence shortlist.

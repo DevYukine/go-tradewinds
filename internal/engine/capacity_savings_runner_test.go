@@ -75,7 +75,7 @@ func capacitySavingsRunnerFixture(t *testing.T, income bool) (*recoveryHarness, 
 	seedCapacitySavingsWindows(t, h, savingsNet)
 	small := runner.stateCache.Catalog.ShipClasses[0]
 	large := small
-	large.ID, large.HoldCapacityTons = "savings-large-hull", 240
+	large.ID, large.HoldCapacityTons = "brigantine", 240
 	runner.stateCache.Catalog.ShipClasses = append(runner.stateCache.Catalog.ShipClasses, large)
 	for _, pair := range [][2]string{{recoveryHomePort, recoveryFarPort}, {recoveryFarPort, recoveryHomePort}} {
 		oldKey := routeKey(pair[0], pair[1], small.ID)
@@ -159,7 +159,7 @@ func TestCapacitySavingsHoldsAffordableBuildAndAgentHire(t *testing.T) {
 	}
 	target := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target")
 	wantCapital := growthCashTotal(save.QuotedHullPence, save.SlippageReservePence, save.CannonsPence, save.InitialStoresPence)
-	if target.PortID != recoveryHomePort || target.HullID != "savings-large-hull" || target.CapitalPence != wantCapital ||
+	if target.PortID != recoveryHomePort || target.HullID != "brigantine" || target.CapitalPence != wantCapital ||
 		target.RequiredPence != growthCashTotal(wantCapital, save.WorkingCapitalPence) || target.DepthNetPencePerGameDay != save.DepthNetPencePerGameDay || !target.ExpiresAt.After(before) {
 		t.Fatalf("missing or incorrect durable savings target: %+v", target)
 	}
@@ -217,9 +217,9 @@ func TestCapacitySavingsAbsentYardMarkerLifecycle(t *testing.T) {
 			h, runner, _, save := capacitySavingsRunnerFixture(t, true)
 			// Only the small hull is sold at the present yard. The stored target
 			// was observed elsewhere, where neither a factor nor a ship is now present.
-			quote := runner.stateCache.Quotes[recoveryHomePort+"|savings-large-hull"]
+			quote := runner.stateCache.Quotes[recoveryHomePort+"|brigantine"]
 			quote.Available = false
-			runner.stateCache.Quotes[recoveryHomePort+"|savings-large-hull"] = quote
+			runner.stateCache.Quotes[recoveryHomePort+"|brigantine"] = quote
 			runner.stateCache.Factors = []string{recoveryHomePort}
 			for i := range runner.stateCache.Catalog.Ports {
 				if runner.stateCache.Catalog.Ports[i].ID == recoveryFarPort {
@@ -235,7 +235,7 @@ func TestCapacitySavingsAbsentYardMarkerLifecycle(t *testing.T) {
 				expiry = time.Now().UTC().Add(-time.Second)
 			}
 			runner.snapshot["_capacity_savings_target"] = encode(capacitySavingsTarget{
-				PortID: recoveryFarPort, HullID: "savings-large-hull",
+				PortID: recoveryFarPort, HullID: "brigantine",
 				RequiredPence:           evidence.available + save.CashShortfallPence,
 				CapitalPence:            growthCashTotal(save.QuotedHullPence, save.SlippageReservePence, save.CannonsPence, save.InitialStoresPence),
 				DepthNetPencePerGameDay: save.DepthNetPencePerGameDay, ExpiresAt: expiry,

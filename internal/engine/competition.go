@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"math"
 	"sort"
 	"time"
 
@@ -61,23 +62,95 @@ func (in PlanningInput) destinationCompetition(destination string) CompetitionEv
 }
 
 func economicallyComparable(value, best float64) bool {
-	return best > 0 && value >= best*0.95
+	return !math.IsInf(best, -1) && value >= best-math.Abs(best)*0.05
 }
 
-// rankPlans anchors the tolerance to the economic best, not a pairwise fuzzy
-// comparison (which could create sorting cycles or drift toward worse returns).
+func planRankScore(economics Economics) float64 {
+	if economics.RankScoreSet {
+		return economics.RankScorePencePerGameDay
+	}
+	return economics.NetPencePerGameDay
+}
+
+// Only the three best admitted first legs trigger onward planning. Alternatives
+// at the same quay share one forecast, and the inner pass cannot recurse.
 func rankPlans(plans []Plan, input PlanningInput) {
-	var best float64
+	for i := range plans {
+		plans[i].competitionComparable = false
+		plans[i].Continuation = nil
+		plans[i].Economics.RankScoreSet = false
+		plans[i].Economics.RankScorePencePerGameDay = plans[i].Economics.NetPencePerGameDay
+	}
+	if !input.singleLegOnly {
+		sort.SliceStable(plans, func(i, j int) bool { return betterPlan(plans[i], plans[j]) })
+		type onwardForecast struct {
+			port         string
+			continuation *Continuation
+		}
+		var cache [3]onwardForecast
+		cached := 0
+		for i := 0; i < min(3, len(plans)) && plans[i].Accepted; i++ {
+			destination := plans[i].Destination
+			known := false
+			for _, item := range cache[:cached] {
+				known = known || item.port == destination
+			}
+			if known || !input.fresh("books/"+destination) || input.Markets[destination].Visibility != "quay" {
+				continue
+			}
+			onward := input
+			onward.singleLegOnly = true
+			// Share a conservative departure horizon without pretending the
+			// current observation frame was fetched again after arrival.
+			for _, first := range plans {
+				if first.Accepted && first.Destination == destination {
+					onward.onwardDelay = max(onward.onwardDelay, gameDuration(first.Economics.GameDays, input.Clock.Calendar.TimeScale))
+				}
+			}
+			onward.Ship.Ship.CurrentPortID = destination
+			onward.Ship.Ship.BerthedAt = nil
+			onward.Ship.Ship.TurnaroundUnlocksAt = nil
+			onward.Ship.CargoUsedTons = 0
+			onward.Ship.CargoManifest = nil
+			candidates := PlanVoyages(onward)
+			item := onwardForecast{port: destination}
+			if len(candidates) > 0 && candidates[0].Accepted {
+				best := candidates[0]
+				item.continuation = &Continuation{Destination: best.Destination, NetPence: best.Economics.ExpectedNetPence, GameDays: best.Economics.GameDays}
+			}
+			cache[cached] = item
+			cached++
+		}
+		hull, hasHull := findHull(input.Catalog, input.Ship.Ship.ShipClass)
+		for i := range plans {
+			plan := &plans[i]
+			if !plan.Accepted || plan.Economics.GameDays <= 0 {
+				continue
+			}
+			for _, item := range cache[:cached] {
+				if item.port == plan.Destination {
+					plan.Continuation = item.continuation
+					break
+				}
+			}
+			if plan.Continuation == nil && hasHull {
+				plan.Continuation = ballastContinuation(input, *plan, hull)
+			}
+			refreshPlanRank(plan)
+		}
+	}
+	// Anchor competition's tolerance to the economic best rather than a
+	// pairwise fuzzy comparison, which could drift toward worse returns.
+	best := math.Inf(-1)
 	for i := range plans {
 		plans[i].Competition = input.destinationCompetition(plans[i].Destination)
-		plans[i].competitionComparable = false
 		if plans[i].Accepted && plans[i].Economics.GameDays > 0 {
-			best = max(best, plans[i].Economics.NetPencePerGameDay)
+			best = max(best, planRankScore(plans[i].Economics))
 		}
 	}
 	for i := range plans {
 		plans[i].competitionComparable = plans[i].Accepted && plans[i].Economics.GameDays > 0 &&
-			economicallyComparable(plans[i].Economics.NetPencePerGameDay, best)
+			economicallyComparable(planRankScore(plans[i].Economics), best)
 	}
 	sort.SliceStable(plans, func(i, j int) bool { return betterPlan(plans[i], plans[j]) })
 	for i := range plans {
@@ -85,6 +158,53 @@ func rankPlans(plans []Plan, input PlanningInput) {
 			plans[i].Competition = CompetitionEvidence{}
 		}
 	}
+}
+
+func refreshPlanRank(plan *Plan) {
+	plan.Economics.RankScorePencePerGameDay = 0
+	plan.Economics.RankScoreSet = false
+	if next := plan.Continuation; next != nil && next.GameDays > 0 {
+		plan.Economics.RankScorePencePerGameDay = (float64(plan.Economics.ExpectedNetPence) + float64(next.NetPence)) /
+			(plan.Economics.GameDays + next.GameDays)
+		plan.Economics.RankScoreSet = true
+	}
+}
+
+func ballastContinuation(input PlanningInput, plan Plan, hull Hull) *Continuation {
+	back, err := observedPlanningRoute(input, plan.Destination, plan.Origin, hull)
+	if err != nil {
+		// This is an opportunity-cost estimate, never departure authority.
+		// Mirror the legal outward distance when no safe return is observed.
+		back, err = observedPlanningRoute(input, plan.Origin, plan.Destination, hull)
+		if err != nil {
+			return nil
+		}
+	}
+	days, provisions, berth, ok := ballastLegEconomics(input, hull, plan.Origin, back)
+	if !ok {
+		return nil
+	}
+	return &Continuation{Destination: plan.Origin, NetPence: -provisions - berth, GameDays: days}
+}
+
+func (r *Runner) refreshRevenueCalibration(ctx context.Context) error {
+	since := decode[time.Time](r.snapshot, "_revenue_calibration_since")
+	asOf := time.Now().UTC()
+	if since.IsZero() {
+		since = asOf
+		r.snapshot["_revenue_calibration_since"] = encode(since)
+		// The regime boundary must survive a crash before any calibrated plan
+		// is admitted, rather than restarting its sample window each launch.
+		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+			return err
+		}
+	}
+	calibration, err := r.db.RevenueCalibration(ctx, r.account.ID, since, asOf)
+	if err != nil {
+		return err
+	}
+	r.snapshot["_revenue_calibration"] = encode(calibration)
+	return nil
 }
 
 type capacityCandidate struct {

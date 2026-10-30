@@ -53,6 +53,7 @@ type missionData struct {
 	Passage                   *passageIntent          `json:"passage,omitempty"`
 	Underwriting              *underwritingIntent     `json:"underwriting,omitempty"`
 	Marque                    *marqueIntent           `json:"marque,omitempty"`
+	Futures                   *futuresPilotIntent     `json:"futures,omitempty"`
 	LoanRepayment             *loanRepaymentIntent    `json:"loan_repayment,omitempty"`
 	SourcingSpentPence        int64                   `json:"sourcing_spent_pence"`
 	SourcingGameDays          float64                 `json:"sourcing_game_days"`
@@ -136,7 +137,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	for _, ship := range r.stateCache.Ships {
 		ids = append(ids, ship.Ship.ID)
 	}
-	ids = append(ids, "__treasury", "__growth", "__underwriting", "__marque")
+	ids = append(ids, "__treasury", "__growth", "__underwriting", "__marque", "__futures")
 	attached := make(map[string]bool)
 	for _, id := range ids {
 		mission, data, err := r.loadMission(ctx, id)
@@ -193,7 +194,9 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	unresolved := false
 	for _, id := range ids {
 		data := dataByShip[id]
-		if data.Action != nil && (data.Passage == nil || data.Passage.QuarantineReason == "") {
+		if data.Action != nil && (data.Passage == nil || data.Passage.QuarantineReason == "") &&
+			(id != "__futures" || !unresolved || data.Action.Stage == "futures-settle" ||
+				data.Action.Stage == "futures-close-stock" || data.Action.Stage == "futures-close-lease") {
 			r.assessShip(id)
 			if changed, err := r.dispatch(ctx, missions[id], &data); changed || err != nil {
 				return changed, err
@@ -207,7 +210,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		}
 		dataByShip[id] = data
 		if data.Action != nil {
-			unresolved = unresolved || id != "__underwriting" && id != "__marque" && !passengerStage(data.Action.Stage)
+			unresolved = unresolved || id != "__underwriting" && id != "__marque" && id != "__futures" && !passengerStage(data.Action.Stage)
 		}
 	}
 	r.assessHold("")
@@ -226,6 +229,13 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	}
 	if unresolved {
 		return r.creditOnlyWork(ctx, missions, dataByShip)
+	}
+	if r.opts.Execute && (r.opts.FuturesPilotEnabled || missions["__futures"] != nil) {
+		r.assessHold("__futures")
+		data := dataByShip["__futures"]
+		if changed, err := r.driveFutures(ctx, missions["__futures"], &data); changed || err != nil {
+			return changed, err
+		}
 	}
 	if mission := missions["__underwriting"]; mission != nil && dataByShip["__underwriting"].Action == nil {
 		r.assessHold("__underwriting")
@@ -427,7 +437,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return changed, err
 		}
 	}
-	return false, r.decision(ctx, "", "excluded_liabilities", "futures, patrols and extra companies rejected: no measured positive incremental return with modeled liabilities; no speculative side effects", nil)
+	return false, r.decision(ctx, "", "excluded_liabilities", "futures are pilot-only: one covered Amsterdam water/beer pair with no scale-up; patrols and extra companies rejected without measured positive incremental return and modeled liabilities", nil)
 }
 
 func unlocked(ship ShipState, now time.Time) bool {
@@ -1073,7 +1083,7 @@ func (r *Runner) prepareDeparture(ctx context.Context, ship ShipState, mission *
 		return false, r.hold(ctx, ship.Ship.ID, err.Error())
 	}
 	if data.Relocation == nil && !data.ReturnJourney && data.Plan.Kind != "recovery" {
-		proceed, err := r.procurementDepartureDecision(ship, mission.Destination, data)
+		proceed, err := r.committedProcurementDepartureDecision(ctx, ship, mission.Destination, data)
 		if err != nil {
 			return false, r.hold(ctx, ship.Ship.ID, err.Error())
 		}
@@ -1386,6 +1396,11 @@ func (r *Runner) finishMission(ctx context.Context, ship ShipState, mission *sto
 			hazardSource = new(data.Plan.Economics.HazardSource)
 			hazardBPS = new(data.Plan.Economics.HazardBPS)
 		}
+		plannedRevenue := data.Plan.Economics.UncalibratedRevenuePence
+		// A partial IOC buy is not a failed price forecast for the full lot.
+		if data.Plan.Kind != "freight" && data.BoughtQuantity != data.Plan.Economics.RevenueQuantityTons {
+			plannedRevenue = nil
+		}
 		data.Settlement = &store.Settlement{
 			ID:                      mission.Generation,
 			AccountID:               r.account.ID,
@@ -1400,7 +1415,7 @@ func (r *Runner) finishMission(ctx context.Context, ship ShipState, mission *sto
 			ExpensesPence:           data.ExpensesPence,
 			ExplorationExpensePence: explorationExpense,
 			PlannedNetPence:         new(data.Plan.Economics.ExpectedNetPence),
-			PlannedRevenuePence:     new(data.Plan.Economics.RevenuePence),
+			PlannedRevenuePence:     plannedRevenue,
 			RevenueBasis:            revenueBasis,
 			RevenueAgeGameHours:     data.Plan.Economics.RevenueAgeGameHours,
 			HazardBPS:               hazardBPS,

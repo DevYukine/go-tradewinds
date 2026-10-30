@@ -149,16 +149,15 @@ func (f *mortgageFixture) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		"ship_class": payload.Class, "total_cost_pence": 60_000, "mortgage": f.loans[0]})
 }
 
-func TestMortgageCapacityBuildUsesImmutableFlagWithoutMeasuredWait(t *testing.T) {
+func TestMortgageCapacityBuildUsesImmutableFlagWithMeasuredClassNet(t *testing.T) {
 	t.Parallel()
 	h, runner, _ := newMortgageFixture(t)
-	runner.stateCache.Ships[0].Ship.CreatedAt = nil
 	port, hull, decision, required, evidence := loanCapacityDecision(t, h, runner)
 	if !decision.Accepted || decision.Mortgage == nil || required[port.BankingRegion] != evidence.required[port.BankingRegion]+growthCapital(decision)+4_600 {
 		t.Fatalf("cash-blocked cheap hull did not use down payment and regional debt reserve: %+v %v", decision, required)
 	}
 	if changed, err := runner.considerCapacityGrowthAt(h.ctx, evidence, port.ID, hull.ID); err != nil || !changed {
-		t.Fatalf("stage cheap mortgage without measured wait: %t %v", changed, err)
+		t.Fatalf("stage cheap mortgage with measured class earnings: %t %v", changed, err)
 	}
 	mission, data := h.mission("__growth")
 	if data.Capacity.Mortgage == nil || !bytes.Contains(data.Action.Body, []byte(`"mortgage":true`)) {
