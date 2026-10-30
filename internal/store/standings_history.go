@@ -22,11 +22,12 @@ type standingCapture struct {
 }
 
 type standingEntry struct {
-	Rank          int             `json:"rank"`
-	CompanyName   string          `json:"company_name"`
-	HomePortID    string          `json:"home_port_id"`
-	NetWorthPence *int64          `json:"net_worth_pence"`
-	Titles        json.RawMessage `json:"titles"`
+	Rank             int             `json:"rank"`
+	CompanyName      string          `json:"company_name"`
+	HomePortID       string          `json:"home_port_id"`
+	NetWorthPence    *int64          `json:"net_worth_pence"`
+	Titles           json.RawMessage `json:"titles"`
+	IsCallingCompany bool            `json:"is_calling_company"`
 }
 
 type standingRow struct {
@@ -56,9 +57,15 @@ func (standingAccount) TableName() string { return "standings_accounts" }
 // immutable hourly snapshot; only its published best-company name can link
 // observations over time. Never stitch different companies or seasons together.
 func recordStandings(tx *gorm.DB, accountID string, raw json.RawMessage, observedAt time.Time) error {
+	_, err := storeStandings(tx, accountID, raw, observedAt)
+	return err
+}
+
+// storeStandings returns the decoded publication only when it was accepted.
+func storeStandings(tx *gorm.DB, accountID string, raw json.RawMessage, observedAt time.Time) (*standingCapture, error) {
 	var capture standingCapture
 	if len(raw) == 0 || json.Unmarshal(raw, &capture) != nil || capture.SeasonNumber < 1 || capture.RefreshedAt == nil || capture.RefreshedAt.IsZero() {
-		return nil
+		return nil, nil
 	}
 	entries := capture.Entries
 	if capture.You != nil {
@@ -66,7 +73,7 @@ func recordStandings(tx *gorm.DB, accountID string, raw json.RawMessage, observe
 		for _, entry := range entries {
 			if entry.Rank == capture.You.Rank {
 				if entry.CompanyName != capture.You.CompanyName || entry.NetWorthPence == nil || capture.You.NetWorthPence == nil || *entry.NetWorthPence != *capture.You.NetWorthPence {
-					return nil
+					return nil, nil
 				}
 				found = true
 			}
@@ -79,12 +86,12 @@ func recordStandings(tx *gorm.DB, accountID string, raw json.RawMessage, observe
 	seen := make(map[int]bool, len(entries))
 	for _, entry := range entries {
 		if entry.Rank < 1 || entry.CompanyName == "" || entry.NetWorthPence == nil || seen[entry.Rank] {
-			return nil
+			return nil, nil
 		}
 		seen[entry.Rank] = true
 		encodedTitles, err := json.Marshal(entry.Titles)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		rows = append(rows, standingRow{
 			SeasonNumber: capture.SeasonNumber, RefreshedAt: capture.RefreshedAt.UTC(),
@@ -94,18 +101,41 @@ func recordStandings(tx *gorm.DB, accountID string, raw json.RawMessage, observe
 		})
 	}
 	if len(rows) == 0 {
-		return nil
+		return nil, nil
 	}
 	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
-		return err
+		return nil, err
 	}
 	if capture.You != nil {
-		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&standingAccount{
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&standingAccount{
 			AccountID: accountID, SeasonNumber: capture.SeasonNumber,
 			RefreshedAt: capture.RefreshedAt.UTC(), Rank: capture.You.Rank,
-		}).Error
+		}).Error; err != nil {
+			return nil, err
+		}
 	}
-	return nil
+	return &capture, nil
+}
+
+// recordStandingsAndNetWorth serves live responses only. Goose version 8
+// replays recordStandings before version 20 creates the index that the net
+// worth insert relies on.
+func recordStandingsAndNetWorth(tx *gorm.DB, accountID string, raw json.RawMessage, observedAt time.Time) error {
+	capture, err := storeStandings(tx, accountID, raw, observedAt)
+	if err != nil || capture == nil {
+		return err
+	}
+	// The player's best company may be another company; its valuation is not
+	// this account's net worth. An accepted you entry always carries a worth.
+	if capture.You == nil || !capture.You.IsCallingCompany {
+		return nil
+	}
+	// The metric is stamped at the official valuation time, so repeated polls of
+	// one publication collapse onto metrics_net_worth_unique_idx.
+	return tx.Exec(`INSERT INTO metrics (account_id, name, value, recorded_at)
+		VALUES (?, 'net_worth_pence', ?, ?)
+		ON CONFLICT (account_id, recorded_at) WHERE name = 'net_worth_pence' DO NOTHING`,
+		accountID, float64(*capture.You.NetWorthPence), capture.RefreshedAt.UTC()).Error
 }
 
 type risingPublication struct {

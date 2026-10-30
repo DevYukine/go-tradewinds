@@ -19,6 +19,7 @@ const (
 	fetchPages
 	fetchContracts
 	fetchBorrowerLoans
+	fetchLedger
 )
 
 type fetchTask struct {
@@ -36,7 +37,8 @@ type fetchResult struct {
 
 // A worker owns its result slot through pagination and the client's existing
 // retries and rate waits. Only the caller reduces results into runner state.
-func fetchWave(ctx context.Context, api *gameapi.Client, tasks []fetchTask) ([]fetchResult, error) {
+// ledgerFloor bounds fetchLedger tasks; see Runner.ledgerFloor.
+func fetchWave(ctx context.Context, api *gameapi.Client, tasks []fetchTask, ledgerFloor time.Time) ([]fetchResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -58,7 +60,9 @@ func fetchWave(ctx context.Context, api *gameapi.Client, tasks []fetchTask) ([]f
 				result := fetchResult{attemptedAt: time.Now()}
 				switch task.kind {
 				case fetchPages:
-					result.data, result.err = readPages(ctx, api, task.path)
+					result.data, result.err = readPages(ctx, api, task.path, time.Time{})
+				case fetchLedger:
+					result.data, result.err = readPages(ctx, api, task.path, ledgerFloor)
 				case fetchContracts:
 					result.data, result.err = readContracts(ctx, api)
 				case fetchBorrowerLoans:
@@ -94,7 +98,10 @@ admit:
 	return results, nil
 }
 
-func readPages(ctx context.Context, api *gameapi.Client, path string) (json.RawMessage, error) {
+// readPages follows the cursor to the end of a list. A nonzero since applies to
+// newest-first lists with created_at: older rows are dropped and paging stops
+// at the first page that reaches them.
+func readPages(ctx context.Context, api *gameapi.Client, path string, since time.Time) (json.RawMessage, error) {
 	endpoint, err := url.Parse(path)
 	if err != nil {
 		return nil, err
@@ -112,6 +119,7 @@ func readPages(ctx context.Context, api *gameapi.Client, path string) (json.RawM
 		if page == nil {
 			return nil, errors.New("paginated list returned null instead of an array")
 		}
+		reachedSince := false
 		for _, row := range page {
 			id, err := pageID(row)
 			if err != nil {
@@ -121,9 +129,21 @@ func readPages(ctx context.Context, api *gameapi.Client, path string) (json.RawM
 				return nil, fmt.Errorf("pagination repeated id %s", id)
 			}
 			seen[id] = true
+			if !since.IsZero() {
+				var stamped struct {
+					CreatedAt time.Time `json:"created_at"`
+				}
+				if err := json.Unmarshal(row, &stamped); err != nil {
+					return nil, err
+				}
+				if !stamped.CreatedAt.IsZero() && stamped.CreatedAt.Before(since) {
+					reachedSince = true
+					continue
+				}
+			}
 			rows = append(rows, row)
 		}
-		if len(page) < 200 {
+		if reachedSince || len(page) < 200 {
 			return json.Marshal(rows)
 		}
 		id, err := pageID(page[len(page)-1])
@@ -138,7 +158,7 @@ func readBorrowerLoans(ctx context.Context, api *gameapi.Client) (json.RawMessag
 	byID := make(map[string]json.RawMessage)
 	var order []string
 	for _, status := range []string{"active", "defaulted"} {
-		rows, err := readPages(ctx, api, "/v1/loan/list?role=borrower&status="+status)
+		rows, err := readPages(ctx, api, "/v1/loan/list?role=borrower&status="+status, time.Time{})
 		if err != nil {
 			return nil, err
 		}
@@ -169,7 +189,7 @@ func readContracts(ctx context.Context, api *gameapi.Client) (json.RawMessage, e
 	byID := make(map[string]json.RawMessage)
 	var order []string
 	for _, status := range []string{"open", "active", "completed", "cancelled", "defaulted"} {
-		rows, err := readPages(ctx, api, "/v1/contract/list?status="+status)
+		rows, err := readPages(ctx, api, "/v1/contract/list?status="+status, time.Time{})
 		if err != nil {
 			return nil, err
 		}

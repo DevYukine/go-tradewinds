@@ -97,7 +97,7 @@ func (s *Store) RecordRequest(ctx context.Context, accountID, method, path strin
 				if err := recordRising(tx, accountID, permanent, now); err != nil {
 					return err
 				}
-				return recordStandings(tx, accountID, permanent, now)
+				return recordStandingsAndNetWorth(tx, accountID, permanent, now)
 			}
 			season, err := currentRivalSeason(tx, now)
 			if err != nil {

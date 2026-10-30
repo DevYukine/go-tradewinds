@@ -224,6 +224,14 @@ func (r *Runner) futuresErrorHold(ctx context.Context, changed *bool, err *error
 	*changed, *err = false, nil
 }
 
+// futuresAccounted reports whether an intent's cash accounting is final. A
+// terminal status alone is not: cash flows are recorded after it.
+func futuresAccounted(row store.FuturesIntent) bool {
+	return store.FuturesTerminal(row.Status) && (row.RealizedPnLPence != nil ||
+		row.PnLBasis == "opening or remaining stock cost unknown; rent unknown" ||
+		row.PnLBasis == "procurement or liquidation cash unknown; rent unknown")
+}
+
 func (r *Runner) driveFutures(ctx context.Context, mission *store.Mission, data *missionData) (changed bool, err error) {
 	defer r.futuresErrorHold(ctx, &changed, &err)
 	rows, err := r.db.FuturesIntents(ctx, r.account.ID)
@@ -232,9 +240,7 @@ func (r *Runner) driveFutures(ctx context.Context, mission *store.Mission, data 
 	}
 	accounted := true
 	for _, row := range rows {
-		accounted = accounted && store.FuturesTerminal(row.Status) && (row.RealizedPnLPence != nil ||
-			row.PnLBasis == "opening or remaining stock cost unknown; rent unknown" ||
-			row.PnLBasis == "procurement or liquidation cash unknown; rent unknown")
+		accounted = accounted && futuresAccounted(row)
 	}
 	if mission != nil && mission.Phase == "futures_done" && accounted {
 		return false, nil

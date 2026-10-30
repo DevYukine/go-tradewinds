@@ -176,7 +176,21 @@ func pageID(row json.RawMessage) (string, error) {
 }
 
 func (r *Runner) captureWave(ctx context.Context, tasks []fetchTask, groups map[string]map[string]json.RawMessage) error {
-	results, err := fetchWave(ctx, r.api, tasks)
+	var floor time.Time
+	for index, task := range tasks {
+		if task.kind != fetchLedger {
+			continue
+		}
+		var err error
+		if floor, err = r.ledgerFloor(ctx, time.Now().UTC()); err != nil {
+			// Without a floor the ledger could drop entries unresolved
+			// accounting needs; keep its last-good copy and refresh the rest.
+			r.log.Warn("ledger window unavailable; keeping the last ledger", zap.Error(err))
+			tasks = append(tasks[:index:index], tasks[index+1:]...)
+		}
+		break
+	}
+	results, err := fetchWave(ctx, r.api, tasks, floor)
 	if err != nil {
 		return err
 	}
@@ -284,7 +298,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 		{"convoys", "/v1/fleet/convoys", fetchPages},
 		{"marques", "/v1/fleet/marques", fetchPages},
 		{"patrols", "/v1/fleet/patrols", fetchPages},
-		{"ledger", "/v1/treasury/ledger", fetchPages},
+		{"ledger", "/v1/treasury/ledger", fetchLedger},
 		{"contracts", "", fetchContracts},
 	}
 	now := time.Now()
@@ -1045,14 +1059,18 @@ func (r *Runner) recordBalances(ctx context.Context) error {
 		return nil
 	}
 	rows := decode[[]struct {
-		Debit  string `json:"debit_account_id"`
-		Credit string `json:"credit_account_id"`
-		Amount int64  `json:"amount_pence"`
-		Reason string `json:"reason"`
+		Debit     string    `json:"debit_account_id"`
+		Credit    string    `json:"credit_account_id"`
+		Amount    int64     `json:"amount_pence"`
+		Reason    string    `json:"reason"`
+		CreatedAt time.Time `json:"created_at"`
 	}](r.snapshot, "ledger")
+	// The retained ledger can reach further back while missions are open; a
+	// fixed window keeps the series comparable over time.
+	since := time.Now().Add(-ledgerRetention)
 	var outflow, bills int64
 	for _, row := range rows {
-		if !owned[row.Debit] || owned[row.Credit] {
+		if !owned[row.Debit] || owned[row.Credit] || !row.CreatedAt.IsZero() && row.CreatedAt.Before(since) {
 			continue
 		}
 		outflow += row.Amount

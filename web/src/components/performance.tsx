@@ -28,7 +28,7 @@ const SERIES: Record<MoneySeries, { label: string; description: string }> = {
   net_worth_pence: {
     label: "Net worth",
     description:
-      "Recorded official valuations, not earnings. A current standing cannot reconstruct historical net worth.",
+      "Official hourly leaderboard valuations of this company, not earnings. Includes vaults, escrow, goods at catalog prices and hull values.",
   },
   settlement_net: {
     label: "Realized settlement net",
@@ -53,12 +53,12 @@ const SERIES: Record<MoneySeries, { label: string; description: string }> = {
   cash_outflow_pence: {
     label: "Ledger cash outflow",
     description:
-      "Outbound cash in each recorded ledger snapshot, including purchases and capital movements. Snapshots overlap; do not add them together or interpret them as trading losses.",
+      "Outbound cash over the 72 real hours before each observation, including purchases and capital movements. Values before 30 Oct 2026 covered the whole ledger. Windows overlap; do not add them together or interpret them as trading losses.",
   },
   expenses_pence: {
     label: "Ledger fees & bills",
     description:
-      "Fees and bills in each recorded ledger snapshot. Snapshots overlap; these are not new charges at every observation.",
+      "Fees and bills over the 72 real hours before each observation. Values before 30 Oct 2026 covered the whole ledger. Windows overlap; these are not new charges at every observation.",
   },
 };
 const signedMoney = (value: number | undefined) =>
@@ -121,6 +121,8 @@ export function Performance({ accountID }: { accountID: string }) {
       : points.findIndex((point) => point.id === selectedID);
   const activeIndex = index < 0 ? points.length - 1 : index;
   const selected = points[activeIndex];
+  // Net worth is published hourly, so a two-hour gap means a missed valuation.
+  const staleAfterMs = series === "net_worth_pence" ? 7_200_000 : 120_000;
   const stale =
     !settlementSeries &&
     history.data &&
@@ -128,7 +130,7 @@ export function Performance({ accountID }: { accountID: string }) {
     Math.abs(
       Date.parse(history.data.to) - Date.parse(history.data.generated_at),
     ) <= 120_000 &&
-    now - Date.parse(last.at) > 120_000;
+    now - Date.parse(last.at) > staleAfterMs;
   const pointDate = (point: (typeof points)[number]) =>
     bars && point.period
       ? `${dateTime(point.at)} – ${dateTime(point.period.to)}`
@@ -358,7 +360,9 @@ export function Performance({ accountID }: { accountID: string }) {
           <span role="status">Retrieving recorded history. </span>
         )}
         {stale
-          ? `Balance observations are stale; latest recorded ${dateTime(last.at)}. `
+          ? series === "net_worth_pence"
+            ? `No leaderboard valuation recorded for over two hours; latest ${dateTime(last.at)}. `
+            : `Balance observations are stale; latest recorded ${dateTime(last.at)}. `
           : ""}
         {settlementSeries && history.data && (
           <>
@@ -376,9 +380,7 @@ export function Performance({ accountID }: { accountID: string }) {
               ? "Money history unavailable"
               : history.isPending && !invalidCustom
                 ? "Retrieving money history"
-                : series === "net_worth_pence"
-                  ? "Net-worth history not recorded"
-                  : "No recorded values in this range"
+                : "No recorded values in this range"
           }
           description={
             history.isError && !history.data
@@ -388,7 +390,7 @@ export function Performance({ accountID }: { accountID: string }) {
                 : history.isPending
                   ? "Waiting for recorded observations from the service."
                   : series === "net_worth_pence"
-                    ? "The current leaderboard is a snapshot, not a historical series. No past valuations have been invented."
+                    ? "Valuations are recorded once per hourly leaderboard publication. Try a range of at least a few hours."
                     : "Missing observations do not establish zero activity. Try a wider date range."
           }
         />

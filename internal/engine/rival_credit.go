@@ -40,7 +40,7 @@ func (r *Runner) refreshRivalCredit(ctx context.Context) error {
 	for _, path := range []string{"/v1/bank/list", "/v1/loan/requests"} {
 		var raw json.RawMessage
 		if path == "/v1/loan/requests" {
-			raw, err = readPages(ctx, r.api, path)
+			raw, err = readPages(ctx, r.api, path, time.Time{})
 		} else {
 			err = r.api.GetOnce(ctx, path, &raw)
 		}
