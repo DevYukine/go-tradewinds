@@ -26,8 +26,10 @@ const (
 	DiagnosticRetention = 7 * 24 * time.Hour
 	MaxHistoryLimit     = 500
 
-	// MaxSnapshotBytes bounds the encoded account snapshot accepted by SaveSnapshot.
+	// MaxSnapshotBytes bounds the encoded account snapshot row, excluding routes.
 	MaxSnapshotBytes = 8 * 1024 * 1024
+	// MaxSnapshotRoutesBytes independently bounds the encoded route cache.
+	MaxSnapshotRoutesBytes = 64 * 1024 * 1024
 
 	maxDiagnosticBytes        = 32 * 1024
 	maxDashboardSnapshotBytes = 16 * 1024 * 1024
@@ -170,6 +172,14 @@ type snapshotRow struct {
 }
 
 func (snapshotRow) TableName() string { return "snapshots" }
+
+type snapshotRouteRow struct {
+	AccountID string          `gorm:"primaryKey"`
+	RouteKey  string          `gorm:"primaryKey"`
+	Data      json.RawMessage `gorm:"type:jsonb"`
+}
+
+func (snapshotRouteRow) TableName() string { return "snapshot_routes" }
 
 type actionRow struct {
 	ID             string `gorm:"primaryKey"`

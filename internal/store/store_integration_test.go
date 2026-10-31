@@ -561,12 +561,13 @@ func TestPostgresSecretRedactionAcrossStoredReadSurfaces(t *testing.T) {
 	}
 	if err := db.SaveSnapshot(ctx, "one", map[string]json.RawMessage{
 		"profile":          json.RawMessage(response),
+		"routes":           json.RawMessage(fmt.Sprintf(`{%q:%s}`, credentials.APIKey, response)),
 		credentials.APIKey: json.RawMessage(`{"public_count":2}`),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var surfaces []string
-	for _, table := range []string{"requests", "events", "decisions", "snapshots"} {
+	for _, table := range []string{"requests", "events", "decisions", "snapshots", "snapshot_routes"} {
 		var rows []string
 		if err := db.db.Raw("SELECT to_jsonb(t)::text FROM " + table + " AS t").Scan(&rows).Error; err != nil {
 			t.Fatal(err)

@@ -123,6 +123,14 @@ func (s *Store) AcquireAccountContext(ctx context.Context, accountID string) (co
 		lease.closeConnection()
 		return nil, nil, fmt.Errorf("fence previous account owner: %w", err)
 	}
+	// Another owner may have changed routes since this Store last held the
+	// account. The next save must compare against the current table.
+	routeCache := s.snapshotRouteCache(accountID)
+	routeCache.mu.Lock()
+	routeCache.digests = nil
+	clear(routeCache.fingerprint[:])
+	routeCache.fingerprintValid = false
+	routeCache.mu.Unlock()
 	ownerCtx = context.WithValue(ownerCtx, leaseContextKey{}, lease)
 	s.leaseMu.Lock()
 	if s.closed {

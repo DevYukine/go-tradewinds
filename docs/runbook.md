@@ -78,6 +78,19 @@ docker compose exec -T postgres createdb -U tradewinds tradewinds_test
 
 Set `TEST_DATABASE_URL` to that database, then run the store's integration tests. Do not use the production `DATABASE_URL` as the test URL. Preserve the live database and its encryption key before schema changes.
 
+### Route cache schema 21 cutover
+
+Migration [00021_snapshot_routes.sql](../internal/store/migrations/00021_snapshot_routes.sql) transactionally extracts existing `routes` payloads into account-scoped `snapshot_routes` rows and removes `routes` from `snapshots.data`. Route `_meta` freshness entries remain in the 8 MiB snapshot row and commit atomically with subsequent route changes. The route payload has a separate 64 MiB per-account cap on the canonical Go-encoded route object, including route keys, JSON escaping and numeric expansion, with each number conservatively budgeted at up to 64 rendered characters; the bound is checked before and after redaction, and the 8 MiB snapshot row cap is unchanged and separate. Exceeding either cap rejects the save with `ErrResponseTooLarge` and can stop runner progress until the storage-size cause is resolved. Stored route reads preflight the stored size before hydration. A snapshot row that still embeds routes while schema 21 route rows exist fails closed; treat that state as an inconsistent database and recover through the coordinated compatible restore below, never by deleting rows. The existing optional history limits remain 256 directed routes and 1 MiB including metadata, scanning at most 1,024 candidates. There is no longer optional-history eviction against shared snapshot headroom, so remaining snapshot data and route metadata still need to fit 8 MiB.
+
+1. Stop every executor for the database and wait for account/company ownership locks to release before any migration-capable process opens it, including `tw-sim backfill`. Do not overlap a schema 20 executor with migration or schema 21 execution.
+2. Take a fresh quiesced full-database custom-format backup using the [backup procedure](#live-account-backup), restrict its ACL to the owner/system, and keep the matching credential key separately protected. Preserve snapshots, route payloads and metadata, immutable action journals, unresolved intents and all other recovery/accounting tables together. After migration, every full backup and restore verification must include `snapshot_routes`.
+3. Restore to a disposable database and rehearse the exact release revision and its migration without game mutations or competing company execution. Compare pre/post route keys and payloads, retained `_meta`, merged snapshot reads after restart, and unchanged unresolved action identities and recovery records. Record the exact release revision and its rehearsal result before production cutover; a rehearsal of any other build is not evidence for this release.
+4. Start the schema 21 executable only after that rehearsal and backup are complete. Confirm migration 21, separate route rows, retained route metadata, coherent runner recovery and advancing authoritative observations. `/readyz` alone does not prove migration data fidelity or executor progress.
+
+**Never perform an old-binary-only rollback to a schema 20 release after this cutover.** The fast restart script does not establish schema compatibility. Returning across schema 21 requires a coordinated restore of a compatible full database, its migration state and matching credential key with the selected binary; do not manually drop `snapshot_routes` or blindly run Goose down. Before restoring, quiesce execution again and preserve the current full database. Account for every post-deployment game mutation and unresolved intent using the durable journal and authoritative game state: a database restore does not undo a game action and must not discard its immutable recovery identity. If those outcomes cannot be reconciled safely, keep execution stopped and recover forward. Never blindly rewind operational state to the pre-deployment backup.
+
+The bounded `/api/dashboard` raw snapshot omits the internal route payload after extraction, while `_meta` still reports its freshness. No typed or in-repository UI consumer reads `snapshot.routes`. Replay startup and sweep frames remain bounded to 16 MiB aggregate plaintext and may omit the largest datasets, including routes, with explicit metadata-only gaps even though the operational cache is within its 64 MiB cap.
+
 ## Replay recording
 
 The live recorder appends an encrypted local tape without issuing game requests. It records startup, at least 60-real-second interval opportunities, accepted plans and staged actions, and the first completed pass after a decision. Observation times are pass starts. Startup, decision and five-minute sweep frames include cached ports and routes. Ordinary frames include current-generation inputs and presence-authorized private books and yard quotes. Failed captures attempted during the pass are metadata-only gaps, never empty books. A dataset exceeding 4 MiB after gzip becomes a reasoned gap. Frames stay within a 16 MiB aggregate plaintext bound by demoting the largest datasets to reasoned metadata-only gaps, not by aborting recording. Oversized metadata or names fall back to a compact frame gap if necessary. Reads enforce the plaintext bound too.
@@ -234,7 +247,7 @@ Only `HTTP_ADDR` is parsed from `.env` or printed as a configuration value, defa
 
 The CLI reports dotenv read/parse failures only as `load .env: file could not be read or parsed`, without the parser's raw input. Inspect the file privately for quoting, readability and permissions; never print dotenv values while troubleshooting. The CLI permits a missing `.env` when configuration comes from the environment, but this restart command still requires `.env` in the selected run directory.
 
-Roll back only to a retained, schema-compatible binary:
+Roll back only to a retained, schema-compatible binary. The [schema 21 cutover restrictions](#route-cache-schema-21-cutover) prohibit an old-binary-only rollback to a schema 20 release:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/restart-bot.ps1 -Version abc1234
@@ -558,6 +571,8 @@ Warnings read recorded database evidence only. They do not call the game, pause 
 
 The following thresholds use real elapsed time, not accelerated game time. Disabled accounts, missing company registrations and registrations without an API key are excluded from assessment and listed in `unmonitored [{account_id, reason}]`, with reason `disabled`, `unregistered` or `no_api_key`. Corrupt credentials are not an incomplete registration: they remain monitored and unavailable. Each monitored account reports `available`, a safe `error_code`, `suppressed` codes and `warnings`. An account-local credential, malformed snapshot or oversized snapshot failure marks only that account unavailable (`credentials_unavailable`, `snapshot_invalid` or `snapshot_too_large`); healthy accounts remain assessable in the same HTTP 200 response. Suppressed codes are not assessed, not cleared. Critical warnings sort first, then code and subject. Every warning has `code`, `severity` (`critical` or `warning`), `since`, integer `facts`, scrubbed `names` and a scrubbed `reason`; amounts are pence, never preformatted money.
 
+Every rollback instruction below is subject to the [schema 21 cutover restrictions](#route-cache-schema-21-cutover); `-Version <previous>` is not permission to run a schema 20 release against the migrated database.
+
 | Code | Recorded condition and evidence | Next action |
 | --- | --- | --- |
 | `controller_stalled` (critical) | A valid `_engine.observed_at` is at least 10 minutes old. Missing, zero or future controller time suppresses both controller and refresh assessment, not a healthy result. Facts contain elapsed `minutes`, and `since` is that completed controller observation. A stalled controller emits this warning and suppresses `refresh_failing` for the account. | Inspect the account-worker, ownership and database logs; fix the stalled controller's cause, then run `scripts/restart-bot.ps1`, or roll back a regression with `-Version <previous>`. |
@@ -650,14 +665,14 @@ For action holds, use the company Journal and System diagnostics to identify the
 
 ### Live account backup
 
-Create a dump without exposing passwords on command lines:
+For a schema cutover, first stop every executor and wait for ownership locks to release. Create a full-database dump without exposing passwords on command lines:
 
 ```sh
 docker compose exec -T postgres pg_dump -U tradewinds -Fc tradewinds --file=/tmp/tradewinds.dump
 docker compose cp postgres:/tmp/tradewinds.dump ./tradewinds.dump
 ```
 
-Protect the dump as sensitive operational data and move it out of the repository. Back up `.env` through a separate protected channel. Restore into a separate database first, with the original credential key and execution disabled. Never run the restored executor while the original company executor is active. Verify migrations, decrypted account records, pending intents, and snapshots before cutting over.
+Protect the dump as sensitive operational data, restrict its ACL to the owner/system and move it out of the repository. Back up `.env` and the matching credential key through a separate protected channel. Restore into a separate database first, with the original credential key and execution disabled. Never run the restored executor while the original company executor is active. Verify migration state, decrypted account records, pending intents, immutable journal identities, snapshots and, for schema 21 backups, `snapshot_routes` payloads together with their in-row `_meta`. A rollback must follow the [schema 21 cutover restrictions](#route-cache-schema-21-cutover), including reconciliation of post-backup game mutations; a dump is not permission for a blind state rewind.
 
 ## Verification
 

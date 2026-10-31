@@ -209,7 +209,13 @@ func TestStandingsHistoryBackfillsRetainedResponsesAndSnapshots(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := legacy.SaveSnapshot(ctx, "one", map[string]json.RawMessage{"leaderboard": standingsFixture(t, base.Add(time.Hour), 11_000, 1_500)}); err != nil {
+	// Legacy code wrote the whole snapshot into one row; the route table does
+	// not exist before its migration, so seed the row the way legacy did.
+	legacySnapshot, err := json.Marshal(map[string]json.RawMessage{"leaderboard": standingsFixture(t, base.Add(time.Hour), 11_000, 1_500)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.db.Create(&snapshotRow{AccountID: "one", Data: legacySnapshot, UpdatedAt: base.Add(time.Hour)}).Error; err != nil {
 		t.Fatal(err)
 	}
 	upgraded, err := Open(ctx, dsn, key, zap.NewNop())

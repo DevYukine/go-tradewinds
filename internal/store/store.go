@@ -5,9 +5,11 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"database/sql/driver"
 	"embed"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +44,7 @@ type Store struct {
 	log            *zap.Logger
 	replayErrors   sync.Map // account ID -> *atomic.Int64; never blocks the live loop
 	replayWarnings sync.Map // account ID and static demotion cause -> struct{}
+	snapshotRoutes sync.Map // account ID -> *snapshotRouteCache
 
 	leaseMu sync.Mutex
 	leases  map[*accountLease]struct{}
@@ -401,46 +404,58 @@ func encodeSnapshot(data map[string]json.RawMessage, secrets []string) ([]byte, 
 	return redactJSON(encoded, secrets, 0)
 }
 
-// RedactedSnapshotSize measures the exact encoded representation SaveSnapshot
-// persists, including credential scrubbing. It may exceed MaxSnapshotBytes so
-// callers can evict optional history before attempting to save.
-func (s *Store) RedactedSnapshotSize(ctx context.Context, accountID string, data map[string]json.RawMessage) (int, error) {
-	secrets, err := s.secrets(ctx, accountID)
-	if err != nil {
-		return 0, err
-	}
-	encoded, err := encodeSnapshot(data, secrets)
-	if err != nil {
-		return 0, err
-	}
-	return len(encoded), nil
-}
-
 func (s *Store) SaveSnapshot(ctx context.Context, accountID string, data map[string]json.RawMessage) error {
+	cache := s.snapshotRouteCache(accountID)
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
 	secrets, err := s.secrets(ctx, accountID)
 	if err != nil {
 		return err
 	}
+	snapshotData := make(map[string]json.RawMessage, len(data))
 	remaining := MaxSnapshotBytes
 	for key, raw := range data {
-		if len(key) > remaining {
+		if key == "routes" {
+			continue
+		}
+		if len(key) > remaining || len(raw) > remaining-len(key) {
 			return ErrResponseTooLarge
 		}
-		remaining -= len(key)
-		if len(raw) > remaining {
-			return ErrResponseTooLarge
-		}
-		remaining -= len(raw)
+		remaining -= len(key) + len(raw)
+		snapshotData[key] = raw
 	}
-	encoded, err := encodeSnapshot(data, secrets)
+	encoded, err := encodeSnapshot(snapshotData, secrets)
 	if err != nil {
 		return err
 	}
 	if len(encoded) > MaxSnapshotBytes {
 		return ErrResponseTooLarge
 	}
+	rawRoutes := data["routes"]
+	fingerprintHash := sha256.New()
+	var frame [8]byte
+	binary.BigEndian.PutUint64(frame[:], uint64(len(rawRoutes)))
+	fingerprintHash.Write(frame[:])
+	fingerprintHash.Write(rawRoutes)
+	binary.BigEndian.PutUint64(frame[:], uint64(len(secrets)))
+	fingerprintHash.Write(frame[:])
+	for _, secret := range secrets {
+		binary.BigEndian.PutUint64(frame[:], uint64(len(secret)))
+		fingerprintHash.Write(frame[:])
+		fingerprintHash.Write([]byte(secret))
+	}
+	var fingerprint [sha256.Size]byte
+	fingerprintHash.Sum(fingerprint[:0])
+	routesUnchanged := cache.fingerprintValid && cache.fingerprint == fingerprint
+	var routes map[string]json.RawMessage
+	if !routesUnchanged {
+		routes, err = encodeSnapshotRoutes(rawRoutes, secrets)
+		if err != nil {
+			return err
+		}
+	}
 	row := snapshotRow{AccountID: accountID, Data: encoded, UpdatedAt: time.Now().UTC()}
-	return s.writeOwned(ctx, accountID, func(tx *gorm.DB) error {
+	err = s.writeOwned(ctx, accountID, func(tx *gorm.DB) error {
 		var profile struct {
 			Company struct {
 				ID   string `json:"id"`
@@ -452,11 +467,27 @@ func (s *Store) SaveSnapshot(ctx context.Context, accountID string, data map[str
 				return err
 			}
 		}
-		return tx.Clauses(clause.OnConflict{
+		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "account_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{"data", "updated_at"}),
-		}).Create(&row).Error
+		}).Create(&row).Error; err != nil {
+			return err
+		}
+		if routesUnchanged {
+			return nil
+		}
+		return saveSnapshotRoutes(tx, accountID, routes, cache)
 	})
+	if err != nil {
+		// A rollback must not leave cache state describing uncommitted routes.
+		cache.digests = nil
+		clear(cache.fingerprint[:])
+		cache.fingerprintValid = false
+		return err
+	}
+	cache.fingerprint = fingerprint
+	cache.fingerprintValid = true
+	return nil
 }
 
 func (s *Store) Snapshot(ctx context.Context, accountID string) (map[string]json.RawMessage, error) {
@@ -465,16 +496,49 @@ func (s *Store) Snapshot(ctx context.Context, accountID string) (map[string]json
 	}
 	db, cancel := s.query(ctx)
 	defer cancel()
-	var row snapshotRow
-	if err := db.First(&row, "account_id = ?", accountID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return make(map[string]json.RawMessage), nil
-		}
-		return nil, err
-	}
 	data := make(map[string]json.RawMessage)
-	if err := json.Unmarshal(row.Data, &data); err != nil {
-		return nil, fmt.Errorf("decode stored snapshot: %w", err)
-	}
-	return data, nil
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var embeddedRoutes bool
+		if err := tx.Raw(`SELECT EXISTS (
+			SELECT 1 FROM snapshots WHERE account_id = ? AND jsonb_exists(data, 'routes')
+		)`, accountID).Scan(&embeddedRoutes).Error; err != nil {
+			return err
+		}
+		if embeddedRoutes {
+			return fmt.Errorf("snapshot contains embedded routes after schema cutover: %w", ErrInvalidInput)
+		}
+		var row snapshotRow
+		if err := tx.First(&row, "account_id = ?", accountID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if err := json.Unmarshal(row.Data, &data); err != nil {
+			return fmt.Errorf("decode stored snapshot: %w", err)
+		}
+		if err := preflightSnapshotRoutes(tx, accountID); err != nil {
+			return err
+		}
+		var rows []snapshotRouteRow
+		if err := tx.Where("account_id = ?", accountID).Find(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) > 0 {
+			routes := make(map[string]json.RawMessage, len(rows))
+			for _, route := range rows {
+				routes[route.RouteKey] = route.Data
+			}
+			encoded, err := json.Marshal(routes)
+			if err != nil {
+				return fmt.Errorf("encode stored routes: %w", err)
+			}
+			if len(encoded) > MaxSnapshotRoutesBytes {
+				return ErrResponseTooLarge
+			}
+			data["routes"] = encoded
+		}
+		return nil
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	return data, err
 }

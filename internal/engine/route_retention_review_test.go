@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -250,77 +251,174 @@ func TestRouteRetentionReviewRejectsResponseIdentityMismatch(t *testing.T) {
 	}
 }
 
-func TestRouteRetentionReviewEvictsAgainstCurrentSnapshotHeadroom(t *testing.T) {
-	for _, whitespace := range []bool{false, true} {
-		t.Run(fmt.Sprintf("raw-whitespace-%t", whitespace), func(t *testing.T) {
+func TestRouteRetentionReviewRejectsUnsafeRequiredRouteNumbers(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		token string
+	}{
+		{"huge exponent", "1e130000"},
+		{"zero extreme scale", "0e-16000"},
+		{"65 digit integer", strings.Repeat("8", 65)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			w := newIdleFallbackWorld(t)
-			w.h.api.setFleet([]map[string]any{sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)})
-			w.h.api.setFactorPorts()
 			runner := w.h.runner(primaryTestKey)
 			w.observe(t, runner, 100)
-			const currentKey = "_near_limit_current"
-			target := store.MaxSnapshotBytes - snapshotSafetyMargin - 96*1024
-			padding := target - len(encode(runner.snapshot)) - len(currentKey) - 6
-			if whitespace {
-				runner.snapshot[currentKey] = json.RawMessage(strings.Repeat(" ", padding) + `"x"`)
-			} else {
-				runner.snapshot[currentKey] = encode(strings.Repeat("x", padding))
+			key := routeKey(recoveryHomePort, recoveryFarPort, recoveryHull)
+			metaKey := "routes/" + key
+			previous := decode[map[string]json.RawMessage](runner.snapshot, "routes")[key]
+			if len(previous) == 0 {
+				t.Fatal("fixture did not observe the required route")
 			}
-			routes := decode[map[string]json.RawMessage](runner.snapshot, "routes")
-			var ordered []string
-			original := make(map[string]DatasetMeta)
-			for _, source := range []string{"amsterdam", "calais", "ostend", "rouen"} {
-				for _, pair := range [][2]string{{source, recoveryFarPort}, {recoveryFarPort, source}} {
-					key := routeKey(pair[0], pair[1], recoveryHull)
-					route := sourcingRoute(pair[0], pair[1], 24)
-					route.Legs[0].EdgeClass = "oceanic"
-					routes[key] = encode(struct {
-						Route
-						Padding string `json:"padding"`
-					}{route, strings.Repeat("x", 48*1024)})
-					at := time.Now().Add(-time.Hour + time.Duration(len(ordered))*time.Minute)
-					meta := DatasetMeta{UpdatedAt: at, AttemptedAt: at, Complete: true, Generation: "near-limit-history"}
-					runner.meta["routes/"+key], original[key] = meta, meta
-					ordered = append(ordered, key)
+			captured := runner.meta[metaKey]
+			retry := captured
+			retry.Stale = true
+			runner.meta[metaKey] = retry
+			base := w.h.api.server.Config.Handler
+			w.h.api.server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				query := request.URL.Query()
+				if request.URL.Path == "/v1/world/route" && query.Get("from") == recoveryHomePort &&
+					query.Get("to") == recoveryFarPort && query.Get("ship_class") == recoveryHull {
+					route := w.h.api.routeDocument(recoveryHomePort, recoveryFarPort)
+					route["total_distance_nm"] = 999
+					route["future_extension"] = json.RawMessage(`{"n":` + test.token + `}`)
+					w.h.api.writeJSON(writer, http.StatusOK, route)
+					return
 				}
-			}
-			runner.snapshot["routes"] = encode(routes)
-			runner.snapshot["_meta"] = encode(runner.meta)
-			rawBytes := 0
-			for key, value := range runner.snapshot {
-				rawBytes += len(key) + len(value)
-			}
-			if max(len(encode(runner.snapshot)), rawBytes) <= store.MaxSnapshotBytes {
-				t.Fatal("optional history must overflow the near-limit current snapshot")
-			}
+				base.ServeHTTP(writer, request)
+			})
 			w.observe(t, runner, 101)
-			retained := decode[map[string]json.RawMessage](runner.snapshot, "routes")
-			if len(retained) == 0 || len(retained) >= len(ordered) {
-				t.Fatalf("headroom eviction should retain only the newest fitting history: %d of %d", len(retained), len(ordered))
+			meta := runner.meta[metaKey]
+			if !meta.Stale || meta.Complete || !strings.Contains(meta.Error, "storage bounds") {
+				t.Fatalf("unsafe route capture lost visible failure metadata: %+v", meta)
 			}
-			if _, exists := retained[ordered[0]]; exists {
-				t.Fatal("headroom eviction kept the oldest optional route")
+			if !meta.UpdatedAt.Equal(captured.UpdatedAt) || meta.Generation != captured.Generation ||
+				!meta.AttemptedAt.After(captured.AttemptedAt) {
+				t.Fatalf("failed capture restamped the last-good route observation: %+v", meta)
 			}
-			if _, exists := retained[ordered[len(ordered)-1]]; !exists {
-				t.Fatal("headroom eviction discarded the newest fitting route")
+			if current := decode[map[string]json.RawMessage](runner.snapshot, "routes")[key]; string(current) != string(previous) {
+				t.Fatal("unsafe numeric extension replaced the last-good required route")
 			}
-			for key := range retained {
-				if runner.meta["routes/"+key] != original[key] {
-					t.Fatalf("headroom eviction restamped retained metadata for %s", key)
-				}
+			if !runner.fresh("ships") {
+				t.Fatal("a failed route capture stopped unrelated dataset refreshes")
 			}
-			rawBytes = 0
-			for key, value := range runner.snapshot {
-				rawBytes += len(key) + len(value)
+			admin, err := sql.Open("pgx", w.h.dsn)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if got := max(len(encode(runner.snapshot)), rawBytes); got > store.MaxSnapshotBytes-snapshotSafetyMargin {
-				t.Fatalf("optional history ignored actual snapshot headroom: %d", got)
+			defer admin.Close()
+			var same bool
+			if err := admin.QueryRowContext(w.h.ctx, `SELECT data = $3::jsonb FROM snapshot_routes
+				WHERE account_id = $1 AND route_key = $2`, w.h.account.ID, key, string(previous)).Scan(&same); err != nil {
+				t.Fatal(err)
+			}
+			if !same {
+				t.Fatal("failed numeric capture changed the stored last-good route")
 			}
 			persisted, err := w.h.db.Snapshot(w.h.ctx, w.h.account.ID)
-			if err != nil || len(encode(persisted)) > store.MaxSnapshotBytes {
-				t.Fatalf("near-limit refresh did not persist within the store budget: %v", err)
+			if err != nil {
+				t.Fatalf("failed route capture prevented snapshot persistence: %v", err)
+			}
+			storedMeta := decode[map[string]DatasetMeta](persisted, "_meta")[metaKey]
+			if !storedMeta.Stale || storedMeta.Complete || storedMeta.Error != meta.Error ||
+				!storedMeta.UpdatedAt.Equal(captured.UpdatedAt) || storedMeta.Generation != captured.Generation {
+				t.Fatalf("route payload and failure metadata were not persisted together: %+v", storedMeta)
+			}
+			w.h.api.server.Config.Handler = base
+			w.observe(t, runner, 102)
+			if !runner.fresh(metaKey) || runner.meta[metaKey].Error != "" {
+				t.Fatalf("a healthy route capture did not recover: %+v", runner.meta[metaKey])
 			}
 		})
+	}
+}
+
+func TestRouteRetentionReviewPreservesHistoryOutsideNearLimitSnapshot(t *testing.T) {
+	w := newIdleFallbackWorld(t)
+	w.h.api.setFleet([]map[string]any{sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)})
+	w.h.api.setFactorPorts()
+	runner := w.h.runner(primaryTestKey)
+	w.observe(t, runner, 100)
+	const currentKey = "_near_limit_current"
+	target := store.MaxSnapshotBytes - 96*1024
+	padding := target - len(encode(runner.snapshot)) - len(currentKey) - 6
+	runner.snapshot[currentKey] = encode(strings.Repeat("x", padding))
+	routes := decode[map[string]json.RawMessage](runner.snapshot, "routes")
+	original := make(map[string]DatasetMeta)
+	for _, source := range []string{"amsterdam", "calais", "ostend", "rouen"} {
+		for _, pair := range [][2]string{{source, recoveryFarPort}, {recoveryFarPort, source}} {
+			key := routeKey(pair[0], pair[1], recoveryHull)
+			route := sourcingRoute(pair[0], pair[1], 24)
+			route.Legs[0].EdgeClass = "oceanic"
+			routes[key] = encode(struct {
+				Route
+				Padding string `json:"padding"`
+			}{route, strings.Repeat("x", 48*1024)})
+			at := time.Now().UTC().Add(-time.Hour + time.Duration(len(original))*time.Minute)
+			meta := DatasetMeta{UpdatedAt: at, AttemptedAt: at, Complete: true, Generation: "near-limit-history"}
+			runner.meta["routes/"+key], original[key] = meta, meta
+		}
+	}
+	runner.snapshot["routes"] = encode(routes)
+	runner.snapshot["_meta"] = encode(runner.meta)
+	if len(encode(runner.snapshot)) <= store.MaxSnapshotBytes {
+		t.Fatal("route history must exceed the near-limit snapshot row budget")
+	}
+	w.observe(t, runner, 101)
+	retained := decode[map[string]json.RawMessage](runner.snapshot, "routes")
+	if len(retained) != len(original) {
+		t.Fatalf("snapshot row pressure evicted route history: got %d want %d", len(retained), len(original))
+	}
+	retainedBytes := 0
+	for key, raw := range retained {
+		meta := runner.meta["routes/"+key]
+		if meta != original[key] {
+			t.Fatalf("retention restamped metadata for %s", key)
+		}
+		retainedBytes += len(encode(raw)) + len(encode(meta)) +
+			len(encode(key)) + len(encode("routes/"+key)) + 4
+	}
+	if retainedBytes > SourcingRouteRetentionBytes || len(retained) > SourcingRouteRetentionLimit {
+		t.Fatalf("retained history exceeded its independent limits: count=%d bytes=%d", len(retained), retainedBytes)
+	}
+	admin, err := sql.Open("pgx", w.h.dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	var stored []byte
+	var routeCount int
+	if err := admin.QueryRowContext(w.h.ctx, `SELECT data,
+		(SELECT count(*) FROM snapshot_routes WHERE account_id = $1)
+		FROM snapshots WHERE account_id = $1`, w.h.account.ID).Scan(&stored, &routeCount); err != nil {
+		t.Fatal(err)
+	}
+	var storedSnapshot map[string]json.RawMessage
+	if err := json.Unmarshal(stored, &storedSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := storedSnapshot["routes"]; exists {
+		t.Fatal("route payloads still consume snapshot row storage")
+	}
+	if size := len(encode(storedSnapshot)); size > store.MaxSnapshotBytes || size < store.MaxSnapshotBytes-128*1024 {
+		t.Fatalf("fixture did not persist a near-limit snapshot row: %d", size)
+	}
+	if routeCount != len(retained) {
+		t.Fatalf("route table lost retained history: got %d want %d", routeCount, len(retained))
+	}
+	persistedMeta := decode[map[string]DatasetMeta](storedSnapshot, "_meta")
+	restored := w.h.runner(primaryTestKey)
+	restoredState := restored.state()
+	if len(restoredState.Routes) != len(retained) {
+		t.Fatalf("runner restore did not merge route history: got %d want %d", len(restoredState.Routes), len(retained))
+	}
+	for key, meta := range original {
+		if _, exists := restoredState.Routes[key]; !exists {
+			t.Fatalf("runner restore lost route %s", key)
+		}
+		if persistedMeta["routes/"+key] != meta || restored.meta["routes/"+key] != meta {
+			t.Fatalf("snapshot row and restored route metadata changed for %s", key)
+		}
 	}
 }
 
@@ -501,89 +599,5 @@ func TestRouteRetentionReviewIndexedGossipUsesLatestAskAndBestCharter(t *testing
 				t.Fatalf("indexed supply ignored latest ask or highest available reward: retained=%t want=%t", retained, higherReward)
 			}
 		})
-	}
-}
-
-func TestRouteRetentionReviewAccountsForRedactionExpansion(t *testing.T) {
-	w := newIdleFallbackWorld(t)
-	w.h.api.setFleet([]map[string]any{sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)})
-	w.h.api.setFactorPorts()
-	runner := w.h.runner(primaryTestKey)
-	w.observe(t, runner, 100)
-	const currentKey = "_near_limit_current"
-	target := store.MaxSnapshotBytes - snapshotSafetyMargin - 700*1024
-	padding := target - len(encode(runner.snapshot)) - len(currentKey) - 6
-	runner.snapshot[currentKey] = encode(strings.Repeat("x", padding))
-	extensions := make([]struct {
-		Token int `json:"token"`
-	}, 5_000)
-	routes := decode[map[string]json.RawMessage](runner.snapshot, "routes")
-	var ordered []string
-	original := make(map[string]DatasetMeta)
-	for _, source := range []string{"amsterdam", "calais", "ostend", "rouen"} {
-		for _, pair := range [][2]string{{source, recoveryFarPort}, {recoveryFarPort, source}} {
-			key := routeKey(pair[0], pair[1], recoveryHull)
-			route := sourcingRoute(pair[0], pair[1], 24)
-			route.Legs[0].EdgeClass = "oceanic"
-			routes[key] = encode(struct {
-				Route
-				Extensions any `json:"extensions"`
-			}{route, extensions})
-			at := time.Now().Add(-time.Hour + time.Duration(len(ordered))*time.Minute)
-			meta := DatasetMeta{UpdatedAt: at, AttemptedAt: at, Complete: true, Generation: "redaction-history"}
-			runner.meta["routes/"+key], original[key] = meta, meta
-			ordered = append(ordered, key)
-		}
-	}
-	runner.snapshot["routes"] = encode(routes)
-	runner.snapshot["_meta"] = encode(runner.meta)
-	if raw := len(encode(runner.snapshot)); raw > store.MaxSnapshotBytes-snapshotSafetyMargin {
-		t.Fatalf("fixture must fit the old unredacted headroom check: %d", raw)
-	}
-	before, err := w.h.db.RedactedSnapshotSize(w.h.ctx, w.h.account.ID, runner.snapshot)
-	if err != nil || before <= store.MaxSnapshotBytes {
-		t.Fatalf("short sensitive values must expand beyond the store limit: size=%d error=%v", before, err)
-	}
-	w.observe(t, runner, 101)
-	retained := decode[map[string]json.RawMessage](runner.snapshot, "routes")
-	if len(retained) == 0 || len(retained) >= len(ordered) {
-		t.Fatalf("redaction-aware eviction should retain only fitting history: %d of %d", len(retained), len(ordered))
-	}
-	if _, exists := retained[ordered[0]]; exists {
-		t.Fatal("redaction-aware eviction kept the oldest optional route")
-	}
-	if _, exists := retained[ordered[len(ordered)-1]]; !exists {
-		t.Fatal("redaction-aware eviction discarded the newest fitting route")
-	}
-	for key := range retained {
-		if runner.meta["routes/"+key] != original[key] {
-			t.Fatalf("redaction-aware eviction restamped metadata for %s", key)
-		}
-	}
-	after, err := w.h.db.RedactedSnapshotSize(w.h.ctx, w.h.account.ID, runner.snapshot)
-	if err != nil || after > store.MaxSnapshotBytes-snapshotSafetyMargin {
-		t.Fatalf("eviction did not converge against the persisted representation: size=%d error=%v", after, err)
-	}
-	persisted, err := w.h.db.Snapshot(w.h.ctx, w.h.account.ID)
-	if err != nil || len(encode(persisted)) != after {
-		t.Fatalf("size helper disagrees with the persisted snapshot: measured=%d persisted=%d error=%v", after, len(encode(persisted)), err)
-	}
-	var persistedRoutes map[string]struct {
-		Extensions []struct {
-			Token string `json:"token"`
-		} `json:"extensions"`
-	}
-	if err := json.Unmarshal(persisted["routes"], &persistedRoutes); err != nil {
-		t.Fatal(err)
-	}
-	for key, route := range persistedRoutes {
-		if len(route.Extensions) != len(extensions) {
-			t.Fatalf("route extension count changed during persistence for %s", key)
-		}
-		for _, extension := range route.Extensions {
-			if extension.Token != "[REDACTED]" {
-				t.Fatal("persisted route extension retained an unredacted sensitive value")
-			}
-		}
 	}
 }

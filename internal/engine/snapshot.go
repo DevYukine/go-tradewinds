@@ -22,7 +22,6 @@ const (
 	SourcingRouteRetentionBytes = 1 << 20
 	// SourcingRouteRetentionScanLimit bounds newest-first optional history scanning.
 	SourcingRouteRetentionScanLimit = 4 * SourcingRouteRetentionLimit
-	snapshotSafetyMargin            = 64 << 10
 	outageWarningInterval           = 10 * time.Minute
 )
 
@@ -111,6 +110,9 @@ func (r *Runner) applyCapture(ctx context.Context, key string, result fetchResul
 		} else if !hasFrom || !hasClass || route.FromPort != from || route.ToPort != to ||
 			class != "" && route.ShipClass != class {
 			result.err = errors.New("route identity disagrees with the requested ports or ship class")
+		}
+		if result.err == nil {
+			result.err = store.ValidateSnapshotRouteNumbers(result.data)
 		}
 	}
 	meta := r.meta[key]
@@ -970,42 +972,6 @@ func (r *Runner) refresh(ctx context.Context) error {
 		return err
 	}
 	r.snapshot["_meta"] = encode(r.meta)
-	// Redaction can expand short sensitive values, so use the store's exact
-	// persisted representation and remeasure after every eviction batch.
-	if len(retainedRouteKeys) > 0 {
-		for {
-			snapshotBytes, err := r.db.RedactedSnapshotSize(ctx, r.account.ID, r.snapshot)
-			if err != nil {
-				return err
-			}
-			rawBytes := 0
-			for key, value := range r.snapshot {
-				rawBytes += len(key) + len(value)
-			}
-			snapshotBytes = max(snapshotBytes, rawBytes)
-			excess := snapshotBytes - (store.MaxSnapshotBytes - snapshotSafetyMargin)
-			if excess <= 0 || len(retainedRouteKeys) == 0 {
-				break
-			}
-			removed := 0
-			for removed < excess && len(retainedRouteKeys) > 0 {
-				key := retainedRouteKeys[len(retainedRouteKeys)-1]
-				retainedRouteKeys = retainedRouteKeys[:len(retainedRouteKeys)-1]
-				removed += len(encode(routes[key])) + len(encode(key)) +
-					len(encode(r.meta["routes/"+key])) + len(encode("routes/"+key)) + 2
-				if len(routes) > 1 {
-					removed++
-				}
-				if len(r.meta) > 1 {
-					removed++
-				}
-				delete(routes, key)
-				delete(r.meta, "routes/"+key)
-			}
-			r.snapshot["routes"] = encode(routes)
-			r.snapshot["_meta"] = encode(r.meta)
-		}
-	}
 	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
 		return err
 	}
