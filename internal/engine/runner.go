@@ -164,11 +164,27 @@ var financialEvents = map[string]bool{
 	"loan_insurance_loss_paid":        true,
 }
 
+// ErrAuthorizationEnded means the game revoked or expired the account key.
+// Restarting cannot fix it; the operator must issue a new key.
+var ErrAuthorizationEnded = errors.New("account stream authorization ended")
+
+// ErrRunnerMisconfigured means the runner lacks its client, store or account.
+var ErrRunnerMisconfigured = errors.New("engine requires an API client, store and company-bound account")
+
+// ErrExecutionStopped means the game definitively refused authorization (or
+// account settings) for a journaled mutation. The operator must investigate
+// before writes resume.
+var ErrExecutionStopped = errors.New("execution stopped")
+
+// ErrIdentityMismatch means the stored account's key authenticates as another
+// company or player; retrying cannot change that.
+var ErrIdentityMismatch = errors.New("stored account company or player does not match authenticated API identity")
+
 // Run owns the account's one mutation loop. SSE only invalidates REST state;
 // historical events never themselves trigger a historical trade.
 func (r *Runner) Run(ctx context.Context) error {
 	if r.api == nil || r.db == nil || r.account.ID == "" || r.account.CompanyID == "" {
-		return errors.New("engine requires an API client, store and company-bound account")
+		return ErrRunnerMisconfigured
 	}
 	owner, release, err := r.db.AcquireAccountContext(ctx, r.account.ID)
 	if err != nil {
@@ -309,7 +325,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		event := message.event
 		if event.Type == "auth_revoked" || event.Type == "auth_expired" {
-			return fmt.Errorf("account stream authorization ended: %s", event.Type)
+			return fmt.Errorf("%w: %s", ErrAuthorizationEnded, event.Type)
 		}
 		if event.Type == "gap" {
 			if err := r.db.ResetCursor(ctx, r.account.ID); err != nil {
@@ -545,7 +561,7 @@ func (r *Runner) verifyIdentity() error {
 	}
 	if who.CompanyID != r.account.CompanyID || profile.Company.ID != r.account.CompanyID ||
 		who.PlayerID == "" || who.PlayerID != player.Player.ID || who.PlayerID != profile.Company.PlayerID {
-		return errors.New("stored account company or player does not match authenticated API identity")
+		return ErrIdentityMismatch
 	}
 	return nil
 }

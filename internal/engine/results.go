@@ -440,7 +440,7 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 		return false, err
 	}
 	if status == 401 || status == 403 && !factorDomainRefusal || (stage == "settings" && status != 429) {
-		return false, fmt.Errorf("execution stopped after definitive HTTP %d; journal and mission retained", status)
+		return false, fmt.Errorf("%w after definitive HTTP %d; journal and mission retained", ErrExecutionStopped, status)
 	}
 	return true, nil
 }

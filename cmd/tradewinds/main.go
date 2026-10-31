@@ -166,8 +166,8 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 				return fmt.Errorf("load runtime accounts: %w", err)
 			}
 			type accountRunner struct {
-				runner *engine.Runner
-				log    *zap.Logger
+				newRunner func() *engine.Runner
+				log       *zap.Logger
 			}
 			runners := make([]accountRunner, 0, len(accounts))
 			for _, account := range accounts {
@@ -199,7 +199,7 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 					underworld = underworldReader{client: observer}
 				}
 				engineLog := accountLog.Named("engine")
-				runner := engine.New(client, db, account, engineLog, engine.Options{
+				options := engine.Options{
 					Execute:             execute,
 					ReservePence:        cfg.ReservePence,
 					MaxPaybackDays:      cfg.MaxPaybackDays,
@@ -210,8 +210,13 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 					ReplayMaxGiB:        cfg.ReplayMaxGiB,
 					GameVersion:         gameVersion.Current,
 					UnderworldAPI:       underworld,
-				})
-				runners = append(runners, accountRunner{runner: runner, log: engineLog})
+				}
+				// Each attempt starts from fresh in-memory state; durable state is
+				// reloaded from the store by Run.
+				newRunner := func() *engine.Runner {
+					return engine.New(client, db, account, engineLog, options)
+				}
+				runners = append(runners, accountRunner{newRunner: newRunner, log: engineLog})
 			}
 
 			listener, err := net.Listen("tcp", cfg.HTTPAddr)
@@ -222,9 +227,9 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 				workers.Add(1)
 				go func() {
 					defer workers.Done()
-					if err := runner.runner.Run(ctx); err != nil && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
-						runner.log.Error("account runner stopped", zap.Error(err))
-					}
+					superviseAccount(ctx, func(ctx context.Context) error {
+						return runner.newRunner().Run(ctx)
+					}, runner.log, accountRestartDelay)
 				}()
 			}
 			workers.Add(1)
