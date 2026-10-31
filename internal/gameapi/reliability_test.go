@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/iotest"
@@ -16,6 +17,115 @@ import (
 
 	"go.uber.org/zap"
 )
+
+type headerTimingTransport struct {
+	http.RoundTripper
+	bodyStarted chan struct{}
+}
+
+func (transport headerTimingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := transport.RoundTripper.RoundTrip(request)
+	if err == nil {
+		response.Body = &headerTimingBody{
+			ReadCloser: response.Body,
+			started:    transport.bodyStarted,
+		}
+	}
+	return response, err
+}
+
+type headerTimingBody struct {
+	io.ReadCloser
+	started chan struct{}
+	once    sync.Once
+}
+
+func (body *headerTimingBody) Read(buffer []byte) (int, error) {
+	body.once.Do(func() { close(body.started) })
+	return body.ReadCloser.Read(buffer)
+}
+
+func TestOrdinaryHeadersUpdateSharedLimitsBeforeBodyCompletes(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			var requests atomic.Int32
+			releaseBody := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if r.URL.Path == "/v1/stalled" {
+					w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("X-Ratelimit-Bucket", "write")
+					w.Header().Set("X-Ratelimit-Remaining", "0")
+					w.Header().Set("Retry-After", "300")
+					w.WriteHeader(status)
+					w.(http.Flusher).Flush()
+					select {
+					case <-releaseBody:
+						_, _ = io.WriteString(w, `{"code":"rate_limit_exceeded","detail":"write limit"}`)
+					case <-r.Context().Done():
+					}
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"ok":true}`)
+			}))
+			defer server.Close()
+			defer close(releaseBody)
+
+			bodyStarted := make(chan struct{})
+			client := New(server.URL, "tw_live_header_timing", zap.NewNop())
+			client.http.Transport = headerTimingTransport{
+				RoundTripper: sharedTransport,
+				bodyStarted:  bodyStarted,
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			results := make(chan error, 1)
+			go func() {
+				var out json.RawMessage
+				results <- client.Do(ctx, http.MethodPost, "/v1/stalled",
+					map[string]int{"quantity": 1}, "stalled-header", &out)
+			}()
+			select {
+			case <-bodyStarted:
+			case err := <-results:
+				t.Fatalf("ordinary request completed before its stalled body: %v", err)
+			case <-time.After(5 * time.Second):
+				t.Fatal("ordinary request did not start reading its response body")
+			}
+
+			for _, key := range []string{"tw_live_header_timing", "tw_live_other_company"} {
+				peer := New(server.URL, key, zap.NewNop())
+				peerCtx, cancelPeer := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				var out json.RawMessage
+				err := peer.Do(peerCtx, http.MethodPost, "/v1/market/place-order",
+					map[string]int{"quantity": 1}, "trade-after-headers", &out)
+				cancelPeer()
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("ordinary trade during stalled body = %v, want shared header pause", err)
+				}
+			}
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("requests = %d, want no ordinary trades sent before the body completed", got)
+			}
+			select {
+			case err := <-results:
+				t.Fatalf("ordinary request completed while its response body was stalled: %v", err)
+			default:
+			}
+			cancel()
+			select {
+			case err := <-results:
+				var outcome *APIError
+				if !errors.As(err, &outcome) || outcome.Status != status || !errors.Is(err, context.Canceled) {
+					t.Fatalf("canceled body lost HTTP %d outcome: %v", status, err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("ordinary request did not stop after body cancellation")
+			}
+		})
+	}
+}
 
 func TestMalformedSuccessPreservesCommittedOutcome(t *testing.T) {
 	for name, body := range map[string]string{

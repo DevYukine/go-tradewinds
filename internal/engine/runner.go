@@ -24,6 +24,7 @@ type Options struct {
 	MaxPaybackDays      float64
 	CapacityPaybackDays float64
 	MarquesEnabled      bool
+	BulletinEnabled     bool
 	FuturesPilotEnabled bool
 	ReplayRetentionDays int
 	ReplayMaxGiB        float64
@@ -672,7 +673,7 @@ func (r *Runner) holdExpected(ctx context.Context, shipID, reason string) error 
 func (r *Runner) recordHold(ctx context.Context, shipID, reason string, expected bool) error {
 	holdShipID := shipID
 	switch shipID {
-	case "__treasury", "__growth", "__loans", "__underwriting", "__marque", "__futures":
+	case "__treasury", "__growth", "__loans", "__underwriting", "__marque", "__futures", "__bulletin":
 		holdShipID = ""
 	}
 	subjectID := shipID

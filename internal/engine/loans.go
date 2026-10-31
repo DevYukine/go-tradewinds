@@ -524,7 +524,7 @@ func (r *Runner) prepayLoans(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	pending, err := r.db.PendingActions(ctx, r.account.ID)
-	if err != nil || len(pending) > 0 {
+	if err != nil || tradingActionsPending(pending) {
 		return false, err
 	}
 	if mission, err := r.db.GetMission(ctx, r.account.ID, "__loans"); err != nil || mission != nil {
@@ -619,6 +619,9 @@ func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (G
 		return financing.Decision, nil, err
 	}
 	for _, action := range pending {
+		if bulletinPath(action.Path) {
+			continue
+		}
 		if data.Action == nil || action.ID != data.Action.ID {
 			return financing.Decision, nil, errors.New("capacity financing waits for another unresolved action")
 		}

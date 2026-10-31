@@ -206,6 +206,7 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 					CapacityPaybackDays: cfg.CapacityPaybackDays,
 					MarquesEnabled:      cfg.MarquesEnabled,
 					FuturesPilotEnabled: cfg.FuturesPilotEnabled,
+					BulletinEnabled:     cfg.BulletinEnabled,
 					ReplayRetentionDays: cfg.ReplayRetentionDays,
 					ReplayMaxGiB:        cfg.ReplayMaxGiB,
 					GameVersion:         gameVersion.Current,

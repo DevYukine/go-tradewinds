@@ -12,6 +12,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -159,7 +161,7 @@ func (c *Client) GetOnce(ctx context.Context, path string, out any) error {
 // Do marshals once, then reuses the identical bytes and key for every bounded
 // transport/5xx retry. A 4xx is definitive, including a cached mutation 429.
 func (c *Client) Do(ctx context.Context, method, path string, body any, idempotencyKey string, out any) error {
-	return c.do(ctx, method, path, body, idempotencyKey, out, nil, maxAttempts)
+	return c.do(ctx, method, path, body, idempotencyKey, out, nil, mutationAttempts(method, path))
 }
 
 // DoWithPreflight checks a new mutation after its rate-limit wait, immediately
@@ -167,7 +169,92 @@ func (c *Client) Do(ctx context.Context, method, path string, body any, idempote
 // an attempt starts, retries retain the request and never rerun the preflight.
 // This is a local validity check, not an atomic condition on upstream state.
 func (c *Client) DoWithPreflight(ctx context.Context, method, path string, body any, idempotencyKey string, out any, beforeFirstSend func() error) error {
-	return c.do(ctx, method, path, body, idempotencyKey, out, beforeFirstSend, maxAttempts)
+	return c.do(ctx, method, path, body, idempotencyKey, out, beforeFirstSend, mutationAttempts(method, path))
+}
+
+// bulletinMutation reports whether the call mutates the bulletin side
+// activity. Such a 429 returns immediately instead of waiting the cooldown
+// out. Company bulletin limits and mutes never lower the shared buckets:
+// the engine persists a schedule from APIError.RetryAfter instead.
+func bulletinMutation(method, path string) bool {
+	if method != http.MethodPost {
+		return false
+	}
+	path, _, _ = strings.Cut(path, "?")
+	return path == "/v1/bulletin/thread" || path == "/v1/bulletin/reply"
+}
+
+type bulletinProblem struct {
+	Code   string `json:"code"`
+	Detail string `json:"detail"`
+}
+
+func parseBulletinProblem(body []byte) bulletinProblem {
+	var problem bulletinProblem
+	if !utf8.Valid(body) || json.Unmarshal(body, &problem) != nil {
+		return bulletinProblem{}
+	}
+	return problem
+}
+
+// BulletinAuthorizationRefusal keeps authorization policy tied to the received
+// problem body even when a complete JSON value is followed by a stalled EOF.
+func BulletinAuthorizationRefusal(status int, body []byte) bool {
+	if status == http.StatusUnauthorized {
+		return true
+	}
+	return status == http.StatusForbidden && parseBulletinProblem(body).Code != "posting_muted"
+}
+
+var bulletinTimestamp = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}| UTC)?`)
+var bulletinWait = regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b`)
+
+// BulletinDetailDeadline returns the latest usable future timestamp or wait
+// duration in a bulletin problem detail, or zero when neither is present.
+func BulletinDetailDeadline(detail string, now time.Time) time.Time {
+	var until time.Time
+	for _, text := range bulletinTimestamp.FindAllString(detail, -1) {
+		for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05Z07:00", "2006-01-02 15:04:05 UTC", "2006-01-02 15:04:05"} {
+			if parsed, err := time.Parse(layout, text); err == nil && parsed.After(now) && parsed.After(until) {
+				until = parsed
+			}
+		}
+	}
+	for _, text := range strings.Fields(detail) {
+		if delay, err := time.ParseDuration(strings.Trim(text, ".,;()")); err == nil && delay > 0 {
+			if deadline := now.Add(delay); deadline.After(until) {
+				until = deadline
+			}
+		}
+	}
+	var delay time.Duration
+	for _, match := range bulletinWait.FindAllStringSubmatch(detail, -1) {
+		amount, err := strconv.ParseFloat(match[1], 64)
+		if err != nil || amount <= 0 {
+			continue
+		}
+		unit := time.Second
+		switch strings.ToLower(match[2][:1]) {
+		case "h":
+			unit = time.Hour
+		case "m":
+			unit = time.Minute
+		}
+		if amount <= float64((1<<63-1)-delay)/float64(unit) {
+			delay += time.Duration(amount * float64(unit))
+		}
+	}
+	if deadline := now.Add(delay); delay > 0 && deadline.After(until) {
+		until = deadline
+	}
+	return until
+}
+
+func mutationAttempts(method, path string) int {
+	if bulletinMutation(method, path) {
+		return 1
+	}
+	return maxAttempts
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, idempotencyKey string, out any, beforeFirstSend func() error, attemptLimit int) error {
@@ -204,8 +291,12 @@ func (c *Client) do(ctx context.Context, method, path string, body any, idempote
 		if result.status == http.StatusTooManyRequests {
 			// Honor the pause even though replaying this key cannot turn a stored
 			// 429 into success. A caller must replan a new logical action instead.
-			if err := c.rates.waitPause(ctx, bucket, c.keyHash, c.apiKey != ""); err != nil {
-				return interruptedOutcome(result.err, err)
+			// Bulletin mutations return immediately so the engine can persist the
+			// company cooldown without delaying trading. Global limits stay shared.
+			if !bulletinMutation(method, path) {
+				if err := c.rates.waitPause(ctx, bucket, c.keyHash, c.apiKey != ""); err != nil {
+					return interruptedOutcome(result.err, err)
+				}
 			}
 			return result.err
 		}
@@ -257,8 +348,15 @@ func (c *Client) send(ctx context.Context, method, requestURL, path string, payl
 		c.observe(method, path, 0, time.Since(start), payload, nil, failure)
 		return requestResult{err: failure}
 	}
-	cooldown := c.rates.update(bucket, c.keyHash, c.apiKey != "", response)
-
+	receivedAt := time.Now()
+	classifyBulletinCooldown := bulletinMutation(method, path) &&
+		(response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusForbidden)
+	var cooldown time.Time
+	if !classifyBulletinCooldown {
+		// Ordinary responses lower shared availability as soon as headers arrive,
+		// even when reading the body stalls or fails.
+		cooldown = c.rates.update(bucket, c.keyHash, c.apiKey != "", response)
+	}
 	responseBody, readErr := readBody(response)
 	result := requestResult{status: response.StatusCode}
 	var failure *APIError
@@ -271,6 +369,30 @@ func (c *Client) send(ctx context.Context, method, requestURL, path string, payl
 			Detail: decodeErr.Error(),
 			Body:   responseBody,
 			cause:  decodeErr,
+		}
+	}
+	if classifyBulletinCooldown {
+		problem := bulletinProblem{Code: failure.Code, Detail: failure.Detail}
+		if readErr != nil {
+			problem = parseBulletinProblem(responseBody)
+		}
+		companyLimit := response.StatusCode == http.StatusTooManyRequests && problem.Code == "bulletin_limit" ||
+			response.StatusCode == http.StatusForbidden && problem.Code == "posting_muted"
+		if companyLimit {
+			cooldown = retryAfter(response.Header.Get("Retry-After"), receivedAt)
+			if detailDeadline := BulletinDetailDeadline(problem.Detail, receivedAt); detailDeadline.After(cooldown) {
+				cooldown = detailDeadline
+			}
+			if !cooldown.After(receivedAt) {
+				delay := time.Hour
+				if failure.Status == http.StatusForbidden {
+					delay = 24 * time.Hour
+				}
+				cooldown = receivedAt.Add(delay)
+			}
+		} else {
+			// Unclassified or genuinely global outcomes still lower shared rates.
+			cooldown = c.rates.update(bucket, c.keyHash, c.apiKey != "", response)
 		}
 	}
 	if failure != nil {

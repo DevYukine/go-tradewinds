@@ -54,6 +54,7 @@ type missionData struct {
 	Underwriting              *underwritingIntent     `json:"underwriting,omitempty"`
 	Marque                    *marqueIntent           `json:"marque,omitempty"`
 	Futures                   *futuresPilotIntent     `json:"futures,omitempty"`
+	Bulletin                  *bulletinIntent         `json:"bulletin,omitempty"`
 	LoanRepayment             *loanRepaymentIntent    `json:"loan_repayment,omitempty"`
 	SourcingSpentPence        int64                   `json:"sourcing_spent_pence"`
 	SourcingGameDays          float64                 `json:"sourcing_game_days"`
@@ -132,16 +133,20 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	// pending request blocks all new account mutations rather than being guessed.
 	missions := make(map[string]*store.Mission)
 	dataByShip := make(map[string]missionData)
-	ids := make([]string, 0, len(r.stateCache.Ships)+5)
+	ids := make([]string, 0, len(r.stateCache.Ships)+7)
 	ids = append(ids, "__loans")
 	for _, ship := range r.stateCache.Ships {
 		ids = append(ids, ship.Ship.ID)
 	}
-	ids = append(ids, "__treasury", "__growth", "__underwriting", "__marque", "__futures")
+	ids = append(ids, "__treasury", "__growth", "__underwriting", "__marque", "__futures", "__bulletin")
 	attached := make(map[string]bool)
 	for _, id := range ids {
 		mission, data, err := r.loadMission(ctx, id)
 		if err != nil {
+			if id == "__bulletin" {
+				_ = r.decision(ctx, "__bulletin", "bulletin", "public posting skipped: durable bulletin mission is unavailable", nil)
+				continue
+			}
 			return false, err
 		}
 		if mission != nil {
@@ -187,14 +192,14 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	for _, action := range pending {
-		if !attached[action.ID] {
+		if !attached[action.ID] && !bulletinPath(action.Path) {
 			return false, r.hold(ctx, "", "orphaned unresolved journal request "+action.ID+"; original mission must be restored before any retry")
 		}
 	}
 	unresolved := false
 	for _, id := range ids {
 		data := dataByShip[id]
-		if data.Action != nil && (data.Passage == nil || data.Passage.QuarantineReason == "") &&
+		if id != "__bulletin" && data.Action != nil && (data.Passage == nil || data.Passage.QuarantineReason == "") &&
 			(id != "__futures" || !unresolved || data.Action.Stage == "futures-settle" ||
 				data.Action.Stage == "futures-close-stock" || data.Action.Stage == "futures-close-lease") {
 			r.assessShip(id)
@@ -210,7 +215,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		}
 		dataByShip[id] = data
 		if data.Action != nil {
-			unresolved = unresolved || id != "__underwriting" && id != "__marque" && id != "__futures" && !passengerStage(data.Action.Stage)
+			unresolved = unresolved || id != "__underwriting" && id != "__marque" && id != "__futures" && id != "__bulletin" && !passengerStage(data.Action.Stage)
 		}
 	}
 	r.assessHold("")
@@ -446,7 +451,26 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return changed, err
 		}
 	}
-	return false, r.decision(ctx, "", "excluded_liabilities", "futures are pilot-only: one covered Amsterdam water/beer pair with no scale-up; patrols and extra companies rejected without measured positive incremental return and modeled liabilities", nil)
+	if err := r.decision(ctx, "", "excluded_liabilities", "futures are pilot-only: one covered Amsterdam water/beer pair with no scale-up; patrols and extra companies rejected without measured positive incremental return and modeled liabilities", nil); err != nil {
+		return false, err
+	}
+	if r.opts.Execute {
+		// Public chatter only uses passes in which every trading control was idle.
+		mission, data, err := r.loadMission(ctx, "__bulletin")
+		if err == nil {
+			changed, postErr := r.driveBulletin(ctx, mission, &data)
+			if postErr == nil {
+				return changed, nil
+			}
+			if errors.Is(postErr, ErrExecutionStopped) {
+				// An authorization stop is account level: it must reach the
+				// runner loop instead of an optional public-posting cooldown.
+				return changed, postErr
+			}
+		}
+		_ = r.decision(ctx, "__bulletin", "bulletin", "public posting deferred; trading remains independent", nil)
+	}
+	return false, nil
 }
 
 func unlocked(ship ShipState, now time.Time) bool {

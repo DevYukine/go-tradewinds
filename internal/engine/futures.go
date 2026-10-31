@@ -58,8 +58,8 @@ func RearmUnusedFuturesPilot(ctx context.Context, db *store.Store, accountID str
 	if err != nil {
 		return err
 	}
-	if len(pending) != 0 {
-		return fmt.Errorf("futures re-arm requires all pending actions to reconcile first: %w", store.ErrActionConflict)
+	if tradingActionsPending(pending) {
+		return fmt.Errorf("futures re-arm requires pending trading actions to reconcile first: %w", store.ErrActionConflict)
 	}
 	data.Futures = &futuresPilotIntent{}
 	data.CooldownUntil = time.Time{}

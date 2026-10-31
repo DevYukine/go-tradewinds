@@ -181,6 +181,18 @@ func (r *Runner) stagedControlValid(action *durableAction) bool {
 // proof, may be released. Retain the mission's actual cargo and obligations so
 // its existing stage planner can re-evaluate fresh state before a new request.
 func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission, data *missionData, kind string) (bool, error) {
+	if data.Bulletin != nil && (kind == neverSentFinancialEvent || kind == neverSentControlEvent) {
+		exists, err := r.db.HasAction(ctx, r.account.ID, data.Action.ID)
+		if err != nil {
+			return false, err
+		}
+		if !exists {
+			data.Action.FinancialSession = r.financialSession
+			data.Action.FinancialEpoch = r.capturedFinancial
+			data.Action.ControlEpoch = r.capturedControl
+			return true, r.saveMission(ctx, mission, data)
+		}
+	}
 	if data.Futures != nil {
 		exists, err := r.db.HasAction(ctx, r.account.ID, data.Action.ID)
 		if err != nil {
@@ -238,6 +250,10 @@ func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission,
 // dispatch always uses the journal's immutable request, including on the first
 // attempt. It never reconstructs a request from a newly calculated plan.
 func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *missionData) (changed bool, err error) {
+	return r.dispatchWithOutcomeContext(ctx, ctx, mission, data)
+}
+
+func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mission *store.Mission, data *missionData) (changed bool, err error) {
 	if data.Futures != nil {
 		defer r.futuresErrorHold(ctx, &changed, &err)
 	}
@@ -321,6 +337,9 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 			evidence.Kind == neverSentControlEvent || evidence.Kind == neverSentFuturesTerms || evidence.Kind == neverSentMarqueQuote {
 			return r.replanUnsentAction(ctx, mission, data, evidence.Kind)
 		}
+		if bulletinStage(action.Stage) {
+			return r.restoreBulletinReconciliation(ctx, mission, data, persisted.Response)
+		}
 		if data.Futures != nil {
 			return r.reconcileFuturesAction(ctx, mission, data, persisted)
 		}
@@ -351,6 +370,12 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 		return r.applyReconciliation(ctx, mission, data)
 	}
 	if persisted.State == store.ActionComplete {
+		if bulletinStage(action.Stage) && gameapi.BulletinAuthorizationRefusal(persisted.Status, persisted.Response) {
+			ctx = outcomeCtx
+			if err := ctx.Err(); err != nil {
+				return false, err
+			}
+		}
 		if persisted.Status == http.StatusTooManyRequests {
 			if persisted.RetryAfter == nil || persisted.RetryAfter.IsZero() {
 				return false, errors.New("stored HTTP 429 lacks a durable retry deadline; reconcile before retrying")
@@ -358,6 +383,10 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 			data.CooldownUntil = maxTime(data.CooldownUntil, *persisted.RetryAfter)
 		}
 		return r.consumeResult(ctx, mission, data, persisted.Status, persisted.Response)
+	}
+	deadline := persisted.CreatedAt.Add(store.ActionReplayWindow)
+	if time.Until(deadline) <= time.Minute {
+		return r.reconcileExpired(ctx, mission, data, persisted)
 	}
 	if !firstSend {
 		if changed, err := r.reconcileObservedAction(ctx, mission, data, persisted); changed || err != nil {
@@ -367,6 +396,9 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 			return false, r.holdUnresolvedAction(ctx, mission.ShipID, action, "passenger action awaits bounded request-specific GET evidence before replay")
 		}
 	}
+	if data.Bulletin != nil && !r.opts.BulletinEnabled {
+		return false, r.decision(ctx, "__bulletin", "bulletin", "public posting disabled; unresolved request retained without a resend", nil)
+	}
 	if data.Futures != nil && !r.opts.FuturesPilotEnabled &&
 		(action.Stage == "futures-create" || action.Stage == "futures-lease" || action.Stage == "futures-stock") {
 		return false, r.hold(ctx, mission.ShipID, "futures pilot disabled; unresolved request and coverage retained without a resend")
@@ -375,9 +407,8 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 		r.wakeBy(data.CooldownUntil)
 		return false, r.hold(ctx, mission.ShipID, "unresolved action waiting for persisted retry cooldown")
 	}
-	deadline := persisted.CreatedAt.Add(store.ActionReplayWindow)
 	if time.Until(deadline) <= time.Minute {
-		return r.reconcileExpired(ctx, mission, data, persisted)
+		return false, r.holdUnresolvedAction(ctx, mission.ShipID, action, "idempotency safety cutoff passed during outcome observation; the immutable request is retained without a resend or another observation")
 	}
 	// All transport retries must end before the upstream's idempotency window.
 	requestContext, cancel := context.WithDeadline(ctx, deadline.Add(-time.Minute))
@@ -474,8 +505,21 @@ func (r *Runner) dispatch(ctx context.Context, mission *store.Mission, data *mis
 	if preflightFailure != nil {
 		return false, preflightFailure
 	}
-	if ctx.Err() != nil {
-		return false, ctx.Err()
+	var bulletinOutcome *gameapi.APIError
+	if bulletinStage(action.Stage) && errors.As(err, &bulletinOutcome) && gameapi.BulletinAuthorizationRefusal(bulletinOutcome.Status, bulletinOutcome.Body) {
+		// The optional network deadline cannot erase a known account refusal.
+		// Its actual owner context retains cancellation and store fencing.
+		ctx = outcomeCtx
+		defer func() {
+			changed = false
+			err = bulletinAuthorizationError(ctx, bulletinOutcome.Status, err)
+		}()
+	}
+	if canceled := ctx.Err(); canceled != nil {
+		if bulletinOutcome != nil {
+			return false, errors.Join(canceled, err)
+		}
+		return false, canceled
 	}
 	outcome := disposition(err)
 	if outcome == actionIntegrityFailure {
@@ -1071,6 +1115,9 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 	if _, _, ok := r.serverBounds(); !ok || r.stateCache.Clock.Paused || r.stateCache.Clock.Calendar.TimeScale <= 0 {
 		return errors.New("new action requires current successful server clock authority")
 	}
+	if bulletinStage(data.Action.Stage) {
+		return r.bulletinPreflight(data)
+	}
 	action := data.Action
 	if passengerStage(action.Stage) {
 		return r.passengerActionReady(ctx, mission, data)
@@ -1499,6 +1546,9 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 func (r *Runner) reconcileObservedAction(ctx context.Context, mission *store.Mission, data *missionData, action *store.Action) (bool, error) {
 	if data.Action == nil || action == nil {
 		return false, nil
+	}
+	if bulletinStage(data.Action.Stage) {
+		return r.reconcileBulletin(ctx, mission, data, action)
 	}
 	if passengerStage(data.Action.Stage) {
 		return r.reconcilePassengerAction(ctx, mission, data, action)

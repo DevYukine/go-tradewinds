@@ -236,3 +236,41 @@ func TestFuturesRearmRequiresStoppedExecutor(t *testing.T) {
 		t.Fatalf("operator re-arm bypassed the active executor lock: %v", err)
 	}
 }
+
+func TestBulletinPendingActionsDoNotBlockFuturesRearm(t *testing.T) {
+	for _, test := range []struct {
+		path  string
+		allow bool
+	}{
+		{"/v1/bulletin/thread", true},
+		{"/v1/bulletin/reply", true},
+		{"/v1/bulletin/thread/extra", false},
+		{"/v1/market/place-order", false},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			h, _ := newFuturesMoneyAPI(t)
+			mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: futuresPilotCohort, Phase: "futures_done"}
+			mission.Data = encode(missionData{Futures: &futuresPilotIntent{SetupAttempted: true}, Sequence: 3, LastActionID: "finished-setup"})
+			if err := h.db.PutMission(h.ctx, mission); err != nil {
+				t.Fatal(err)
+			}
+			action := &store.Action{ID: "pending-rearm-boundary", AccountID: h.account.ID, Method: http.MethodPost, Path: test.path, Body: json.RawMessage(`{}`)}
+			if _, err := h.db.BeginAction(h.ctx, action); err != nil {
+				t.Fatal(err)
+			}
+			err := RearmUnusedFuturesPilot(h.ctx, h.db, h.account.ID)
+			if test.allow && err != nil || !test.allow && !errors.Is(err, store.ErrActionConflict) {
+				t.Fatalf("re-arm classified pending %s incorrectly: %v", test.path, err)
+			}
+			saved, data := h.mission("__futures")
+			expectedPhase := "futures_done"
+			if test.allow {
+				expectedPhase = "futures_pilot"
+			}
+			pending := h.pending()
+			if saved.Phase != expectedPhase || data.Sequence != 3 || len(pending) != 1 || pending[0].ID != action.ID || !bytes.Equal(pending[0].Body, action.Body) {
+				t.Fatalf("re-arm replaced pending intent or changed the cohort sequence: phase=%s data=%+v pending=%+v", saved.Phase, data, pending)
+			}
+		})
+	}
+}

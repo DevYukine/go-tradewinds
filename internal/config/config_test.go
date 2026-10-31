@@ -101,6 +101,39 @@ func TestReplayConfigurationLimits(t *testing.T) {
 	}
 }
 
+func TestBulletinConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		bulletin string
+		valid    bool
+		enabled  bool
+	}{
+		{name: "defaults", valid: true, enabled: true},
+		{name: "explicit true", bulletin: "true", valid: true, enabled: true},
+		{name: "explicit false", bulletin: "false", valid: true},
+		{name: "unparseable switch", bulletin: "sometimes"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://localhost/bulletin_config_test")
+			t.Setenv("CREDENTIAL_KEY", base64.StdEncoding.EncodeToString([]byte(strings.Repeat("k", 32))))
+			t.Setenv("BULLETIN_ENABLED", test.bulletin)
+			cfg, err := Load()
+			if !test.valid {
+				if err == nil {
+					t.Fatal("invalid bulletin setting accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.BulletinEnabled != test.enabled {
+				t.Fatalf("BULLETIN_ENABLED=%q loaded %v, want %v", test.bulletin, cfg.BulletinEnabled, test.enabled)
+			}
+		})
+	}
+}
+
 func TestLoadDoesNotExposeDotenvErrors(t *testing.T) {
 	const secret = "tw_live_synthetic_dotenv_secret"
 	const databasePassword = "synthetic_database_password"

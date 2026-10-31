@@ -23,6 +23,7 @@ type Config struct {
 	CapacityPaybackDays float64
 	MarquesEnabled      bool
 	FuturesPilotEnabled bool
+	BulletinEnabled     bool
 	ReplayRetentionDays int
 	ReplayMaxGiB        float64
 }
@@ -78,6 +79,10 @@ func Load() (Config, error) {
 	cfg.FuturesPilotEnabled, err = strconv.ParseBool(env("FUTURES_PILOT_ENABLED", "false"))
 	if err != nil {
 		return cfg, errors.New("FUTURES_PILOT_ENABLED must be true or false")
+	}
+	cfg.BulletinEnabled, err = strconv.ParseBool(env("BULLETIN_ENABLED", "true"))
+	if err != nil {
+		return cfg, errors.New("BULLETIN_ENABLED must be true or false")
 	}
 	cfg.ReplayRetentionDays, err = strconv.Atoi(env("REPLAY_RETENTION_DAYS", "90"))
 	if err != nil || cfg.ReplayRetentionDays < 0 || cfg.ReplayRetentionDays > 106751 {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DevYukine/go-tradewinds/internal/gameapi"
 	"github.com/DevYukine/go-tradewinds/internal/store"
 )
 
@@ -65,6 +66,13 @@ func validTrade(result tradeResult) bool {
 func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data *missionData, status int, response json.RawMessage) (bool, error) {
 	if data.Action == nil {
 		return false, fmt.Errorf("mission %s has no attached response stage", mission.ShipID)
+	}
+	if bulletinStage(data.Action.Stage) {
+		if gameapi.BulletinAuthorizationRefusal(status, response) {
+			_, err := r.consumeRejection(ctx, mission, data, status, response)
+			return false, bulletinAuthorizationError(ctx, status, err)
+		}
+		return r.consumeBulletinResult(ctx, mission, data, status, response)
 	}
 	if data.Futures != nil {
 		return r.consumeFuturesResult(ctx, mission, data, status, response)

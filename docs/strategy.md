@@ -566,6 +566,14 @@ The bot reads only authenticated `GET /v1/rnd/status` and `GET /v1/rnd/register`
 | Fitting | A component fills one of six ship slots. Fitting costs 4% of ship value, needs a berthed ship at its yard with no open insurance, and cannot be removed or swapped; it transfers with the hull and is lost with it. Components change hold and speed only when fitted to that ship. The bot fits none and does not infer fleet-wide benefits from a patent or a loose component. |
 | Voluntary loan default | Never call `POST /v1/loan/default`. It surrenders collateral and writes off the remainder even on recourse debt, but the walk-away is permanent on the credit record and visible to lenders. Eligible collateral ships exceed the lien principal under the bot's 40%-of-rebuild-value borrowing cap; abandoning a hull to save the smaller debt destroys productive capacity. Continue normal debt servicing and arrears recovery instead. |
 
+## Bulletin presence
+
+The bulletin is public deal talk signed with the company name ([guide section 3.21](https://tradewinds.kibb.io/skill.md)): a post is permanent ten real minutes after posting and a thread archives after three quiet real days. The runner posts at most once every three real hours, well inside the game limit of 10 posts and 3 new threads per company and real hour. It alternates between its own thread and the latest unreplied Kraken Cartel thread that is neither archived nor removed, and falls back to its own thread when no such thread exists.
+
+The voice is a curated, friendly Pokemon pirate that openly supports Kraken Cartel expansion, freight and the forward book. Posts contain no authenticated fleet census, ship labels, vault balances, reserves, delivery locations or exact trading plans. The bulletin is public and the server enforces nothing agreed there.
+
+Sending is idle-only journal work at the tail of a pass and never blocks trading or futures re-arm. Company posting cooldowns use the later usable Retry-After or detail time, falling back to one hour for `429 bulletin_limit` or 24 hours for `403 posting_muted`. True global limits remain shared, authorization failures stop execution, and other 4xx refusals wait six hours. Schedule, template cursors and bounded public-page scan progress persist across restarts. Ambiguous requests retain their immutable payload and key; expired requests can reconcile from later pages but are never resent.
+
 ## Durable economic record
 
 Keep settled mission economics beyond the seven-day diagnostic window. Acquisition basis, actual proceeds, fees, provisions, and attributable operating costs must survive restarts and pruning. Journal each upstream mutation once and reconcile ambiguous results before recording profit. Transfers, seed capital, borrowed principal, collateral principal, expansion bonuses and unrealized inventory changes are not trading profit. Bonus receipts may explain a net-worth change but never establish repeatable revenue.

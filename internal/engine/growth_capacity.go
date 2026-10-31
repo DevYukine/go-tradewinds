@@ -1177,6 +1177,9 @@ func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) erro
 		return err
 	}
 	for _, action := range pending {
+		if bulletinPath(action.Path) {
+			continue
+		}
 		if data.Action == nil || action.ID != data.Action.ID {
 			return errors.New("capacity build waits for every other unresolved account action")
 		}

@@ -941,7 +941,7 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if len(pending) > 0 {
+	if tradingActionsPending(pending) {
 		return r.holdCapacityGrowth(ctx, "capacity growth waits for every unresolved account action")
 	}
 	for _, id := range []string{"__treasury", "__underwriting", "__marque", "__futures"} {
