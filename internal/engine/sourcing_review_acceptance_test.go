@@ -181,7 +181,12 @@ func TestSourcingReviewDiagnosticsStayBoundedAcrossEquivalentPasses(t *testing.T
 	// Churn a retained, ranked candidate: with six equal-economics charters the
 	// displayed top three are charter-a/b/c by the deterministic tiebreak, so a
 	// materially changed charter-a (new deadline and reward) must rewrite its
-	// own row while every other unchanged candidate stays deduped.
+	// own row once its class refresh interval has passed, while every other
+	// unchanged candidate stays deduped.
+	for key, cached := range runner.decisionHashes {
+		cached.writtenAt = cached.writtenAt.Add(-decisionClassRefresh)
+		runner.decisionHashes[key] = cached
+	}
 	churned := sourcingReviewCharter("charter-a")
 	churnedDeadline := time.Now().UTC().Add(10 * 24 * time.Hour)
 	churned.ExpiresAt = &churnedDeadline

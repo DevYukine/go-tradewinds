@@ -903,6 +903,11 @@ func (r *Runner) logRejectedAction(ctx context.Context, mission *store.Mission, 
 		outcomeText{field: "code", value: problem.Code},
 		outcomeText{field: "reason", value: problem.Detail},
 	)
+	if problem.Code == "" && problem.Detail == "" {
+		// Without a problem document the body is the only evidence of the
+		// cause. It is redacted in full before the log cap applies.
+		upstream = append(upstream, outcomeText{field: "response", value: r.db.ScrubOutcomeResponse(ctx, r.account.ID, response)})
+	}
 	entry.Write(r.scrubOutcomeFields(ctx, fields, upstream)...)
 }
 
@@ -923,7 +928,7 @@ func (r *Runner) holdUnresolvedAction(ctx context.Context, shipID string, action
 			upstream := append(actionOutcomeTexts(&store.Mission{ShipID: shipID}, nil, action), outcomeText{field: "reason", value: reason})
 			entry.Write(r.scrubOutcomeFields(ctx, fields, upstream)...)
 		}
-		r.rememberDecision(key, fingerprint, now)
+		r.rememberDecision(key, decisionFingerprint{hash: fingerprint, writtenAt: now})
 	}
 	return nil
 }

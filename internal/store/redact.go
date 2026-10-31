@@ -77,6 +77,30 @@ func (s *Store) ScrubOutcomeTexts(ctx context.Context, accountID string, values 
 	return cleaned
 }
 
+// ScrubOutcomeResponse redacts a stored action response for a log excerpt.
+// Non-JSON bodies are stored as base64 raw_body, which text scrubbing cannot
+// see into, so they are decoded first. Every body then takes the payload
+// redactor: plain text is scrubbed, JSON is redacted value by value and
+// malformed JSON is omitted. It fails closed like ScrubOutcomeTexts.
+func (s *Store) ScrubOutcomeResponse(ctx context.Context, accountID string, response json.RawMessage) string {
+	secrets, err := s.secrets(ctx, accountID)
+	if err != nil {
+		return redacted
+	}
+	body := []byte(response)
+	var wrapped struct {
+		RawBody []byte `json:"raw_body"`
+	}
+	if json.Unmarshal(response, &wrapped) == nil && wrapped.RawBody != nil {
+		body = wrapped.RawBody
+	}
+	cleaned, err := redactJSON(body, secrets, 0)
+	if err != nil {
+		return redacted
+	}
+	return string(cleaned)
+}
+
 func sensitiveKey(key string) bool {
 	normalized := strings.Map(func(r rune) rune {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {

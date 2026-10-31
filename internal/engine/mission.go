@@ -354,10 +354,19 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return false, err
 		}
 		plans := PlanVoyages(input)
+		// Plans are ranked best first. A port can yield thousands of rejected
+		// destination and commodity pairs; the best few explain the hold.
+		const recordedRejections = 3
+		rejections := 0
 		for i, plan := range plans {
 			kind := "rejected"
 			if plan.Accepted {
 				kind = "ranked"
+			} else {
+				rejections++
+				if rejections > recordedRejections {
+					continue
+				}
 			}
 			if i == 0 && plan.Accepted {
 				kind = "selected"

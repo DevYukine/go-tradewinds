@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -85,6 +86,12 @@ func (r *Runner) refreshRivalCredit(ctx context.Context) error {
 		if err := r.api.GetOnce(ctx, path, &report); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			// A company without a credit report answers 404; that is the
+			// observation, not a failure.
+			var apiErr *gameapi.APIError
+			if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+				continue
 			}
 			r.logRivalCreditError(ctx, path, err)
 		}

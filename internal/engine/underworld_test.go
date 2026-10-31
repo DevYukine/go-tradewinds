@@ -209,7 +209,9 @@ func TestUnderworldForbiddenDisablesOnlyMissingScope(t *testing.T) {
 }
 
 func TestUnderworldRejectedKeyDisablesAfterOneRead(t *testing.T) {
-	for _, code := range []string{"revoked_api_key", "expired_api_key", "invalid_api_key"} {
+	// The live game answered with an empty code (2026-10-30), which kept the
+	// observer warning on every read for 47 minutes.
+	for _, code := range []string{"revoked_api_key", "expired_api_key", "invalid_api_key", "", "unauthorized"} {
 		t.Run(code, func(t *testing.T) {
 			h := newRecoveryHarness(t)
 			reader := &underworldTestReader{err: &gameapi.APIError{Status: 401, Code: code}}

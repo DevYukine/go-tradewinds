@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,7 +32,10 @@ type Options struct {
 }
 
 type decisionFingerprint struct {
-	hash      [sha256.Size]byte
+	hash [sha256.Size]byte
+	// class hashes the reason with its numbers masked; live prices change
+	// the exact hash nearly every cycle.
+	class     [sha256.Size]byte
 	writtenAt time.Time
 }
 
@@ -43,26 +47,28 @@ type currentHold struct {
 }
 
 type Runner struct {
-	api                    *gameapi.Client
-	db                     *store.Store
-	account                store.Account
-	log                    *zap.Logger
-	opts                   Options
-	snapshot               map[string]json.RawMessage
-	meta                   map[string]DatasetMeta
-	stateCache             AccountState
-	generation             string
-	passStart              time.Time
-	replay                 *replayRecorder
-	replayPorts            map[string]json.RawMessage
-	holding                []currentHold
-	assessedShipIDs        []string
-	assessedHoldIDs        map[string]bool
-	holdScope              string
-	blockingStatuses       map[string]blockingStatus
-	fleetObserved          bool
-	lastShipStatus         map[string]string
-	decisionHashes         map[string]decisionFingerprint
+	api              *gameapi.Client
+	db               *store.Store
+	account          store.Account
+	log              *zap.Logger
+	opts             Options
+	snapshot         map[string]json.RawMessage
+	meta             map[string]DatasetMeta
+	stateCache       AccountState
+	generation       string
+	passStart        time.Time
+	replay           *replayRecorder
+	replayPorts      map[string]json.RawMessage
+	holding          []currentHold
+	assessedShipIDs  []string
+	assessedHoldIDs  map[string]bool
+	holdScope        string
+	blockingStatuses map[string]blockingStatus
+	fleetObserved    bool
+	lastShipStatus   map[string]string
+	decisionHashes   map[string]decisionFingerprint
+	// outageWarnedAt rate-limits dataset failures caused by game 5xx outages.
+	outageWarnedAt         time.Time
 	lastMutationStatus     atomic.Int64
 	expenseOwners          map[string]string
 	nextDeadline           time.Time
@@ -574,6 +580,10 @@ func (r *Runner) wakeBy(deadline time.Time) {
 	}
 }
 
+// An unchanged evaluation class is re-recorded at most this often, so price
+// churn cannot flood the decisions table while the latest figures stay recent.
+const decisionClassRefresh = 15 * time.Minute
+
 func (r *Runner) decision(ctx context.Context, shipID, kind, reason string, details any) error {
 	const retention = 7 * 24 * time.Hour
 	key := shipID + "|" + kind
@@ -582,23 +592,41 @@ func (r *Runner) decision(ctx context.Context, shipID, kind, reason string, deta
 	digest.Write([]byte(reason))
 	digest.Write([]byte{0})
 	digest.Write(encode(fingerprintDetails))
-	var fingerprint [sha256.Size]byte
-	digest.Sum(fingerprint[:0])
-	now := time.Now()
+	current := decisionFingerprint{
+		class:     sha256.Sum256([]byte(blockingReasonNumbers.ReplaceAllString(reason, "#"))),
+		writtenAt: time.Now(),
+	}
+	digest.Sum(current.hash[:0])
 	previous, exists := r.decisionHashes[key]
-	if exists && previous.hash == fingerprint && now.Sub(previous.writtenAt) < retention {
+	age := current.writtenAt.Sub(previous.writtenAt)
+	churning := previous.class == current.class && age < decisionClassRefresh && evaluationDecision(kind)
+	if exists && (previous.hash == current.hash && age < retention || churning) {
 		return nil
 	}
 	if err := r.db.RecordDecision(ctx, r.account.ID, shipID, kind, reason, details); err != nil {
 		return err
 	}
-	r.rememberDecision(key, fingerprint, now)
+	r.rememberDecision(key, current)
 	return nil
 }
 
-func (r *Runner) rememberDecision(key string, fingerprint [sha256.Size]byte, now time.Time) {
+// evaluationDecision reports kinds re-evaluated every cycle against live
+// prices; their details churn without a new event. Other kinds carry event
+// identity in details and must keep every distinct record. The selected plan
+// is excluded so a flip back to an earlier choice is always recorded.
+func evaluationDecision(kind string) bool {
+	family, _, _ := strings.Cut(kind, ":")
+	switch family {
+	case "rejected", "ranked", "marque_rejected", "scouting", "capacity_candidate", "sourcing", "capacity_financing":
+		return true
+	}
+	return false
+}
+
+func (r *Runner) rememberDecision(key string, fingerprint decisionFingerprint) {
 	const capacity = 2048
 	const retention = 7 * 24 * time.Hour
+	now := fingerprint.writtenAt
 	_, exists := r.decisionHashes[key]
 	if !exists && len(r.decisionHashes) >= capacity {
 		var oldestKey string
@@ -614,7 +642,7 @@ func (r *Runner) rememberDecision(key string, fingerprint [sha256.Size]byte, now
 			delete(r.decisionHashes, oldestKey)
 		}
 	}
-	r.decisionHashes[key] = decisionFingerprint{hash: fingerprint, writtenAt: now}
+	r.decisionHashes[key] = fingerprint
 }
 
 func (r *Runner) hold(ctx context.Context, shipID, reason string) error {

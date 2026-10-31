@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -22,6 +23,7 @@ const (
 	// SourcingRouteRetentionScanLimit bounds newest-first optional history scanning.
 	SourcingRouteRetentionScanLimit = 4 * SourcingRouteRetentionLimit
 	snapshotSafetyMargin            = 64 << 10
+	outageWarningInterval           = 10 * time.Minute
 )
 
 func gameVersionLogText(version string) string {
@@ -118,8 +120,17 @@ func (r *Runner) applyCapture(ctx context.Context, key string, result fetchResul
 	if result.err != nil {
 		if ctx.Err() == nil && !errors.Is(result.err, context.Canceled) {
 			level := zap.WarnLevel
+			var apiErr *gameapi.APIError
 			if failedBefore && meta.Error == result.err.Error() {
 				level = zap.DebugLevel
+			} else if errors.As(result.err, &apiErr) && apiErr.Status >= http.StatusInternalServerError {
+				// A game outage fails every dataset at once; one warning per
+				// outage window says the same as thirty.
+				if time.Since(r.outageWarnedAt) < outageWarningInterval {
+					level = zap.DebugLevel
+				} else {
+					r.outageWarnedAt = time.Now()
+				}
 			}
 			if entry := r.log.Check(level, "dataset refresh failed"); entry != nil {
 				fields := []zap.Field{zap.Bool("timeout", errors.Is(result.err, context.DeadlineExceeded))}

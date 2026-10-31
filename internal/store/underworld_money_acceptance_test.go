@@ -88,6 +88,27 @@ func TestUnderworldMoneyCredentialEncryptedRoundTripAndRedaction(t *testing.T) {
 	if len(clean) != 1 || strings.Contains(clean[0], observerKey) {
 		t.Fatal("observer key leaked through outcome log redaction")
 	}
+	// Non-JSON action responses are stored base64-wrapped; the excerpt must be
+	// the decoded, scrubbed text. Malformed JSON could hide an escaped key, so
+	// it is omitted.
+	wrapped, err := json.Marshal(map[string][]byte{"raw_body": []byte("echo: " + observerKey)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	escaped := `{"echo":"\u` + fmt.Sprintf("%04x", observerKey[0]) + observerKey[1:]
+	malformed, err := json.Marshal(map[string][]byte{"raw_body": []byte(escaped)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for response, want := range map[string]string{
+		string(wrapped):                         `"echo: [REDACTED]"`,
+		string(malformed):                       `{"omitted":"invalid_json_cannot_be_safely_redacted","original_bytes":` + fmt.Sprint(len(escaped)) + `,"unparsed":true}`,
+		fmt.Sprintf(`{"echo":%q}`, observerKey): `{"echo":"[REDACTED]"}`,
+	} {
+		if excerpt := reopened.ScrubOutcomeResponse(ctx, account, json.RawMessage(response)); excerpt != want {
+			t.Fatalf("response excerpt %q, want %q", excerpt, want)
+		}
+	}
 }
 
 func underworldMoneyRecord(t *testing.T, db *Store, raw json.RawMessage) error {

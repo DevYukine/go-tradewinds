@@ -121,8 +121,9 @@ func (r *Runner) observeUnderworld(ctx context.Context, shipID, visitID, portID,
 			return ctx.Err()
 		}
 		var apiErr *gameapi.APIError
-		if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized &&
-			(apiErr.Code == "revoked_api_key" || apiErr.Code == "expired_api_key" || apiErr.Code == "invalid_api_key") {
+		// The game answers a rejected key with codes beyond the documented
+		// three, including none; every 401 means this key cannot read.
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
 			r.disableUnderworld("observer key rejected; run underworld-key")
 			return nil
 		}
