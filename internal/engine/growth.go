@@ -54,33 +54,38 @@ type GrowthInput struct {
 }
 
 type GrowthDecision struct {
-	Accepted                      bool                   `json:"accepted"`
-	EconomicallyViable            bool                   `json:"economically_viable"`
-	CashShortfallPence            int64                  `json:"cash_shortfall_pence"`
-	Reason                        string                 `json:"reason"`
-	QuotedHullPence               int64                  `json:"quoted_hull_pence"`
-	SlippageReservePence          int64                  `json:"slippage_reserve_pence"`
-	CannonsPence                  int64                  `json:"cannons_pence"`
-	InitialStoresPence            int64                  `json:"initial_stores_pence"`
-	WorkingCapitalPence           int64                  `json:"working_capital_pence"`
-	FundingFeesPence              int64                  `json:"funding_fees_pence"`
-	IncrementalUpkeepPence        int64                  `json:"incremental_upkeep_pence"`
-	UpkeepReservePence            int64                  `json:"upkeep_reserve_pence"`
-	IncrementalNetPencePerGameDay float64                `json:"incremental_net_pence_per_game_day"`
-	DepthNetPencePerGameDay       float64                `json:"depth_net_pence_per_game_day"`
-	PaybackGameDays               float64                `json:"payback_game_days"`
-	EvidenceBasis                 string                 `json:"evidence_basis"`
-	HazardSource                  string                 `json:"hazard_source,omitempty"`
-	HazardDestination             string                 `json:"hazard_destination,omitempty"`
-	DepthHazardSource             string                 `json:"depth_hazard_source,omitempty"`
-	DepthHazardDestination        string                 `json:"depth_hazard_destination,omitempty"`
-	ExpansionEstimate             *expansionRateEstimate `json:"expansion_estimate,omitempty"`
-	Competition                   CompetitionEvidence    `json:"competition"`
-	DepthCompetition              CompetitionEvidence    `json:"depth_competition"`
-	Mortgage                      *gameapi.MortgageTerms `json:"mortgage,omitempty"`
-	competitionComparable         bool
-	rejection                     capacityRejection
-	depthCompetitionComparable    bool
+	Accepted                         bool                   `json:"accepted"`
+	EconomicallyViable               bool                   `json:"economically_viable"`
+	CashShortfallPence               int64                  `json:"cash_shortfall_pence"`
+	Reason                           string                 `json:"reason"`
+	QuotedHullPence                  int64                  `json:"quoted_hull_pence"`
+	SlippageReservePence             int64                  `json:"slippage_reserve_pence"`
+	CannonsPence                     int64                  `json:"cannons_pence"`
+	InitialStoresPence               int64                  `json:"initial_stores_pence"`
+	WorkingCapitalPence              int64                  `json:"working_capital_pence"`
+	FundingFeesPence                 int64                  `json:"funding_fees_pence"`
+	IncrementalUpkeepPence           int64                  `json:"incremental_upkeep_pence"`
+	UpkeepReservePence               int64                  `json:"upkeep_reserve_pence"`
+	IncrementalNetPencePerGameDay    float64                `json:"incremental_net_pence_per_game_day"`
+	DepthNetPencePerGameDay          float64                `json:"depth_net_pence_per_game_day"`
+	DepthForecastRatePencePerGameDay float64                `json:"depth_forecast_rate_pence_per_game_day"`
+	PaybackGameDays                  float64                `json:"payback_game_days"`
+	EvidenceBasis                    string                 `json:"evidence_basis"`
+	HullCategory                     string                 `json:"hull_category"`
+	Verdict                          string                 `json:"verdict"`
+	CandidateLotCashPence            int64                  `json:"candidate_lot_cash_pence"`
+	Package                          capacityPackage        `json:"package"`
+	HazardSource                     string                 `json:"hazard_source,omitempty"`
+	HazardDestination                string                 `json:"hazard_destination,omitempty"`
+	DepthHazardSource                string                 `json:"depth_hazard_source,omitempty"`
+	DepthHazardDestination           string                 `json:"depth_hazard_destination,omitempty"`
+	ExpansionEstimate                *expansionRateEstimate `json:"expansion_estimate,omitempty"`
+	Competition                      CompetitionEvidence    `json:"competition"`
+	DepthCompetition                 CompetitionEvidence    `json:"depth_competition"`
+	Mortgage                         *gameapi.MortgageTerms `json:"mortgage,omitempty"`
+	competitionComparable            bool
+	rejection                        capacityRejection
+	depthCompetitionComparable       bool
 }
 
 func growthCapital(decision GrowthDecision) int64 {
@@ -1150,10 +1155,13 @@ func (r *Runner) driveGrowth(ctx context.Context, mission *store.Mission, data *
 	}
 	capacityRefitFinished := data.Capacity != nil && (data.Capacity.RefitRefused || data.Capacity.RefitAttempts >= 3)
 	if time.Now().Before(data.CooldownUntil) && !capacityRefitFinished {
-		return false, r.hold(ctx, "", "commissioning waits for persisted retry cooldown")
+		return false, r.holdExpected(ctx, mission.ShipID, "commissioning waits for its scoped persisted retry cooldown")
 	}
 	if data.Action != nil {
 		return false, r.hold(ctx, "", "commissioning retains its unresolved immutable action before any allocation transition")
+	}
+	if data.PlayerLoan != nil && (data.Capacity == nil || data.Capacity.Financing == nil || len(data.Capacity.Financing.Loans) == 0) && mission.Phase != "growth_rejected" {
+		return r.drivePlayerLoan(ctx, mission, data)
 	}
 	if data.Capacity != nil && data.Capacity.Financing != nil && data.BuiltShipID == "" {
 		return r.driveCapacityFinancing(ctx, mission, data)

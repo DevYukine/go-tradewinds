@@ -36,7 +36,7 @@ func TestLoanCapacityOnlyCashRejectionCanBorrow(t *testing.T) {
 			input := capacityGrowthAcceptanceInput()
 			test.change(&input)
 			decision := EvaluateCapacityGrowth(input)
-			result := evaluateCapacityLoan(decision, 100_000, 750_000, 110_000, 5_000, 3_000)
+			result := evaluateCapacityLoan(decision, 100_000, 750_000, 110_000, 5_000, 3_000, 420)
 			if result.Borrow != test.want || result.Reason == "" {
 				t.Fatalf("financing repaired a non-cash rejection: decision %+v, loan %+v", decision, result)
 			}
@@ -47,15 +47,15 @@ func TestLoanCapacityOnlyCashRejectionCanBorrow(t *testing.T) {
 func TestLoanCapacityHalfNetCoverageBoundary(t *testing.T) {
 	t.Parallel()
 	decision := GrowthDecision{EconomicallyViable: true, IncrementalNetPencePerGameDay: 2_000}
-	result := evaluateCapacityLoan(decision, 100_000, 750_000, 116_000, 8_000, 3_000)
+	result := evaluateCapacityLoan(decision, 100_000, 750_000, 116_000, 8_000, 3_000, 420)
 	if !result.Borrow || result.Coverage == nil || *result.Coverage != 1.25 || result.DebtReservePence != 16_000 || result.NetAfterInterestPence <= 0 {
 		t.Fatalf("exact 1.25x coverage was rejected or misreported: %+v", result)
 	}
 	decision.IncrementalNetPencePerGameDay = 1_999.99
-	if result := evaluateCapacityLoan(decision, 100_000, 750_000, 116_000, 8_000, 3_000); result.Borrow {
+	if result := evaluateCapacityLoan(decision, 100_000, 750_000, 116_000, 8_000, 3_000, 420); result.Borrow {
 		t.Fatalf("below-boundary half-net coverage admitted: %+v", result)
 	}
-	if result := evaluateCapacityLoan(decision, 100_000, 115_999, 116_000, 8_000, 3_000); result.Borrow {
+	if result := evaluateCapacityLoan(decision, 100_000, 115_999, 116_000, 8_000, 3_000, 420); result.Borrow {
 		t.Fatalf("principal above available liens admitted: %+v", result)
 	}
 }
@@ -86,7 +86,7 @@ func TestLoanCapacityEstimateRespectsLiensAndMinimum(t *testing.T) {
 	}
 	principal, installment = estimatedCapacityPrincipal(1_000, 1)
 	decision := GrowthDecision{EconomicallyViable: true, IncrementalNetPencePerGameDay: 10_000}
-	if principal >= goldsmithsMinimumPence || evaluateCapacityLoan(decision, 1_000, 750_000, principal, installment, 3_000).Borrow {
+	if principal >= goldsmithsMinimumPence || evaluateCapacityLoan(decision, 1_000, 750_000, principal, installment, 3_000, 420).Borrow {
 		t.Fatal("small shortfall silently rounded up into minimum debt")
 	}
 }
@@ -249,6 +249,9 @@ func loanCapacityFixture(t *testing.T, cap int64, refuseBuild bool) (*recoveryHa
 func loanCapacityRoundingFixture(t *testing.T, cap int64, refuseBuild bool, round func(float64) float64) (*recoveryHarness, *Runner) {
 	t.Helper()
 	h, runner := capacityExecutionFixture(t, refuseBuild)
+	// These fixtures exercise instant Goldsmiths funding after a lapsed player request.
+	runner.snapshot["_player_loan_fallback"] = encode(map[string]time.Time{recoveryHomePort + "|" + recoveryHull: time.Now().UTC().Add(6 * time.Hour)})
+	overseasMetric(t, h, 100_000_000, time.Now().UTC())
 	base := h.api.server.Config.Handler
 	quotes := make(map[string]gameapi.LoanQuote)
 	loans := make([]gameapi.Loan, 0)
@@ -398,11 +401,11 @@ func loanCapacityDecision(t *testing.T, h *recoveryHarness, runner *Runner) (Por
 
 func loanCapacityCashShortfall(t *testing.T, h *recoveryHarness, runner *Runner, shortfall int64) {
 	t.Helper()
-	_, _, decision, required, evidence := loanCapacityDecision(t, h, runner)
+	_, _, decision, _, evidence := loanCapacityDecision(t, h, runner)
 	if !decision.Accepted {
 		t.Fatalf("funded fixture lacks an economic capacity candidate: %+v", decision)
 	}
-	h.api.setVaultBalance("north", required["north_sea"]+decision.WorkingCapitalPence-shortfall)
+	h.api.setVaultBalance("north", evidence.required["north_sea"]+growthCapital(decision)+decision.WorkingCapitalPence-shortfall)
 	h.api.setVaultBalance("south", evidence.required["channel"])
 	loanCapacityRefresh(t, h, runner)
 }
@@ -424,8 +427,9 @@ func TestLoanCapacityBorrowBuildAndUnusedPrincipalRepayment(t *testing.T) {
 				t.Fatalf("loan was not separated from construction: %+v", data)
 			}
 			quote := data.Capacity.Financing.Quotes[0]
-			if quote.PrincipalPence != 100_000+2**quote.InstallmentPence || quote.PrincipalPence > 750_000 {
-				t.Fatalf("principal is not the exact cash shortfall plus two installments: %+v", quote)
+			headroom := decision.CandidateLotCashPence + DailyUpkeep(runner.stateCache.Ships, runner.stateCache.Catalog, len(runner.stateCache.Factors))
+			if quote.PrincipalPence != 100_000+headroom+2**quote.InstallmentPence || quote.PrincipalPence > 750_000 {
+				t.Fatalf("principal is not the exact shortfall, one lot, daily upkeep and two installments: %+v", quote)
 			}
 			if changed, err := runner.driveGrowth(h.ctx, mission, &data); err != nil || !changed {
 				t.Fatalf("stage accepted quote: %t, %v", changed, err)
@@ -524,9 +528,11 @@ func TestLoanCapacityRejectsImpossiblePackagesBeforeQuoting(t *testing.T) {
 				decision.CashShortfallPence = 750_000
 			case "weak coverage":
 				decision.DepthNetPencePerGameDay = 1
+				decision.DepthForecastRatePencePerGameDay = 1 + float64(decision.IncrementalUpkeepPence)
 				runner.opts.CapacityPaybackDays = 1e9
 			case "gossip only":
 				decision.DepthNetPencePerGameDay = 0
+				decision.DepthForecastRatePencePerGameDay = 0
 			case "remittance only":
 				decision.CashShortfallPence = 0
 			}
@@ -596,6 +602,11 @@ func TestLoanCapacityRetainsFrozenAdmissionAcrossTemporaryChanges(t *testing.T) 
 	}
 	if err := h.db.DeleteMission(h.ctx, h.account.ID, "__underwriting"); err != nil {
 		t.Fatal(err)
+	}
+	for _, key := range []string{"zones", "profile"} {
+		meta := runner.meta[key]
+		meta.Stale = false
+		runner.meta[key] = meta
 	}
 	runner.stateCache.Ships = runner.stateCache.Ships[:1]
 	var saved int64
@@ -724,6 +735,17 @@ func loanCapacityAcceptedFixture(t *testing.T) (*recoveryHarness, *Runner) {
 func TestLoanArrearsCashCrunchStagesAndSendsCureInSameCycle(t *testing.T) {
 	t.Parallel()
 	h, runner := loanCapacityFixture(t, 750_000, false)
+	installExcludedHullCatalog(h, "unknown")
+	excluded := sailingShipRow(recoveryShipCharizard, "Charizard", recoveryFarPort, recoveryHomePort)
+	excluded["ship"].(map[string]any)["ship_class"] = "excluded-barque"
+	excluded["hold_capacity_tons"] = 220
+	h.api.mu.Lock()
+	h.api.fleet = append(h.api.fleet, excluded)
+	h.api.mu.Unlock()
+	loanCapacityRefresh(t, h, runner)
+	if upkeep := DailyUpkeep(runner.stateCache.Ships, runner.stateCache.Catalog, len(runner.stateCache.Factors)); upkeep < 22_000 {
+		t.Fatalf("unknown-category loan fixture lost its conservative bill: %d", upkeep)
+	}
 	loan := snapshotTestLoan()
 	loan.BankingRegion, loan.ArrearsPence = "channel", 1_000
 	runner.stateCache.Loans, runner.snapshot["loans"] = []gameapi.Loan{loan}, encode([]gameapi.Loan{loan})
@@ -792,7 +814,7 @@ func TestLoanArrearsFundingOnlyTargetsLoanRegion(t *testing.T) {
 	runner.stateCache.Rates = []Rate{{FromRegion: "north_sea", ToRegion: "baltic"}, {FromRegion: "north_sea", ToRegion: "channel"}}
 	balances := map[string]int64{"north_sea": 10_000}
 	required := map[string]int64{"north_sea": 1_000, "baltic": 1_000, "channel": 1_000}
-	if changed, err := runner.fundTreasuryMission(h.ctx, balances, required, "__loans", &loanRepaymentIntent{Before: loan, AmountPence: 1_000}); err != nil || !changed {
+	if changed, err := runner.fundTreasuryMission(h.ctx, balances, required, "__loans", &loanRepaymentIntent{Before: loan, AmountPence: 1_000}, nil); err != nil || !changed {
 		t.Fatalf("fund loan region: %t, %v", changed, err)
 	}
 	_, data := h.mission("__loans")
@@ -811,13 +833,13 @@ func TestLoanCapacityAcceptedDebtDeadlineRepaysBlockedBuild(t *testing.T) {
 	financing := data.Capacity.Financing
 	gameDay := 24 * time.Hour / time.Duration(runner.stateCache.Clock.Calendar.TimeScale)
 	if len(financing.Loans) != len(financing.Quotes) || financing.BuildBy.IsZero() ||
-		!financing.BuildBy.Equal(financing.Loans[0].CreatedAt.Add(gameDay)) {
+		financing.BuildBy.Before(financing.Loans[0].CreatedAt.Add(gameDay)) || financing.BuildBy.After(time.Now().UTC().Add(gameDay)) {
 		t.Fatalf("first acceptance did not establish exactly one game day of idle debt: %+v", financing)
 	}
 	port, _ := findPort(runner.stateCache.Catalog, data.BuildPort)
 	for index := range runner.stateCache.Vaults {
 		if runner.stateCache.Vaults[index].BankingRegion == port.BankingRegion {
-			runner.stateCache.Vaults[index].BalancePence -= 3
+			runner.stateCache.Vaults[index].BalancePence -= runner.capacityLoanHeadroom(financing.Decision) + 3
 		}
 	}
 	if changed, err := runner.driveGrowth(h.ctx, mission, &data); err != nil || changed || financing.Cancel || data.Action != nil {
@@ -840,7 +862,7 @@ func TestLoanCapacityAcceptedDebtDeadlineRepaysBlockedBuild(t *testing.T) {
 	}
 }
 
-func TestLoanCapacityYardAuthorityLossImmediatelyRepays(t *testing.T) {
+func TestLoanCapacityYardAuthorityLossHoldsUntilRecovery(t *testing.T) {
 	for _, status := range []int{http.StatusForbidden, http.StatusNotFound, http.StatusConflict} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			h, runner := loanCapacityAcceptedFixture(t)
@@ -856,12 +878,19 @@ func TestLoanCapacityYardAuthorityLossImmediatelyRepays(t *testing.T) {
 			if !time.Now().Before(data.Capacity.Financing.BuildBy) {
 				t.Fatal("yard-loss fixture already reached the financing deadline")
 			}
-			if changed, err := runner.driveGrowth(h.ctx, mission, &data); err != nil || !changed {
-				t.Fatalf("yard authority loss did not immediately stage repayment: %t, %v", changed, err)
+			if changed, err := runner.driveGrowth(h.ctx, mission, &data); err != nil || changed {
+				t.Fatalf("temporary yard authority loss did not hold: %t, %v", changed, err)
 			}
-			mission, data = h.mission("__growth")
-			if !data.Capacity.Financing.Cancel || mission.Phase != "growth_finance_repay" || data.Action == nil || data.Action.Stage != "loan-repay" {
-				t.Fatalf("HTTP %d left accepted loans idle: phase %s, %+v", status, mission.Phase, data)
+			if data.Capacity.Financing.Cancel || data.Action != nil || h.api.mutationCount("/v1/loan/repay") != 0 {
+				t.Fatalf("HTTP %d canceled or spent accepted debt before its deadline: %+v", status, data)
+			}
+			h.api.server.Config.Handler = base
+			if changed, err := runner.driveGrowth(h.ctx, mission, &data); err != nil || !changed {
+				t.Fatalf("restored yard authority did not stage construction: %t, %v", changed, err)
+			}
+			_, data = h.mission("__growth")
+			if data.Action == nil || data.Action.Stage != "build" || data.Capacity.Financing.Cancel {
+				t.Fatalf("HTTP %d recovery lost the accepted package: %+v", status, data)
 			}
 		})
 	}
@@ -897,13 +926,14 @@ func TestLoanCapacityServerInstallmentRoundingRequotesOnceWithoutBackoff(t *test
 	h, runner := loanCapacityRoundingFixture(t, 750_000, false, math.Floor)
 	loanCapacityCashShortfall(t, h, runner, 100_000)
 	port, hull, decision, required, evidence := loanCapacityDecision(t, h, runner)
-	estimated, _ := estimatedCapacityPrincipal(decision.CashShortfallPence, 1)
+	financingShortfall := growthCashTotal(decision.CashShortfallPence, runner.capacityLoanHeadroom(decision))
+	estimated, _ := estimatedCapacityPrincipal(financingShortfall, 1)
 	if changed, err := runner.considerCapacityFinancing(h.ctx, port, hull, decision, required, evidence); err != nil || !changed {
 		t.Fatalf("server-rounded installments prevented financing: %t, %v", changed, err)
 	}
 	mission, data := h.mission("__growth")
 	quote := data.Capacity.Financing.Quotes[0]
-	needed := decision.CashShortfallPence + 2**quote.InstallmentPence
+	needed := financingShortfall + 2**quote.InstallmentPence
 	if quote.PrincipalPence == estimated || quote.PrincipalPence < needed || quote.PrincipalPence-needed > 2 ||
 		h.api.mutationCount("/v1/loan/quote") != 2 ||
 		time.Now().Before(decode[map[string]time.Time](runner.snapshot, "_capacity_financing_backoffs")[port.ID+"|"+hull.ID]) ||

@@ -6,6 +6,25 @@ import (
 	"strconv"
 )
 
+// PostLoanRequest posts one borrower request; mutations use the durable journal.
+type PostLoanRequest struct {
+	BankingRegion  string `json:"banking_region"`
+	PrincipalPence int64  `json:"principal_pence"`
+	TermGameDays   int32  `json:"term_game_days"`
+	Repayment      string `json:"repayment"`
+	CollateralKind string `json:"collateral_kind"`
+	ShipID         string `json:"ship_id,omitempty"`
+	Recourse       bool   `json:"recourse"`
+	AutoQuote      bool   `json:"auto_quote"`
+	OpenGameHours  int64  `json:"open_game_hours"`
+}
+
+func (c *Client) ListOwnLoanRequests(ctx context.Context) ([]LoanRequestView, error) {
+	var requests []LoanRequestView
+	err := c.Get(ctx, "/v1/loan/requests?mine=true&limit=50", &requests)
+	return requests, err
+}
+
 // GoldsmithsQuoteRequest asks for a stored ship-lien quote. PrincipalPence is
 // integer pence, TermGameDays is 1–360, and Repayment is balloon or amortised.
 // An empty BankingRegion uses the company's home region.

@@ -1187,24 +1187,65 @@ func diagnosticStressBPS(in PlanningInput, route Route, hull Hull) int64 {
 // whole pence. Half the oceanic tonnage, rounded down, enters the sprawl term
 // on top of the flat 1 Cr per oceanic ton.
 func DailyUpkeep(fleet []ShipState, catalog Catalog, factors int) int64 {
-	var sprawlTons, oceanicTons int64
+	var largestHold int64
+	var sprawlTons, oceanicTons, unknownTons int64
 	for _, ship := range fleet {
 		if ship.Ship.Status == "sunk" {
 			continue
 		}
 		hull, exists := findHull(catalog, ship.Ship.ShipClass)
 		if !exists {
-			continue
+			for _, excluded := range catalog.UpkeepShipClasses {
+				if excluded.ID == ship.Ship.ShipClass {
+					hull = excluded
+					hull.HoldCapacityTons = 0
+					break
+				}
+			}
 		}
-		if hull.HullCategory == "oceanic" {
+		if hull.HoldCapacityTons <= 0 || hull.HoldCapacityTons > 1_000_000 {
+			hull.HoldCapacityTons = ship.HoldCapacityTons
+			if hull.HoldCapacityTons <= 0 || hull.HoldCapacityTons > 1_000_000 {
+				if largestHold == 0 {
+					for _, candidate := range catalog.ShipClasses {
+						if candidate.HoldCapacityTons > 0 && candidate.HoldCapacityTons <= 1_000_000 {
+							largestHold = max(largestHold, candidate.HoldCapacityTons)
+						}
+					}
+					if largestHold == 0 {
+						// Catalog validation bounds tonnage even when no
+						// usable class or owned ship reports a hold.
+						largestHold = 1_000_000
+					}
+				}
+				hull.HoldCapacityTons = largestHold
+			}
+		}
+		switch hull.HullCategory {
+		case "oceanic":
 			oceanicTons += hull.HoldCapacityTons
-		} else {
+		case "coastal", "regional":
 			sprawlTons += hull.HoldCapacityTons
+		default:
+			unknownTons += hull.HoldCapacityTons
 		}
 	}
-	sprawl := 4_500 * math.Pow(float64(max(0, sprawlTons+oceanicTons/2-40))/100, 1.45)
 	factorCost := 12_000 * math.Pow(float64(max(0, factors)), 1.25)
-	return int64(math.Ceil(sprawl+factorCost)) + oceanicTons*100
+	bill := func(sprawl, oceanic int64) int64 {
+		sprawlCost := 4_500 * math.Pow(float64(max(0, sprawl+oceanic/2-40))/100, 1.45)
+		return int64(math.Ceil(sprawlCost+factorCost)) + oceanic*100
+	}
+	if unknownTons == 0 {
+		return bill(sprawlTons, oceanicTons)
+	}
+	// On each oceanic-tonnage parity the sprawl formula is convex, so the
+	// most expensive category allocation is at one of these four endpoints.
+	return max(
+		bill(sprawlTons+unknownTons, oceanicTons),
+		bill(sprawlTons+unknownTons-1, oceanicTons+1),
+		bill(sprawlTons+1, oceanicTons+unknownTons-1),
+		bill(sprawlTons, oceanicTons+unknownTons),
+	)
 }
 
 // GrossRemittance rounds conservatively so the observed bps fee cannot leave

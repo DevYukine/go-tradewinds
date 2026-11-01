@@ -12,6 +12,11 @@ import (
 )
 
 func capacitySavingsSpendMarker(runner *Runner) {
+	if _, exists := findHull(runner.stateCache.Catalog, "brigantine"); !exists {
+		hull, _ := findHull(runner.stateCache.Catalog, recoveryHull)
+		hull.ID, hull.HullCategory = "brigantine", "regional"
+		runner.stateCache.Catalog.ShipClasses = append(runner.stateCache.Catalog.ShipClasses, hull)
+	}
 	runner.snapshot["_capacity_savings_target"] = encode(capacitySavingsTarget{
 		PortID: recoveryHomePort, HullID: "brigantine", RequiredPence: 1_000_000,
 		CapitalPence: 500_000, DepthNetPencePerGameDay: 100_000,

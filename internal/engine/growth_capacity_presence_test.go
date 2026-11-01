@@ -73,6 +73,7 @@ func TestCapacityFinancedBuildRevalidatesEstimateRouteAgainstLivePiracy(t *testi
 			loan := snapshotTestLoan()
 			loan.ID, loan.BorrowerCompanyID, loan.BankingRegion = "test-financed-build", runner.account.CompanyID, "north"
 			loan.IsMortgage, loan.Status = false, "active"
+			loan.PrincipalPence, loan.OutstandingPrincipalPence, loan.OwedPence = 10_000, 10_000, 10_000
 			payment := int64(100)
 			loan.InstallmentPence, loan.NextPaymentPence = &payment, &payment
 			runner.stateCache.Loans = append(runner.stateCache.Loans, loan)
@@ -249,6 +250,10 @@ func TestCapacityPairedSavingsExpiryBlocksImmediateRearm(t *testing.T) {
 		runner.meta["routes/"+key] = runner.meta["routes/"+sourceKey]
 	}
 	bookCommodity(runner.stateCache.Markets["new_york"], recoveryGrain).Depth.Bids[0].PricePence = 50_000
+	// This savings-only fixture has already exhausted player credit here.
+	runner.snapshot["_player_loan_fallback"] = encode(map[string]time.Time{
+		yard.ID + "|" + large.ID: time.Now().UTC().Add(6 * time.Hour),
+	})
 	evidence, input := overseasCapacityEvidence(t, h, runner, time.Now().UTC())
 	candidate, _, err := runner.capacityAtYard(h.ctx, yard, large, quote, input, &evidence)
 	if err != nil || candidate.Accepted || !candidate.EconomicallyViable || candidate.CashShortfallPence <= 0 || candidate.DepthNetPencePerGameDay <= 0 {

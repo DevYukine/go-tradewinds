@@ -95,6 +95,11 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 	}
 	stage := data.Action.Stage
 	switch stage {
+	case "loan-request":
+		if status != http.StatusCreated || !r.acceptPlayerLoanRequest(data, response) {
+			return r.reconcileCommitted(ctx, mission, data)
+		}
+		mission.Phase = "growth_loan_request"
 	case "loan-accept", "loan-repay":
 		if status != http.StatusOK || !r.acceptLoanResult(data, response) {
 			return r.reconcileCommitted(ctx, mission, data)
@@ -392,13 +397,36 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 			return false, err
 		}
 	}
-	if stage == "loan-accept" && data.Capacity != nil && domainRefusal {
+	playerApprovalRefusal := stage == "loan-accept" && data.PlayerLoan != nil && data.Action.Path == "/v1/loan/approve" && domainRefusal
+	if stage == "loan-request" && domainRefusal {
+		if err := r.recordPlayerLoanDecision(ctx, data.PlayerLoan, "request_refused", "server refused the player request: "+problem.Detail); err != nil {
+			return false, err
+		}
+		if err := r.playerLoanBackoff(ctx, data.PlayerLoan.PortID, data.PlayerLoan.HullID, true, time.Now().UTC()); err != nil {
+			return false, err
+		}
+	}
+	if playerApprovalRefusal {
+		if err := r.recordPlayerLoanDecision(ctx, data.PlayerLoan, "quote_refused", "approval refused only this quote: "+problem.Detail); err != nil {
+			return false, err
+		}
+	}
+	if stage == "loan-accept" && data.Capacity != nil && domainRefusal && !playerApprovalRefusal {
 		if err := r.recordCapacityFinancingRefusal(ctx, data); err != nil {
 			return false, err
 		}
 	}
 	mortgageRefusal := stage == "build" && data.Capacity != nil && data.Capacity.Mortgage != nil && status == http.StatusConflict &&
 		(strings.Contains(strings.ToLower(problem.Code), "mortgage") || strings.Contains(strings.ToLower(problem.Detail), "mortgage still owed"))
+	if stage == "build" && data.Capacity != nil && data.Capacity.Financing != nil && domainRefusal {
+		verdict := "need_stale"
+		if mortgageRefusal {
+			verdict = "mortgage_unavailable"
+		}
+		if err := r.recordCapacityFinanceFailure(ctx, data, verdict, "financed build refused: "+problem.Detail); err != nil {
+			return false, err
+		}
+	}
 	if mortgageRefusal {
 		r.snapshot["_mortgage_refused_at"] = encode(time.Now().UTC())
 		r.snapshot["_mortgage_retry_at"] = encode(maxTime(r.gameDelay(1), time.Now().UTC().Add(30*time.Second)))
@@ -421,7 +449,7 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 	}
 	// A domain refusal already has a durable, offer-specific latch. It must
 	// not delay selling other cargo or accepting a newly changed offer.
-	if stage != "deliver-charter" || status == 401 || status == 403 || status == 429 {
+	if !playerApprovalRefusal && (stage != "deliver-charter" || status == 401 || status == 403 || status == 429) {
 		data.CooldownUntil = maxTime(data.CooldownUntil, r.gameDelay(1))
 		if status == 409 {
 			data.CooldownUntil = maxTime(data.CooldownUntil, time.Now().Add(5*time.Second))
@@ -441,6 +469,11 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 		}
 	}
 	applyRejectedResult(mission, data, status, problem.Detail)
+	if stage == "loan-request" && domainRefusal {
+		// A refused borrower request acquired no hull or trading obligation.
+		// Do not invent an aborted trade settlement from its journal receipt.
+		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+	}
 	if err := r.saveMission(ctx, mission, data); err != nil {
 		return false, err
 	}
@@ -459,7 +492,20 @@ func applyRejectedResult(mission *store.Mission, data *missionData, status int, 
 	data.Sequence++
 	data.Action = nil
 	if (status == 401 || status == 403 || status == 429) &&
-		(stage == "loan-accept" || stage == "loan-repay" || stage == "build" && data.Capacity != nil && data.Capacity.Financing != nil) {
+		(stage == "loan-request" || stage == "loan-accept" || stage == "loan-repay" || stage == "build" && data.Capacity != nil && data.Capacity.Financing != nil) {
+		return
+	}
+	if stage == "loan-request" {
+		data.PlayerLoan = nil
+		mission.Phase = "growth_rejected"
+		return
+	}
+	if stage == "loan-accept" && action.Path == "/v1/loan/approve" && data.PlayerLoan != nil {
+		var request gameapi.QuoteActionRequest
+		_ = json.Unmarshal(action.Body, &request)
+		data.PlayerLoan.RejectedQuotes = append(data.PlayerLoan.RejectedQuotes, request.QuoteID)
+		data.Capacity = nil
+		mission.Phase = "growth_loan_request"
 		return
 	}
 	// Operational intents must release their control row after a definite

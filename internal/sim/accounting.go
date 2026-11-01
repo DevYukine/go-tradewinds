@@ -71,7 +71,7 @@ func ApplyReceipt(money *Money, stage string, response json.RawMessage) error {
 			return errors.New("incomplete remittance receipt")
 		}
 		money.FeesPence += *receipt.Fee
-	case "depart", "dock", "offshore", "accept-freight", "hire-factor", "dismiss-factor", "settings", "build", "refit", "loan-accept", "loan-repay", "marque", "underwrite":
+	case "depart", "dock", "offshore", "accept-freight", "hire-factor", "dismiss-factor", "settings", "build", "refit", "loan-request", "loan-accept", "loan-repay", "marque", "underwrite":
 		// Departure dues are ledger bills, not a second receipt cost.
 	default:
 		return fmt.Errorf("unsupported receipt stage %s", stage)

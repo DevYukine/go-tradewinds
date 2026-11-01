@@ -77,16 +77,19 @@ func TestStreamControlsPersistNeverSentProofAndRecoverAfterRestart(t *testing.T)
 			}
 			var injected atomic.Bool
 			var staged durableAction
+			var stagedMission *store.Mission
+			var stagedData missionData
 			core := zapcore.NewCore(zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()), zapcore.AddSync(io.Discard), zap.DebugLevel)
 			runner.log = zap.New(core, zap.Hooks(func(entry zapcore.Entry) error {
 				if entry.Message != "dispatching durable action" || !injected.CompareAndSwap(false, true) {
 					return nil
 				}
-				_, data := h.mission("__growth")
+				mission, data := h.mission("__growth")
 				if data.Action == nil {
 					return errors.New("build lost its durable intent")
 				}
 				staged = *data.Action
+				stagedMission, stagedData = mission, data
 				if control == "closure" {
 					close(closeStream)
 				} else if !stream.emit(h.ctx, progressFrame{id: "gap-before-first-send", eventType: "gap"}) {
@@ -125,21 +128,32 @@ func TestStreamControlsPersistNeverSentProofAndRecoverAfterRestart(t *testing.T)
 			if err := json.Unmarshal(journaled.Response, &evidence); err != nil || evidence.Kind != neverSentControlEvent {
 				t.Fatalf("wrong local no-send provenance: %+v error %v", evidence, err)
 			}
-			mission, data := h.mission("__growth")
-			if data.Action != nil {
+			current, currentData, err := runner.loadMission(h.ctx, "__growth")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current != nil && (currentData.Action != nil || time.Now().Before(currentData.CooldownUntil)) {
 				t.Fatal("never-sent debit remained attached")
 			}
-			// Replay the crash window after proof commit but before detaching the intent.
-			data.Sequence--
+			// Restore the exact staged snapshot to simulate a crash after proof
+			// commit but before retirement, even if immediate replanning deleted it.
+			mission, data := stagedMission, stagedData
 			data.Action = &staged
 			if err := runner.saveMission(h.ctx, mission, &data); err != nil {
 				t.Fatal(err)
 			}
+			// This recovery case isolates the original no-send proof, not an
+			// independently eligible replacement build.
+			h.api.setVaultBalance("north", 75_000)
+			h.api.setVaultBalance("south", 75_000)
 			restarted := h.runner(primaryTestKey)
 			if _, err := h.tick(restarted); err != nil {
 				t.Fatal(err)
 			}
-			_, recovered := h.mission("__growth")
+			_, recovered, err := restarted.loadMission(h.ctx, "__growth")
+			if err != nil {
+				t.Fatal(err)
+			}
 			if recovered.Action != nil || recovered.BuiltShipID != "" || recovered.LastActionID == staged.ID ||
 				h.api.mutationCount("/v1/shipyard/build-ship") != 0 || len(h.pending()) != 0 {
 				t.Fatal("restart interpreted local no-send proof as a committed build")

@@ -251,7 +251,7 @@ func BulletinDetailDeadline(detail string, now time.Time) time.Time {
 }
 
 func mutationAttempts(method, path string) int {
-	if bulletinMutation(method, path) {
+	if bulletinMutation(method, path) || method == http.MethodPost && (path == "/v1/loan/request" || path == "/v1/loan/approve") {
 		return 1
 	}
 	return maxAttempts
@@ -332,6 +332,11 @@ func (c *Client) send(ctx context.Context, method, requestURL, path string, payl
 	request, err := http.NewRequestWithContext(attemptCtx, method, requestURL, bytes.NewReader(payload))
 	if err != nil {
 		return requestResult{err: &requestFailure{message: "cannot create game API request", cause: err}}
+	}
+	if method == http.MethodPost && (path == "/v1/loan/request" || path == "/v1/loan/approve") {
+		// The journal must reconcile an ambiguous borrow before another send,
+		// including retries that http.Transport otherwise makes internally.
+		request.GetBody = nil
 	}
 	c.setHeaders(request, "application/json")
 	if len(payload) > 0 {

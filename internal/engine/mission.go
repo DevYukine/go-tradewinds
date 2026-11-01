@@ -56,6 +56,9 @@ type missionData struct {
 	Futures                   *futuresPilotIntent     `json:"futures,omitempty"`
 	Bulletin                  *bulletinIntent         `json:"bulletin,omitempty"`
 	LoanRepayment             *loanRepaymentIntent    `json:"loan_repayment,omitempty"`
+	PlayerLoan                *playerLoanIntent       `json:"player_loan,omitempty"`
+	FundingMission            string                  `json:"funding_mission,omitempty"`
+	FundingGeneration         string                  `json:"funding_generation,omitempty"`
 	SourcingSpentPence        int64                   `json:"sourcing_spent_pence"`
 	SourcingGameDays          float64                 `json:"sourcing_game_days"`
 	ClosingObservedAt         time.Time               `json:"closing_observed_at"`
@@ -203,7 +206,9 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			(id != "__futures" || !unresolved || data.Action.Stage == "futures-settle" ||
 				data.Action.Stage == "futures-close-stock" || data.Action.Stage == "futures-close-lease") {
 			r.assessShip(id)
-			if changed, err := r.dispatch(ctx, missions[id], &data); changed || err != nil {
+			before := r.localRetirements
+			changed, err := r.dispatch(ctx, missions[id], &data)
+			if err != nil || changed && before == r.localRetirements {
 				return changed, err
 			}
 		}
@@ -228,7 +233,9 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		return false, r.hold(ctx, "", "world paused; observation continues without mutations")
 	}
 	if r.opts.Execute {
-		if changed, err := r.serviceLoans(ctx); changed || err != nil {
+		before := r.localRetirements
+		changed, err := r.serviceLoans(ctx)
+		if err != nil || changed && before == r.localRetirements {
 			return changed, err
 		}
 	}
@@ -265,42 +272,49 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return changed, err
 		}
 	}
+	treasuryReleased := false
 	if mission := missions["__treasury"]; mission != nil {
 		r.assessHold("__treasury")
 		data := dataByShip["__treasury"]
 		if time.Now().Before(data.CooldownUntil) {
-			if err := r.hold(ctx, "", "treasury waits for persisted retry-after/replanning cooldown"); err != nil {
+			if err := r.holdExpected(ctx, "__treasury", "treasury waits for persisted retry-after/replanning cooldown"); err != nil {
 				return false, err
 			}
 		} else {
 			// An attached or orphaned unresolved action was handled above.
 			// Release completed or legacy rejected control intents for a fresh
 			// treasury plan rather than holding every account mutation forever.
-			return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+			if err := r.db.DeleteMission(ctx, r.account.ID, mission.ShipID); err != nil {
+				return false, err
+			}
+			delete(missions, mission.ShipID)
+			delete(dataByShip, mission.ShipID)
+			treasuryReleased = true
 		}
 	}
 	sourcingActive := false
 	for _, data := range dataByShip {
 		sourcingActive = sourcingActive || data.Relocation != nil || data.SourcingHandoff != nil
 	}
-	if r.opts.Execute && missions["__treasury"] == nil && !sourcingActive {
+	if r.opts.Execute && !treasuryReleased && missions["__treasury"] == nil && !sourcingActive {
 		r.assessHold("__treasury")
 		changed, err := r.manageTreasury(ctx)
 		if changed || err != nil {
 			return changed, err
 		}
 	}
-	if r.opts.Execute && missions["__treasury"] == nil {
+	if r.opts.Execute && !treasuryReleased && missions["__treasury"] == nil {
 		r.assessHold("__growth")
 		changed, err := r.manageExpansionAgents(ctx)
 		if changed || err != nil {
 			return changed, err
 		}
 	}
-	if missions["__growth"] == nil && missions["__treasury"] == nil {
+	if !treasuryReleased && missions["__growth"] == nil && missions["__treasury"] == nil {
 		r.assessHold("__growth")
+		before := r.localRetirements
 		changed, err := r.considerGrowth(ctx)
-		if changed || err != nil {
+		if err != nil || changed && before == r.localRetirements {
 			return changed, err
 		}
 	}
@@ -312,11 +326,18 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		mission := missions[ship.Ship.ID]
 		data := dataByShip[ship.Ship.ID]
 		if mission != nil {
+			if time.Now().Before(data.CooldownUntil) {
+				if err := r.holdExpected(ctx, ship.Ship.ID, "mission waits for its scoped persisted retry; other ships remain eligible"); err != nil {
+					return false, err
+				}
+				continue
+			}
 			if data.Action != nil && passengerStage(data.Action.Stage) && (data.Passage == nil || data.Passage.QuarantineReason == "") {
 				continue // Only this ship is quarantined by its ambiguous fare request.
 			}
+			before := r.localRetirements
 			changed, err := r.driveMission(ctx, ship, mission, &data)
-			if changed || err != nil {
+			if err != nil || changed && before == r.localRetirements {
 				return changed, err
 			}
 			continue
@@ -650,7 +671,7 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 		return r.finishMission(ctx, ship, mission, data)
 	}
 	if time.Now().Before(data.CooldownUntil) {
-		return false, r.hold(ctx, ship.Ship.ID, "mission waiting for persisted retry cooldown")
+		return false, r.holdExpected(ctx, ship.Ship.ID, "mission waits for its scoped persisted retry cooldown")
 	}
 	if r.fresh("contracts") {
 		changed := false

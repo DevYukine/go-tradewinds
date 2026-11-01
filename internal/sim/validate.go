@@ -13,7 +13,7 @@ import (
 	"github.com/DevYukine/go-tradewinds/internal/store"
 )
 
-var receiptStages = []string{"loan-accept", "loan-repay", "marque", "underwrite", "buy", "sell", "provision", "accept-freight", "deliver-freight", "deliver-charter", "depart", "dock", "offshore", "hire-factor", "dismiss-factor", "settings", "remit", "sourcing-remit", "build", "refit"}
+var receiptStages = []string{"loan-request", "loan-accept", "loan-repay", "marque", "underwrite", "buy", "sell", "provision", "accept-freight", "deliver-freight", "deliver-charter", "depart", "dock", "offshore", "hire-factor", "dismiss-factor", "settings", "remit", "sourcing-remit", "build", "refit"}
 
 type SettlementCheck struct {
 	ID         string `json:"id"`

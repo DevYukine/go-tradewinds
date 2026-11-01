@@ -90,6 +90,15 @@ func (r *Runner) growthSourceAuthority(input PlanningInput, portID string) bool 
 // Only unpaid cash is committed. Existing cargo, hardware and completed store
 // orders do not reserve their original purchase price a second time.
 func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mission, data *missionData, ship ShipState) {
+	if data.PlayerLoan != nil && (data.Capacity == nil || data.Capacity.Financing == nil) {
+		for region, amount := range data.PlayerLoan.ProtectedByRegion {
+			required[region] = growthCashTotal(required[region], amount)
+		}
+		for region, amount := range data.PlayerLoan.DonorByRegion {
+			required[region] = growthCashTotal(required[region], amount)
+		}
+		return
+	}
 	if data.Capacity != nil && data.Capacity.Financing != nil && data.BuiltShipID == "" {
 		financing := data.Capacity.Financing
 		if mission.Phase == "growth_finance_repay" || mission.Phase == "growth_rejected" {

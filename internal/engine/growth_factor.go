@@ -30,6 +30,7 @@ type expansionAgent struct {
 	Region      string    `json:"region"`
 	CreatedAt   time.Time `json:"created_at"`
 	HiredAt     time.Time `json:"hired_at"`
+	RetryAt     time.Time `json:"retry_at,omitempty"`
 	EvaluatedAt time.Time `json:"evaluated_at,omitempty"`
 }
 
@@ -711,6 +712,10 @@ func (r *Runner) expansionRequired(ctx context.Context, input PlanningInput, reg
 	if err != nil {
 		return nil, err
 	}
+	return r.expansionFundingRequired(input, required, region, fees), nil
+}
+
+func (r *Runner) expansionFundingRequired(input PlanningInput, required map[string]int64, region string, fees int64) map[string]int64 {
 	ownFees := expansionFeeCommitments(r.stateCache, r.snapshot)[region]
 	required[region] = max(0, required[region]-ownFees)
 	for candidate, protected := range input.ReserveByRegion {
@@ -720,7 +725,7 @@ func (r *Runner) expansionRequired(ctx context.Context, input PlanningInput, reg
 		required[candidate] = max(required[candidate], min(protected, input.Balances[candidate]))
 	}
 	required[region] = growthCashTotal(max(required[region], r.opts.ReservePence), fees)
-	return required, nil
+	return required
 }
 
 type expansionEvidence struct {
@@ -748,24 +753,25 @@ func (r *Runner) expansionPassEvidence(ctx context.Context, input PlanningInput)
 }
 
 func (r *Runner) expansionBuildAdmission(ctx context.Context, admission *expansionAdmission) (string, bool, error) {
-	ownFees := expansionFeeCommitments(r.stateCache, r.snapshot)[admission.region]
-	if ownFees > 0 {
-		admission.input.ReserveByRegion = maps.Clone(admission.input.ReserveByRegion)
-		admission.input.ReserveByRegion[admission.region] = max(0, admission.input.ReserveByRegion[admission.region]-ownFees)
-	}
 	pass, reason, err := r.expansionPassEvidence(ctx, admission.input)
 	if err != nil || reason != "" {
 		return reason, false, err
 	}
-	pass.growth.required[admission.region] = max(0, pass.growth.required[admission.region]-ownFees)
 	return r.expansionBuildAdmissionForPass(ctx, admission, &pass)
 }
 
 func (r *Runner) expansionBuildAdmissionForPass(ctx context.Context, admission *expansionAdmission, pass *expansionEvidence) (string, bool, error) {
 	input := &admission.input
 	var err error
+	admission.required = r.expansionFundingRequired(*input, maps.Clone(pass.growth.required), admission.region, 2*expansionAgentHireFeePence)
+	projected, fees, _, funded := measuredFunding(input.Balances, admission.required, input.Rates)
+	capacity := pass.capacity
+	capacity.SurplusPence = 2 * expansionAgentHireFeePence
+	for region, balance := range projected {
+		capacity.SurplusPence = growthCashTotal(capacity.SurplusPence, max(0, balance-admission.required[region]))
+	}
 	admission.build, admission.quote, admission.fresh, err = r.expansionBuildEstimateForRegion(ctx,
-		admission.yard, admission.partner, pass.capacity, pass.growth.asOf, pass.rates[admission.region])
+		admission.yard, admission.partner, capacity, pass.growth.asOf, pass.rates[admission.region])
 	if err != nil {
 		return "", false, err
 	}
@@ -797,15 +803,8 @@ func (r *Runner) expansionBuildAdmissionForPass(ctx context.Context, admission *
 	if capped := capacityEstimatedExposure(admission.build, pass.growth.hazard.netWorth); !capped.EconomicallyViable {
 		return capped.Reason, true, nil
 	}
-	admission.required = maps.Clone(pass.growth.required)
-	for region, protected := range input.ReserveByRegion {
-		admission.required[region] = max(admission.required[region], min(protected, input.Balances[region]))
-	}
-	admission.required[admission.region] = growthCashTotal(
-		max(admission.required[admission.region], r.opts.ReservePence), 2*expansionAgentHireFeePence)
-	_, fees, _, funded := measuredFunding(input.Balances, admission.required, input.Rates)
 	admission.needed = growthCashTotal(admission.needed, fees)
-	if !funded || pass.growth.available < admission.needed {
+	if !funded {
 		return "expansion agent must preserve the hull capital, capacity working cash and funding fees", false, nil
 	}
 	return "", false, nil
@@ -1098,6 +1097,10 @@ func (r *Runner) manageExpansionAgents(ctx context.Context) (bool, error) {
 			slices.Contains(r.stateCache.Factors, agent.PortID) || !now.Before(expansionPairTime(agents, agent).Add(2*time.Hour)) {
 			continue
 		}
+		if now.Before(agent.RetryAt) {
+			r.wakeBy(agent.RetryAt)
+			continue
+		}
 		// The durable records are ordered yard first, then its partner.
 		input, err := r.committedPlanningInput(ctx, ShipState{})
 		if err != nil {
@@ -1237,6 +1240,7 @@ func (r *Runner) recordExpansionAgent(ctx context.Context, data *missionData) er
 			return nil
 		}
 		agents[i].HiredAt = time.Now().UTC()
+		agents[i].RetryAt = time.Time{}
 		if mate, paired := expansionMate(agents, agents[i]); !paired || mate.HiredAt.IsZero() {
 			r.snapshot["_expansion_last_started_at"] = encode(maxTime(
 				decode[time.Time](r.snapshot, "_expansion_last_started_at"), agents[i].HiredAt))
@@ -1250,6 +1254,36 @@ func (r *Runner) recordExpansionAgent(ctx context.Context, data *missionData) er
 		decode[time.Time](r.snapshot, "_expansion_last_started_at"), agents[len(agents)-1].HiredAt))
 	r.snapshot["_expansion_agents"] = encode(agents)
 	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+}
+
+// A proven never-sent hire can wait without quarantining ships or charging
+// another pair. The original two-hour exploration lifetime is unchanged.
+func (r *Runner) deferExpansionHire(ctx context.Context, body []byte, now time.Time) (time.Time, error) {
+	var request struct {
+		PortID string `json:"port_id"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		return time.Time{}, err
+	}
+	until := now.Add(15 * time.Minute / time.Duration(max(1, r.stateCache.Clock.Calendar.TimeScale)))
+	agents := decode[[]expansionAgent](r.snapshot, "_expansion_agents")
+	for _, agent := range agents {
+		if agent.PortID != request.PortID {
+			continue
+		}
+		if expires := expansionPairTime(agents, agent).Add(2 * time.Hour); expires.Before(until) {
+			until = expires
+		}
+		for i := range agents {
+			if agents[i].Region == agent.Region && agents[i].HiredAt.IsZero() {
+				agents[i].RetryAt = maxTime(agents[i].RetryAt, until)
+			}
+		}
+		r.snapshot["_expansion_agents"] = encode(agents)
+		r.wakeBy(until)
+		return until, r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	}
+	return until, nil
 }
 
 func (r *Runner) clearAwaitingExpansion(ctx context.Context, body []byte, recordLoss bool) error {

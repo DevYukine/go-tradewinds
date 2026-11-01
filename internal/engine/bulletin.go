@@ -260,6 +260,10 @@ func (r *Runner) driveBulletin(ctx context.Context, mission *store.Mission, data
 	if mission != nil && mission.Phase == "done" && data.Action == nil {
 		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 	}
+	if mission != nil && time.Now().Before(data.CooldownUntil) {
+		r.wakeBy(data.CooldownUntil)
+		return false, r.holdExpected(ctx, mission.ShipID, "public posting waits for its scoped persisted retry")
+	}
 	if mission != nil && data.Action != nil {
 		until := maxTime(state.CooldownUntil, data.CooldownUntil)
 		if time.Now().Before(until) {

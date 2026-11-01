@@ -29,6 +29,7 @@ func (r *Runner) loanCaptureTask(ctx context.Context) (fetchTask, error) {
 		}
 		if mission != nil && (data.LoanRepayment != nil ||
 			data.Capacity != nil && data.Capacity.Financing != nil ||
+			data.PlayerLoan != nil ||
 			data.Action != nil && strings.HasPrefix(data.Action.Path, "/v1/loan/")) {
 			return fetchTask{key: "loans", path: "/v1/loan/list?role=borrower", kind: fetchPages}, nil
 		}
@@ -135,6 +136,85 @@ func validateBorrowerLoans(raw json.RawMessage, companyID string) error {
 				loan.NextPaymentPence == nil || loan.Repayment == "amortised" && loan.InstallmentPence == nil {
 				return fmt.Errorf("borrower loan row %d has unknown active payment obligations", index)
 			}
+		}
+	}
+	return nil
+}
+
+func validateLoanRequests(raw json.RawMessage, companyID string) error {
+	var rows []json.RawMessage
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return fmt.Errorf("invalid own loan requests: %w", err)
+	}
+	if rows == nil {
+		return errors.New("own loan requests are null")
+	}
+	seen := make(map[string]bool, len(rows))
+	for index, row := range rows {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(row, &fields); err != nil {
+			return err
+		}
+		for _, key := range []string{
+			"id", "borrower_company_id", "borrower_name", "borrower_record", "banking_region",
+			"principal_pence", "term_game_days", "repayment", "recourse", "collateral_kind",
+			"goldsmiths_rate_bps", "rate_floor_bps", "rate_ceiling_bps", "auto_quote",
+			"status", "expires_at", "created_at", "quotes",
+		} {
+			if value := bytes.TrimSpace(fields[key]); len(value) == 0 || bytes.Equal(value, []byte("null")) {
+				return fmt.Errorf("own loan request %d has unknown %s", index, key)
+			}
+		}
+		var request gameapi.LoanRequestView
+		if err := json.Unmarshal(row, &request); err != nil {
+			return err
+		}
+		if request.ID == "" || seen[request.ID] || companyID == "" || request.BorrowerCompanyID != companyID ||
+			request.PrincipalPence <= 0 || request.TermGameDays < 1 || request.TermGameDays > 360 ||
+			request.CreatedAt.IsZero() || !request.ExpiresAt.After(request.CreatedAt) ||
+			request.GoldsmithsRateBPS < 0 || request.RateFloorBPS < 0 || request.RateCeilingBPS < 0 {
+			return fmt.Errorf("own loan request %d has invalid terms or identity", index)
+		}
+		seen[request.ID] = true
+		switch request.BankingRegion {
+		case "channel", "north_sea", "baltic", "iberia", "caribbean", "indian_ocean", "east_indies", "america":
+		default:
+			return fmt.Errorf("own loan request %d has unknown banking region", index)
+		}
+		if request.Repayment != "amortised" && request.Repayment != "balloon" {
+			return fmt.Errorf("own loan request %d has unknown repayment", index)
+		}
+		switch request.CollateralKind {
+		case "ship_lien", "warehouse_goods", "contract_receivable", "unsecured", "deposit":
+		default:
+			return fmt.Errorf("own loan request %d has unknown collateral kind", index)
+		}
+		if request.CollateralKind == "ship_lien" && (request.CollateralShipID == nil || *request.CollateralShipID == "") {
+			return fmt.Errorf("own loan request %d has unknown pledged ship", index)
+		}
+		switch request.Status {
+		case "open", "funded", "withdrawn", "lapsed":
+		default:
+			return fmt.Errorf("own loan request %d has unknown status", index)
+		}
+	}
+	return nil
+}
+
+func validateOwnShipListings(raw json.RawMessage) error {
+	var rows []struct {
+		ShipID string `json:"ship_id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return fmt.Errorf("invalid own ship listings: %w", err)
+	}
+	if rows == nil {
+		return errors.New("own ship listings are null")
+	}
+	for _, row := range rows {
+		if row.ShipID == "" || row.Status != "open" && row.Status != "sold" && row.Status != "cancelled" {
+			return errors.New("own ship listing has unknown ship or status")
 		}
 	}
 	return nil

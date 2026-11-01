@@ -69,15 +69,17 @@ type Runner struct {
 	lastShipStatus   map[string]string
 	decisionHashes   map[string]decisionFingerprint
 	// outageWarnedAt rate-limits dataset failures caused by game 5xx outages.
-	outageWarnedAt         time.Time
-	lastMutationStatus     atomic.Int64
-	expenseOwners          map[string]string
-	nextDeadline           time.Time
-	publishedFinancial     atomic.Uint64
-	capturedFinancial      uint64
-	publishedControl       atomic.Uint64
-	capturedControl        uint64
-	financialSession       string
+	outageWarnedAt     time.Time
+	lastMutationStatus atomic.Int64
+	expenseOwners      map[string]string
+	nextDeadline       time.Time
+	publishedFinancial atomic.Uint64
+	capturedFinancial  uint64
+	publishedControl   atomic.Uint64
+	capturedControl    uint64
+	financialSession   string
+	// Local retirements never reached transport and do not end a fleet pass.
+	localRetirements       uint64
 	requestJournalMu       sync.Mutex
 	requestJournalCauses   map[[sha256.Size]byte]struct{}
 	requestJournalFailures int
@@ -157,6 +159,8 @@ var financialEvents = map[string]bool{
 	"futures_claim_paid":              true,
 	"futures_claim_written_off":       true,
 	"loan_disbursed":                  true,
+	"loan_quote_received":             true,
+	"loan_request_expired":            true,
 	"loan_repayment":                  true,
 	"loan_defaulted":                  true,
 	"loan_collateral_seized":          true,

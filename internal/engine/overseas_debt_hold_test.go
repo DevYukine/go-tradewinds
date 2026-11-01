@@ -61,6 +61,7 @@ func TestOverseasAwaitingPairHoldsEuropeanDebtUntilFreshEvaluation(t *testing.T)
 	bookCommodity(runner.stateCache.Markets[recoveryFarPort], recoveryGrain).Depth.Bids[0].PricePence = 50_000
 	yard, hull, _ := overseasAddCapacityWorld(t, h, runner)
 	runner.stateCache.Factors = append(runner.stateCache.Factors, yard.ID, "new_york")
+	overseasMetric(t, h, 10_000_000, time.Now().UTC())
 	// The proven cash-short shape: every region exactly its protected reserve,
 	// and the European debt region holding the only free working cash, so its
 	// grain lane funds at every size while the build stays a genuine debt case
@@ -73,7 +74,7 @@ func TestOverseasAwaitingPairHoldsEuropeanDebtUntilFreshEvaluation(t *testing.T)
 	for i := range runner.stateCache.Vaults {
 		vault := &runner.stateCache.Vaults[i]
 		if vault.BankingRegion == port.BankingRegion {
-			vault.BalancePence = reserves[vault.BankingRegion] + 40_000
+			vault.BalancePence = reserves[vault.BankingRegion] + 100_000
 			continue
 		}
 		vault.BalancePence = reserves[vault.BankingRegion]
@@ -130,6 +131,10 @@ func TestOverseasAwaitingPairHoldsEuropeanDebtUntilFreshEvaluation(t *testing.T)
 	// Release pass: a real route-backed yard evaluation marks the pair, and the
 	// proven European financing stages again in the same consumer pass.
 	delete(runner.snapshot, "_growth_build_backoffs")
+	// The first control consumed its candidate-scoped fallback ticket.
+	runner.snapshot["_player_loan_fallback"] = encode(map[string]time.Time{
+		recoveryHomePort + "|" + recoveryHull: time.Now().UTC().Add(6 * time.Hour),
+	})
 	evidence, _ = overseasCapacityEvidence(t, h, runner, time.Now().UTC())
 	if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || !changed {
 		t.Fatalf("fresh evaluation did not release normal financing: changed=%t err=%v holds=%v", changed, err, runner.holding)
@@ -170,11 +175,9 @@ func TestOverseasLoanAcceptRevalidatesZoneEstimateBeforeDebt(t *testing.T) {
 			at := time.Now().UTC().Truncate(time.Microsecond)
 			overseasMetric(t, h, netWorth, at)
 			evidence, candidate := overseasDebtYardCandidate(t, h, runner, yard, hull, quote, 50_000)
-			if change == "insufficient valuation" {
-				// The frozen admission stays valid at the exact 35% boundary; a
-				// fresher but lower publication must fail the live recheck.
-				overseasMetric(t, h, netWorth-1, time.Now().UTC())
-			}
+			runner.snapshot["_player_loan_fallback"] = encode(map[string]time.Time{
+				yard.ID + "|" + hull.ID: time.Now().UTC().Add(6 * time.Hour),
+			})
 			if changed, err := runner.considerCapacityFinancing(h.ctx, yard, hull, candidate, clonePence(evidence.required), &evidence); err != nil || !changed {
 				t.Fatalf("frozen financing admission: changed=%t err=%v holds=%v", changed, err, runner.holding)
 			}
@@ -232,6 +235,10 @@ func TestOverseasLoanAcceptRevalidatesZoneEstimateBeforeDebt(t *testing.T) {
 				runner.snapshot["zones"] = encode(observed)
 			case "stale valuation":
 				overseasMetric(t, h, netWorth, at.Add(-6*time.Hour-time.Second))
+			case "insufficient valuation":
+				// Change the publication after staging, so this exercises the
+				// first-send recheck rather than the shared admission gate.
+				overseasMetric(t, h, netWorth-1, time.Now().UTC())
 			}
 			runner.holding = nil
 			changed, err := runner.dispatch(h.ctx, mission, &data)
@@ -258,7 +265,7 @@ func TestOverseasLoanAcceptRevalidatesZoneEstimateBeforeDebt(t *testing.T) {
 			if change == "insufficient valuation" {
 				wantReason = capacitySolvencyReason
 			}
-			requireReviewHold(t, runner, wantReason, false)
+			requireReviewHold(t, runner, wantReason, true)
 			mission, data = h.mission("__growth")
 			if data.Action != nil || data.Capacity == nil || data.Capacity.Financing == nil ||
 				len(data.Capacity.Financing.Quotes) != 1 || len(data.Capacity.Financing.Loans) != 0 {

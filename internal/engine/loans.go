@@ -91,11 +91,11 @@ func (r *Runner) mortgageBuildTermsReady(data *missionData, quote YardQuote) err
 		return nil
 	}
 	if !r.mortgageAvailable() {
-		return errors.New("capacity mortgage waits until authoritative loans show no open mortgage")
+		return capacityGate("mortgage_unavailable", true, "capacity mortgage waits until authoritative loans show no open mortgage")
 	}
 	if quote.TotalCostPence == nil || !validMortgageTerms(quote.Mortgage, *quote.TotalCostPence) ||
 		!sameMortgageTerms(data.Capacity.Mortgage, quote.Mortgage) {
-		return errors.New("capacity mortgage fresh terms differ from the admitted immutable financing")
+		return capacityGate("mortgage_unavailable", true, "capacity mortgage fresh terms differ from the admitted immutable financing")
 	}
 	return nil
 }
@@ -133,15 +133,23 @@ type loanRepaymentIntent struct {
 }
 
 type capacityLoanDecision struct {
-	Borrow                bool     `json:"borrow"`
-	Reason                string   `json:"reason"`
-	ShortfallPence        int64    `json:"shortfall_pence"`
-	LienCapacityPence     *int64   `json:"lien_capacity_pence"`
-	PrincipalPence        int64    `json:"principal_pence"`
-	InstallmentPence      *int64   `json:"installment_pence"`
-	DebtReservePence      int64    `json:"debt_reserve_pence"`
-	Coverage              *float64 `json:"half_net_installment_coverage"`
-	NetAfterInterestPence float64  `json:"net_after_daily_interest_pence"`
+	Borrow                bool            `json:"borrow"`
+	Source                string          `json:"source"`
+	TermGameDays          int32           `json:"term_game_days"`
+	CollateralKind        string          `json:"collateral_kind"`
+	ShipID                string          `json:"ship_id"`
+	Verdict               string          `json:"verdict"`
+	HullCategory          string          `json:"hull_category"`
+	EvidenceBasis         string          `json:"evidence_basis"`
+	Package               capacityPackage `json:"package"`
+	Reason                string          `json:"reason"`
+	ShortfallPence        int64           `json:"shortfall_pence"`
+	LienCapacityPence     *int64          `json:"lien_capacity_pence"`
+	PrincipalPence        int64           `json:"principal_pence"`
+	InstallmentPence      *int64          `json:"installment_pence"`
+	DebtReservePence      int64           `json:"debt_reserve_pence"`
+	Coverage              *float64        `json:"half_net_installment_coverage"`
+	NetAfterInterestPence float64         `json:"net_after_daily_interest_pence"`
 }
 
 func (r *Runner) loanAuthority() bool {
@@ -175,28 +183,36 @@ func loanFullPayment(loan gameapi.Loan) int64 {
 	return growthCashTotal(loan.OwedPence, int64(math.Ceil(loanDailyInterest(loan))))
 }
 
-func evaluateCapacityLoan(decision GrowthDecision, shortfall, capacity, principal, installment int64, annualRate int32) capacityLoanDecision {
+func evaluateCapacityLoan(decision GrowthDecision, shortfall, capacity, principal, installment int64, annualRate int32, maxPaybackDays float64) capacityLoanDecision {
 	result := capacityLoanDecision{
-		ShortfallPence: shortfall, LienCapacityPence: &capacity, PrincipalPence: principal,
+		ShortfallPence: shortfall, LienCapacityPence: &capacity, PrincipalPence: principal, Verdict: "debt_capacity",
 		InstallmentPence: &installment, DebtReservePence: growthCashTotal(installment, installment),
 	}
 	if !decision.EconomicallyViable || decision.Accepted || shortfall <= 0 {
 		result.Reason = "borrow only for an economically admitted depth-backed capacity candidate blocked solely by a positive total cash shortfall"
 		return result
 	}
-	if principal < goldsmithsMinimumPence || principal > capacity || installment <= 0 || result.DebtReservePence == math.MaxInt64 {
+	if principal < goldsmithsMinimumPence || principal > capacity || installment <= 0 ||
+		result.DebtReservePence == math.MaxInt64 || principal < growthCashTotal(shortfall, result.DebtReservePence) {
 		result.Reason = "available liens cannot cover the full shortfall and two installments"
 		return result
 	}
 	coverage := decision.IncrementalNetPencePerGameDay * 5 / float64(installment)
 	result.Coverage = &coverage
 	result.NetAfterInterestPence = decision.IncrementalNetPencePerGameDay - float64(principal)*float64(annualRate)/10_000/360
-	if math.IsNaN(coverage) || math.IsInf(coverage, 0) || coverage+1e-9 < 1.25 || result.NetAfterInterestPence <= 0 {
+	if !capacityPackageCoverage(decision, installment) || result.NetAfterInterestPence <= 0 {
+		result.Verdict = "dscr"
 		result.Reason = "half the repeatable marginal net must cover ten-day installments by at least 1.25x after interest"
 		return result
 	}
+	if maxPaybackDays <= 0 || float64(growthCapital(decision))/result.NetAfterInterestPence > min(420, maxPaybackDays) {
+		result.Verdict = "payback"
+		result.Reason = "capacity capital exceeds the configured maximum game-day payback after loan interest"
+		return result
+	}
 	result.Borrow = true
-	result.Reason = "Goldsmiths proceeds fund the cash-only shortfall and two installments with at least 1.25x half-net coverage"
+	result.Verdict = "financed"
+	result.Reason = "loan proceeds fund only capacity capital, the candidate lot and two installments with at least 1.25x half-net coverage"
 	return result
 }
 
@@ -286,6 +302,19 @@ func (r *Runner) validGoldsmithsQuote(quote gameapi.GoldsmithsQuote, shipID, reg
 }
 
 func (r *Runner) recordCapacityLoan(ctx context.Context, port Port, hull Hull, decision capacityLoanDecision) error {
+	if decision.Source == "" {
+		decision.Source = "goldsmiths"
+	}
+	if decision.TermGameDays == 0 {
+		decision.TermGameDays = 360
+	}
+	if decision.CollateralKind == "" {
+		decision.CollateralKind = "ship_lien"
+	}
+	decision.HullCategory = hull.HullCategory
+	if decision.Verdict == "" {
+		decision.Verdict = "debt_capacity"
+	}
 	return r.decision(ctx, "", "capacity_financing:"+port.ID+"|"+hull.ID, decision.Reason, decision)
 }
 
@@ -294,7 +323,18 @@ func (r *Runner) recordCapacityFinancingRefusal(ctx context.Context, data *missi
 }
 
 func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull Hull, decision GrowthDecision, required map[string]int64, evidence *growthEvidence) (bool, error) {
-	result := capacityLoanDecision{ShortfallPence: decision.CashShortfallPence}
+	if evidence.asOf.IsZero() {
+		evidence.asOf = time.Now().UTC()
+	}
+	result := capacityLoanDecision{
+		ShortfallPence: decision.CashShortfallPence, EvidenceBasis: decision.EvidenceBasis,
+		Source:  "player_request",
+		Package: capacityPackageFor(decision, "player_request", 0, 0),
+	}
+	if r.playerFallback(port.ID, hull.ID) {
+		result.Source = "goldsmiths"
+		result.Package.Source = "goldsmiths"
+	}
 	quoted := false
 	refuse := func(reason string) (bool, error) {
 		result.Borrow = false
@@ -309,8 +349,9 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 	if !decision.EconomicallyViable || decision.Accepted || required == nil || decision.CashShortfallPence <= 0 {
 		return refuse("no borrowing: this is not a positive total cash-only capacity shortfall")
 	}
-	if decision.Mortgage != nil {
-		return refuse("capacity mortgage does not also pledge incumbent ships for a second financing package")
+	if !capacityDebtCashReady(decision, evidence.available) {
+		result.Verdict = "own_cash_buffer"
+		return refuse("own cash must cover the incumbent buffer before borrowing for capital and the candidate lot")
 	}
 	if until := decode[map[string]time.Time](r.snapshot, "_capacity_financing_backoffs")[port.ID+"|"+hull.ID]; time.Now().Before(until) {
 		r.wakeBy(until)
@@ -319,9 +360,25 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 	if !r.loanAuthority() || !r.opts.Execute {
 		return refuse("borrowing requires execute mode and fresh complete borrower-loan authority")
 	}
+	var gate string
+	var err error
+	decision, gate, err = r.capacityDebtDecision(ctx, hull, decision, evidence.asOf, nil)
+	if err != nil {
+		return false, err
+	}
+	result.EvidenceBasis = decision.EvidenceBasis
+	if gate != "" {
+		result.Verdict = gate
+		return refuse("debt requires fresh realized settlement net: " + gate)
+	}
 	capital := growthCapital(decision)
-	if decision.DepthNetPencePerGameDay <= 0 || float64(capital)/decision.DepthNetPencePerGameDay > r.opts.CapacityPaybackDays {
-		return refuse("recourse debt requires depth-backed non-charter earnings inside the capacity payback horizon")
+	if decision.DepthNetPencePerGameDay <= 0 {
+		result.Verdict = "no_depth"
+		return refuse("recourse debt requires repeatable depth-backed non-charter earnings")
+	}
+	if float64(capital)/decision.DepthNetPencePerGameDay > r.capacityPaybackLimit() {
+		result.Verdict = "payback"
+		return refuse("debt-funded capacity exceeds the maximum payback")
 	}
 	decision.IncrementalNetPencePerGameDay = decision.DepthNetPencePerGameDay
 	decision.PaybackGameDays = float64(capital) / decision.DepthNetPencePerGameDay
@@ -331,27 +388,46 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 	}
 	if strings.HasPrefix(decision.HazardSource, "zone estimate") {
 		if capped := capacityEstimatedExposure(decision, evidence.hazard.netWorth); !capped.EconomicallyViable {
+			result.Verdict = "zone_exposure"
 			return refuse(capped.Reason)
 		}
 	}
-	var ships []string
-	for _, ship := range r.stateCache.Ships {
-		if ship.Ship.Status == "sunk" {
-			continue
-		}
-		pledged := false
-		for _, loan := range r.stateCache.Loans {
-			pledged = pledged || loan.CollateralShipID != nil && *loan.CollateralShipID == ship.Ship.ID &&
-				(openMortgage(loan) || loan.CollateralStatus == "pledged" || loan.CollateralStatus == "held" || loan.CollateralStatus == "seizure_pending")
-		}
-		if !pledged {
-			ships = append(ships, ship.Ship.ID)
-		}
+	freeShips := r.freeLoanShips()
+	ships := make([]string, 0, len(freeShips))
+	for _, ship := range freeShips {
+		ships = append(ships, ship.Ship.ID)
 	}
-	sort.Strings(ships)
+	// A request precedes all instant Goldsmiths quote creation.
+	if until := decode[map[string]time.Time](r.snapshot, "_player_loan_backoffs")[port.ID+"|"+hull.ID]; !r.playerFallback(port.ID, hull.ID) && time.Now().Before(until) {
+		r.wakeBy(until)
+		return false, nil
+	}
+	if !r.loanRequestAuthority() || !r.fresh("ship_listings") || r.openOwnLoanRequest() {
+		result.Source, result.Verdict = "player_request", "request_open"
+		return refuse("fresh own requests must show no open request before borrowing")
+	}
+	if _, err := r.growthNetWorth(ctx, evidence); err != nil {
+		return false, err
+	}
+	financingShortfall := growthCashTotal(decision.CashShortfallPence, r.capacityLoanHeadroom(decision))
+	playerPrincipal, playerInstallment := estimatedPlayerPrincipal(financingShortfall)
+	if !capacityDebtExposure(decision, playerPrincipal, evidence.hazard.netWorth, r.stateCache.Loans, nil) {
+		result.Verdict = "debt_capacity"
+		return refuse("gross package debt exceeds 35% of fresh net worth, or net worth is stale")
+	}
+	if !r.playerFallback(port.ID, hull.ID) {
+		result = evaluateCapacityLoan(decision, decision.CashShortfallPence, math.MaxInt64, playerPrincipal, playerInstallment, 3_000, r.capacityPaybackLimit())
+		result.Source = "player_request"
+		result.EvidenceBasis = decision.EvidenceBasis
+		result.Package = capacityPackageFor(decision, "player_request", playerPrincipal, playerInstallment)
+		if !result.Borrow {
+			return refuse(result.Reason)
+		}
+		return r.stagePlayerLoan(ctx, port, hull, decision, playerPrincipal, playerInstallment, evidence)
+	}
 	capacity := int64(len(ships)) * goldsmithsMaximumPence
-	principal, estimate := estimatedCapacityPrincipal(decision.CashShortfallPence, int64(len(ships)))
-	result = evaluateCapacityLoan(decision, decision.CashShortfallPence, capacity, principal, estimate, 3_000)
+	principal, estimate := estimatedCapacityPrincipal(financingShortfall, int64(len(ships)))
+	result = evaluateCapacityLoan(decision, decision.CashShortfallPence, capacity, principal, estimate, 3_000, r.capacityPaybackLimit())
 	if !result.Borrow {
 		return refuse(result.Reason)
 	}
@@ -391,7 +467,7 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 			installment = growthCashTotal(installment, *quote.Quote.InstallmentPence)
 			capacity = min(quotedCapacity, houseFunds)
 		}
-		needed := growthCashTotal(decision.CashShortfallPence, installment, installment)
+		needed := growthCashTotal(financingShortfall, installment, installment)
 		if principal == needed || attempt == 1 && principal >= needed && principal-needed <= 2*int64(count) {
 			break
 		}
@@ -401,13 +477,26 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 		}
 		principal = needed
 	}
-	result = evaluateCapacityLoan(decision, decision.CashShortfallPence, capacity, principal, installment, quotes[0].AnnualRateBPS)
+	result = evaluateCapacityLoan(decision, decision.CashShortfallPence, capacity, principal, installment, quotes[0].AnnualRateBPS, r.capacityPaybackLimit())
+	result.Source, result.TermGameDays, result.CollateralKind = "goldsmiths", 360, "ship_lien"
+	result.Package, result.EvidenceBasis = capacityPackageFor(decision, "goldsmiths", principal, installment), decision.EvidenceBasis
+	if len(quotes) > 0 && quotes[0].CollateralShipID != nil {
+		result.ShipID = *quotes[0].CollateralShipID
+	}
+	if !capacityDebtExposure(decision, principal, evidence.hazard.netWorth, r.stateCache.Loans, nil) {
+		result.Verdict = "debt_capacity"
+		return refuse("exact gross package debt exceeds 35% of fresh net worth")
+	}
 	_, protected, donors, funded := capacityLoanFunding(decision, evidence, port.BankingRegion, principal, result.DebtReservePence, r.stateCache.Rates)
 	if !result.Borrow || !funded {
 		result.Borrow = false
 		return refuse("exact financing cannot preserve the admitted capital, cargo buffer, debt reserve and coverage")
 	}
 	if err := r.recordCapacityLoan(ctx, port, hull, result); err != nil {
+		return false, err
+	}
+	r.clearPlayerFallback(port.ID, hull.ID)
+	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
 		return false, err
 	}
 	return r.startCapacityGrowth(ctx, port, hull, decision, &capacityFinancing{Quotes: quotes, Decision: decision, ProtectedByRegion: protected, DonorByRegion: donors})
@@ -422,7 +511,18 @@ func matchesLoanQuote(loan gameapi.Loan, quote gameapi.LoanQuote, companyID stri
 }
 
 func loanQuoteIdentity(loan gameapi.Loan, quote gameapi.LoanQuote) bool {
-	return !loan.IsMortgage && loan.ID != "" && loan.QuoteID != nil && *loan.QuoteID == quote.ID && loan.CollateralShipID != nil && quote.CollateralShipID != nil && *loan.CollateralShipID == *quote.CollateralShipID
+	if loan.IsMortgage || loan.ID == "" || loan.QuoteID == nil || *loan.QuoteID != quote.ID {
+		return false
+	}
+	if quote.RequestID != nil {
+		return loan.RequestID != nil && *loan.RequestID == *quote.RequestID &&
+			sameOptionalString(loan.CollateralShipID, quote.CollateralShipID)
+	}
+	return loan.CollateralShipID != nil && quote.CollateralShipID != nil && *loan.CollateralShipID == *quote.CollateralShipID
+}
+
+func sameOptionalString(a, b *string) bool {
+	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
 
 func (r *Runner) loanByID(id string) (gameapi.Loan, bool) {
@@ -466,12 +566,14 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 			// captures prevent another payment from the pre-mutation snapshot.
 			tasks := []fetchTask{
 				{key: "loans", path: "/v1/loan/list?role=borrower", kind: fetchPages},
+				{key: "loan_requests", path: "/v1/loan/requests?mine=true&limit=50", kind: fetchJSON},
 				{key: "vaults", path: "/v1/treasury/vaults", kind: fetchJSON},
 			}
 			if err := r.captureWave(ctx, tasks, nil); err != nil {
 				return false, err
 			}
 			r.stateCache.Loans = decode[[]gameapi.Loan](r.snapshot, "loans")
+			r.stateCache.LoanRequests = decode[[]gameapi.LoanRequestView](r.snapshot, "loan_requests")
 			r.stateCache.Vaults = decode[struct {
 				Vaults []Vault `json:"vaults"`
 			}](r.snapshot, "vaults").Vaults
@@ -495,7 +597,7 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 		}
 		input := r.planningInput(ShipState{})
 		if input.Balances[loan.BankingRegion] < required[loan.BankingRegion] {
-			if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__loans", &loanRepaymentIntent{Before: loan}); changed || err != nil {
+			if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__loans", &loanRepaymentIntent{Before: loan}, nil); changed || err != nil {
 				return changed, err
 			}
 		}
@@ -511,7 +613,7 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 		}
 		required[loan.BankingRegion] = growthCashTotal(max(0, required[loan.BankingRegion]-loanReserve(loan)), loan.ArrearsPence)
 		intent := &loanRepaymentIntent{Before: loan, AmountPence: loan.ArrearsPence}
-		if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__loans", intent); changed || err != nil {
+		if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__loans", intent, nil); changed || err != nil {
 			return changed, err
 		}
 		if input.Balances[loan.BankingRegion] < required[loan.BankingRegion] {
@@ -611,21 +713,32 @@ func (r *Runner) loanPrepaymentInput(ctx context.Context, loan gameapi.Loan) (Pl
 }
 
 func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (GrowthDecision, map[string]int64, error) {
-	if !r.loanAuthority() || !r.fresh("ships") || !r.fresh("vaults") {
-		return GrowthDecision{}, nil, errors.New("capacity financing waits for fresh loan, fleet and cash authority")
-	}
-	if !cheapCapacityHull(Hull{ID: data.Capacity.BuildClass}) {
-		data.Capacity.Financing.Cancel = true
-		return data.Capacity.Financing.Decision, nil, errors.New("capacity financing requires a cheap reinvestment hull")
-	}
 	financing := data.Capacity.Financing
 	if !financing.BuildBy.IsZero() && !time.Now().Before(financing.BuildBy) {
 		financing.Cancel = true
-		return financing.Decision, nil, errors.New("capacity financing reached its one-game-day construction deadline")
+		return financing.Decision, nil, capacityGate("build_deadline", false, "capacity financing reached its one-game-day construction deadline")
 	}
 	_, upper, clockOK := r.serverBounds()
+	if clockOK {
+		for index, quote := range financing.Quotes {
+			if index >= len(financing.Loans) && !upper.Before(quote.ExpiresAt) {
+				financing.Cancel = true
+				return financing.Decision, nil, capacityGate("quote_expiry", false, "unaccepted loan quote expired")
+			}
+		}
+	}
+	if err := r.capacityInputsReady(); err != nil {
+		return financing.Decision, nil, err
+	}
+	if !r.loanAuthority() {
+		return financing.Decision, nil, capacityGate("authority", true, "capacity financing waits for fresh loan authority")
+	}
+	hull, hullExists := findHull(r.stateCache.Catalog, data.Capacity.BuildClass)
+	if !hullExists || !capacityHull(hull) {
+		return financing.Decision, nil, capacityGate("hull", true, "capacity financing waits for its admitted trading hull")
+	}
 	if !clockOK {
-		return financing.Decision, nil, errors.New("capacity financing waits for current server time")
+		return financing.Decision, nil, capacityGate("authority", true, "capacity financing waits for current server time")
 	}
 	pending, err := r.db.PendingActions(ctx, r.account.ID)
 	if err != nil {
@@ -636,7 +749,7 @@ func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (G
 			continue
 		}
 		if data.Action == nil || action.ID != data.Action.ID {
-			return financing.Decision, nil, errors.New("capacity financing waits for another unresolved action")
+			return financing.Decision, nil, capacityGate("pending_action", true, "capacity financing waits for another unresolved action")
 		}
 	}
 	for _, id := range []string{"__treasury", "__loans", "__underwriting", "__marque"} {
@@ -645,7 +758,7 @@ func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (G
 			return financing.Decision, nil, err
 		}
 		if mission != nil && current.Action != nil {
-			return financing.Decision, nil, errors.New("capacity financing waits for an unresolved control intent")
+			return financing.Decision, nil, capacityGate("pending_action", true, "capacity financing waits for an unresolved control intent")
 		}
 	}
 	for _, accepted := range financing.Loans {
@@ -657,23 +770,51 @@ func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (G
 			return financing.Decision, nil, errors.New("capacity financing awaits its named authoritative loan")
 		}
 	}
+	excludedQuotes := make(map[string]bool, len(financing.Quotes))
+	for _, quote := range financing.Quotes {
+		excludedQuotes[quote.ID] = true
+	}
+	coverageDecision, gate, err := r.capacityDebtDecision(ctx, hull, financing.Decision, time.Now().UTC(), excludedQuotes)
+	if err != nil {
+		return financing.Decision, nil, err
+	}
+	if gate != "" {
+		financing.Cancel = gate != "measured_net"
+		return financing.Decision, nil, capacityGate(gate, gate == "measured_net", "capacity financing fails "+gate)
+	}
+	coverageDecision.IncrementalNetPencePerGameDay = min(coverageDecision.IncrementalNetPencePerGameDay, financing.Decision.IncrementalNetPencePerGameDay)
 	var installment int64
-	netAfterInterest := financing.Decision.IncrementalNetPencePerGameDay
-	for index, quote := range financing.Quotes {
-		if index >= len(financing.Loans) && !upper.Before(quote.ExpiresAt) {
-			financing.Cancel = true
-			return financing.Decision, nil, errors.New("unaccepted Goldsmiths quote expired")
-		}
+	netAfterInterest := coverageDecision.IncrementalNetPencePerGameDay
+	for _, quote := range financing.Quotes {
 		if quote.InstallmentPence == nil {
 			financing.Cancel = true
-			return financing.Decision, nil, errors.New("financing lacks exact quoted payment terms")
+			return financing.Decision, nil, capacityGate("quote_terms", false, "financing lacks exact quoted payment terms")
 		}
 		installment = growthCashTotal(installment, *quote.InstallmentPence)
 		netAfterInterest -= float64(quote.PrincipalPence) * float64(quote.AnnualRateBPS) / 10_000 / 360
 	}
-	if installment <= 0 || financing.Decision.IncrementalNetPencePerGameDay*5+1e-9 < 1.25*float64(installment) || netAfterInterest <= 0 {
+	var principal int64
+	for _, quote := range financing.Quotes {
+		principal = growthCashTotal(principal, quote.PrincipalPence)
+	}
+	evidence := growthEvidence{asOf: time.Now().UTC()}
+	if _, err := r.growthNetWorth(ctx, &evidence); err != nil {
+		return financing.Decision, nil, err
+	}
+	if evidence.hazard.netWorth <= 0 {
+		return financing.Decision, nil, capacityGate("debt_capacity", true, "capacity financing waits for fresh positive net worth")
+	}
+	if !capacityDebtExposure(financing.Decision, principal, evidence.hazard.netWorth, r.stateCache.Loans, excludedQuotes) {
 		financing.Cancel = true
-		return financing.Decision, nil, errors.New("admitted depth earnings no longer cover the quoted debt")
+		return financing.Decision, nil, capacityGate("debt_capacity", false, "capacity financing debt_capacity: gross outstanding debt exceeds 35% of fresh net worth")
+	}
+	if !capacityPackageCoverage(coverageDecision, installment) || netAfterInterest <= 0 {
+		financing.Cancel = true
+		return financing.Decision, nil, capacityGate("dscr", false, "capacity financing dscr: realized depth earnings no longer cover the quoted debt")
+	}
+	if float64(growthCapital(financing.Decision))/netAfterInterest > r.capacityPaybackLimit() {
+		financing.Cancel = true
+		return financing.Decision, nil, capacityGate("payback", false, "capacity financing payback: realized after-interest net exceeds maximum payback")
 	}
 	input, err := r.committedPlanningInputExcept(ctx, ShipState{}, "__growth")
 	if err != nil {
@@ -698,7 +839,7 @@ func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (G
 			available = growthCashTotal(available, max(0, balance-required[region]))
 		}
 		if !funded || available+2*int64(len(financing.Quotes)) < financing.Decision.WorkingCapitalPence {
-			return financing.Decision, nil, errors.New("financed capacity waits for its fleet-wide working buffer and protected capital")
+			return financing.Decision, nil, capacityGate("own_cash_buffer", true, "financed capacity waits for its fleet-wide working buffer and protected capital")
 		}
 	}
 	return financing.Decision, required, nil
@@ -736,19 +877,16 @@ func (r *Runner) repayCapacityFinancing(ctx context.Context, mission *store.Miss
 		required := clonePence(input.ReserveByRegion)
 		required[loan.BankingRegion] = growthCashTotal(max(0, required[loan.BankingRegion]-loanReserve(loan)), loanFullPayment(loan))
 		if input.Balances[loan.BankingRegion] < required[loan.BankingRegion] {
-			funding, current, err := r.loadMission(ctx, "__treasury")
-			if err != nil {
-				return false, err
-			}
-			if funding != nil && current.Action != nil {
-				return false, r.hold(ctx, "", "unused capacity debt awaits the pending treasury funding action")
-			}
-			if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__treasury", &loanRepaymentIntent{Before: loan}); changed || err != nil {
+			if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__treasury", &loanRepaymentIntent{Before: loan}, mission); changed || err != nil {
 				return changed, err
 			}
-			return false, r.hold(ctx, "", "unused capacity principal and one day of interest remain protected pending repayment funding")
+			return false, r.holdExpected(ctx, mission.ShipID, "unused capacity principal and one day of interest remain protected pending repayment funding")
 		}
 		return r.stageLoanRepayment(ctx, mission, data, loan, 0)
+	}
+	r.clearPlayerFallback(data.BuildPort, data.BuildClass)
+	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+		return false, err
 	}
 	return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 }
@@ -756,6 +894,17 @@ func (r *Runner) repayCapacityFinancing(ctx context.Context, mission *store.Miss
 func (r *Runner) driveCapacityFinancing(ctx context.Context, mission *store.Mission, data *missionData) (bool, error) {
 	financing := data.Capacity.Financing
 	if !financing.BuildBy.IsZero() && !time.Now().Before(financing.BuildBy) {
+		if !financing.Cancel {
+			if err := r.recordCapacityFinanceFailure(ctx, data, "build_deadline", "approved capacity reached its one-game-day construction deadline; repay unused principal"); err != nil {
+				return false, err
+			}
+			if err := r.playerLoanBackoff(ctx, data.BuildPort, data.BuildClass, false, time.Now().UTC()); err != nil {
+				return false, err
+			}
+			if err := r.recordCapacityFinancingRefusal(ctx, data); err != nil {
+				return false, err
+			}
+		}
 		financing.Cancel = true
 	}
 	if financing.Cancel || mission.Phase == "growth_finance_repay" || mission.Phase == "growth_rejected" {
@@ -763,35 +912,52 @@ func (r *Runner) driveCapacityFinancing(ctx context.Context, mission *store.Miss
 	}
 	_, required, err := r.capacityFinanceReady(ctx, data)
 	if err == nil {
-		_, err = r.capacityYardReady(ctx, data)
+		err = r.capacityZoneEstimateReady(ctx, data, financing.Decision)
 	}
 	if err != nil {
+		verdict, hold := capacityGateDetails(err)
+		if !hold {
+			financing.Cancel = true
+		}
+		if recordErr := r.recordCapacityFinanceFailure(ctx, data, verdict, err.Error()); recordErr != nil {
+			return false, recordErr
+		}
 		if financing.Cancel {
 			if saveErr := r.recordCapacityFinancingRefusal(ctx, data); saveErr != nil {
 				return false, saveErr
 			}
+			if saveErr := r.playerLoanBackoff(ctx, data.BuildPort, data.BuildClass, false, time.Now().UTC()); saveErr != nil {
+				return false, saveErr
+			}
 			return r.repayCapacityFinancing(ctx, mission, data)
 		}
-		return false, r.hold(ctx, "", err.Error())
+		return false, r.holdExpected(ctx, mission.ShipID, err.Error())
 	}
 	if len(financing.Loans) < len(financing.Quotes) {
 		quote := financing.Quotes[len(financing.Loans)]
-		return true, r.stage(ctx, mission, data, ShipState{}, "loan-accept", "/v1/loan/accept-quote", gameapi.QuoteActionRequest{QuoteID: quote.ID})
+		path := "/v1/loan/accept-quote"
+		if quote.RequestID != nil {
+			path = "/v1/loan/approve"
+		}
+		return true, r.stage(ctx, mission, data, ShipState{}, "loan-accept", path, gameapi.QuoteActionRequest{QuoteID: quote.ID})
 	}
 	input := r.planningInput(ShipState{})
-	if changed, err := r.fundTreasury(ctx, input.Balances, required); changed || err != nil {
+	if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__treasury", nil, mission); changed || err != nil {
 		return changed, err
 	}
 	for region, amount := range required {
 		if input.Balances[region] < amount {
-			return false, r.hold(ctx, "", "financed capacity waits for protected package funding; admission is retained")
+			return false, r.holdExpected(ctx, mission.ShipID, "financed capacity waits for protected package funding; admission is retained")
 		}
 	}
 	mission.Phase = "growth_build"
-	return true, r.stage(ctx, mission, data, ShipState{}, "build", "/v1/shipyard/build-ship", map[string]any{"port_id": data.BuildPort, "name": data.BuildName, "ship_class": data.BuildClass, "build_mode": "turnkey_cash"})
+	return true, r.stage(ctx, mission, data, ShipState{}, "build", "/v1/shipyard/build-ship", map[string]any{"port_id": data.BuildPort, "name": data.BuildName, "ship_class": data.BuildClass, "build_mode": "turnkey_cash", "mortgage": data.Capacity.Mortgage != nil})
 }
 
 func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, data *missionData) error {
+	if data.Action.Stage == "loan-request" || data.Action.Path == "/v1/loan/approve" {
+		return r.playerLoanActionReady(ctx, data)
+	}
 	if !r.loanAuthority() || !r.fresh("ships") || !r.fresh("vaults") {
 		return errors.New("new loan action requires fresh debt, fleet and cash authority")
 	}
@@ -804,11 +970,11 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 		if json.Unmarshal(data.Action.Body, &request) != nil || len(financing.Loans) >= len(financing.Quotes) || request.QuoteID != financing.Quotes[len(financing.Loans)].ID || financing.Cancel {
 			return errors.New("new borrowing disagrees with its admitted quote")
 		}
-		decision, _, err := r.capacityFinanceReady(ctx, data)
-		if err != nil {
+		if err := r.capacityZoneEstimateReady(ctx, data, financing.Decision); err != nil {
 			return err
 		}
-		return r.capacityZoneEstimateReady(ctx, data, decision)
+		_, _, err := r.capacityFinanceReady(ctx, data)
+		return err
 	}
 	intent := data.LoanRepayment
 	var request gameapi.RepayLoanRequest
@@ -864,9 +1030,10 @@ func (r *Runner) recordAcceptedCapacityLoan(data *missionData, loan gameapi.Loan
 	}
 	financing := data.Capacity.Financing
 	if len(financing.Loans) == 0 {
-		// The receipt time prevents reconciliation from extending the idle-debt window.
-		acceptedAt := loan.CreatedAt
-		if acceptedAt.IsZero() || acceptedAt.After(time.Now()) {
+		// The local receipt (or original action for a lost response) fixes the
+		// deadline. A lender's older offer creation time is not disbursement.
+		acceptedAt := data.Action.ReceiptAt
+		if acceptedAt.IsZero() {
 			acceptedAt = data.Action.CreatedAt
 		}
 		financing.BuildBy = acceptedAt.Add(24 * time.Hour / time.Duration(max(int64(1), r.stateCache.Clock.Calendar.TimeScale)))
@@ -979,4 +1146,34 @@ func loanResultPhase(mission *store.Mission, data *missionData) {
 		mission.Phase = "done"
 	}
 	data.LoanRepayment = nil
+}
+
+func (r *Runner) recordCapacityFinanceFailure(ctx context.Context, data *missionData, verdict, reason string) error {
+	financing := data.Capacity.Financing
+	port, _ := findPort(r.stateCache.Catalog, data.BuildPort)
+	hull, _ := findHull(r.stateCache.Catalog, data.BuildClass)
+	var principal, installment int64
+	source, shipID := "goldsmiths", ""
+	for _, quote := range financing.Quotes {
+		principal = growthCashTotal(principal, quote.PrincipalPence)
+		if quote.InstallmentPence != nil {
+			installment = growthCashTotal(installment, *quote.InstallmentPence)
+		}
+		if quote.RequestID != nil {
+			source = playerQuoteSource(quote)
+		}
+		if shipID == "" && quote.CollateralShipID != nil {
+			shipID = *quote.CollateralShipID
+		}
+	}
+	collateral := "ship_lien"
+	if data.PlayerLoan != nil {
+		collateral = data.PlayerLoan.CollateralKind
+	}
+	return r.recordCapacityLoan(ctx, port, hull, capacityLoanDecision{
+		Source: source, PrincipalPence: principal, TermGameDays: playerLoanTermGameDays,
+		CollateralKind: collateral, ShipID: shipID, Verdict: verdict, Reason: reason,
+		EvidenceBasis: financing.Decision.EvidenceBasis,
+		Package:       capacityPackageFor(financing.Decision, source, principal, installment),
+	})
 }

@@ -135,6 +135,8 @@ func TestCapacitySavingsExpansionAgentOnlyCannotSave(t *testing.T) {
 func TestCapacitySavingsFinancingRefusalKeepsSaving(t *testing.T) {
 	t.Parallel()
 	h, runner, buy, save := capacitySavingsRunnerFixture(t, true)
+	runner.snapshot["_player_loan_fallback"] = encode(map[string]time.Time{recoveryHomePort + "|brigantine": time.Now().Add(6 * time.Hour)})
+	overseasMetric(t, h, 10_000_000, time.Now().UTC())
 	// Reach the loan minimum without moving the savings comparison near its boundary.
 	// Keep this income inside the savings window but outside the lane-proof window.
 	persistGrowthWindowSettlement(t, h, store.Settlement{
@@ -230,6 +232,9 @@ func TestCapacitySavingsLanePackageMustBeatLiveTarget(t *testing.T) {
 				CompletedAt: time.Now().Add(-time.Hour),
 			})
 			if saving {
+				hull, _ := findHull(runner.stateCache.Catalog, recoveryHull)
+				hull.ID = "collier"
+				runner.stateCache.Catalog.ShipClasses = append(runner.stateCache.Catalog.ShipClasses, hull)
 				evidence := growthEvidence{workingByRegion: make(map[string]int64)}
 				if reason, err := runner.growthCashFunding(h.ctx, &evidence); err != nil || reason != "" {
 					t.Fatalf("lane funding: %s, %v", reason, err)

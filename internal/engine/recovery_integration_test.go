@@ -131,18 +131,24 @@ type fakeGameAPI struct {
 	t      *testing.T
 	server *httptest.Server
 
-	mu           sync.Mutex
-	validKeys    map[string]bool
-	autoRemit    bool
-	minReserve   int64
-	vaultBalance map[string]int64
-	fleet        []map[string]any
-	factorPorts  []string
-	rates        []Rate
-	settingsMode string
-	remitMode    string
-	buildMode    string
-	mutations    []recordedMutation
+	mu              sync.Mutex
+	validKeys       map[string]bool
+	autoRemit       bool
+	minReserve      int64
+	vaultBalance    map[string]int64
+	fleet           []map[string]any
+	factorPorts     []string
+	rates           []Rate
+	settingsMode    string
+	remitMode       string
+	buildMode       string
+	mutations       []recordedMutation
+	loanRequests    []gameapi.LoanRequestView
+	loanRequestMode string
+	loanApproveMode string
+	playerLoans     []gameapi.Loan
+	shipListings    []map[string]any
+	loanReceipts    map[string]json.RawMessage
 }
 
 func newFakeGameAPI(t *testing.T) *fakeGameAPI {
@@ -257,6 +263,8 @@ func (f *fakeGameAPI) handle(writer http.ResponseWriter, request *http.Request) 
 		f.handlePurchase(writer, request, body)
 	case request.Method == http.MethodPost && request.URL.Path == "/v1/fleet/depart":
 		f.handleDeparture(writer, request, body)
+	case request.Method == http.MethodPost && (request.URL.Path == "/v1/loan/request" || request.URL.Path == "/v1/loan/approve" || request.URL.Path == "/v1/loan/repay"):
+		f.handlePlayerLoan(writer, request, body)
 	default:
 		f.record(request, body, http.StatusConflict)
 		f.writeProblem(writer, http.StatusConflict, "unsupported_in_test", "this test fake does not implement "+request.URL.Path)
@@ -274,6 +282,9 @@ func (f *fakeGameAPI) authorized(request *http.Request) bool {
 }
 
 func (f *fakeGameAPI) handleGet(writer http.ResponseWriter, request *http.Request) {
+	if f.handleLoanGet(writer, request) {
+		return
+	}
 	switch request.URL.Path {
 	case "/v1/auth/whoami":
 		f.writeJSON(writer, http.StatusOK, map[string]any{
@@ -323,7 +334,7 @@ func (f *fakeGameAPI) handleGet(writer http.ResponseWriter, request *http.Reques
 	case "/v1/world/events", "/v1/treasury/ledger", "/v1/fleet/convoys",
 		"/v1/fleet/marques", "/v1/fleet/patrols", "/v1/warehouse/list",
 		"/v1/market/orders", "/v1/market/fills", "/v1/insurance/list",
-		"/v1/future/list", "/v1/contract/list", "/v1/loan/list":
+		"/v1/future/list", "/v1/contract/list":
 		f.writeJSON(writer, http.StatusOK, []any{})
 	case "/v1/insurance/quote":
 		f.writeJSON(writer, http.StatusOK, map[string]any{

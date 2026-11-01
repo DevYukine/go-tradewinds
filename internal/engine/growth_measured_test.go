@@ -409,7 +409,7 @@ func TestCapacityMeasuredCheapHullReinvestmentNeverWaitsForEarnings(t *testing.T
 	}
 }
 
-func TestCapacityMeasuredCheapHullFinancingDoesNotWaitForEarnings(t *testing.T) {
+func TestCapacityMeasuredCheapHullDebtRefusesMissingOrNonpositiveEarnings(t *testing.T) {
 	t.Parallel()
 	for _, measurement := range []string{"missing", "zero", "negative"} {
 		t.Run(measurement, func(t *testing.T) {
@@ -437,12 +437,19 @@ func TestCapacityMeasuredCheapHullFinancingDoesNotWaitForEarnings(t *testing.T) 
 				measurement == "missing" && input.MeasuredNetAvailable {
 				t.Fatalf("expected %s measured evidence: %+v reason %q error %v", measurement, input, reason, err)
 			}
-			if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || !changed {
-				t.Fatalf("cheap financing was blocked by %s measured earnings: changed %t error %v holds %v", measurement, changed, err, runner.holding)
+			if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || changed {
+				t.Fatalf("cheap debt ignored %s measured earnings: changed %t error %v holds %v", measurement, changed, err, runner.holding)
 			}
-			_, data := h.mission("__growth")
-			if data.Capacity == nil || data.Capacity.Financing == nil || data.BuildClass != recoveryHull {
-				t.Fatalf("cheap reinvestment did not stage recourse financing: %+v", data)
+			h.missingMission("__growth")
+			gate := "dscr"
+			if measurement == "missing" {
+				gate = "measured_net"
+			}
+			playerLoanAcceptanceDecision(t, h, gate)
+			for _, path := range []string{"/v1/loan/request", "/v1/loan/quote", "/v1/loan/accept-quote", "/v1/shipyard/build-ship"} {
+				if h.api.mutationCount(path) != 0 {
+					t.Fatalf("%s measured earnings allowed %s", measurement, path)
+				}
 			}
 		})
 	}

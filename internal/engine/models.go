@@ -15,6 +15,9 @@ type Catalog struct {
 	ShipClasses []Hull      `json:"ship_classes"`
 	SeaZones    []Zone      `json:"sea_zones"`
 	Commodities []Commodity `json:"commodities"`
+
+	// Excluded classes retain billing metadata without becoming planning hulls.
+	UpkeepShipClasses []Hull `json:"-"`
 }
 
 type Commodity struct {

@@ -217,6 +217,9 @@ func TestCapacitySavingsLaneComparisonIgnoresCapacityOnlyPause(t *testing.T) {
 			})
 			runner.snapshot["_capacity_growth_paused_until"] = encode(time.Now().UTC().Add(time.Hour))
 			if outcome != "positive lane control" {
+				hull, _ := findHull(runner.stateCache.Catalog, recoveryHull)
+				hull.ID = "collier"
+				runner.stateCache.Catalog.ShipClasses = append(runner.stateCache.Catalog.ShipClasses, hull)
 				evidence := growthEvidence{workingByRegion: make(map[string]int64)}
 				if reason, err := runner.growthCashFunding(h.ctx, &evidence); err != nil || reason != "" {
 					t.Fatalf("lane funding: %s, %v", reason, err)

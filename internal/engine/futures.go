@@ -279,7 +279,7 @@ func (r *Runner) driveFutures(ctx context.Context, mission *store.Mission, data 
 		return false, nil
 	}
 	if time.Now().Before(data.CooldownUntil) {
-		return false, r.hold(ctx, "__futures", "futures pilot waits for its persisted retry cooldown")
+		return false, r.holdExpected(ctx, "__futures", "futures pilot waits for its scoped persisted retry cooldown")
 	}
 	lower, _, _ := r.serverBounds()
 	// Physical obligations outrank every discretionary admission, including

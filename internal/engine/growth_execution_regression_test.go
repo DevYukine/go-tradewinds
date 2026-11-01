@@ -737,6 +737,7 @@ func TestGrowthReturnRepricesNeverSentItineraryButKeepsPaidReturnSunk(t *testing
 		if w.h.api.mutationCount("/v1/fleet/depart") != before {
 			t.Fatal("a now-inferior never-sent return escaped journal preflight")
 		}
+		expireLocalIntentRetry(t, w.h, recoveryBuiltShipID)
 		w.until(runner, func(mission *store.Mission, data missionData) bool {
 			return mission != nil && mission.Phase == "settled"
 		})
@@ -1066,6 +1067,7 @@ func TestGrowthSourceInspectionDockPreservesExactRegionalFunding(t *testing.T) {
 	if w.h.api.mutationCount("/v1/fleet/dock") != before {
 		t.Fatal("source inspection spent a harbour bill one pence inside protected reserves")
 	}
+	expireLocalIntentRetry(t, w.h, recoveryBuiltShipID)
 	w.h.api.setVaultBalance("north", required)
 	w.until(runner, func(mission *store.Mission, data missionData) bool {
 		return mission != nil && mission.Generation != first.Generation && data.Action != nil && data.Action.Stage == "dock"

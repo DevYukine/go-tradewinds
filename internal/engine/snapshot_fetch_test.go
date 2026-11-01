@@ -278,3 +278,87 @@ func TestDatasetFailureScrubsAfterEnabledLogCheckAndFailsClosed(t *testing.T) {
 		t.Fatalf("credential lookup before Check or fail-open dataset fields: checked %t logs %+v", checked, failures)
 	}
 }
+
+func TestCatalogCaptureExcludesOnlyUnusableHullClasses(t *testing.T) {
+	t.Parallel()
+	for _, tons := range []int64{-1, 0, 1_000_001, 1<<63 - 1} {
+		t.Run(fmt.Sprint(tons), func(t *testing.T) {
+			runner := &Runner{
+				log: zap.NewNop(), generation: "capture", meta: make(map[string]DatasetMeta),
+				snapshot: make(map[string]json.RawMessage),
+			}
+			now := time.Now()
+			raw := encode(Catalog{
+				ShipClasses: []Hull{
+					{ID: "hoy", HoldCapacityTons: 60},
+					{ID: "barque", HullCategory: "oceanic", HoldCapacityTons: tons},
+				},
+				Ports: []Port{{ID: "home"}},
+			})
+			if !runner.applyCapture(context.Background(), "catalog", fetchResult{data: raw, attemptedAt: now, completedAt: now}) {
+				t.Fatalf("one unusable hull rejected catalog capture: %d", tons)
+			}
+			meta := runner.meta["catalog"]
+			state := runner.state()
+			if meta.Stale || !meta.Complete || meta.Error != "" || string(runner.snapshot["catalog"]) != string(raw) {
+				t.Fatalf("capture lost authority or diagnostic source: %+v", meta)
+			}
+			if _, exists := findHull(state.Catalog, "barque"); exists {
+				t.Fatalf("unusable hold %d remained eligible for planning", tons)
+			}
+			if _, exists := findHull(state.Catalog, "hoy"); !exists || len(state.Catalog.Ports) != 1 {
+				t.Fatalf("unrelated catalog authority was discarded: %+v", state.Catalog)
+			}
+			for _, valid := range []int64{1, 1_000_000} {
+				raw = encode(Catalog{ShipClasses: []Hull{{ID: "barque", HullCategory: "oceanic", HoldCapacityTons: valid}}})
+				if !runner.applyCapture(context.Background(), "catalog", fetchResult{data: raw, attemptedAt: now, completedAt: now}) {
+					t.Fatalf("inclusive valid hold boundary %d was rejected", valid)
+				}
+				if hull, exists := findHull(runner.state().Catalog, "barque"); !exists || hull.HoldCapacityTons != valid {
+					t.Fatalf("valid class did not return to planning: %+v", hull)
+				}
+			}
+		})
+	}
+}
+
+func TestCatalogUnusableClassDoesNotBlockIncumbentVoyage(t *testing.T) {
+	t.Parallel()
+	h := newRecoveryHarness(t)
+	base := h.api.server.Config.Handler
+	h.api.server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/v1/world/catalog" {
+			base.ServeHTTP(writer, request)
+			return
+		}
+		h.api.mu.Lock()
+		catalog := h.api.catalogDocument()
+		h.api.mu.Unlock()
+		catalog["ship_classes"] = append(catalog["ship_classes"].([]any),
+			Hull{ID: "unusable-barque", HullCategory: "oceanic", HoldCapacityTons: 1_000_001})
+		h.api.writeJSON(writer, http.StatusOK, catalog)
+	})
+	ship := sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)
+	ship["ship"].(map[string]any)["status"] = "berthed"
+	ship["ship"].(map[string]any)["cannons_count"] = 4
+	ship["effective_hold_capacity_tons"] = 52
+	ship["stores"] = map[string]any{"provisions_tons": 4, "sea_days_remaining": 5}
+	ship["route_legs"], ship["voyage"] = []any{}, nil
+	h.api.setFleet([]map[string]any{ship})
+	h.api.setFactorPorts(recoveryFarPort)
+	runner := h.runner(primaryTestKey)
+	for tick := range 16 {
+		if _, err := h.tick(runner); err != nil {
+			t.Fatalf("incumbent voyage pass %d: %v", tick, err)
+		}
+		if h.api.mutationCount("/v1/fleet/depart") > 0 {
+			break
+		}
+	}
+	if !runner.fresh("catalog") || h.api.mutationCount("/v1/market/place-order") == 0 || h.api.mutationCount("/v1/fleet/depart") == 0 {
+		t.Fatalf("one invalid class froze valid incumbent mutations: holds=%v", runner.holding)
+	}
+	if _, exists := findHull(runner.stateCache.Catalog, "unusable-barque"); exists {
+		t.Fatal("invalid class remained usable after a successful fleet pass")
+	}
+}

@@ -655,6 +655,7 @@ type Loan struct {
 	InterestAccruedThrough      *time.Time `json:"interest_accrued_through"`
 	RequestID                   *string    `json:"request_id"`
 	QuoteID                     *string    `json:"quote_id"`
+	LendingLineID               *string    `json:"lending_line_id,omitempty"`
 	CreatedAt                   time.Time  `json:"created_at"`
 	UpdatedAt                   time.Time  `json:"updated_at"`
 }
@@ -688,6 +689,8 @@ func (l *Loan) UnmarshalJSON(raw []byte) error {
 type LoanQuote struct {
 	ID                  string    `json:"id"`
 	RequestID           *string   `json:"request_id"`
+	Auto                bool      `json:"auto,omitempty"`
+	LendingLineID       *string   `json:"lending_line_id,omitempty"`
 	LenderCompanyID     string    `json:"lender_company_id"`
 	LenderName          string    `json:"lender_name"`
 	BorrowerCompanyID   string    `json:"borrower_company_id"`
@@ -703,6 +706,36 @@ type LoanQuote struct {
 	ExpiresAt           time.Time `json:"expires_at"`
 	LoanID              *string   `json:"loan_id"`
 	CreatedAt           time.Time `json:"created_at"`
+}
+
+// LoanRequestView preserves the public terms and all quotes on an own request.
+type LoanRequestView struct {
+	ID                      string          `json:"id"`
+	BorrowerCompanyID       string          `json:"borrower_company_id"`
+	BorrowerName            string          `json:"borrower_name"`
+	BorrowerRecord          json.RawMessage `json:"borrower_record"`
+	BankingRegion           string          `json:"banking_region"`
+	PrincipalPence          int64           `json:"principal_pence"`
+	TermGameDays            int32           `json:"term_game_days"`
+	Repayment               string          `json:"repayment"`
+	Recourse                bool            `json:"recourse"`
+	CollateralKind          string          `json:"collateral_kind"`
+	CollateralShipID        *string         `json:"collateral_ship_id"`
+	CollateralPortID        *string         `json:"collateral_port_id"`
+	CollateralCommodityID   *string         `json:"collateral_commodity_id"`
+	CollateralTons          *int32          `json:"collateral_tons"`
+	CollateralContractID    *string         `json:"collateral_contract_id"`
+	CollateralDepositID     *string         `json:"collateral_deposit_id"`
+	CollateralDepositBankID *string         `json:"collateral_deposit_bank_id"`
+	GoldsmithsRateBPS       int32           `json:"goldsmiths_rate_bps"`
+	RateFloorBPS            int32           `json:"rate_floor_bps"`
+	RateCeilingBPS          int32           `json:"rate_ceiling_bps"`
+	AutoQuote               bool            `json:"auto_quote"`
+	Status                  string          `json:"status"`
+	ExpiresAt               time.Time       `json:"expires_at"`
+	CreatedAt               time.Time       `json:"created_at"`
+	LoanID                  *string         `json:"loan_id"`
+	Quotes                  []LoanQuote     `json:"quotes"`
 }
 
 // GoldsmithsQuote is an instant ship-lien quote stored for 6 game hours.

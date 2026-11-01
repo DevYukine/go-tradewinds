@@ -202,6 +202,14 @@ func TestExpansionPureCashHirePreflightKeepsPairAndLossSchedule(t *testing.T) {
 	if err := h.db.DeleteMission(h.ctx, h.account.ID, "__treasury"); err != nil {
 		t.Fatal(err)
 	}
+	if changed, err := runner.manageExpansionAgents(h.ctx); err != nil || changed {
+		t.Fatalf("restored cash bypassed the transient hire retry deadline: %t %v", changed, err)
+	}
+	agents := persistedExpansionAgents(t, h)
+	for i := range agents {
+		agents[i].RetryAt = time.Now().UTC().Add(-time.Second)
+	}
+	overseasPairSave(t, h, runner, agents)
 	if changed, err := runner.manageExpansionAgents(h.ctx); err != nil || !changed {
 		t.Fatalf("restored cash could not retry the same pending pair: %t %v", changed, err)
 	}

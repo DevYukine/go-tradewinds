@@ -49,6 +49,7 @@ type AccountState struct {
 	Contracts         []Contract
 	Vaults            []Vault
 	Loans             []gameapi.Loan
+	LoanRequests      []gameapi.LoanRequestView
 	InsurancePolicies []InsurancePolicy
 	Rates             []Rate
 	Factors           []string
@@ -68,12 +69,24 @@ func encode(value any) json.RawMessage {
 }
 
 func (r *Runner) applyCapture(ctx context.Context, key string, result fetchResult) bool {
+	if result.err == nil && key == "catalog" {
+		var catalog Catalog
+		if err := json.Unmarshal(result.data, &catalog); err != nil {
+			result.err = err
+		}
+	}
 	if result.err == nil && key == "rnd_status" {
 		var status gameapi.RndStatus
 		result.err = json.Unmarshal(result.data, &status)
 	}
 	if result.err == nil && key == "loans" {
 		result.err = validateBorrowerLoans(result.data, r.account.CompanyID)
+	}
+	if result.err == nil && key == "loan_requests" {
+		result.err = validateLoanRequests(result.data, r.account.CompanyID)
+	}
+	if result.err == nil && key == "ship_listings" {
+		result.err = validateOwnShipListings(result.data)
 	}
 	if result.err == nil && (key == "insurance" || key == "insurance_owned") {
 		var policies []InsurancePolicy
@@ -299,6 +312,8 @@ func (r *Runner) refresh(ctx context.Context) error {
 		{"monopolies", "/v1/world/monopolies", fetchPages},
 		{"vaults", "/v1/treasury/vaults", fetchJSON},
 		loans,
+		{"loan_requests", "/v1/loan/requests?mine=true&limit=50", fetchJSON},
+		{"ship_listings", "/v1/fleet/ship-listings?limit=200", fetchPages},
 		{"rates", "/v1/treasury/rates", fetchJSON},
 		{"ships", "/v1/fleet/ships", fetchPages},
 		{"warehouses", "/v1/warehouse/list", fetchJSON},
@@ -1052,10 +1067,22 @@ func StateFromSnapshot(now time.Time, snapshot map[string]json.RawMessage, sourc
 		HazardQuotes:      decode[map[string]HazardQuote](snapshot, hazardQuoteSnapshotKey),
 		Contracts:         decode[[]Contract](snapshot, "contracts"),
 		Loans:             decode[[]gameapi.Loan](snapshot, "loans"),
+		LoanRequests:      decode[[]gameapi.LoanRequestView](snapshot, "loan_requests"),
 		InsurancePolicies: decode[[]InsurancePolicy](snapshot, "insurance"),
 		Rates:             decode[[]Rate](snapshot, "rates"),
 		Factors:           decode[[]string](snapshot, "factors"),
 		Quotes:            decode[map[string]YardQuote](snapshot, "yard_quotes"),
+	}
+	// Excluded classes still describe the billing category of owned ships.
+	// Their fresh ship-reported tonnage may fund reserves, never capacity plans.
+	classes := state.Catalog.ShipClasses
+	state.Catalog.ShipClasses = classes[:0]
+	for _, hull := range classes {
+		if hull.HoldCapacityTons <= 0 || hull.HoldCapacityTons > 1_000_000 {
+			state.Catalog.UpkeepShipClasses = append(state.Catalog.UpkeepShipClasses, hull)
+			continue
+		}
+		state.Catalog.ShipClasses = append(state.Catalog.ShipClasses, hull)
 	}
 	var vaults struct {
 		Vaults []Vault `json:"vaults"`

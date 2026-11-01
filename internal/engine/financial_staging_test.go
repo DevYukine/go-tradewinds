@@ -158,6 +158,13 @@ func TestFinancialRestartReplansNeverSentGrowthFromFreshFunds(t *testing.T) {
 	// The process dies before observing the bill's SSE frame. A new process
 	// cannot equate its reset in-memory epoch with the staged capture's epoch.
 	h.api.setVaultBalance("north", 75_000)
+	required, err := original.treasuryReserves(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Independent treasury funding is now eligible during the local retry.
+	// Pin the donor at reserve so this fixture isolates build re-admission.
+	h.api.setVaultBalance("south", required["south"])
 	restarted := h.runner(primaryTestKey)
 	for range 2 {
 		if _, err := h.tick(restarted); err != nil {
@@ -165,10 +172,12 @@ func TestFinancialRestartReplansNeverSentGrowthFromFreshFunds(t *testing.T) {
 		}
 	}
 	h.missingMission("__growth")
+	h.missingMission("__treasury")
 	if h.api.mutationCount("/v1/shipyard/build-ship") != 0 || len(h.pending()) != 0 {
 		t.Fatal("restart dispatched an unjournaled build funded by the previous process's capture")
 	}
 	h.api.setVaultBalance("north", 500_000)
+	h.api.setVaultBalance("south", 100_000)
 	if _, err := h.tick(restarted); err != nil {
 		t.Fatal(err)
 	}
@@ -278,16 +287,19 @@ func TestRunAbandonsOnlyNewJournalRequestVetoedBeforeFirstSend(t *testing.T) {
 	stream.frameFor = func(int32) progressFrame { return progressFrame{} }
 	var injected atomic.Bool
 	var staged durableAction
+	var stagedMission *store.Mission
+	var stagedData missionData
 	core := zapcore.NewCore(zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()), zapcore.AddSync(io.Discard), zap.DebugLevel)
 	runner.log = zap.New(core, zap.Hooks(func(entry zapcore.Entry) error {
 		if entry.Message != "dispatching durable action" || !injected.CompareAndSwap(false, true) {
 			return nil
 		}
-		_, data := h.mission("__growth")
+		mission, data := h.mission("__growth")
 		if data.Action == nil {
 			return errors.New("new journal request lost its durable mission")
 		}
 		staged = *data.Action
+		stagedMission, stagedData = mission, data
 		h.api.setVaultBalance("north", 75_000)
 		if !stream.emit(h.ctx, progressFrame{id: "before-first-send", eventType: "company_upkeep_billed"}) {
 			return errors.New("event stream ended before first-send invalidation")
@@ -305,9 +317,12 @@ func TestRunAbandonsOnlyNewJournalRequestVetoedBeforeFirstSend(t *testing.T) {
 	if !injected.Load() || h.api.mutationCount("/v1/shipyard/build-ship") != 0 || len(h.pending()) != 0 {
 		t.Fatal("a known financial invalidation crossed the first transport attempt")
 	}
-	mission, data := h.mission("__growth")
-	if data.Action != nil {
-		t.Fatalf("preflight veto retained its never-sent action: %+v", data.Action)
+	current, currentData, err := runner.loadMission(h.ctx, "__growth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current != nil && (currentData.Action != nil || time.Now().Before(currentData.CooldownUntil)) {
+		t.Fatalf("routine fence retained its never-sent action or added a retry: %+v", currentData)
 	}
 	// Recreate the crash window after the no-send evidence committed but before
 	// the actionless mission save. Restart must release, not invent a build.
@@ -319,11 +334,8 @@ func TestRunAbandonsOnlyNewJournalRequestVetoedBeforeFirstSend(t *testing.T) {
 	if err != nil || journaled == nil || journaled.State != store.ActionReconciled || journaled.Status != 0 {
 		t.Fatalf("no-send evidence is not durable: %+v error %v", journaled, err)
 	}
-	data.Sequence--
-	data.Action = &durableAction{
-		ID: id, Stage: "build", Method: journaled.Method, Path: journaled.Path,
-		Body: journaled.Body, CreatedAt: journaled.CreatedAt,
-	}
+	mission, data := stagedMission, stagedData
+	data.Action = &staged
 	if err := runner.saveMission(h.ctx, mission, &data); err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +343,10 @@ func TestRunAbandonsOnlyNewJournalRequestVetoedBeforeFirstSend(t *testing.T) {
 	if _, err := h.tick(restarted); err != nil {
 		t.Fatalf("recover committed no-send evidence: %v", err)
 	}
-	_, recovered := h.mission("__growth")
+	_, recovered, err := restarted.loadMission(h.ctx, "__growth")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if recovered.Action != nil || recovered.BuiltShipID != "" || recovered.LastActionID == id ||
 		h.api.mutationCount("/v1/shipyard/build-ship") != 0 || len(h.pending()) != 0 {
 		t.Fatalf("no-send recovery was treated as a committed build: %+v", recovered)

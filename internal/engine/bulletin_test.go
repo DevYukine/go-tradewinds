@@ -410,6 +410,9 @@ func TestBulletinRestartPreservesStagedRequest(t *testing.T) {
 	if data.Action == nil || data.Action.ID != key || !bytes.Equal(data.Action.Body, payload) || proxy.postCalls != 0 || proxy.boardReads != 1 {
 		t.Fatal("restart regenerated a public post, key, payload or board read before first send")
 	}
+	if time.Now().Before(data.CooldownUntil) {
+		t.Fatal("routine restart restamping introduced a posting retry delay")
+	}
 	sendBulletinFixture(t, h, restarted, mission, &data)
 	if proxy.postCalls != 1 || !bytes.Equal(proxy.bodies[key], payload) {
 		t.Fatal("restaged request did not send the original immutable bytes exactly once")
@@ -1031,6 +1034,11 @@ func TestBulletinLegacyPrivatePayloadIsNeverSentOrResent(t *testing.T) {
 				if err != nil || data.Action != nil {
 					t.Fatalf("proven never-sent legacy post was not retired: %v", err)
 				}
+				if changed, err := runner.driveBulletin(h.ctx, mission, &data); err != nil || changed {
+					t.Fatalf("retired legacy post bypassed its local retry: changed=%t error=%v", changed, err)
+				}
+				expireLocalIntentRetry(t, h, "__bulletin")
+				mission, data = h.mission("__bulletin")
 				if changed, err := runner.driveBulletin(h.ctx, mission, &data); err != nil || !changed || proxy.postCalls != 0 {
 					t.Fatalf("retiring the unused legacy mission sent a post: changed=%t error=%v", changed, err)
 				}

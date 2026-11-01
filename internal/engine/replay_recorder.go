@@ -27,6 +27,7 @@ var replayPassRunnerKeys = []string{
 var replaySweepRunnerKeys = []string{
 	"_capacity_savings_target", "_capacity_savings_expired", "_capacity_growth_port", "_expansion_agents",
 	"_sourcing_probe_history", "_growth_build_backoffs", "_capacity_financing_backoffs", "_capacity_growth_paused_until", "_ship_losses",
+	"_player_loan_backoffs", "_player_loan_fallback", "_mortgage_retry_at",
 }
 
 var (

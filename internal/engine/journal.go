@@ -25,6 +25,7 @@ type durableAction struct {
 	// The mission stores bytes; the action journal still sends the original JSON.
 	Body                []byte    `json:"body"`
 	CreatedAt           time.Time `json:"created_at"`
+	ReceiptAt           time.Time `json:"receipt_at,omitempty"`
 	Before              ShipState `json:"before"`
 	FinancialSession    string    `json:"financial_session"`
 	FinancialEpoch      uint64    `json:"financial_epoch"`
@@ -181,6 +182,34 @@ func (r *Runner) stagedControlValid(action *durableAction) bool {
 // proof, may be released. Retain the mission's actual cargo and obligations so
 // its existing stage planner can re-evaluate fresh state before a new request.
 func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission, data *missionData, kind string) (bool, error) {
+	fenceInvalidated := kind == neverSentFinancialEvent || kind == neverSentControlEvent
+	if !fenceInvalidated {
+		now := time.Now().UTC()
+		until := now.Add(15 * time.Minute / time.Duration(max(1, r.stateCache.Clock.Calendar.TimeScale)))
+		if data.Futures != nil {
+			until = now.Add(5 * time.Second)
+		}
+		if data.Bulletin != nil {
+			until = maxTime(until, now.Add(bulletinRetryDelay))
+		}
+		if kind == neverSentMarqueQuote {
+			until = maxTime(until, now.Add(marqueQuoteInterval))
+		}
+		if mission.ShipID == "__treasury" && data.Action.Stage == "hire-factor" {
+			var err error
+			until, err = r.deferExpansionHire(ctx, data.Action.Body, now)
+			if err != nil {
+				return false, err
+			}
+			mission.Phase = "done"
+		}
+		data.CooldownUntil = maxTime(data.CooldownUntil, until)
+		r.wakeBy(data.CooldownUntil)
+		if err := r.holdExpected(ctx, mission.ShipID, "never-sent local veto waits for its scoped persisted retry; other missions and ships remain eligible"); err != nil {
+			return false, err
+		}
+	}
+	r.localRetirements++
 	if data.Bulletin != nil && (kind == neverSentFinancialEvent || kind == neverSentControlEvent) {
 		exists, err := r.db.HasAction(ctx, r.account.ID, data.Action.ID)
 		if err != nil {
@@ -229,11 +258,11 @@ func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission,
 		}
 		return true, r.saveMission(ctx, mission, data)
 	}
-	if err := r.hold(ctx, mission.ShipID, "never-sent action's preconditions were invalidated; authoritative resynchronization and replanning precede new spending"); err != nil {
-		return false, err
-	}
 	if data.Plan.Kind == "maintenance" && data.Action.Stage == "offshore" {
-		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+		if fenceInvalidated {
+			return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+		}
+		mission.Phase = "maintenance_done"
 	}
 	if kind == neverSentMarqueQuote {
 		// The issue endpoint has no price cap. Retire the frozen admission and
@@ -289,7 +318,7 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 		}
 	}
 	if firstSend && time.Now().Before(data.CooldownUntil) {
-		return false, r.hold(ctx, mission.ShipID, "unresolved staged action waiting for persisted retry cooldown")
+		return false, r.holdExpected(ctx, mission.ShipID, "never-sent intent waits for its scoped persisted retry cooldown")
 	}
 	if firstSend && (!r.stagedFundsValid(action) || !r.stagedControlValid(action)) {
 		kind := neverSentFinancialEvent
@@ -303,7 +332,7 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 			if data.Futures != nil && !errors.Is(err, errFuturesPrecondition) && !errors.Is(err, errFuturesTerms) {
 				return false, err
 			}
-			if holdErr := r.hold(ctx, mission.ShipID, err.Error()); holdErr != nil {
+			if holdErr := r.holdExpected(ctx, mission.ShipID, err.Error()); holdErr != nil {
 				return false, holdErr
 			}
 			kind := neverSentPrecondition
@@ -325,10 +354,11 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 	}
 	if persisted.State == store.ActionReconciled {
 		var evidence struct {
-			Kind   string         `json:"kind"`
-			Ship   ShipState      `json:"ship"`
-			Marque letterOfMarque `json:"marque"`
-			Loan   gameapi.Loan   `json:"loan"`
+			Kind    string                  `json:"kind"`
+			Ship    ShipState               `json:"ship"`
+			Marque  letterOfMarque          `json:"marque"`
+			Loan    gameapi.Loan            `json:"loan"`
+			Request gameapi.LoanRequestView `json:"request"`
 		}
 		if err := json.Unmarshal(persisted.Response, &evidence); err != nil {
 			return false, fmt.Errorf("invalid reconciliation evidence for %s: %w", persisted.ID, err)
@@ -359,6 +389,9 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 			validMarque(evidence.Marque) && evidence.Marque.SeaZoneID == data.Marque.Quote.SeaZoneID && evidence.Marque.AddedPiracyBPS == 500 {
 			data.Marque.IssuedID, data.Marque.ExpiresAt = evidence.Marque.ID, evidence.Marque.ExpiresAt
 		}
+		if action.Stage == "loan-request" && (evidence.Kind != "authoritative_loan_request" || !r.acceptPlayerLoanRequest(data, encode(evidence.Request))) {
+			return false, r.hold(ctx, mission.ShipID, "reconciled loan request lacks its matching authoritative borrower request")
+		}
 		if action.Stage == "loan-accept" {
 			if evidence.Kind != "authoritative_loan" || !r.acceptLoanResult(data, encode(evidence.Loan)) {
 				return false, r.hold(ctx, mission.ShipID, "reconciled borrowing lacks its exact quote-specific loan receipt")
@@ -370,6 +403,7 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 		return r.applyReconciliation(ctx, mission, data)
 	}
 	if persisted.State == store.ActionComplete {
+		action.ReceiptAt = persisted.UpdatedAt
 		if bulletinStage(action.Stage) && gameapi.BulletinAuthorizationRefusal(persisted.Status, persisted.Response) {
 			ctx = outcomeCtx
 			if err := ctx.Err(); err != nil {
@@ -391,6 +425,11 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 	if !firstSend {
 		if changed, err := r.reconcileObservedAction(ctx, mission, data, persisted); changed || err != nil {
 			return changed, err
+		}
+		if action.Stage == "loan-request" || action.Path == "/v1/loan/approve" {
+			if reason := r.playerLoanReplayHold(data); reason != "" {
+				return false, r.holdUnresolvedAction(ctx, mission.ShipID, action, reason)
+			}
 		}
 		if passengerStage(action.Stage) && (data.Passage == nil || !data.Passage.RetryOffer) {
 			return false, r.holdUnresolvedAction(ctx, mission.ShipID, action, "passenger action awaits bounded request-specific GET evidence before replay")
@@ -459,7 +498,7 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 				if errors.Is(err, errMarqueQuoteIncreased) {
 					kind = neverSentMarqueQuote
 				}
-				if holdErr := r.hold(ctx, mission.ShipID, err.Error()); holdErr != nil {
+				if holdErr := r.holdExpected(ctx, mission.ShipID, err.Error()); holdErr != nil {
 					return false, holdErr
 				}
 			}
@@ -556,6 +595,7 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 	if err := r.db.CompleteAction(ctx, persisted.ID, status, response, retryAfter); err != nil {
 		return false, err
 	}
+	action.ReceiptAt = time.Now().UTC()
 	changed, err = r.consumeResult(ctx, mission, data, status, response)
 	if status >= 400 && status < 500 {
 		r.logRejectedAction(ctx, mission, data, action, status, response)
@@ -1021,6 +1061,8 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 	action := data.Action
 	data.CostsKnown = false
 	switch data.Action.Stage {
+	case "loan-request":
+		mission.Phase = "growth_loan_request"
 	case "loan-accept", "loan-repay":
 		loanResultPhase(mission, data)
 	case "marque":
@@ -1136,7 +1178,7 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			return err
 		}
 	}
-	if action.Stage == "loan-accept" || action.Stage == "loan-repay" {
+	if action.Stage == "loan-request" || action.Stage == "loan-accept" || action.Stage == "loan-repay" {
 		return r.loanActionReady(ctx, mission, data)
 	}
 	if mission.ShipID == "__growth" {
@@ -1229,6 +1271,20 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			}
 			input = r.planningInput(ship)
 			input.ReserveByRegion, err = r.treasuryReserves(ctx)
+		} else if data.FundingMission != "" {
+			if mission.ShipID != "__treasury" || data.FundingMission == mission.ShipID || data.FundingGeneration == "" {
+				return errors.New("new remittance has an invalid funding owner")
+			}
+			owner, _, ownerErr := r.loadMission(ctx, data.FundingMission)
+			if ownerErr != nil {
+				return ownerErr
+			}
+			if owner == nil || owner.Generation != data.FundingGeneration {
+				return errors.New("new remittance no longer has its recorded funding owner")
+			}
+			// This transfer spends its owner's reservation, not a second
+			// independent claim on the same donor cash.
+			input, err = r.committedPlanningInputExcept(ctx, ship, data.FundingMission)
 		} else {
 			input, err = r.committedPlanningInput(ctx, ship)
 		}
@@ -1521,6 +1577,9 @@ func (r *Runner) reconcileObservedAction(ctx context.Context, mission *store.Mis
 	}
 	if data.Futures != nil {
 		return r.reconcileFuturesAction(ctx, mission, data, action)
+	}
+	if data.Action.Stage == "loan-request" {
+		return r.reconcilePlayerLoanRequest(ctx, mission, data, action)
 	}
 	if data.Action.Stage == "loan-accept" || data.Action.Stage == "loan-repay" {
 		return r.reconcileLoanAction(ctx, mission, data, action)

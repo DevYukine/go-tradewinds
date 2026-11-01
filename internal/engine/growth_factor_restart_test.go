@@ -160,10 +160,17 @@ func TestOverseasTransientHirePreflightKeepsAwaitingPairInsideFloor(t *testing.T
 			}
 			meta.Stale = false
 			runner.meta[dataset] = meta
-			// Released replanned intents retry inside the observation floor.
+			// Released intents retry after their short delay, still inside the floor.
 			if err := h.db.DeleteMission(h.ctx, h.account.ID, "__treasury"); err != nil {
 				t.Fatal(err)
 			}
+			if changed, err := runner.manageExpansionAgents(h.ctx); err != nil || changed {
+				t.Fatalf("transient %s failure bypassed its retry deadline: %t %v", mode, changed, err)
+			}
+			for i := range agents {
+				agents[i].RetryAt = time.Now().UTC().Add(-time.Second)
+			}
+			overseasPairSave(t, h, runner, agents)
 			if changed, err := runner.manageExpansionAgents(h.ctx); err != nil || !changed {
 				t.Fatalf("awaiting pair did not retry its hire inside the floor after %s: %t %v", mode, changed, err)
 			}

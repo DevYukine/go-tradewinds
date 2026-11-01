@@ -354,6 +354,9 @@ func TestLoanCaptureTaskFetchesHistoryOnlyForOpenLoanWork(t *testing.T) {
 		{name: "ordinary treasury", shipID: "__treasury", data: missionData{Plan: Plan{Kind: "treasury"}}},
 		{name: "unrelated pending action", pendingPath: "/v1/treasury/remit"},
 		{name: "capacity financing", shipID: "__growth", data: missionData{Capacity: &capacityIntent{Financing: &capacityFinancing{}}}, history: true},
+		{name: "player request wait", shipID: "__growth", data: missionData{PlayerLoan: &playerLoanIntent{}}, history: true},
+		{name: "orphan pending request", pendingPath: "/v1/loan/request", history: true},
+		{name: "orphan pending approval", pendingPath: "/v1/loan/approve", history: true},
 		{name: "treasury repayment", shipID: "__treasury", data: missionData{LoanRepayment: &loanRepaymentIntent{}}, history: true},
 		{name: "priority arrears repayment", shipID: "__loans", data: missionData{LoanRepayment: &loanRepaymentIntent{}}, history: true},
 		{name: "staged loan action", shipID: "__growth", data: missionData{Action: &durableAction{Path: "/v1/loan/accept-quote"}}, history: true},
@@ -408,6 +411,7 @@ func TestLoanCaptureTaskFetchesHistoryOnlyForOpenLoanWork(t *testing.T) {
 func TestLoanFinancialEventsFencePreEventFirstSend(t *testing.T) {
 	for _, eventType := range []string{
 		"loan_disbursed", "loan_repayment", "loan_defaulted", "loan_collateral_seized",
+		"loan_quote_received", "loan_request_expired",
 		"loan_written_off", "loan_foreclosure_surplus_paid", "loan_insurance_loss_paid",
 	} {
 		t.Run(eventType, func(t *testing.T) {
@@ -439,7 +443,7 @@ func TestLoanFinancialEventsFencePreEventFirstSend(t *testing.T) {
 			if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
 				t.Fatal("loan event allowed a pre-event build to cross first-send")
 			}
-			for _, dataset := range []string{"loans", "vaults", "ships"} {
+			for _, dataset := range []string{"loans", "loan_requests", "vaults", "ships"} {
 				if meta := runner.meta[dataset]; meta.UpdatedAt.IsZero() || !meta.Complete || meta.Stale {
 					t.Fatalf("loan event did not retain authoritative %s capture: %+v", dataset, meta)
 				}
