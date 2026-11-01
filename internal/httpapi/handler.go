@@ -92,6 +92,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.competition(ctx, w, r)
 	case "/api/rivals":
 		h.rivals(ctx, w, r)
+	case "/api/bulletin":
+		h.bulletinBoard(ctx, w, r)
+	case "/api/bulletin/thread":
+		h.bulletinThread(ctx, w, r)
 	case "/api/warnings":
 		h.warnings(ctx, w)
 	case "/metrics":

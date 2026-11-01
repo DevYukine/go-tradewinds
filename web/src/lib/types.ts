@@ -83,6 +83,47 @@ export interface WarningReport {
   }[];
 }
 
+export interface BulletinThreadSummary {
+  id: string;
+  title: string;
+  company_name: string;
+  link: JsonRecord | null;
+  created_at: string;
+  last_post_at: string;
+  replies: number;
+  posts_recorded: number;
+  archived: boolean;
+  removed: boolean;
+  detail_synced_at: string | null;
+  detail_current: boolean;
+}
+
+export interface BulletinBoard {
+  threads: BulletinThreadSummary[];
+  total: number;
+  companies: string[];
+  companies_truncated: boolean;
+  synced_at: string | null;
+}
+
+export interface BulletinPostView {
+  id: string;
+  company_name: string;
+  body: string;
+  is_opening: boolean;
+  created_at: string;
+  edited_at: string | null;
+  removed: boolean;
+  deleted: boolean;
+}
+
+export interface BulletinThreadView {
+  thread: BulletinThreadSummary;
+  posts: BulletinPostView[];
+  posts_truncated: boolean;
+  posts_total: number;
+}
+
 export interface Account {
   id: string;
   label: string;

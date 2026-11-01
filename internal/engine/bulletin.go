@@ -74,24 +74,28 @@ type bulletinPayload struct {
 }
 
 type bulletinThread struct {
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	CompanyName string    `json:"company_name"`
-	CreatedAt   time.Time `json:"created_at"`
-	LastPostAt  time.Time `json:"last_post_at"`
-	Archived    bool      `json:"archived"`
-	Removed     bool      `json:"removed"`
+	ID          string          `json:"id"`
+	Title       string          `json:"title"`
+	CompanyName string          `json:"company_name"`
+	Link        json.RawMessage `json:"link"`
+	Replies     int             `json:"replies"`
+	CreatedAt   time.Time       `json:"created_at"`
+	LastPostAt  time.Time       `json:"last_post_at"`
+	Archived    bool            `json:"archived"`
+	Removed     bool            `json:"removed"`
 }
 
 type bulletinPost struct {
-	ID          string    `json:"id"`
-	ThreadID    string    `json:"thread_id"`
-	CompanyName string    `json:"company_name"`
-	Body        string    `json:"body"`
-	Opening     bool      `json:"is_opening"`
-	CreatedAt   time.Time `json:"created_at"`
-	Removed     bool      `json:"removed"`
-	Deleted     bool      `json:"deleted"`
+	ID            string     `json:"id"`
+	ThreadID      string     `json:"thread_id"`
+	CompanyName   string     `json:"company_name"`
+	Body          string     `json:"body"`
+	Opening       bool       `json:"is_opening"`
+	CreatedAt     time.Time  `json:"created_at"`
+	EditedAt      *time.Time `json:"edited_at"`
+	EditableUntil *time.Time `json:"editable_until"`
+	Removed       bool       `json:"removed"`
+	Deleted       bool       `json:"deleted"`
 }
 
 type bulletinPage struct {

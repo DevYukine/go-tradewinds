@@ -1,6 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import type {
   Account,
+  BulletinBoard,
+  BulletinThreadView,
   CompetitionSummary,
   DashboardData,
   DatasetMeta,
@@ -161,6 +163,48 @@ export function useCompetition(accountID: string) {
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
+    staleTime: 20_000,
+    retry: 1,
+  });
+}
+
+export function useBulletinBoard(query: {
+  q: string;
+  company: string;
+  limit: number;
+}) {
+  return useQuery({
+    queryKey: ["bulletin", query],
+    queryFn: ({ signal }) => {
+      const params = new URLSearchParams({
+        q: query.q,
+        company: query.company,
+        limit: String(query.limit),
+      });
+      return fetchJSON<BulletinBoard>(`/api/bulletin?${params}`, signal);
+    },
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    placeholderData: keepPreviousData,
+    staleTime: 20_000,
+    retry: 1,
+  });
+}
+
+export function useBulletinThread(id: string) {
+  return useQuery({
+    queryKey: ["bulletin-thread", id],
+    queryFn: ({ signal }) => {
+      const params = new URLSearchParams({ id });
+      return fetchJSON<BulletinThreadView>(
+        `/api/bulletin/thread?${params}`,
+        signal,
+      );
+    },
+    enabled: Boolean(id),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    placeholderData: keepPreviousData,
     staleTime: 20_000,
     retry: 1,
   });

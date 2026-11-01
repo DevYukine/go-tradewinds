@@ -134,7 +134,9 @@ func scrubText(value string, secrets []string) string {
 	if delimiter := strings.IndexAny(value, ":="); delimiter >= 0 && delimiter < len(value)-1 {
 		value = assignmentPattern.ReplaceAllString(value, redacted)
 	}
-	return value
+	// Decoded JSON strings (including keys) cannot contain NUL in PostgreSQL.
+	// encoding/json already replaces unpaired UTF-16 surrogates with U+FFFD.
+	return strings.ReplaceAll(value, "\x00", "\uFFFD")
 }
 
 func redactValue(value any, secrets []string) any {

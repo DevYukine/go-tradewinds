@@ -358,6 +358,9 @@ func (r *Runner) Run(ctx context.Context) error {
 					r.snapshot["_passenger_boarding_ships"] = encode(hints)
 				}
 			}
+			if event.Type == "bulletin_posted" {
+				r.recordBulletinEvent(ctx, event.Data)
+			}
 			backoff = time.Second
 			if streamDegraded {
 				r.log.Info("event stream reconnected")

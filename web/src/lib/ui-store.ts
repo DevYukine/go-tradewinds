@@ -11,6 +11,7 @@ export type View =
   | "voyages"
   | "fleet"
   | "journal"
+  | "bulletin"
   | "performance"
   | "treasury"
   | "holdings"
@@ -30,6 +31,12 @@ interface UIState {
   selectedShipAccountID: string;
   selectedPortID: string;
   navigationOpen: boolean;
+  selectedBulletinThreadID: string;
+  bulletinSearch: string;
+  bulletinCompany: string;
+  selectBulletinThread: (id: string) => void;
+  setBulletinSearch: (search: string) => void;
+  setBulletinCompany: (company: string) => void;
   moneyHistory: MoneyPreferences;
   setMoneyHistory: (preferences: Partial<MoneyPreferences>) => void;
   setAccount: (id: string) => void;
@@ -50,6 +57,12 @@ export const useUI = create<UIState>()(
       selectedShipAccountID: "",
       selectedPortID: "",
       navigationOpen: false,
+      selectedBulletinThreadID: "",
+      bulletinSearch: "",
+      bulletinCompany: "",
+      selectBulletinThread: (id) => set({ selectedBulletinThreadID: id }),
+      setBulletinSearch: (search) => set({ bulletinSearch: search }),
+      setBulletinCompany: (company) => set({ bulletinCompany: company }),
       moneyHistory: DEFAULT_MONEY_PREFERENCES,
       setMoneyHistory: (preferences) =>
         set((state) => ({

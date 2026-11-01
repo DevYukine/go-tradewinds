@@ -68,24 +68,29 @@ type passengerEventPayload struct {
 	Cause             string     `json:"cause"`
 }
 
-func decodePassengerEvent(raw json.RawMessage, out *passengerEventPayload) bool {
+func decodeEventPayload(raw json.RawMessage, out any) (time.Time, bool) {
 	var envelope struct {
 		Payload   json.RawMessage `json:"payload"`
 		Timestamp time.Time       `json:"timestamp"`
 	}
 	if json.Unmarshal(raw, &envelope) != nil {
-		return false
+		return time.Time{}, false
 	}
 	if len(envelope.Payload) != 0 {
 		raw = envelope.Payload
 	}
 	if json.Unmarshal(raw, out) != nil {
-		return false
+		return time.Time{}, false
 	}
-	if out.Timestamp.IsZero() {
-		out.Timestamp = envelope.Timestamp
+	return envelope.Timestamp, true
+}
+
+func decodePassengerEvent(raw json.RawMessage, out *passengerEventPayload) bool {
+	timestamp, ok := decodeEventPayload(raw, out)
+	if ok && out.Timestamp.IsZero() {
+		out.Timestamp = timestamp
 	}
-	return true
+	return ok
 }
 
 // Recording time is not source time: a replay after an SSE gap must not pay

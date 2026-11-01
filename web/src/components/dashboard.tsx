@@ -14,6 +14,7 @@ import {
   Hammer,
   Landmark,
   Menu,
+  MessagesSquare,
   Moon,
   RefreshCw,
   Sailboat,
@@ -36,6 +37,7 @@ import type {
   DashboardData,
 } from "@/lib/types";
 import { useUI, type View } from "@/lib/ui-store";
+import { BulletinView } from "./bulletin";
 import { ContractsView } from "./contracts";
 import { DecisionPanel } from "./decisions";
 import { DiagnosticsView } from "./diagnostics";
@@ -70,7 +72,10 @@ const navigationGroups: {
   },
   {
     label: "Journal",
-    items: [{ id: "journal", label: "Journal", icon: BookOpen }],
+    items: [
+      { id: "journal", label: "Journal", icon: BookOpen },
+      { id: "bulletin", label: "Bulletin", icon: MessagesSquare },
+    ],
   },
   {
     label: "Money",
@@ -266,15 +271,17 @@ export function Dashboard() {
             </h1>
             {view !== "chart" && (
               <p>
-                {scoped.length === 1
-                  ? (dataset<CompanyProfile>(scoped[0], "profile")?.company
-                      .name ?? scoped[0].label)
-                  : `${count(scoped.length)} configured accounts`}
+                {view === "bulletin"
+                  ? "Recorded posts from all companies"
+                  : scoped.length === 1
+                    ? (dataset<CompanyProfile>(scoped[0], "profile")?.company
+                        .name ?? scoped[0].label)
+                    : `${count(scoped.length)} configured accounts`}
               </p>
             )}
           </div>
           <div className="observation-status">
-            {view !== "chart" && (
+            {view !== "chart" && view !== "bulletin" && (
               <span>
                 {freshness}
                 {oldest ? `, ${age(oldest, now)}` : ""}
@@ -313,11 +320,13 @@ export function Dashboard() {
           </div>
         )}
         <EngineWarnings
-          accounts={scoped}
+          accounts={view === "bulletin" ? accounts : scoped}
           accountsLoaded={query.data !== undefined}
           overview={view === "chart"}
         />
-        {query.isPending ? (
+        {view === "bulletin" ? (
+          <BulletinView accounts={accounts} />
+        ) : query.isPending ? (
           <div className="loading-state" role="status">
             Loading recorded fleet and company data…
           </div>

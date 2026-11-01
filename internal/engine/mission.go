@@ -491,6 +491,9 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	if err := r.decision(ctx, "", "excluded_liabilities", "futures are pilot-only: one covered Amsterdam water/beer pair with no scale-up; patrols and extra companies rejected without measured positive incremental return and modeled liabilities", nil); err != nil {
 		return false, err
 	}
+	if err := r.syncBulletinMirror(ctx); err != nil {
+		return false, err
+	}
 	if r.opts.Execute {
 		// Public chatter only uses passes in which every trading control was idle.
 		mission, data, err := r.loadMission(ctx, "__bulletin")
