@@ -141,6 +141,7 @@ func obligationReserves(state AccountState, snapshot map[string]json.RawMessage,
 	for region, fees := range expansionFeeCommitments(state, snapshot) {
 		required[region] = growthCashTotal(max(required[region], base), fees)
 	}
+	reserveAmericaFlagship(required, state, snapshot)
 	return required
 }
 

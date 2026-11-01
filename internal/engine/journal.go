@@ -1169,6 +1169,9 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 	if bulletinStage(data.Action.Stage) {
 		return r.bulletinPreflight(data)
 	}
+	if mission.ShipID == americaFlagshipMission {
+		return r.americaFlagshipPreflight(ctx, data)
+	}
 	action := data.Action
 	if passengerStage(action.Stage) {
 		return r.passengerActionReady(ctx, mission, data)

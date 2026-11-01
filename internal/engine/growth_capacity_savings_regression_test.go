@@ -8,6 +8,36 @@ import (
 	"github.com/DevYukine/go-tradewinds/internal/store"
 )
 
+func TestCapacitySavingsOverseasUnlockClearsPhaseOneTargetsAndRestrictedBuild(t *testing.T) {
+	t.Parallel()
+	h, runner, _, _ := capacitySavingsRunnerFixture(t, true)
+	if _, err := runner.considerGrowth(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if target := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target"); target.PortID != recoveryHomePort {
+		t.Fatalf("Phase 1 control did not establish its savings target: %+v", target)
+	}
+	runner.snapshot["_capacity_growth_port"] = encode(recoveryHomePort)
+	overseasAddCapacityWorld(t, h, runner)
+	evidence, _ := overseasCapacityEvidence(t, h, runner, time.Now().UTC())
+	if changed, err := runner.considerCapacityGrowthAt(h.ctx, &evidence, recoveryHomePort, ""); err != nil || changed {
+		t.Fatalf("restricted Phase 1 selection survived the overseas unlock: changed=%t err=%v", changed, err)
+	}
+	h.missingMission("__growth")
+	h.missingMission("__treasury")
+	if target := decode[capacitySavingsTarget](runner.snapshot, "_capacity_savings_target"); target.PortID != "" {
+		t.Fatalf("closed Phase 1 yard retained its savings reservation: %+v", target)
+	}
+	if port := decode[string](runner.snapshot, "_capacity_growth_port"); port != "" {
+		t.Fatalf("closed Phase 1 yard retained its growth reservation: %q", port)
+	}
+	requireReviewHold(t, runner, "Phase 1 growth is closed: new hulls are built in Phase 2+ regions", true)
+	if h.api.mutationCount("/v1/loan/quote") != 0 || h.api.mutationCount("/v1/loan/request") != 0 ||
+		h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
+		t.Fatal("closed Phase 1 target created financing or construction")
+	}
+}
+
 func TestCapacitySavingsFreshYardObservationReleasesTarget(t *testing.T) {
 	t.Parallel()
 	for _, observation := range []string{"unavailable quote", "build backoff", "no longer winning"} {

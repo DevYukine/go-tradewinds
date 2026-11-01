@@ -10,22 +10,37 @@ import (
 	"github.com/DevYukine/go-tradewinds/internal/store"
 )
 
-func TestPhaseOneCapacityBuildWaitsUntilOverseasExhaustion(t *testing.T) {
+func expansionRegionsExhausted(runner *Runner) bool {
+	exhausted, _, _ := runner.overseasGrowthStatus()
+	return exhausted
+}
+
+func TestPhaseOneCapacityBuildClosesWhenOverseasYardUnlocks(t *testing.T) {
 	for _, scenario := range []struct {
-		name     string
-		phase    int
-		noGossip bool
-		loss     bool
-		wantHold bool
+		name      string
+		phase     int
+		yardPhase int
+		noGossip  bool
+		loss      bool
+		wantHold  bool
 	}{
 		{name: "Phase 1 remains open to local builds", phase: 1},
+		{name: "later overseas yard remains locked", phase: 2, yardPhase: 3},
 		{name: "unexplored retry holds Europe", phase: 2, wantHold: true},
 		{name: "missing gossip still holds Europe", phase: 2, noGossip: true, wantHold: true},
-		{name: "paid loss backoff opens Europe", phase: 2, loss: true},
+		{name: "paid loss backoff still closes Europe", phase: 2, loss: true, wantHold: true},
+		{name: "later unlocked phase still closes Europe", phase: 3, wantHold: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			h, runner, yard, hull, _ := overseasCapacityFixture(t)
 			runner.stateCache.Clock.UnlockedPhase = scenario.phase
+			if scenario.yardPhase != 0 {
+				for i := range runner.stateCache.Catalog.Ports {
+					if runner.stateCache.Catalog.Ports[i].BankingRegion == yard.BankingRegion {
+						runner.stateCache.Catalog.Ports[i].Phase = scenario.yardPhase
+					}
+				}
+			}
 			retry := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
 			outcome := expansionOutcome{RetryAt: retry}
 			if scenario.loss {
@@ -48,7 +63,7 @@ func TestPhaseOneCapacityBuildWaitsUntilOverseasExhaustion(t *testing.T) {
 				admission, reason, err := runner.expansionAdmission(h.ctx)
 				if err != nil || admission.region != yard.BankingRegion || !admission.retryUntil.Equal(retry) ||
 					reason != "expansion region waits for its retry deadline" {
-					t.Fatalf("overseas region must wait without being exhausted: %+v, %q, %v", admission, reason, err)
+					t.Fatalf("overseas retry must remain diagnostic, not reopen Europe: %+v, %q, %v", admission, reason, err)
 				}
 			}
 			changed, err := runner.considerGrowth(h.ctx)
@@ -58,12 +73,12 @@ func TestPhaseOneCapacityBuildWaitsUntilOverseasExhaustion(t *testing.T) {
 			if scenario.wantHold {
 				h.missingMission("__growth")
 				h.missingMission("__treasury")
-				requireReviewHold(t, runner, "Phase 1 growth waits: new hulls go overseas", true)
+				requireReviewHold(t, runner, "Phase 1 growth is closed: new hulls are built in Phase 2+ regions", true)
 				requireReviewHold(t, runner, "earliest overseas retry "+retry.Format(time.RFC3339), true)
 			} else {
 				_, data := h.mission("__growth")
 				if data.BuildPort != home.ID || data.Capacity == nil || data.Action == nil || data.Action.Stage != "build" {
-					t.Fatalf("exhausted overseas or Phase 1 world must stage local capacity: %+v", data)
+					t.Fatalf("before an overseas yard unlocks, local capacity must remain available: %+v", data)
 				}
 			}
 			if got := h.api.mutationCount("/v1/shipyard/build-ship"); got != 0 {
@@ -290,19 +305,20 @@ func TestOverseasProbeRetainsSafetyAndFundingGates(t *testing.T) {
 			if len(decode[[]expansionAgent](runner.snapshot, "_expansion_agents")) != 0 {
 				t.Fatal("rejected probe retained chargeable factor intents")
 			}
-			if guard != "arrival hazard" && guard != "unrated water" && guard != "eleven factors" && runner.overseasExhausted() {
-				t.Fatalf("%s incorrectly released Europe", guard)
+			if guard != "arrival hazard" && guard != "unrated water" && guard != "eleven factors" && expansionRegionsExhausted(runner) {
+				t.Fatalf("%s incorrectly exhausted overseas exploration", guard)
 			}
-			if guard == "eleven factors" && !runner.overseasExhausted() {
+			if guard == "eleven factors" && !expansionRegionsExhausted(runner) {
 				t.Fatal("without a live pair or two free slots, no overseas yard can be probed")
 			}
 		})
 	}
 }
 
-func TestPhaseOneGrowthOpensAfterAmericanLossAndCaribbeanHazardRejection(t *testing.T) {
-	h, runner, yard, _, _ := overseasCapacityFixture(t)
+func TestPhaseOneGrowthStaysClosedAfterAmericanLossAndCaribbeanHazardRejection(t *testing.T) {
+	h, runner, yard, hull, _ := overseasCapacityFixture(t)
 	removeExpansionGossip(runner)
+	home, _ := findPort(runner.stateCache.Catalog, recoveryHomePort)
 	runner.stateCache.Catalog.Ports = append(runner.stateCache.Catalog.Ports,
 		Port{ID: "havana", BankingRegion: "caribbean", SeaZoneID: "caribbean-water", Phase: 2, HasShipyard: true},
 		Port{ID: "port_royal", BankingRegion: "caribbean", SeaZoneID: "caribbean-water", Phase: 2})
@@ -310,7 +326,7 @@ func TestPhaseOneGrowthOpensAfterAmericanLossAndCaribbeanHazardRejection(t *test
 		Zone{ID: "caribbean-water", ZoneClass: "coastal", BaseStormBPS: 151})
 	zones := decode[[]ZoneObservation](runner.snapshot, "zones")
 	runner.snapshot["zones"] = encode(append(zones, ZoneObservation{SeaZoneID: "caribbean-water"}))
-	if runner.overseasExhausted() {
+	if expansionRegionsExhausted(runner) {
 		t.Fatal("hazard-rejected Caribbean hid probe-able unexplored America")
 	}
 	if handled, changed, err := runner.holdExpansionGrowth(h.ctx, false, true); err != nil || !handled || changed {
@@ -320,19 +336,30 @@ func TestPhaseOneGrowthOpensAfterAmericanLossAndCaribbeanHazardRejection(t *test
 	runner.markExpansionLoss(expansionAgent{
 		PortID: yard.ID, Region: yard.BankingRegion, HiredAt: time.Now().UTC().Add(-3 * time.Hour),
 	}, "expansion pair has no active profitable plan or saved build")
-	if !runner.overseasExhausted() {
+	if !expansionRegionsExhausted(runner) {
 		t.Fatal("paid American loss and measured Caribbean hazard did not exhaust overseas options")
 	}
-	if handled, _, err := runner.holdExpansionGrowth(h.ctx, false, true); err != nil || handled {
-		t.Fatalf("exhausted overseas regions retained the European hold: %t %v", handled, err)
+	if handled, changed, err := runner.holdExpansionGrowth(h.ctx, false, true); err != nil || !handled || changed {
+		t.Fatalf("exhausted overseas regions reopened Europe: %t %t %v", handled, changed, err)
+	}
+	evidence, input := overseasCapacityEvidence(t, h, runner, time.Now().UTC())
+	local, required, err := runner.capacityAtYard(h.ctx, home, hull, runner.stateCache.Quotes[home.ID+"|"+hull.ID], input, &evidence)
+	if err != nil || !local.Accepted {
+		t.Fatalf("fixture requires profitable funded European capacity: %+v %v", local, err)
 	}
 	runner.holding = nil
-	if changed, err := runner.considerGrowth(h.ctx); err != nil || !changed {
-		t.Fatalf("exhausted overseas regions prevented European construction: %t %v holds=%v", changed, err, runner.holding)
+	if changed, err := runner.considerGrowth(h.ctx); err != nil || changed {
+		t.Fatalf("exhausted overseas regions admitted European construction: %t %v holds=%v", changed, err, runner.holding)
 	}
-	_, build := h.mission("__growth")
-	if build.BuildPort != recoveryHomePort || build.Action == nil || build.Action.Stage != "build" {
-		t.Fatalf("overseas exhaustion did not release the safe European build: %+v", build)
+	local.Accepted, local.CashShortfallPence = false, 100_000
+	if changed, err := runner.considerCapacityFinancing(h.ctx, home, hull, local, required, &evidence); err != nil || changed {
+		t.Fatalf("exhausted overseas regions admitted European debt: %t %v", changed, err)
+	}
+	h.missingMission("__growth")
+	h.missingMission("__treasury")
+	requireReviewHold(t, runner, "Phase 1 growth is closed: new hulls are built in Phase 2+ regions", true)
+	if h.api.mutationCount("/v1/shipyard/build-ship") != 0 || h.api.mutationCount("/v1/loan/request") != 0 {
+		t.Fatal("overseas exhaustion sent a European build or loan request")
 	}
 }
 
@@ -395,11 +422,11 @@ func TestOverseasExhaustionWaitsForExistingExplorationWithoutRecordedLoss(t *tes
 		}
 	}
 	runner.snapshot["zones"] = encode(zones)
-	if runner.overseasExhausted() {
+	if expansionRegionsExhausted(runner) {
 		t.Fatal("a changed pre-exploration hazard gate bypassed an existing paid pair's observation floor")
 	}
 	if handled, changed, err := runner.holdExpansionGrowth(h.ctx, false, true); err != nil || !handled || changed {
-		t.Fatalf("existing exploration released Europe before its loss was recorded: %t %t %v", handled, changed, err)
+		t.Fatalf("existing exploration lost its observation hold: %t %t %v", handled, changed, err)
 	}
 	requireReviewHold(t, runner, "existing overseas exploration is still within its observation floor", true)
 }
@@ -426,7 +453,7 @@ func TestOverseasRegionWithoutProbeableYardIsExhausted(t *testing.T) {
 			}
 			runner.stateCache.Catalog.SeaZones = append(runner.stateCache.Catalog.SeaZones,
 				Zone{ID: "unprobeable-ocean", ZoneClass: "oceanic"})
-			if !runner.overseasExhausted() {
+			if !expansionRegionsExhausted(runner) {
 				t.Fatalf("%s left an impossible probe holding Europe", topology)
 			}
 		})
@@ -457,32 +484,30 @@ func TestMeasuredUnbuildableOverseasYardExhaustsRegionUntilRetry(t *testing.T) {
 			}
 			outcome := decode[map[string]expansionOutcome](runner.snapshot, "_expansion_agent_outcomes")[yard.BankingRegion]
 			if rejection == "stale quay waits" {
-				if runner.overseasExhausted() || !outcome.CapacityRetryAt.IsZero() || changed {
+				if expansionRegionsExhausted(runner) || !outcome.CapacityRetryAt.IsZero() || changed {
 					t.Fatalf("missing authority exhausted overseas capacity: %+v, changed=%t", outcome, changed)
 				}
 				h.missingMission("__growth")
 				return
 			}
-			if !changed || !runner.overseasExhausted() || outcome.CapacityReason == "" ||
+			if changed || !expansionRegionsExhausted(runner) || outcome.CapacityReason == "" ||
 				!outcome.CapacityRetryAt.After(time.Now().UTC().Add(23*time.Hour)) || outcome.Losses != 0 {
-				t.Fatalf("measured overseas rejection did not release Europe with a persisted retry: %+v, changed=%t", outcome, changed)
+				t.Fatalf("measured overseas rejection lost its retry or reopened Europe: %+v, changed=%t", outcome, changed)
 			}
-			_, build := h.mission("__growth")
-			if build.BuildPort != recoveryHomePort || build.Action == nil || build.Action.Stage != "build" {
-				t.Fatalf("measured overseas exhaustion did not stage safe local capacity: %+v", build)
-			}
+			h.missingMission("__growth")
+			requireReviewHold(t, runner, "Phase 1 growth is closed: new hulls are built in Phase 2+ regions", true)
 			persisted, err := h.db.Snapshot(h.ctx, h.account.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			runner.snapshot = persisted
-			if !runner.overseasExhausted() {
+			if !expansionRegionsExhausted(runner) {
 				t.Fatal("measured capacity exhaustion was lost on snapshot reload")
 			}
 			outcome.CapacityRetryAt = time.Now().UTC().Add(-time.Second)
 			runner.snapshot["_expansion_agent_outcomes"] = encode(map[string]expansionOutcome{yard.BankingRegion: outcome})
-			if runner.overseasExhausted() {
-				t.Fatal("expired capacity retry kept Europe open without another overseas evaluation")
+			if expansionRegionsExhausted(runner) {
+				t.Fatal("expired capacity retry prevented another overseas evaluation")
 			}
 		})
 	}
@@ -511,7 +536,7 @@ func TestOverseasPresenceAwayFromYardStillAdmitsEvidenceProbe(t *testing.T) {
 			}
 			exhausted, detail, _ := runner.overseasGrowthStatus()
 			if exhausted || !strings.Contains(detail, "probe-able overseas yard awaits quay evidence") {
-				t.Fatalf("presence away from a yard released Europe before evidence: exhausted=%t detail=%q", exhausted, detail)
+				t.Fatalf("presence away from a yard exhausted exploration before evidence: exhausted=%t detail=%q", exhausted, detail)
 			}
 			admission, reason, err := runner.expansionAdmission(h.ctx)
 			if err != nil || reason != "" || !admission.probe || admission.yard.ID != "boston" ||
@@ -633,7 +658,7 @@ func TestOverseasProbeRetainsOlderFactorUntilDismissalWithoutFailingNewPair(t *t
 			if changed, err := runner.manageExpansionAgents(h.ctx); err != nil || changed {
 				t.Fatalf("dismissed factor's retained history triggered another cleanup: %t %v", changed, err)
 			}
-			if runner.overseasExhausted() || h.api.mutationCount("/v1/company/dismiss-factor") != 1 {
+			if expansionRegionsExhausted(runner) || h.api.mutationCount("/v1/company/dismiss-factor") != 1 {
 				t.Fatal("old factor dismissal prematurely exhausted or repeatedly dismissed the new exploration")
 			}
 		})
@@ -682,7 +707,7 @@ func TestPaidUnevaluatedOverseasPairExhaustsRegionDuringItsRetry(t *testing.T) {
 			}
 			outcome := decode[map[string]expansionOutcome](runner.snapshot, "_expansion_agent_outcomes")["america"]
 			if outcome.Losses != 0 || outcome.UnevaluatedAttempts != 1 ||
-				!outcome.UnevaluatedRetryAt.After(time.Now().UTC()) || !runner.overseasExhausted() {
+				!outcome.UnevaluatedRetryAt.After(time.Now().UTC()) || !expansionRegionsExhausted(runner) {
 				t.Fatalf("paid pair without quay evaluation did not exhaust its retry window: %+v", outcome)
 			}
 			persisted, err := h.db.Snapshot(h.ctx, h.account.ID)
@@ -690,7 +715,7 @@ func TestPaidUnevaluatedOverseasPairExhaustsRegionDuringItsRetry(t *testing.T) {
 				t.Fatal(err)
 			}
 			runner.snapshot = persisted
-			if !runner.overseasExhausted() {
+			if !expansionRegionsExhausted(runner) {
 				t.Fatal("paid pair exhaustion did not survive snapshot reload")
 			}
 			_, detail, retry := runner.overseasGrowthStatus()
@@ -700,7 +725,7 @@ func TestPaidUnevaluatedOverseasPairExhaustsRegionDuringItsRetry(t *testing.T) {
 			}
 			outcome.UnevaluatedRetryAt = time.Now().UTC().Add(-time.Second)
 			runner.snapshot["_expansion_agent_outcomes"] = encode(map[string]expansionOutcome{"america": outcome})
-			if runner.overseasExhausted() {
+			if expansionRegionsExhausted(runner) {
 				t.Fatal("paid-start floor alone exhausted a pair after its failure retry expired")
 			}
 		})
@@ -752,8 +777,8 @@ func TestOverseasSpreadWithoutAdmissibleBuildFallsBackToEvidenceProbe(t *testing
 					t.Fatalf("pure cash shortage bought a probe instead of saving for the overseas build: %+v %q", admission, reason)
 				}
 				hold := runner.overseasGrowthHoldReason(reason)
-				if !strings.Contains(hold, reason) || runner.overseasExhausted() {
-					t.Fatalf("cash-only overseas wait released Europe or hid the shortfall: %q", hold)
+				if !strings.Contains(hold, reason) || expansionRegionsExhausted(runner) {
+					t.Fatalf("cash-only overseas wait exhausted exploration or hid the shortfall: %q", hold)
 				}
 				return
 			}
@@ -798,7 +823,7 @@ func TestPhaseOnePlayerRequestAndApprovalRetireBeforeNewDebt(t *testing.T) {
 			mission, data := h.mission("__growth")
 			requestID := data.PlayerLoan.RequestID
 			openProbeableAmericaForFinancing(runner)
-			if runner.overseasExhausted() {
+			if expansionRegionsExhausted(runner) {
 				t.Fatal("newly unlocked America must still hold Europe")
 			}
 			requestsBefore := h.api.mutationCount("/v1/loan/request")
@@ -968,7 +993,7 @@ func TestUnpaidExpansionRejectionRetriesWithoutExhaustingOverseas(t *testing.T) 
 				t.Fatal(err)
 			}
 			outcome := decode[map[string]expansionOutcome](runner.snapshot, "_expansion_agent_outcomes")["america"]
-			if (outcome.Losses > 0) != paid || runner.overseasExhausted() != paid || !runner.expansionRetryUntil("america").After(now) {
+			if (outcome.Losses > 0) != paid || expansionRegionsExhausted(runner) != paid || !runner.expansionRetryUntil("america").After(now) {
 				t.Fatalf("hire refusal confused never-paid retry with a realized fee loss: paid=%t outcome=%+v", paid, outcome)
 			}
 		})
@@ -1007,7 +1032,7 @@ func TestNeverSentPhaseOneFinancingRetiresBeforeMissionDispatch(t *testing.T) {
 	}
 }
 
-func TestExhaustedOverseasCashBlockedCandidateDoesNotHideFundedEuropeanCapacity(t *testing.T) {
+func TestExhaustedOverseasCashShortfallDoesNotReopenEurope(t *testing.T) {
 	h, runner, yard, hull, quote := overseasCapacityFixture(t)
 	overseasMetric(t, h, 1_000_000_000, time.Now().UTC())
 	runner.stateCache.Factors = append(runner.stateCache.Factors, yard.ID, "new_york")
@@ -1024,11 +1049,17 @@ func TestExhaustedOverseasCashBlockedCandidateDoesNotHideFundedEuropeanCapacity(
 	if err != nil || overseas.Accepted || !overseas.EconomicallyViable || overseas.CashShortfallPence <= 0 {
 		t.Fatalf("fixture needs economically viable but unfundable overseas capacity: %+v %v", overseas, err)
 	}
-	if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || !changed {
-		t.Fatalf("exhausted unfunded overseas candidate hid the funded local build: %t %v", changed, err)
+	if _, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil {
+		t.Fatal(err)
 	}
-	_, build := h.mission("__growth")
-	if build.BuildPort != recoveryHomePort || build.Action == nil || build.Action.Stage != "build" {
-		t.Fatalf("cash-blocked overseas alternative displaced executable European capacity after exhaustion: %+v", build)
+	mission, data, err := runner.loadMission(h.ctx, "__growth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mission != nil && data.BuildPort != yard.ID {
+		t.Fatalf("cash-blocked overseas capacity reopened a European yard: %+v", data)
+	}
+	if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
+		t.Fatal("cash-blocked overseas capacity sent a European build")
 	}
 }

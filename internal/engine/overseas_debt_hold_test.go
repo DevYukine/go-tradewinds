@@ -3,8 +3,8 @@ package engine
 // Consumer regressions for overseas debt holds:
 //   - an expansion pair still awaiting its fresh capacity evaluation must hold
 //     every savings and direct debt call before any quote or acceptance
-//     mutation, and release ordinary financing once a real yard evaluation
-//     lands;
+//     mutation; a real yard evaluation ends that pair hold but never reopens
+//     European financing after an overseas yard unlocks;
 //   - a capacity loan-accept must revalidate the identical zone-estimate guard
 //     as the financed build preflight before its immutable request is sent.
 
@@ -48,7 +48,34 @@ func overseasDebtYardCandidate(t *testing.T, h *recoveryHarness, runner *Runner,
 	return evidence, candidate
 }
 
-func TestOverseasAwaitingPairHoldsEuropeanDebtUntilFreshEvaluation(t *testing.T) {
+func TestOverseasUnlockRejectsDirectPhaseOneFinancingBeforeQuotesOrRequests(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"Goldsmiths", "player request"} {
+		t.Run(source, func(t *testing.T) {
+			h, runner := loanCapacityFixture(t, 750_000, false)
+			loanCapacityCashShortfall(t, h, runner, 100_000)
+			port, hull, decision, required, evidence := loanCapacityDecision(t, h, runner)
+			if decision.Accepted || !decision.EconomicallyViable || decision.CashShortfallPence <= 0 {
+				t.Fatalf("Phase 1 financing control is not a viable cash shortfall: %+v", decision)
+			}
+			if source == "player request" {
+				runner.clearPlayerFallback(port.ID, hull.ID)
+			}
+			overseasAddCapacityWorld(t, h, runner)
+			if changed, err := runner.considerCapacityFinancing(h.ctx, port, hull, decision, required, evidence); err != nil || changed {
+				t.Fatalf("closed Phase 1 yard admitted %s financing: changed=%t err=%v", source, changed, err)
+			}
+			h.missingMission("__growth")
+			requireReviewHold(t, runner, "Phase 1 growth is closed: new hulls are built in Phase 2+ regions", true)
+			if h.api.mutationCount("/v1/loan/quote") != 0 || h.api.mutationCount("/v1/loan/request") != 0 ||
+				h.api.mutationCount("/v1/loan/accept-quote") != 0 || h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
+				t.Fatal("closed Phase 1 financing reached a quote, request, acceptance or build")
+			}
+		})
+	}
+}
+
+func TestOverseasAwaitingPairEvaluationNeverReopensEuropeanDebt(t *testing.T) {
 	t.Parallel()
 	h, runner := loanCapacityFixture(t, 750_000, false)
 	runner.stateCache.Clock.Calendar.TimeScale = 60
@@ -59,32 +86,7 @@ func TestOverseasAwaitingPairHoldsEuropeanDebtUntilFreshEvaluation(t *testing.T)
 	runner.stateCache.Clock.Calendar.TimeScale = 60
 	runner.stateCache.Contracts = nil
 	bookCommodity(runner.stateCache.Markets[recoveryFarPort], recoveryGrain).Depth.Bids[0].PricePence = 50_000
-	yard, hull, _ := overseasAddCapacityWorld(t, h, runner)
-	runner.stateCache.Factors = append(runner.stateCache.Factors, yard.ID, "new_york")
-	overseasMetric(t, h, 10_000_000, time.Now().UTC())
-	// The proven cash-short shape: every region exactly its protected reserve,
-	// and the European debt region holding the only free working cash, so its
-	// grain lane funds at every size while the build stays a genuine debt case
-	// and the unreachable overseas vault cannot erase the shortfall.
-	reserves, err := runner.treasuryReserves(h.ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	port, _ := findPort(runner.stateCache.Catalog, recoveryHomePort)
-	for i := range runner.stateCache.Vaults {
-		vault := &runner.stateCache.Vaults[i]
-		if vault.BankingRegion == port.BankingRegion {
-			vault.BalancePence = reserves[vault.BankingRegion] + 100_000
-			continue
-		}
-		vault.BalancePence = reserves[vault.BankingRegion]
-	}
-	runner.snapshot["_expansion_agent_outcomes"] = encode(map[string]expansionOutcome{
-		yard.BankingRegion: {Losses: 1, RetryAt: time.Now().UTC().Add(24 * time.Hour)},
-	})
-	// Control: overseas exploration has recorded a loss, so Europe is open.
-	// With no awaiting pair seeded, an ordinary pass stages a quote-backed
-	// financing intent without accepting debt or building.
+	// A fresh Phase 1 account may still admit the ordinary debt package.
 	evidence, _ := overseasCapacityEvidence(t, h, runner, time.Now().UTC())
 	before := h.api.mutationCount("/v1/loan/quote")
 	if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || !changed {
@@ -102,10 +104,29 @@ func TestOverseasAwaitingPairHoldsEuropeanDebtUntilFreshEvaluation(t *testing.T)
 	if err := h.db.DeleteMission(h.ctx, h.account.ID, "__growth"); err != nil {
 		t.Fatal(err)
 	}
-	// Held pass: seed the awaiting pair and block its own yard's evaluation, so
-	// the pair is genuinely awaiting when the growth decision reaches its debt
-	// calls. The proven European candidate is unchanged; the hold alone must
-	// prevent every debt mutation.
+	yard, hull, _ := overseasAddCapacityWorld(t, h, runner)
+	runner.stateCache.Factors = append(runner.stateCache.Factors, yard.ID, "new_york")
+	overseasMetric(t, h, 10_000_000, time.Now().UTC())
+	bookCommodity(runner.stateCache.Markets[yard.ID], recoveryGrain).Depth.Asks = nil
+	// The proven cash-short shape: every region exactly its protected reserve,
+	// and the European debt region holding the only free working cash, so its
+	// grain lane funds at every size while the build stays a genuine debt case
+	// and the unreachable overseas vault cannot erase the shortfall.
+	reserves, err := runner.treasuryReserves(h.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, _ := findPort(runner.stateCache.Catalog, recoveryHomePort)
+	for i := range runner.stateCache.Vaults {
+		vault := &runner.stateCache.Vaults[i]
+		if vault.BankingRegion == port.BankingRegion {
+			vault.BalancePence = reserves[vault.BankingRegion] + 100_000
+			continue
+		}
+		vault.BalancePence = reserves[vault.BankingRegion]
+	}
+	// Seed an awaiting pair whose yard cannot yet be evaluated. The proven
+	// European candidate must remain held before every debt mutation.
 	hiredAt := time.Now().UTC().Add(-time.Hour)
 	runner.snapshot["_expansion_agents"] = encode([]expansionAgent{
 		{PortID: yard.ID, Partner: "new_york", Region: yard.BankingRegion, HiredAt: hiredAt},
@@ -131,27 +152,21 @@ func TestOverseasAwaitingPairHoldsEuropeanDebtUntilFreshEvaluation(t *testing.T)
 			t.Fatalf("blocked pass recorded a premature pair evaluation: %+v", agent)
 		}
 	}
-	// Release pass: the exhausted region permits Europe once a real
-	// route-backed yard evaluation also releases the pair's safety hold.
+	// A route-backed evaluation releases the pair hold, not the Europe ban.
 	delete(runner.snapshot, "_growth_build_backoffs")
-	// The first control consumed its candidate-scoped fallback ticket.
 	runner.snapshot["_player_loan_fallback"] = encode(map[string]time.Time{
 		recoveryHomePort + "|" + recoveryHull: time.Now().UTC().Add(6 * time.Hour),
 	})
 	evidence, _ = overseasCapacityEvidence(t, h, runner, time.Now().UTC())
-	if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || !changed {
-		t.Fatalf("fresh evaluation did not release normal financing: changed=%t err=%v holds=%v", changed, err, runner.holding)
+	if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || changed {
+		t.Fatalf("fresh evaluation reopened European financing: changed=%t err=%v holds=%v", changed, err, runner.holding)
 	}
-	_, data = h.mission("__growth")
-	if data.BuildPort != recoveryHomePort || data.Capacity == nil || data.Capacity.Financing == nil ||
-		len(data.Capacity.Financing.Quotes) == 0 || data.Action != nil {
-		t.Fatalf("released pass did not stage the European financing intent: %+v", data)
-	}
-	if h.api.mutationCount("/v1/loan/quote") == heldAt {
-		t.Fatal("released pass staged financing without requesting real quotes")
-	}
-	if h.api.mutationCount("/v1/loan/accept-quote") != 0 {
-		t.Fatal("staging alone accepted debt")
+	h.missingMission("__growth")
+	h.missingMission("__treasury")
+	requireReviewHold(t, runner, "Phase 1 growth is closed: new hulls are built in Phase 2+ regions", true)
+	if h.api.mutationCount("/v1/loan/quote") != heldAt || h.api.mutationCount("/v1/loan/request") != 0 ||
+		h.api.mutationCount("/v1/loan/accept-quote") != 0 || h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
+		t.Fatal("evaluated pair mutated European financing or construction")
 	}
 	evaluated := false
 	for _, agent := range decode[[]expansionAgent](runner.snapshot, "_expansion_agents") {
@@ -160,7 +175,7 @@ func TestOverseasAwaitingPairHoldsEuropeanDebtUntilFreshEvaluation(t *testing.T)
 		}
 	}
 	if !evaluated {
-		t.Fatal("release pass did not record the pair's real yard evaluation")
+		t.Fatal("held pass did not record the pair's real yard evaluation")
 	}
 }
 

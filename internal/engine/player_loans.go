@@ -47,6 +47,7 @@ type playerLoanIntent struct {
 	Repayment         string           `json:"repayment"`
 	CollateralKind    string           `json:"collateral_kind"`
 	ShipID            string           `json:"ship_id"`
+	OpenGameHours     int64            `json:"open_game_hours,omitempty"`
 	PostedAt          time.Time        `json:"posted_at"`
 	ExpiresAt         time.Time        `json:"expires_at"`
 	Decision          GrowthDecision   `json:"decision"`
@@ -58,11 +59,15 @@ type playerLoanIntent struct {
 }
 
 func (intent *playerLoanIntent) body() gameapi.PostLoanRequest {
+	hours := intent.OpenGameHours
+	if hours == 0 {
+		hours = 24
+	}
 	return gameapi.PostLoanRequest{
 		BankingRegion: intent.BankingRegion, PrincipalPence: intent.PrincipalPence,
 		TermGameDays: intent.TermGameDays, Repayment: intent.Repayment,
 		CollateralKind: intent.CollateralKind, ShipID: intent.ShipID,
-		Recourse: true, AutoQuote: true, OpenGameHours: 24,
+		Recourse: true, AutoQuote: true, OpenGameHours: hours,
 	}
 }
 
@@ -241,6 +246,9 @@ func (r *Runner) playerLoanBackoff(ctx context.Context, portID, hullID string, f
 }
 
 func (r *Runner) stagePlayerLoan(ctx context.Context, port Port, hull Hull, decision GrowthDecision, principal, installment int64, evidence *growthEvidence) (bool, error) {
+	if r.phaseOneYard(port) {
+		return false, r.holdExpected(ctx, "", r.overseasGrowthHoldReason(""))
+	}
 	if !r.loanRequestAuthority() || !r.fresh("ship_listings") {
 		return false, r.recordCapacityLoan(ctx, port, hull, capacityLoanDecision{
 			Source: "player_request", Verdict: "debt_capacity", Reason: "player request waits for fresh own request and listing authority",
@@ -315,8 +323,9 @@ func playerRequestMatches(request gameapi.LoanRequestView, intent *playerLoanInt
 	return intent != nil && request.ID != "" && request.BorrowerCompanyID == companyID &&
 		request.BankingRegion == intent.BankingRegion && request.PrincipalPence == intent.PrincipalPence &&
 		request.TermGameDays == intent.TermGameDays && request.Repayment == intent.Repayment &&
-		intent.CollateralKind == "ship_lien" && request.CollateralKind == "ship_lien" && request.Recourse && request.AutoQuote &&
-		intent.ShipID != "" && request.CollateralShipID != nil && *request.CollateralShipID == intent.ShipID &&
+		request.CollateralKind == intent.CollateralKind && request.Recourse && request.AutoQuote &&
+		(intent.CollateralKind == "ship_lien" && intent.ShipID != "" && request.CollateralShipID != nil && *request.CollateralShipID == intent.ShipID ||
+			intent.CollateralKind == "unsecured" && intent.ShipID == "" && request.CollateralShipID == nil) &&
 		!request.CreatedAt.Before(intent.PostedAt)
 }
 
@@ -367,6 +376,9 @@ func (r *Runner) playerCapacityNeed(ctx context.Context, intent *playerLoanInten
 	}
 	if !portOK || !hullOK || !capacityHull(hull) || port.BankingRegion != intent.BankingRegion {
 		return port, hull, GrowthDecision{}, nil, capacityGate("hull", true, "capacity waits for its recorded catalog yard and hull")
+	}
+	if r.phaseOneYard(port) {
+		return port, hull, GrowthDecision{}, nil, capacityGate("overseas_first", true, r.overseasGrowthHoldReason(""))
 	}
 	planning, err := r.committedPlanningInputExcept(ctx, ShipState{}, "__growth")
 	if err != nil {

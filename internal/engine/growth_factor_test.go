@@ -606,7 +606,7 @@ func TestExpansionFactorUnpaidRefusalRetriesWithoutRealizedLoss(t *testing.T) {
 			outcomes := decode[map[string]expansionOutcome](runner.snapshot, "_expansion_agent_outcomes")
 			outcome := outcomes["caribbean"]
 			if outcome.Losses != 0 || !outcome.RetryAt.IsZero() || !time.Now().Before(runner.expansionRetryUntil("caribbean")) ||
-				!decode[time.Time](runner.snapshot, "_expansion_last_started_at").IsZero() || runner.overseasExhausted() {
+				!decode[time.Time](runner.snapshot, "_expansion_last_started_at").IsZero() || expansionRegionsExhausted(runner) {
 				t.Fatalf("never-paid refusal became an exhausting loss or lost its retry: %+v", outcome)
 			}
 			outcome.AttemptAt = time.Now().UTC().Add(-3*time.Hour - time.Second)

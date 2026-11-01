@@ -1164,7 +1164,6 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 	buildBackoffs := decode[map[string]time.Time](r.snapshot, "_growth_build_backoffs")
 	expansionAgents := decode[[]expansionAgent](r.snapshot, "_expansion_agents")
 	expiredSavings := decode[map[string]time.Time](r.snapshot, "_capacity_savings_expired")
-	savingsIndex := -1
 	var candidates []capacityCandidate
 	completeYards := make(map[string]bool)
 	for _, port := range r.stateCache.Catalog.Ports {
@@ -1231,9 +1230,6 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 				}
 			}
 			candidates = append(candidates, capacityCandidate{port: port, hull: hull, decision: decision, required: required})
-			if savingsTarget.PortID == port.ID && savingsTarget.HullID == hull.ID {
-				savingsIndex = len(candidates) - 1
-			}
 		}
 	}
 	if portID == "" {
@@ -1241,32 +1237,14 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 			return false, err
 		}
 	}
-	overseasExhausted := r.overseasExhausted()
-	if portID == "" && slices.ContainsFunc(candidates, func(candidate capacityCandidate) bool {
-		return candidate.port.Phase >= 2 && candidate.decision.EconomicallyViable &&
-			(!overseasExhausted || candidate.decision.Accepted)
-	}) {
-		// A viable overseas yard takes precedence unless overseas exploration
-		// is exhausted and this candidate has no executable cash route.
+	if r.overseasYardUnlocked() {
 		candidates = slices.DeleteFunc(candidates, func(candidate capacityCandidate) bool {
 			return r.phaseOneYard(candidate.port)
 		})
-		savingsIndex = slices.IndexFunc(candidates, func(candidate capacityCandidate) bool {
-			return candidate.port.ID == savingsTarget.PortID && candidate.hull.ID == savingsTarget.HullID
-		})
-		if targetPort, _ := findPort(r.stateCache.Catalog, savingsTarget.PortID); r.phaseOneYard(targetPort) {
-			savingsTarget = capacitySavingsTarget{}
-			if err := r.setCapacitySavingsTarget(ctx, savingsTarget); err != nil {
-				return false, err
-			}
-		}
-		if targetPort, _ := findPort(r.stateCache.Catalog, decode[string](r.snapshot, "_capacity_growth_port")); r.phaseOneYard(targetPort) {
-			delete(r.snapshot, "_capacity_growth_port")
-			if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
-				return false, err
-			}
-		}
 	}
+	savingsIndex := slices.IndexFunc(candidates, func(candidate capacityCandidate) bool {
+		return candidate.port.ID == savingsTarget.PortID && candidate.hull.ID == savingsTarget.HullID
+	})
 	markCapacityCompetition(candidates)
 	for _, candidate := range candidates {
 		port, hull, decision, required := candidate.port, candidate.hull, candidate.decision, candidate.required
@@ -1282,8 +1260,8 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 		found = found || decision.Accepted
 		evaluated = true
 	}
-	if found && (portID == "" || r.phaseOneYard(bestPort)) {
-		if handled, changed, err := r.holdExpansionGrowth(ctx, portID == "", r.phaseOneYard(bestPort)); handled || err != nil {
+	if found && portID == "" {
+		if handled, changed, err := r.holdExpansionGrowth(ctx, true, false); handled || err != nil {
 			return changed, err
 		}
 	}
@@ -1414,11 +1392,6 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 		if found {
 			buy = bestDecision
 		}
-		if portID == "" && r.phaseOneYard(save.port) {
-			if handled, changed, err := r.holdExpansionGrowth(ctx, canExpand, true); handled || err != nil {
-				return changed, err
-			}
-		}
 		if changed, err := r.considerCapacitySavingsFinancing(ctx, buy, &save, savingsRate, input.FleetSize, evidence); changed || err != nil {
 			return changed, err
 		}
@@ -1484,15 +1457,6 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 		}
 	}
 	if !found && portID == "" {
-		financed := bestPort
-		if savingsHold && savingsIndex >= 0 {
-			financed = candidates[savingsIndex].port
-		}
-		if r.phaseOneYard(financed) {
-			if handled, changed, err := r.holdExpansionGrowth(ctx, canExpand, true); handled || err != nil {
-				return changed, err
-			}
-		}
 		if savingsHold && savingsIndex >= 0 {
 			save := candidates[savingsIndex]
 			save.decision = capacitySavingsDecision(save.decision, input)
@@ -1504,7 +1468,7 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 				return changed, err
 			}
 		}
-		if handled, changed, err := r.holdExpansionGrowth(ctx, canExpand, false); handled || err != nil {
+		if handled, changed, err := r.holdExpansionGrowth(ctx, canExpand, r.overseasYardUnlocked()); handled || err != nil {
 			return changed, err
 		}
 	}
@@ -1516,6 +1480,9 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 		return r.holdCapacitySavings(ctx, savingsTarget, buy, evidence.available, savingsRate)
 	}
 	if !found {
+		if reason := r.overseasGrowthHoldReason(bestDecision.Reason); reason != "" {
+			bestDecision.Reason = reason
+		}
 		if err := r.holdExpected(ctx, "", bestDecision.Reason); err != nil {
 			return false, err
 		}
@@ -1546,6 +1513,9 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 }
 
 func (r *Runner) startCapacityGrowth(ctx context.Context, port Port, hull Hull, decision GrowthDecision, financing *capacityFinancing) (bool, error) {
+	if r.phaseOneYard(port) && (financing == nil || len(financing.Loans) == 0) {
+		return false, r.holdExpected(ctx, "", r.overseasGrowthHoldReason(""))
+	}
 	used := decode[[]string](r.snapshot, "_used_ship_names")
 	for _, ship := range r.stateCache.Ships {
 		used = append(used, ship.Ship.Name)
@@ -1687,6 +1657,9 @@ func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) erro
 	port, exists := findPort(r.stateCache.Catalog, intent.BuildPort)
 	if !exists {
 		return errors.New("capacity build yard is absent from the current catalog")
+	}
+	if r.phaseOneYard(port) {
+		return errors.New(r.overseasGrowthHoldReason(""))
 	}
 	hull, exists = findHull(r.stateCache.Catalog, intent.BuildClass)
 	if !exists {

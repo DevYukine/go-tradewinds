@@ -136,12 +136,12 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	// pending request blocks all new account mutations rather than being guessed.
 	missions := make(map[string]*store.Mission)
 	dataByShip := make(map[string]missionData)
-	ids := make([]string, 0, len(r.stateCache.Ships)+7)
+	ids := make([]string, 0, len(r.stateCache.Ships)+8)
 	ids = append(ids, "__loans")
 	for _, ship := range r.stateCache.Ships {
 		ids = append(ids, ship.Ship.ID)
 	}
-	ids = append(ids, "__treasury", "__growth", "__underwriting", "__marque", "__futures", "__bulletin")
+	ids = append(ids, "__treasury", "__growth", americaFlagshipMission, "__underwriting", "__marque", "__futures", "__bulletin")
 	attached := make(map[string]bool)
 	for _, id := range ids {
 		mission, data, err := r.loadMission(ctx, id)
@@ -231,6 +231,12 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		dataByShip[id] = data
 		if data.Action != nil {
 			unresolved = unresolved || id != "__underwriting" && id != "__marque" && id != "__futures" && id != "__bulletin" && !passengerStage(data.Action.Stage)
+		}
+	}
+	if !unresolved {
+		data := dataByShip[americaFlagshipMission]
+		if changed, err := r.driveAmericaFlagship(ctx, missions[americaFlagshipMission], &data); changed || err != nil {
+			return changed, err
 		}
 	}
 	r.assessHold("")

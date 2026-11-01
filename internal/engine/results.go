@@ -389,6 +389,9 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 	if err := r.decision(ctx, mission.ShipID, "action_rejected", fmt.Sprintf("%s received definitive HTTP %d %s: %s", stage, status, problem.Code, problem.Detail), map[string]any{"action_id": data.Action.ID, "stage": stage}); err != nil {
 		return false, err
 	}
+	if mission.ShipID == americaFlagshipMission {
+		return r.rejectAmericaFlagship(ctx, mission, data, status)
+	}
 	domainRefusal := status >= 400 && status < 500 && status != 401 && status != 403 && status != 429
 	factorStage := stage == "hire-factor" || stage == "dismiss-factor"
 	factorDomainRefusal := factorStage && (domainRefusal || status == 403 && (problem.Code == "no_factor_at_cove" || problem.Code == "no_port_presence"))

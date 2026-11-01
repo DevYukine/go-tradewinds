@@ -438,7 +438,7 @@ func TestOverseasCapacityMissingGossipAndValuationHoldEuropeanBuild(t *testing.T
 		t.Fatalf("unexplored region without probe valuation released Europe: %t %v", changed, err)
 	}
 	h.missingMission("__growth")
-	requireReviewHold(t, runner, "Phase 1 growth waits: new hulls go overseas", true)
+	requireReviewHold(t, runner, "Phase 1 growth is closed: new hulls are built in Phase 2+ regions", true)
 	h.missingMission("__treasury")
 	history, err := h.db.History(h.ctx, h.account.ID, "decisions", store.MaxHistoryLimit)
 	if err != nil {
@@ -463,7 +463,7 @@ func TestOverseasCapacityMissingGossipAndValuationHoldEuropeanBuild(t *testing.T
 	}
 }
 
-func TestOverseasCapacityAwaitingPairBlocksOnlyUntilEvaluationOrFloor(t *testing.T) {
+func TestOverseasCapacityPairEvaluationOrFloorNeverReopensEurope(t *testing.T) {
 	for _, mode := range []string{"awaiting evaluation", "partner book stale", "evaluated within floor", "floor expired"} {
 		t.Run(mode, func(t *testing.T) {
 			h, runner, yard, hull, _ := overseasCapacityFixture(t)
@@ -489,29 +489,23 @@ func TestOverseasCapacityAwaitingPairBlocksOnlyUntilEvaluationOrFloor(t *testing
 				runner.meta["books/"+stalePort] = meta
 			}
 			if mode == "evaluated within floor" || mode == "floor expired" {
-				// Releasing the pair-evaluation hold does not bypass the
-				// overseas-first rule; Europe also needs an exhausted region.
+				// Neither a completed observation nor an exhausted region can
+				// reopen Phase 1 construction after an overseas yard unlocks.
 				runner.snapshot["_expansion_agent_outcomes"] = encode(map[string]expansionOutcome{
 					yard.BankingRegion: {Losses: 1, RetryAt: time.Now().UTC().Add(24 * time.Hour)},
 				})
 			}
 			evidence, _ := overseasCapacityEvidence(t, h, runner, time.Now().UTC())
 			changed, err := runner.considerCapacityGrowth(h.ctx, &evidence)
-			blocked := mode == "awaiting evaluation" || mode == "partner book stale"
-			if err != nil || changed == blocked {
-				t.Fatalf("pair wait %s: changed=%t err=%v holds=%v", mode, changed, err, runner.holding)
+			if err != nil || changed {
+				t.Fatalf("pair state %s reopened Europe: changed=%t err=%v holds=%v", mode, changed, err, runner.holding)
 			}
-			if blocked {
-				h.missingMission("__growth")
-				h.missingMission("__treasury")
-				if len(runner.holding) == 0 {
-					t.Fatal("unexplained exploration hold")
-				}
-				return
-			}
-			_, build := h.mission("__growth")
-			if build.BuildPort != recoveryHomePort || build.Action == nil || build.Action.Stage != "build" {
-				t.Fatalf("completed/expired exploration retained the European build: %+v", build)
+			h.missingMission("__growth")
+			h.missingMission("__treasury")
+			if mode == "awaiting evaluation" || mode == "partner book stale" {
+				requireReviewHold(t, runner, "growth waits for the expansion pair's fresh capacity evaluation", true)
+			} else {
+				requireReviewHold(t, runner, "Phase 1 growth is closed: new hulls are built in Phase 2+ regions", true)
 			}
 			if mode == "evaluated within floor" {
 				row := overseasCapacityDecision(t, h, yard.ID, hull.ID)

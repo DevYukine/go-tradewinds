@@ -323,6 +323,9 @@ func (r *Runner) recordCapacityFinancingRefusal(ctx context.Context, data *missi
 }
 
 func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull Hull, decision GrowthDecision, required map[string]int64, evidence *growthEvidence) (bool, error) {
+	if r.phaseOneYard(port) {
+		return false, r.holdExpected(ctx, "", r.overseasGrowthHoldReason(""))
+	}
 	if evidence.asOf.IsZero() {
 		evidence.asOf = time.Now().UTC()
 	}
@@ -732,6 +735,9 @@ func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (G
 	}
 	if !r.loanAuthority() {
 		return financing.Decision, nil, capacityGate("authority", true, "capacity financing waits for fresh loan authority")
+	}
+	if port, _ := findPort(r.stateCache.Catalog, data.Capacity.BuildPort); r.phaseOneYard(port) && len(financing.Loans) == 0 {
+		return financing.Decision, nil, capacityGate("overseas_first", true, r.overseasGrowthHoldReason(""))
 	}
 	hull, hullExists := findHull(r.stateCache.Catalog, data.Capacity.BuildClass)
 	if !hullExists || !capacityHull(hull) {

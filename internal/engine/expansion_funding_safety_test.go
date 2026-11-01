@@ -83,6 +83,10 @@ func TestExpansionHireCashVetoDefersOnlyTreasuryWhileFleetTrades(t *testing.T) {
 	h := newRecoveryHarness(t)
 	newMeasuredExpansionFactorAPI(h)
 	runner := h.runner(primaryTestKey)
+	// This fixture isolates the treasury veto from the one-time flagship.
+	if err := runner.saveAmericaFlagship(h.ctx, americaFlagshipState{BuiltShipID: "already-built-flagship"}); err != nil {
+		t.Fatal(err)
+	}
 	refreshExpansionFactor(t, h, runner)
 	if changed, err := runner.considerExpansionAgent(h.ctx); err != nil || !changed {
 		t.Fatalf("admit paid pair: %t %v", changed, err)

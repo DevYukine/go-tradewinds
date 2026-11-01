@@ -1302,8 +1302,8 @@ func (r *Runner) expansionAwaitingEvaluation() bool {
 	return false
 }
 
-// Phase 1 construction and its financing wait for genuine overseas
-// exhaustion, not a temporarily unavailable exploration admission.
+// Once an overseas yard is unlocked, Phase 1 construction and new financing
+// stay closed even when overseas exploration is temporarily exhausted.
 func (r *Runner) holdExpansionGrowth(ctx context.Context, canExplore bool, phaseOneBuild bool) (bool, bool, error) {
 	if !r.opts.Execute {
 		return false, false, nil
@@ -1338,11 +1338,11 @@ func (r *Runner) holdExpansionGrowth(ctx context.Context, canExplore bool, phase
 }
 
 func (r *Runner) overseasGrowthHoldReason(wait string) string {
-	exhausted, detail, retry := r.overseasGrowthStatus()
-	if exhausted {
+	if !r.overseasYardUnlocked() {
 		return ""
 	}
-	reason := "Phase 1 growth waits: new hulls go overseas; " + detail
+	_, detail, retry := r.overseasGrowthStatus()
+	reason := "Phase 1 growth is closed: new hulls are built in Phase 2+ regions; " + detail
 	if wait != "" {
 		reason += "; " + wait
 	}
@@ -1351,11 +1351,6 @@ func (r *Runner) overseasGrowthHoldReason(wait string) string {
 		r.wakeBy(retry)
 	}
 	return reason
-}
-
-func (r *Runner) overseasExhausted() bool {
-	exhausted, _, _ := r.overseasGrowthStatus()
-	return exhausted
 }
 
 // Paid failed exploration, measured unbuildable capacity, hard safety gates and
@@ -1468,7 +1463,7 @@ func (r *Runner) overseasGrowthStatus() (bool, string, time.Time) {
 }
 
 func (r *Runner) clearPhaseOneGrowthTargets(ctx context.Context) error {
-	if r.overseasExhausted() {
+	if !r.overseasYardUnlocked() {
 		return nil
 	}
 	changed := false
@@ -1507,7 +1502,7 @@ func (r *Runner) retirePhaseOneFinancing(ctx context.Context, mission *store.Mis
 		}
 	}
 	port, _ := findPort(r.stateCache.Catalog, data.BuildPort)
-	if !r.phaseOneYard(port) || r.overseasExhausted() {
+	if !r.phaseOneYard(port) {
 		return false, false, nil
 	}
 	if data.Action != nil {
@@ -1537,9 +1532,9 @@ func (r *Runner) retirePhaseOneFinancing(ctx context.Context, mission *store.Mis
 	return true, true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 }
 
-// phaseOneYard reports a Phase 1 yard while a later phase is open.
+// phaseOneYard reports a European yard closed to new construction.
 func (r *Runner) phaseOneYard(port Port) bool {
-	return port.ID != "" && r.stateCache.Clock.UnlockedPhase >= 2 && port.Phase < 2
+	return port.ID != "" && port.Phase < 2 && r.overseasYardUnlocked()
 }
 
 // portPresence reports a factor or an idle ship lying at the port, the quay
@@ -1557,10 +1552,9 @@ func (r *Runner) portPresence(portID string) bool {
 	return false
 }
 
-// overseasYardPresent reports an open Phase 2 or later yard with presence.
-func (r *Runner) overseasYardPresent() bool {
+func (r *Runner) overseasYardUnlocked() bool {
 	for _, port := range r.stateCache.Catalog.Ports {
-		if port.HasShipyard && port.Phase >= 2 && port.Phase <= r.stateCache.Clock.UnlockedPhase && r.portPresence(port.ID) {
+		if port.HasShipyard && port.Phase >= 2 && port.Phase <= r.stateCache.Clock.UnlockedPhase {
 			return true
 		}
 	}

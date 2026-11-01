@@ -878,6 +878,9 @@ func (r *Runner) growthBuildReady(ctx context.Context, data *missionData) error 
 	if !exists {
 		return errors.New("new build yard is absent from the current catalog")
 	}
+	if r.phaseOneYard(port) {
+		return errors.New(r.overseasGrowthHoldReason(""))
+	}
 	hull, exists := findHull(r.stateCache.Catalog, data.BuildClass)
 	if !exists {
 		return errors.New("new build hull is absent from the current catalog")
@@ -1031,7 +1034,7 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 	var best growthPackage
 	found := false
 	for _, port := range r.stateCache.Catalog.Ports {
-		if !port.HasShipyard || !r.fresh("books/"+port.ID) || r.stateCache.Markets[port.ID].Visibility != "quay" {
+		if !port.HasShipyard || r.phaseOneYard(port) || !r.fresh("books/"+port.ID) || r.stateCache.Markets[port.ID].Visibility != "quay" {
 			continue
 		}
 		for _, hull := range r.stateCache.Catalog.ShipClasses {
@@ -1054,9 +1057,7 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 			}
 		}
 	}
-	if !found || r.phaseOneYard(best.port) && r.overseasYardPresent() {
-		// An overseas yard we can see competes in the capacity comparison,
-		// which builds there before any Phase 1 yard.
+	if !found {
 		return r.considerCapacityGrowth(ctx, &evidence)
 	}
 	agents := decode[[]expansionAgent](r.snapshot, "_expansion_agents")
@@ -1117,6 +1118,9 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 }
 
 func (r *Runner) startGrowth(ctx context.Context, port Port, hull Hull, plan Plan, workingCapital int64) (bool, error) {
+	if r.phaseOneYard(port) {
+		return false, r.holdExpected(ctx, "", r.overseasGrowthHoldReason(""))
+	}
 	used := decode[[]string](r.snapshot, "_used_ship_names")
 	for _, ship := range r.stateCache.Ships {
 		used = append(used, ship.Ship.Name)
