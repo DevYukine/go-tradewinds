@@ -19,6 +19,10 @@ import (
 const americaFlagshipMission = "__america_flagship"
 const americaFlagshipQuoteRetry = 30 * time.Minute
 
+// A request is open only 72 game hours (72 real minutes at time scale 60), so
+// a lapsed one is reposted quickly to keep it visible to lenders.
+const americaFlagshipRequestRetry = 10 * time.Minute
+
 type americaFlagshipState struct {
 	Pending     bool      `json:"pending"`
 	LoanID      string    `json:"loan_id,omitempty"`
@@ -189,7 +193,7 @@ func (r *Runner) driveAmericaFlagship(ctx context.Context, mission *store.Missio
 		return false, r.holdExpected(ctx, americaFlagshipMission, "America flagship awaits its disbursed loan receipt")
 	}
 	if request.Status != "open" || !upper.Before(request.ExpiresAt) {
-		state.Pending, state.RetryAt = false, now.Add(playerLoanBackoff)
+		state.Pending, state.RetryAt = false, now.Add(americaFlagshipRequestRetry)
 		if err := r.saveAmericaFlagship(ctx, state); err != nil {
 			return false, err
 		}

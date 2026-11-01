@@ -258,7 +258,7 @@ func TestAmericaFlagshipRequestKrakenApprovalBostonBuildOnceAcrossRestart(t *tes
 	}
 }
 
-func TestAmericaFlagshipClosedRequestWaitsSixRealHours(t *testing.T) {
+func TestAmericaFlagshipClosedRequestRepostsAfterTenRealMinutes(t *testing.T) {
 	h, runner, _ := americaFlagshipFixture(t)
 	americaFlagshipTick(t, h, runner)
 	americaFlagshipTick(t, h, runner)
@@ -269,8 +269,8 @@ func TestAmericaFlagshipClosedRequestWaitsSixRealHours(t *testing.T) {
 	americaFlagshipTick(t, h, runner)
 	h.missingMission(americaFlagshipMission)
 	state := decode[americaFlagshipState](runner.snapshot, "_america_flagship")
-	if state.Pending || state.RetryAt.Before(before.Add(6*time.Hour)) {
-		t.Fatalf("unfunded request did not get six real hours of backoff: %+v", state)
+	if state.Pending || state.RetryAt.Before(before.Add(americaFlagshipRequestRetry)) || state.RetryAt.After(time.Now().UTC().Add(americaFlagshipRequestRetry)) {
+		t.Fatalf("lapsed request did not wait exactly the repost delay: %+v", state)
 	}
 	runner = h.runner(primaryTestKey)
 	americaFlagshipTick(t, h, runner)
