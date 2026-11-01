@@ -202,6 +202,16 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	unresolved := false
 	for _, id := range ids {
 		data := dataByShip[id]
+		if id == "__growth" {
+			if handled, changed, err := r.retirePhaseOneFinancing(ctx, missions[id], &data); handled || err != nil {
+				if changed || err != nil {
+					return changed, err
+				}
+				dataByShip[id] = data
+				unresolved = unresolved || data.Action != nil
+				continue
+			}
+		}
 		if id != "__bulletin" && data.Action != nil && (data.Passage == nil || data.Passage.QuarantineReason == "") &&
 			(id != "__futures" || !unresolved || data.Action.Stage == "futures-settle" ||
 				data.Action.Stage == "futures-close-stock" || data.Action.Stage == "futures-close-lease") {

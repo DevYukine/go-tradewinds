@@ -492,6 +492,9 @@ func playerQuoteSource(quote gameapi.LoanQuote) string {
 }
 
 func (r *Runner) drivePlayerLoan(ctx context.Context, mission *store.Mission, data *missionData) (bool, error) {
+	if handled, changed, err := r.retirePhaseOneFinancing(ctx, mission, data); handled || err != nil {
+		return changed, err
+	}
 	intent := data.PlayerLoan
 	if intent.RequestID != "" && (!r.loanAuthority() || !r.loanRequestAuthority()) {
 		if err := r.recordPlayerLoanDecision(ctx, intent, "authority", "player request waits for current borrower loans and own requests"); err != nil {

@@ -79,9 +79,12 @@ func TestOverseasAwaitingPairHoldsEuropeanDebtUntilFreshEvaluation(t *testing.T)
 		}
 		vault.BalancePence = reserves[vault.BankingRegion]
 	}
-	// Control: with the final world state and no pair seeded, an ordinary pass
-	// stages a real quote-backed European financing intent without accepting
-	// debt or building. Quote GETs before the pair incur no debt.
+	runner.snapshot["_expansion_agent_outcomes"] = encode(map[string]expansionOutcome{
+		yard.BankingRegion: {Losses: 1, RetryAt: time.Now().UTC().Add(24 * time.Hour)},
+	})
+	// Control: overseas exploration has recorded a loss, so Europe is open.
+	// With no awaiting pair seeded, an ordinary pass stages a quote-backed
+	// financing intent without accepting debt or building.
 	evidence, _ := overseasCapacityEvidence(t, h, runner, time.Now().UTC())
 	before := h.api.mutationCount("/v1/loan/quote")
 	if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || !changed {
@@ -128,8 +131,8 @@ func TestOverseasAwaitingPairHoldsEuropeanDebtUntilFreshEvaluation(t *testing.T)
 			t.Fatalf("blocked pass recorded a premature pair evaluation: %+v", agent)
 		}
 	}
-	// Release pass: a real route-backed yard evaluation marks the pair, and the
-	// proven European financing stages again in the same consumer pass.
+	// Release pass: the exhausted region permits Europe once a real
+	// route-backed yard evaluation also releases the pair's safety hold.
 	delete(runner.snapshot, "_growth_build_backoffs")
 	// The first control consumed its candidate-scoped fallback ticket.
 	runner.snapshot["_player_loan_fallback"] = encode(map[string]time.Time{

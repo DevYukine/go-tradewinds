@@ -22,6 +22,8 @@ const expansionAgentHireFeePence int64 = 75_000
 const (
 	expansionAgentAdmissionReason = "expansion agent waits for an admissible build"
 	expansionAgentQuoteReason     = "expansion agent needs a previously observed regional hull quote"
+	expansionProbeReason          = "overseas probe: no gossip spread, hiring factors for quay evidence"
+	expansionEstimateProbeReason  = "overseas probe: estimated build rejected, hiring factors for quay evidence"
 )
 
 type expansionAgent struct {
@@ -32,6 +34,7 @@ type expansionAgent struct {
 	HiredAt     time.Time `json:"hired_at"`
 	RetryAt     time.Time `json:"retry_at,omitempty"`
 	EvaluatedAt time.Time `json:"evaluated_at,omitempty"`
+	Probe       bool      `json:"probe,omitempty"`
 }
 
 type expansionAdmissionError struct {
@@ -58,12 +61,18 @@ type expansionOutcome struct {
 	UnevaluatedAttempts  int       `json:"unevaluated_attempts,omitempty"`
 	UnevaluatedAttemptAt time.Time `json:"unevaluated_attempt_at,omitempty"`
 	UnevaluatedRetryAt   time.Time `json:"unevaluated_retry_at,omitempty"`
+	CapacityRetryAt      time.Time `json:"capacity_retry_at,omitempty"`
+	CapacityReason       string    `json:"capacity_reason,omitempty"`
 }
 
 // Regional and global exploration starts are separated by at least 24 real hours.
 const expansionRegionRetry = 24 * time.Hour
 
 const expansionObservationRetry = 5 * time.Minute
+
+// A pair that expired before either factor was hired explored nothing, so it
+// retries after its window plus this pause instead of the 24-hour start floor.
+const expansionUnhiredRetry = time.Hour
 
 // Historical gossip ranks paid observation only; timestamps do not turn it
 // into executable depth or reset a losing region's economic backoff.
@@ -119,19 +128,7 @@ type expansionPair struct {
 
 func expansionAgentYards(state AccountState, input PlanningInput) []expansionPair {
 	prices := expansionPrices(input)
-	present := make(map[string]bool)
-	for _, ship := range state.Ships {
-		for _, portID := range shipRegionPorts(ship) {
-			if port, exists := findPort(state.Catalog, portID); exists {
-				present[port.BankingRegion] = true
-			}
-		}
-	}
-	for _, portID := range state.Factors {
-		if port, exists := findPort(state.Catalog, portID); exists {
-			present[port.BankingRegion] = true
-		}
-	}
+	present := expansionPresentRegions(state)
 	var candidates []expansionPair
 	for _, yard := range state.Catalog.Ports {
 		if !yard.HasShipyard || yard.IsCove || yard.Phase < 2 || yard.Phase > state.Clock.UnlockedPhase || yard.BankingRegion == "" || present[yard.BankingRegion] ||
@@ -211,6 +208,141 @@ func sortExpansionPairs(candidates []expansionPair) {
 		}
 		return strings.Compare(a.yard.ID, b.yard.ID)
 	})
+}
+func expansionPresentRegions(state AccountState) map[string]bool {
+	present := make(map[string]bool)
+	for _, ship := range state.Ships {
+		for _, portID := range shipRegionPorts(ship) {
+			if port, exists := findPort(state.Catalog, portID); exists {
+				present[port.BankingRegion] = true
+			}
+		}
+	}
+	for _, portID := range state.Factors {
+		if port, exists := findPort(state.Catalog, portID); exists {
+			present[port.BankingRegion] = true
+		}
+	}
+	return present
+}
+
+// Probe ranking deliberately does not infer profitability from missing prices.
+// These pairs buy quay evidence; the ordinary capacity evaluator buys hulls.
+func expansionProbeYards(state AccountState, input PlanningInput, hiring bool) []expansionPair {
+	prices := expansionPrices(input)
+	observations := make(map[string]int)
+	for key, price := range prices {
+		portID, _, _ := strings.Cut(key, "|")
+		if price.Bid > 0 {
+			observations[portID]++
+		}
+		if price.Ask > 0 {
+			observations[portID]++
+		}
+	}
+	lowerHazard := func(a, b Port) bool {
+		aRisk, aKnown := expansionArrivalRisk(input, a)
+		bRisk, bKnown := expansionArrivalRisk(input, b)
+		if aKnown != bKnown {
+			return aKnown
+		}
+		if aRisk != bRisk {
+			return aRisk < bRisk
+		}
+		return a.ID < b.ID
+	}
+	var pairs []expansionPair
+	for _, yard := range state.Catalog.Ports {
+		if !yard.HasShipyard || yard.IsCove || yard.Phase < 2 || yard.Phase > state.Clock.UnlockedPhase ||
+			yard.BankingRegion == "" || !regionalWater(state.Catalog, yard) {
+			continue
+		}
+		var partner Port
+		for _, port := range state.Catalog.Ports {
+			if port.ID == yard.ID || port.IsCove || port.Phase > state.Clock.UnlockedPhase ||
+				port.BankingRegion != yard.BankingRegion || !regionalWater(state.Catalog, port) ||
+				hiring && slices.Contains(state.Factors, port.ID) {
+				continue
+			}
+			if partner.ID == "" || observations[port.ID] > observations[partner.ID] ||
+				observations[port.ID] == observations[partner.ID] && lowerHazard(port, partner) {
+				partner = port
+			}
+		}
+		if partner.ID != "" {
+			pairs = append(pairs, expansionPair{
+				yard: yard, partner: partner, competition: competitionAt(input.Competition, yard.BankingRegion),
+			})
+		}
+	}
+	slices.SortFunc(pairs, func(a, b expansionPair) int {
+		if (a.yard.YardDiscount != nil) != (b.yard.YardDiscount != nil) {
+			if a.yard.YardDiscount != nil {
+				return -1
+			}
+			return 1
+		}
+		if lowerHazard(a.yard, b.yard) {
+			return -1
+		}
+		if lowerHazard(b.yard, a.yard) {
+			return 1
+		}
+		return 0
+	})
+	return pairs
+}
+
+func expansionArrivalRisk(input PlanningInput, port Port) (int64, bool) {
+	_, _, highest, valid := hazardZoneRisk(input, Route{Legs: []RouteLeg{{ToNode: port.ID}}}, nil)
+	return highest, valid
+}
+
+// Only measured hazard and catalog hull ratings can reject an unexplored
+// region. Missing calibration or zone authority is a wait, not exhaustion.
+func expansionPairSafety(input PlanningInput, yard, partner Port) (string, bool) {
+	rank := 0
+	for _, port := range []Port{yard, partner} {
+		for _, zone := range input.Catalog.SeaZones {
+			if zone.ID == port.SeaZoneID {
+				rank = max(rank, classRank(zone.ZoneClass))
+			}
+		}
+	}
+	rated, uncalibrated := false, false
+	for _, hull := range input.Catalog.ShipClasses {
+		if !capacityHull(hull) || hull.CanSealDispatches || hull.Phase > input.Clock.UnlockedPhase ||
+			rank <= 0 || classRank(hull.HullCategory) < rank {
+			continue
+		}
+		rated = true
+		if !input.fresh("zones") {
+			return "expansion pair requires current successful zones authority", false
+		}
+		calibration := calibrateZoneHazard(input, hull, min(4, hull.MaxCannons))
+		if calibration == nil {
+			uncalibrated = true
+			continue
+		}
+		safe := true
+		for _, port := range []Port{yard, partner} {
+			risk, valid := expansionArrivalRisk(input, port)
+			if !valid {
+				return "expansion pair requires current nonnegative arrival-zone risk at both ports", false
+			}
+			safe = safe && float64(risk) <= 1.5*float64(calibration.highestRisk)
+		}
+		if safe {
+			return "", false
+		}
+	}
+	if !rated {
+		return "expansion pair has no unlocked capacity hull rated for both ports", true
+	}
+	if uncalibrated {
+		return "expansion agent requires calibrated hazard and net worth no older than 6 real hours", false
+	}
+	return "expansion pair arrival-zone risk exceeds 1.5x calibrated maximum", true
 }
 
 func regionalWater(catalog Catalog, port Port) bool {
@@ -568,23 +700,32 @@ func (r *Runner) expansionBuildEstimateForRegion(ctx context.Context, yard, part
 }
 
 type expansionAdmission struct {
-	yard       Port
-	partner    Port
-	region     string
-	score      int64
-	build      GrowthDecision
-	quote      YardQuote
-	fresh      bool
-	input      PlanningInput
-	required   map[string]int64
-	needed     int64
-	retryUntil time.Time
+	yard        Port
+	partner     Port
+	region      string
+	score       int64
+	build       GrowthDecision
+	quote       YardQuote
+	fresh       bool
+	input       PlanningInput
+	required    map[string]int64
+	needed      int64
+	retryUntil  time.Time
+	probe       bool
+	probeReason string
 }
 
 func (r *Runner) expansionRetryUntil(region string) time.Time {
 	outcome := decode[map[string]expansionOutcome](r.snapshot, "_expansion_agent_outcomes")[region]
-	until := maxTime(outcome.RetryAt, outcome.UnevaluatedRetryAt)
+	until := maxTime(maxTime(outcome.RetryAt, outcome.UnevaluatedRetryAt), outcome.CapacityRetryAt)
 	at := decode[map[string]time.Time](r.snapshot, "_expansion_agent_retries")[region]
+	// markExpansionRetry records the creation time only when neither factor
+	// was hired, and considerExpansionAgent stamps that same instant as the
+	// attempt. Hired or evaluated pairs keep the full start floor.
+	if !at.IsZero() && at.Equal(outcome.AttemptAt) && outcome.Losses == 0 && outcome.UnevaluatedAttemptAt.IsZero() {
+		until = maxTime(until, at.Add(2*time.Hour+expansionUnhiredRetry))
+		at = time.Time{}
+	}
 	for _, agent := range decode[[]expansionAgent](r.snapshot, "_expansion_agents") {
 		if agent.Region == region {
 			at = maxTime(at, maxTime(agent.CreatedAt, agent.HiredAt))
@@ -629,7 +770,23 @@ func (r *Runner) expansionAdmission(ctx context.Context) (expansionAdmission, st
 		r.wakeBy(until)
 		return admission, "expansion starts at most one paid pair per 24 real hours", nil
 	}
-	candidates := expansionAgentYards(r.stateCache, r.planningInput(ShipState{}))
+	planning := r.planningInput(ShipState{})
+	candidates := expansionAgentYards(r.stateCache, planning)
+	withSpread := make(map[string]bool)
+	for _, pair := range candidates {
+		withSpread[pair.yard.BankingRegion] = true
+	}
+	yardPresent := make(map[string]bool)
+	for _, port := range r.stateCache.Catalog.Ports {
+		if port.HasShipyard && port.Phase >= 2 && port.Phase <= r.stateCache.Clock.UnlockedPhase && r.portPresence(port.ID) {
+			yardPresent[port.BankingRegion] = true
+		}
+	}
+	for _, pair := range expansionProbeYards(r.stateCache, planning, true) {
+		if !yardPresent[pair.yard.BankingRegion] {
+			candidates = append(candidates, pair)
+		}
+	}
 	eligible := candidates[:0]
 	for _, pair := range candidates {
 		if until := r.expansionRetryUntil(pair.yard.BankingRegion); now.Before(until) {
@@ -647,7 +804,6 @@ func (r *Runner) expansionAdmission(ctx context.Context) (expansionAdmission, st
 		}
 		return admission, "expansion agent has no positive historical pair spread in an unoccupied region", nil
 	}
-	sortExpansionPairs(eligible)
 	target, err := r.liveCapacitySavingsTarget(ctx)
 	if err != nil {
 		return admission, "", err
@@ -666,23 +822,55 @@ func (r *Runner) expansionAdmission(ctx context.Context) (expansionAdmission, st
 	if err != nil {
 		return admission, "", err
 	}
-	pass, reason, err := r.expansionPassEvidence(ctx, input)
-	if err != nil || reason != "" {
-		return admission, reason, err
-	}
+	var pass expansionEvidence
+	passLoaded, passReason := false, ""
 	var firstRejected expansionAdmission
 	firstReason := ""
+	cashWaiting := make(map[string]bool)
 	for _, pair := range eligible {
 		candidate := expansionAdmission{
 			yard: pair.yard, partner: pair.partner, region: pair.yard.BankingRegion,
-			score: pair.score, input: input,
+			score: pair.score, input: input, probe: pair.score == 0,
 		}
-		reason, _, err := r.expansionBuildAdmissionForPass(ctx, &candidate, &pass)
+		if candidate.probe {
+			if cashWaiting[candidate.region] {
+				continue
+			}
+			candidate.probeReason = expansionProbeReason
+			if withSpread[candidate.region] {
+				candidate.probeReason = expansionEstimateProbeReason
+			}
+		}
+		var reason string
+		var err error
+		if candidate.probe {
+			reason, _, err = r.expansionProbeAdmission(ctx, &candidate)
+		} else {
+			if !passLoaded {
+				pass, passReason, err = r.expansionPassEvidence(ctx, input)
+				passLoaded = true
+			}
+			reason = passReason
+			if err == nil && reason == "" {
+				reason, _, err = r.expansionBuildAdmissionForPass(ctx, &candidate, &pass)
+			}
+		}
 		if err != nil {
 			return candidate, "", err
 		}
 		if reason == "" {
 			return candidate, "", nil
+		}
+		if !candidate.probe && candidate.build.EconomicallyViable && candidate.build.CashShortfallPence > 0 {
+			cashWaiting[candidate.region] = true
+			reason = fmt.Sprintf("overseas build waits for %.2f Cr cash shortfall: %s", float64(candidate.build.CashShortfallPence)/100, reason)
+			firstRejected, firstReason = candidate, reason
+		}
+		if !candidate.probe && !cashWaiting[candidate.region] {
+			// A later probe must not erase the rejected hull estimate's evidence.
+			if _, err := r.stageExpansionAgent(ctx, candidate, reason); err != nil {
+				return candidate, "", err
+			}
 		}
 		if firstReason == "" {
 			firstRejected, firstReason = candidate, reason
@@ -759,6 +947,29 @@ func (r *Runner) expansionBuildAdmission(ctx context.Context, admission *expansi
 	}
 	return r.expansionBuildAdmissionForPass(ctx, admission, &pass)
 }
+func (r *Runner) expansionProbeAdmission(ctx context.Context, admission *expansionAdmission) (string, bool, error) {
+	if reason, definitive := expansionPairSafety(admission.input, admission.yard, admission.partner); reason != "" {
+		return reason, definitive, nil
+	}
+	evidence := growthEvidence{}
+	if reason, err := r.growthCashFunding(ctx, &evidence); err != nil || reason != "" {
+		return reason, false, err
+	}
+	netWorth, err := r.growthNetWorth(ctx, &evidence)
+	if err != nil {
+		return "", false, err
+	}
+	if netWorth <= 0 {
+		return "expansion agent requires calibrated hazard and net worth no older than 6 real hours", false, nil
+	}
+	admission.required = r.expansionFundingRequired(admission.input, evidence.required, admission.region, 2*expansionAgentHireFeePence)
+	_, fees, _, funded := measuredFunding(admission.input.Balances, admission.required, admission.input.Rates)
+	admission.needed = growthCashTotal(admission.required[admission.region], fees)
+	if !funded {
+		return "overseas probe waits for both hire fees, transfer fees and protected regional reserves", false, nil
+	}
+	return "", false, nil
+}
 
 func (r *Runner) expansionBuildAdmissionForPass(ctx context.Context, admission *expansionAdmission, pass *expansionEvidence) (string, bool, error) {
 	input := &admission.input
@@ -812,10 +1023,27 @@ func (r *Runner) expansionBuildAdmissionForPass(ctx context.Context, admission *
 
 func (r *Runner) markExpansionLoss(agent expansionAgent, reason string) {
 	outcomes := decode[map[string]expansionOutcome](r.snapshot, "_expansion_agent_outcomes")
+	outcome := outcomes[agent.Region]
+	// Retained factors from an older pair cannot fail a newly selected pair.
+	if !agent.HiredAt.IsZero() && outcome.AttemptAt.After(maxTime(agent.CreatedAt, agent.HiredAt)) {
+		return
+	}
+	paid := !agent.HiredAt.IsZero()
+	if !paid {
+		for _, recorded := range decode[[]expansionAgent](r.snapshot, "_expansion_agents") {
+			if recorded.Region == agent.Region && !recorded.HiredAt.IsZero() &&
+				!outcome.AttemptAt.After(maxTime(recorded.CreatedAt, recorded.HiredAt)) {
+				paid = true
+				break
+			}
+		}
+	}
+	if !paid {
+		return
+	}
 	if outcomes == nil {
 		outcomes = make(map[string]expansionOutcome)
 	}
-	outcome := outcomes[agent.Region]
 	if outcome.Reason != "" {
 		return
 	}
@@ -839,6 +1067,9 @@ func (r *Runner) markExpansionUnevaluated(agent expansionAgent) {
 		outcomes = make(map[string]expansionOutcome)
 	}
 	outcome := outcomes[agent.Region]
+	if outcome.AttemptAt.After(maxTime(agent.CreatedAt, agent.HiredAt)) {
+		return
+	}
 	if outcome.AttemptAt.IsZero() {
 		outcome.AttemptAt = agent.CreatedAt
 		if outcome.AttemptAt.IsZero() {
@@ -891,6 +1122,10 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	return r.stageExpansionAgent(ctx, admission, reason)
+}
+
+func (r *Runner) stageExpansionAgent(ctx context.Context, admission expansionAdmission, reason string) (bool, error) {
 	if reason != "" {
 		err := r.decision(ctx, "", "expansion_agent:"+admission.region, reason, map[string]any{
 			"region": admission.region, "reason": reason, "port_id": admission.yard.ID,
@@ -904,23 +1139,32 @@ func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	yard, partner := admission.yard, admission.partner
-	if err := r.decision(ctx, "", "expansion_agent", "an admissible estimated build supports the paid expansion pair", map[string]any{
+	reason = "an admissible estimated build supports the paid expansion pair"
+	if admission.probe {
+		reason = admission.probeReason
+		if reason == "" {
+			reason = expansionProbeReason
+		}
+	}
+	if err := r.decision(ctx, "", "expansion_agent", reason, map[string]any{
 		"port_id": yard.ID, "partner_port_id": partner.ID, "region": yard.BankingRegion, "score_pence": admission.score,
 		"hull_class":                   admission.quote.ShipClass,
 		"estimated_hull_capital_pence": growthCapital(admission.build), "estimated_quote_port": admission.quote.PortID,
 		"estimated_hull_capital_stale": !admission.fresh, "competition": competitionAt(admission.input.Competition, yard.BankingRegion),
-		"estimate": admission.build.ExpansionEstimate,
+		"estimate": admission.build.ExpansionEstimate, "probe": admission.probe,
 	}); err != nil {
 		return false, err
 	}
 	now := time.Now().UTC()
 	agents := decode[[]expansionAgent](r.snapshot, "_expansion_agents")
+	// A still-hired factor keeps its record so manageExpansionAgents can
+	// dismiss it later; dropping it would leave its daily upkeep unmanaged.
 	agents = slices.DeleteFunc(agents, func(agent expansionAgent) bool {
-		return agent.Region == yard.BankingRegion
+		return agent.Region == yard.BankingRegion && !slices.Contains(r.stateCache.Factors, agent.PortID)
 	})
 	agents = append(agents,
-		expansionAgent{PortID: yard.ID, Partner: partner.ID, Region: yard.BankingRegion, CreatedAt: now},
-		expansionAgent{PortID: partner.ID, Partner: yard.ID, Region: yard.BankingRegion, CreatedAt: now},
+		expansionAgent{PortID: yard.ID, Partner: partner.ID, Region: yard.BankingRegion, CreatedAt: now, Probe: admission.probe},
+		expansionAgent{PortID: partner.ID, Partner: yard.ID, Region: yard.BankingRegion, CreatedAt: now, Probe: admission.probe},
 	)
 	r.snapshot["_expansion_agents"] = encode(agents)
 	outcomes := decode[map[string]expansionOutcome](r.snapshot, "_expansion_agent_outcomes")
@@ -1058,18 +1302,269 @@ func (r *Runner) expansionAwaitingEvaluation() bool {
 	return false
 }
 
-func (r *Runner) holdExpansionGrowth(ctx context.Context, canExplore bool) (bool, bool, error) {
+// Phase 1 construction and its financing wait for genuine overseas
+// exhaustion, not a temporarily unavailable exploration admission.
+func (r *Runner) holdExpansionGrowth(ctx context.Context, canExplore bool, phaseOneBuild bool) (bool, bool, error) {
 	if !r.opts.Execute {
 		return false, false, nil
 	}
 	if r.expansionAwaitingEvaluation() {
-		return true, false, r.holdExpected(ctx, "", "growth waits for the expansion pair's fresh capacity evaluation")
+		reason := "growth waits for the expansion pair's fresh capacity evaluation"
+		if phaseOneBuild {
+			if overseasReason := r.overseasGrowthHoldReason(reason); overseasReason != "" {
+				reason = overseasReason
+			}
+		}
+		return true, false, r.holdExpected(ctx, "", reason)
 	}
-	if !canExplore {
+	admissionReason := ""
+	if canExplore {
+		admission, reason, err := r.expansionAdmission(ctx)
+		if err != nil {
+			return false, false, err
+		}
+		changed, err := r.stageExpansionAgent(ctx, admission, reason)
+		if changed || err != nil {
+			return changed, changed, err
+		}
+		admissionReason = reason
+	}
+	if phaseOneBuild {
+		if reason := r.overseasGrowthHoldReason(admissionReason); reason != "" {
+			return true, false, r.holdExpected(ctx, "", reason)
+		}
+	}
+	return false, false, nil
+}
+
+func (r *Runner) overseasGrowthHoldReason(wait string) string {
+	exhausted, detail, retry := r.overseasGrowthStatus()
+	if exhausted {
+		return ""
+	}
+	reason := "Phase 1 growth waits: new hulls go overseas; " + detail
+	if wait != "" {
+		reason += "; " + wait
+	}
+	if !retry.IsZero() {
+		reason += "; earliest overseas retry " + retry.UTC().Format(time.RFC3339)
+		r.wakeBy(retry)
+	}
+	return reason
+}
+
+func (r *Runner) overseasExhausted() bool {
+	exhausted, _, _ := r.overseasGrowthStatus()
+	return exhausted
+}
+
+// Paid failed exploration, measured unbuildable capacity, hard safety gates and
+// absent probe access exhaust a region. Mere scheduling or funding waits do not.
+func (r *Runner) overseasGrowthStatus() (bool, string, time.Time) {
+	if r.stateCache.Clock.UnlockedPhase < 2 {
+		return true, "", time.Time{}
+	}
+	for _, dataset := range []string{"catalog", "clock", "ships", "factors"} {
+		if !r.fresh(dataset) {
+			return false, "overseas expansion requires current successful " + dataset + " authority", time.Time{}
+		}
+	}
+	input := r.planningInput(ShipState{})
+	pairs := expansionProbeYards(r.stateCache, input, false)
+	regions := make(map[string][]expansionPair)
+	for _, port := range r.stateCache.Catalog.Ports {
+		if port.Phase >= 2 && port.Phase <= r.stateCache.Clock.UnlockedPhase && port.BankingRegion != "" {
+			regions[port.BankingRegion] = nil
+		}
+	}
+	for _, pair := range pairs {
+		regions[pair.yard.BankingRegion] = append(regions[pair.yard.BankingRegion], pair)
+	}
+	names := make([]string, 0, len(regions))
+	for region := range regions {
+		names = append(names, region)
+	}
+	slices.Sort(names)
+	outcomes := decode[map[string]expansionOutcome](r.snapshot, "_expansion_agent_outcomes")
+	now := time.Now().UTC()
+	globalRetry := decode[time.Time](r.snapshot, "_expansion_last_started_at")
+	agents := decode[[]expansionAgent](r.snapshot, "_expansion_agents")
+	for _, agent := range agents {
+		globalRetry = maxTime(globalRetry, agent.HiredAt)
+	}
+	if !globalRetry.IsZero() {
+		globalRetry = globalRetry.Add(expansionRegionRetry)
+	}
+	var details []string
+	waiting := false
+	var earliest time.Time
+	for _, region := range names {
+		retry := maxTime(globalRetry, r.expansionRetryUntil(region))
+		if now.Before(retry) && (earliest.IsZero() || retry.Before(earliest)) {
+			earliest = retry
+		}
+		outcome := outcomes[region]
+		reason := ""
+		switch {
+		case outcome.Losses > 0 && now.Before(outcome.RetryAt):
+			reason = "paid exploration recorded a realized loss: " + outcome.Reason
+		case outcome.UnevaluatedAttempts > 0 && now.Before(outcome.UnevaluatedRetryAt):
+			reason = "paid overseas pair ended without a capacity evaluation"
+		case outcome.CapacityReason != "" && now.Before(outcome.CapacityRetryAt):
+			reason = "measured overseas capacity is not buildable: " + outcome.CapacityReason
+		case len(regions[region]) == 0:
+			reason = "no probe-able overseas yard and partner"
+		}
+		if reason != "" {
+			details = append(details, region+": "+reason)
+			continue
+		}
+		exploring := slices.ContainsFunc(agents, func(agent expansionAgent) bool {
+			_, paired := expansionMate(agents, agent)
+			return agent.Region == region && paired && now.Before(expansionPairTime(agents, agent).Add(2*time.Hour))
+		})
+		if exploring {
+			waiting = true
+			details = append(details, region+": existing overseas exploration is still within its observation floor")
+			continue
+		}
+		yardPresent := false
+		for _, pair := range regions[region] {
+			yardPresent = yardPresent || r.portPresence(pair.yard.ID)
+		}
+		if !yardPresent && len(r.stateCache.Factors)+2 > 12 {
+			details = append(details, region+": no probe-able overseas yard with two free factor slots")
+			continue
+		}
+		hardReason := ""
+		for _, pair := range regions[region] {
+			if yardPresent && !r.portPresence(pair.yard.ID) {
+				continue
+			}
+			gate, hard := expansionPairSafety(input, pair.yard, pair.partner)
+			if hard {
+				hardReason = gate
+				continue
+			}
+			reason = gate
+			if reason == "" {
+				reason = "probe-able overseas yard awaits quay evidence and profitable capacity"
+			}
+			break
+		}
+		if reason == "" {
+			details = append(details, region+": "+hardReason)
+			continue
+		}
+		if yardPresent {
+			reason = "existing overseas yard presence awaits profitable capacity"
+		} else if now.Before(retry) {
+			reason = "overseas exploration waits for its retry deadline"
+		}
+		waiting = true
+		details = append(details, region+": "+reason)
+	}
+	return !waiting, strings.Join(details, "; "), earliest
+}
+
+func (r *Runner) clearPhaseOneGrowthTargets(ctx context.Context) error {
+	if r.overseasExhausted() {
+		return nil
+	}
+	changed := false
+	target := decode[capacitySavingsTarget](r.snapshot, "_capacity_savings_target")
+	if port, _ := findPort(r.stateCache.Catalog, target.PortID); r.phaseOneYard(port) {
+		delete(r.snapshot, "_capacity_savings_target")
+		changed = true
+	}
+	if port, _ := findPort(r.stateCache.Catalog, decode[string](r.snapshot, "_capacity_growth_port")); r.phaseOneYard(port) {
+		delete(r.snapshot, "_capacity_growth_port")
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+}
+
+// Retire obsolete local financing only before the first accepted loan and on
+// current overseas authority. Possibly sent journal actions reconcile normally.
+func (r *Runner) retirePhaseOneFinancing(ctx context.Context, mission *store.Mission, data *missionData) (bool, bool, error) {
+	if !r.opts.Execute || data.BuiltShipID != "" || data.PlayerLoan == nil && (data.Capacity == nil || data.Capacity.Financing == nil) {
 		return false, false, nil
 	}
-	changed, err := r.considerExpansionAgent(ctx)
-	return changed, changed, err
+	if data.Capacity != nil && data.Capacity.Financing != nil && len(data.Capacity.Financing.Loans) > 0 {
+		return false, false, nil
+	}
+	if data.PlayerLoan != nil {
+		if request := r.recordedPlayerRequest(data.PlayerLoan); request != nil && request.Status == "funded" {
+			return false, false, nil
+		}
+	}
+	for _, dataset := range []string{"catalog", "clock", "ships", "factors", "zones"} {
+		if !r.fresh(dataset) {
+			return false, false, nil
+		}
+	}
+	port, _ := findPort(r.stateCache.Catalog, data.BuildPort)
+	if !r.phaseOneYard(port) || r.overseasExhausted() {
+		return false, false, nil
+	}
+	if data.Action != nil {
+		if data.Action.Stage != "loan-request" && data.Action.Stage != "loan-accept" && data.Action.Stage != "build" {
+			return false, false, nil
+		}
+		exists, err := r.db.HasAction(ctx, r.account.ID, data.Action.ID)
+		if err != nil || exists {
+			return false, false, err
+		}
+	}
+	reason := r.overseasGrowthHoldReason("Phase 1 financing is retired before the first loan is accepted; open requests lapse unapproved")
+	if err := r.holdExpected(ctx, mission.ShipID, reason); err != nil {
+		return true, false, err
+	}
+	if data.PlayerLoan != nil {
+		if err := r.recordPlayerLoanDecision(ctx, data.PlayerLoan, "overseas_first", reason); err != nil {
+			return true, false, err
+		}
+	} else if err := r.recordCapacityFinanceFailure(ctx, data, "overseas_first", reason); err != nil {
+		return true, false, err
+	}
+	data.Action = nil
+	if err := r.clearPhaseOneGrowthTargets(ctx); err != nil {
+		return true, false, err
+	}
+	return true, true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+}
+
+// phaseOneYard reports a Phase 1 yard while a later phase is open.
+func (r *Runner) phaseOneYard(port Port) bool {
+	return port.ID != "" && r.stateCache.Clock.UnlockedPhase >= 2 && port.Phase < 2
+}
+
+// portPresence reports a factor or an idle ship lying at the port, the quay
+// presence a yard candidate needs.
+func (r *Runner) portPresence(portID string) bool {
+	if slices.Contains(r.stateCache.Factors, portID) {
+		return true
+	}
+	for _, ship := range r.stateCache.Ships {
+		if ship.Ship.CurrentPortID == portID && ship.Voyage == nil &&
+			(ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") {
+			return true
+		}
+	}
+	return false
+}
+
+// overseasYardPresent reports an open Phase 2 or later yard with presence.
+func (r *Runner) overseasYardPresent() bool {
+	for _, port := range r.stateCache.Catalog.Ports {
+		if port.HasShipyard && port.Phase >= 2 && port.Phase <= r.stateCache.Clock.UnlockedPhase && r.portPresence(port.ID) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runner) manageExpansionAgents(ctx context.Context) (bool, error) {
@@ -1404,10 +1899,17 @@ func (r *Runner) expansionHireReady(ctx context.Context, body []byte) error {
 	for _, agent := range agents {
 		if agent.PortID == port.ID {
 			admission.partner, _ = findPort(r.stateCache.Catalog, agent.Partner)
+			admission.probe = agent.Probe
 			break
 		}
 	}
-	reason, definitive, err := r.expansionBuildAdmission(ctx, &admission)
+	var reason string
+	var definitive bool
+	if admission.probe {
+		reason, definitive, err = r.expansionProbeAdmission(ctx, &admission)
+	} else {
+		reason, definitive, err = r.expansionBuildAdmission(ctx, &admission)
+	}
 	if err != nil || reason == "" {
 		return err
 	}

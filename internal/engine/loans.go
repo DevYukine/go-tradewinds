@@ -892,6 +892,9 @@ func (r *Runner) repayCapacityFinancing(ctx context.Context, mission *store.Miss
 }
 
 func (r *Runner) driveCapacityFinancing(ctx context.Context, mission *store.Mission, data *missionData) (bool, error) {
+	if handled, changed, err := r.retirePhaseOneFinancing(ctx, mission, data); handled || err != nil {
+		return changed, err
+	}
 	financing := data.Capacity.Financing
 	if !financing.BuildBy.IsZero() && !time.Now().Before(financing.BuildBy) {
 		if !financing.Cancel {

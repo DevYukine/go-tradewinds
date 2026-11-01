@@ -67,6 +67,11 @@ func capacitySavingsRunnerFixture(t *testing.T, income bool) (*recoveryHarness, 
 	newExpansionFactorAPI(h)
 	runner := growthWindowRunner(t, h)
 	runner.stateCache.Clock.Calendar.TimeScale = 60
+	// These comparisons exercise local savings after overseas exploration
+	// has already lost, not permission to bypass unexplored regions.
+	runner.snapshot["_expansion_agent_outcomes"] = encode(map[string]expansionOutcome{
+		"caribbean": {Losses: 1, RetryAt: time.Now().UTC().Add(24 * time.Hour)},
+	})
 	runner.stateCache.Contracts = nil
 	savingsNet := int64(0)
 	if income {

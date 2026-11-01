@@ -428,19 +428,17 @@ func TestOverseasCapacityEuropeanBuildExploresThenBetterCandidateWins(t *testing
 	overseasRequireEstimatePayload(t, overseasCapacityDecision(t, h, yard.ID, hull.ID))
 }
 
-func TestOverseasCapacityInadmissibleExplorationDoesNotHoldEuropeanBuild(t *testing.T) {
+func TestOverseasCapacityMissingGossipAndValuationHoldEuropeanBuild(t *testing.T) {
 	h, runner, _, _, _ := overseasCapacityFixture(t)
 	detail := runner.stateCache.Ports[recoveryHomePort]
 	detail.CoffeeHouseGossip = nil
 	runner.stateCache.Ports[recoveryHomePort] = detail
 	evidence, _ := overseasCapacityEvidence(t, h, runner, time.Now().UTC())
-	if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || !changed {
-		t.Fatalf("inadmissible exploration held European reinvestment: %t %v", changed, err)
+	if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || changed {
+		t.Fatalf("unexplored region without probe valuation released Europe: %t %v", changed, err)
 	}
-	_, build := h.mission("__growth")
-	if build.BuildPort != recoveryHomePort || build.Action == nil || build.Action.Stage != "build" {
-		t.Fatalf("no-admission branch did not proceed with Europe: %+v", build)
-	}
+	h.missingMission("__growth")
+	requireReviewHold(t, runner, "Phase 1 growth waits: new hulls go overseas", true)
 	h.missingMission("__treasury")
 	history, err := h.db.History(h.ctx, h.account.ID, "decisions", store.MaxHistoryLimit)
 	if err != nil {
@@ -489,6 +487,13 @@ func TestOverseasCapacityAwaitingPairBlocksOnlyUntilEvaluationOrFloor(t *testing
 				meta := runner.meta["books/"+stalePort]
 				meta.Stale = true
 				runner.meta["books/"+stalePort] = meta
+			}
+			if mode == "evaluated within floor" || mode == "floor expired" {
+				// Releasing the pair-evaluation hold does not bypass the
+				// overseas-first rule; Europe also needs an exhausted region.
+				runner.snapshot["_expansion_agent_outcomes"] = encode(map[string]expansionOutcome{
+					yard.BankingRegion: {Losses: 1, RetryAt: time.Now().UTC().Add(24 * time.Hour)},
+				})
 			}
 			evidence, _ := overseasCapacityEvidence(t, h, runner, time.Now().UTC())
 			changed, err := runner.considerCapacityGrowth(h.ctx, &evidence)

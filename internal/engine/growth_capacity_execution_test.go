@@ -1076,7 +1076,7 @@ func TestCapacityGrowthComputedLosingRepeatDoesNotUseOutboundProfit(t *testing.T
 	}
 }
 
-func TestCapacityGrowthRejectedPaybackDoesNotFundInadmissibleExpansion(t *testing.T) {
+func TestCapacityGrowthRejectedPaybackBuysEvidenceWithoutAdmittingHull(t *testing.T) {
 	t.Parallel()
 	h, runner := capacityExecutionFixture(t, false)
 	newMeasuredExpansionFactorAPI(h)
@@ -1100,10 +1100,17 @@ func TestCapacityGrowthRejectedPaybackDoesNotFundInadmissibleExpansion(t *testin
 	if err != nil || decision.Accepted || !strings.Contains(decision.Reason, "payback") {
 		t.Fatalf("fixture must have spare local work rejected solely on payback: %+v, %v", decision, err)
 	}
-	if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || changed {
-		t.Fatalf("bad regional payback paid for an inadmissible overseas build: changed=%t err=%v holds=%v", changed, err, runner.holding)
+	if changed, err := runner.considerCapacityGrowth(h.ctx, &evidence); err != nil || !changed {
+		t.Fatalf("rejected regional estimate did not fall back to a safe evidence probe: changed=%t err=%v holds=%v", changed, err, runner.holding)
 	}
-	h.missingMission("__treasury")
+	_, probe := h.mission("__treasury")
+	if probe.Action == nil || probe.Action.Stage != "hire-factor" {
+		t.Fatalf("rejected payback staged capital rather than factor evidence: %+v", probe)
+	}
+	agents := decode[[]expansionAgent](runner.snapshot, "_expansion_agents")
+	if len(agents) != 2 || !agents[0].Probe || !agents[1].Probe {
+		t.Fatalf("rejected build estimate did not remain distinguishable from its evidence probe: %+v", agents)
+	}
 	row := expansionFactorDecision(t, h, "caribbean")
 	var details struct {
 		HullClass string `json:"hull_class"`
@@ -1117,8 +1124,9 @@ func TestCapacityGrowthRejectedPaybackDoesNotFundInadmissibleExpansion(t *testin
 	if !strings.Contains(row.Reason, "payback") || details.HullClass == "" || details.QuotePort == "" || details.Capital <= 0 || details.Needed < details.Capital {
 		t.Fatalf("growth pass lost its rejected-build diagnostics: %+v %s", row, row.Details)
 	}
-	if h.api.mutationCount("/v1/company/hire-factor") != 0 {
-		t.Fatal("inadmissible expansion paid a factor hire fee")
+	if h.api.mutationCount("/v1/company/hire-factor") != 0 || h.api.mutationCount("/v1/shipyard/build-ship") != 0 ||
+		h.api.mutationCount("/v1/loan/accept-quote") != 0 {
+		t.Fatal("inadmissible hull estimate bypassed staging or authorized build capital/debt")
 	}
 	h.missingMission("__growth")
 }
@@ -1154,7 +1162,7 @@ func TestCapacityGrowthIdleHullWithoutProfitableWorkExploresAnotherRegion(t *tes
 	h.missingMission("__growth")
 }
 
-func TestCapacityGrowthUnavailableHullStillRequiresAdmissibleExpansion(t *testing.T) {
+func TestCapacityGrowthUnavailableHullProbesOnlyAfterCompleteQuoteAuthority(t *testing.T) {
 	t.Parallel()
 	for _, refusal := range []string{"unavailable", "non-turnkey", "unpriced", "missing", "stale"} {
 		t.Run(refusal, func(t *testing.T) {
@@ -1193,10 +1201,23 @@ func TestCapacityGrowthUnavailableHullStillRequiresAdmissibleExpansion(t *testin
 				t.Fatalf("funding: %s, %v", reason, err)
 			}
 			changed, err := runner.considerCapacityGrowth(h.ctx, &evidence)
-			if err != nil || changed {
-				t.Fatalf("quote %s licensed an inadmissible paid expansion: changed=%t err=%v holds=%v", refusal, changed, err, runner.holding)
+			probeExpected := refusal != "missing" && refusal != "stale"
+			if err != nil || changed != probeExpected {
+				t.Fatalf("quote %s probe changed=%t, want=%t, error=%v holds=%v", refusal, changed, probeExpected, err, runner.holding)
 			}
-			h.missingMission("__treasury")
+			if probeExpected {
+				_, probe := h.mission("__treasury")
+				agents := decode[[]expansionAgent](runner.snapshot, "_expansion_agents")
+				if probe.Action == nil || probe.Action.Stage != "hire-factor" || len(agents) != 2 || !agents[0].Probe || !agents[1].Probe {
+					t.Fatalf("unbuildable observed hull authorized capital rather than quay evidence: %+v %+v", probe, agents)
+				}
+			} else {
+				h.missingMission("__treasury")
+			}
+			if h.api.mutationCount("/v1/company/hire-factor") != 0 || h.api.mutationCount("/v1/shipyard/build-ship") != 0 ||
+				h.api.mutationCount("/v1/loan/accept-quote") != 0 {
+				t.Fatal("unavailable hull bypassed staging or authorized build capital/debt")
+			}
 			h.missingMission("__growth")
 			if refusal != "missing" && refusal != "stale" {
 				if row := expansionFactorDecision(t, h, "caribbean"); !strings.Contains(row.Reason, "payback") {

@@ -61,7 +61,7 @@ func TestHoldReviewCapacitySavingsAndAdmissionAreExpected(t *testing.T) {
 		runner := h.runner(primaryTestKey)
 		refreshExpansionFactor(t, h, runner)
 		runner.snapshot["_capacity_savings_target"] = encode(capacitySavingsTarget{
-			PortID: recoveryHomePort, HullID: recoveryHull, RequiredPence: 200_000,
+			PortID: "yard-a", HullID: recoveryHull, RequiredPence: 200_000,
 			CapitalPence: 100_000, DepthNetPencePerGameDay: 10_000,
 			ExpiresAt: time.Now().UTC().Add(time.Hour),
 		})

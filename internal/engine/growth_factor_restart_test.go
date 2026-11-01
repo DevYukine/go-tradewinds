@@ -105,7 +105,7 @@ func TestOverseasHiredYardWithoutReciprocalMateDoesNotHoldGrowth(t *testing.T) {
 	if runner.expansionAwaitingEvaluation() {
 		t.Fatal("a hired yard whose reciprocal mate is missing held every growth decision")
 	}
-	if handled, _, err := runner.holdExpansionGrowth(h.ctx, false); err != nil || handled || len(runner.holding) != 0 {
+	if handled, _, err := runner.holdExpansionGrowth(h.ctx, false, false); err != nil || handled || len(runner.holding) != 0 {
 		t.Fatalf("dangling mate held growth: handled=%t holding=%v err=%v", handled, runner.holding, err)
 	}
 	// Control: the complete un-evaluated pair inside its floor still holds.
@@ -241,7 +241,7 @@ func TestOverseasYardVerdictEvaluationSurvivesCacheEvictionAndRestart(t *testing
 	if _, err := runner.considerCapacityGrowthAt(h.ctx, &evidence, yard.ID, recoveryHull); err != nil {
 		t.Fatal(err)
 	}
-	if handled, _, err := runner.holdExpansionGrowth(h.ctx, false); err != nil || handled {
+	if handled, _, err := runner.holdExpansionGrowth(h.ctx, false, false); err != nil || handled {
 		t.Fatalf("route-backed yard verdict did not release the pair hold: handled=%t err=%v", handled, err)
 	}
 	var evaluatedAt time.Time
@@ -255,12 +255,12 @@ func TestOverseasYardVerdictEvaluationSurvivesCacheEvictionAndRestart(t *testing
 	}
 	// Eviction: the release must not depend on the dedup cache's memory.
 	runner.decisionHashes = map[string]decisionFingerprint{}
-	if handled, _, err := runner.holdExpansionGrowth(h.ctx, false); err != nil || handled {
+	if handled, _, err := runner.holdExpansionGrowth(h.ctx, false, false); err != nil || handled {
 		t.Fatalf("evaluation state lived only in the decision dedup cache: handled=%t err=%v", handled, err)
 	}
 	// Restart: a fresh runner reads the durable evaluation from the snapshot.
 	restarted := restartedExpansionRunner(t, h, runner)
-	if handled, _, err := restarted.holdExpansionGrowth(h.ctx, false); err != nil || handled {
+	if handled, _, err := restarted.holdExpansionGrowth(h.ctx, false, false); err != nil || handled {
 		t.Fatalf("restart re-held an evaluated pair from an empty decision cache: handled=%t err=%v", handled, err)
 	}
 }

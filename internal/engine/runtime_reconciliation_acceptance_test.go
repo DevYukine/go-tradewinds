@@ -445,6 +445,75 @@ func TestPrivateDatasetsRequireCurrentStationaryPresence(t *testing.T) {
 	})
 }
 
+func TestOverseasFactorPresenceRefreshesUnlockedOceanicTurnkeyQuotes(t *testing.T) {
+	t.Parallel()
+	for _, available := range []bool{true, false} {
+		t.Run(map[bool]string{true: "available quote", false: "measured unavailable quote"}[available], func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			h.api.setFleet(nil)
+			h.api.setFactorPorts("boston")
+			catalog := h.api.catalogDocument()
+			ports := catalog["ports"].([]any)
+			catalog["ports"] = append(ports, map[string]any{
+				"id": "boston", "banking_region": "america", "sea_zone_id": "zone-north", "phase": 2, "has_shipyard": true,
+			})
+			classes := catalog["ship_classes"].([]any)
+			for _, hull := range []struct {
+				id    string
+				phase int
+			}{{id: "barque", phase: 2}, {id: "indiaman", phase: 3}} {
+				classes = append(classes, map[string]any{
+					"id": hull.id, "hull_category": "oceanic", "phase": hull.phase,
+					"base_speed_centiknots": 900, "hold_capacity_tons": 120, "max_cannons": 14, "crew_required": 20,
+				})
+			}
+			catalog["ship_classes"] = classes
+			base := h.api.server.Config.Handler
+			h.api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				switch req.URL.Path {
+				case "/v1/world/catalog":
+					h.api.writeJSON(w, http.StatusOK, catalog)
+					return
+				case "/v1/world/clock":
+					clock := h.api.clockDocument()
+					clock["unlocked_phase"] = 2
+					h.api.writeJSON(w, http.StatusOK, clock)
+					return
+				case "/v1/shipyard/quote":
+					if req.URL.Query().Get("port_id") == "boston" && req.URL.Query().Get("ship_class") == "barque" {
+						quote := map[string]any{
+							"port_id": "boston", "ship_class": "barque", "build_mode": "turnkey_cash",
+							"available": available, "total_cost_pence": 60_000,
+						}
+						if !available {
+							quote["total_cost_pence"] = nil
+						}
+						h.api.writeJSON(w, http.StatusOK, quote)
+						return
+					}
+				}
+				base.ServeHTTP(w, req)
+			})
+			runner := refreshedRunner(t, h)
+			key := "boston|barque"
+			quote, exists := runner.stateCache.Quotes[key]
+			if !exists || !runner.fresh("yard_quotes/"+key) || quote.PortID != "boston" ||
+				quote.ShipClass != "barque" || quote.BuildMode != "turnkey_cash" || quote.Available != available {
+				t.Fatalf("factor-only overseas yard did not fetch its unlocked oceanic quote: exists=%t quote=%+v", exists, quote)
+			}
+			if _, exists := runner.stateCache.Quotes["boston|indiaman"]; exists {
+				t.Fatal("overseas quote refresh fetched a phase-locked oceanic hull")
+			}
+			yard, _ := findPort(runner.stateCache.Catalog, "boston")
+			hull, _ := findHull(runner.stateCache.Catalog, "barque")
+			_, err := runner.growthQuote(yard, hull)
+			if available != (err == nil) {
+				t.Fatalf("fresh unavailable quote was mistaken for missing refresh or executable construction: %+v %v", quote, err)
+			}
+		})
+	}
+}
+
 // A sealed obligation's full accepted quantity is the precondition for a new
 // tender. Carrying 18 of 24 tons must produce zero new delivery requests,
 // must keep safe maintenance running while held, must keep the full seal

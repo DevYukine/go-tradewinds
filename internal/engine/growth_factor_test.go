@@ -395,31 +395,32 @@ func refreshExpansionFactor(t *testing.T, h *recoveryHarness, runner *Runner) {
 	}
 }
 
-func TestExpansionFactorRequiresNonCharterEvidenceBeforeHiring(t *testing.T) {
+func TestExpansionFactorWithoutGossipBuysEvidenceNotCharterBackedHull(t *testing.T) {
 	t.Parallel()
-	for _, charterOnly := range []bool{true, false} {
-		t.Run(map[bool]string{true: "charter only", false: "positive repeatable spot evidence"}[charterOnly], func(t *testing.T) {
+	for _, probe := range []bool{true, false} {
+		t.Run(map[bool]string{true: "no gossip spread", false: "positive repeatable spot evidence"}[probe], func(t *testing.T) {
 			h := newRecoveryHarness(t)
 			newMeasuredExpansionFactorAPI(h)
 			runner := h.runner(primaryTestKey)
 			refreshExpansionFactor(t, h, runner)
-			if charterOnly {
+			if probe {
 				runner.stateCache.Ports = nil
 			}
 			changed, err := runner.considerExpansionAgent(h.ctx)
-			if err != nil || changed == charterOnly {
-				t.Fatalf("charterOnly=%t changed=%t err=%v", charterOnly, changed, err)
+			if err != nil || !changed {
+				t.Fatalf("probe=%t changed=%t err=%v", probe, changed, err)
 			}
-			if charterOnly {
-				h.missingMission("__treasury")
-				if h.api.mutationCount("/v1/company/hire-factor") != 0 {
-					t.Fatal("finite charter income caused a paid hire")
-				}
-			} else {
-				mission, data := h.mission("__treasury")
-				if mission.Destination != "yard-a" || data.Action == nil || data.Action.Stage != "hire-factor" {
-					t.Fatalf("repeatable spot evidence did not select a hire: %+v %+v", mission, data.Action)
-				}
+			mission, data := h.mission("__treasury")
+			if mission.Destination != "yard-a" || data.Action == nil || data.Action.Stage != "hire-factor" {
+				t.Fatalf("evidence admission did not select the yard hire: %+v %+v", mission, data.Action)
+			}
+			agents := decode[[]expansionAgent](runner.snapshot, "_expansion_agents")
+			if len(agents) != 2 || agents[0].Probe != probe {
+				t.Fatalf("gossip-free admission was not distinguishable from a priced pair: %+v", agents)
+			}
+			h.missingMission("__growth")
+			if h.api.mutationCount("/v1/company/hire-factor") != 0 || h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
+				t.Fatal("admission sent an unjournaled hire or built on finite charter income")
 			}
 		})
 	}
@@ -563,7 +564,7 @@ func TestExpansionFactorLifecycle(t *testing.T) {
 	}
 }
 
-func TestExpansionFactorRefusalLatch(t *testing.T) {
+func TestExpansionFactorUnpaidRefusalRetriesWithoutRealizedLoss(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		code   string
@@ -602,18 +603,18 @@ func TestExpansionFactorRefusalLatch(t *testing.T) {
 			if changed, err := runner.considerExpansionAgent(h.ctx); err != nil || changed {
 				t.Fatalf("refused region rehired after restart: changed=%t err=%v", changed, err)
 			}
-			runner.snapshot["_expansion_agent_retries"] = encode(map[string]time.Time{"caribbean": time.Now().Add(-24*time.Hour - time.Second)})
 			outcomes := decode[map[string]expansionOutcome](runner.snapshot, "_expansion_agent_outcomes")
 			outcome := outcomes["caribbean"]
-			if outcome.Losses != 1 || !time.Now().Before(outcome.RetryAt) {
-				t.Fatalf("refused hire lost its first regional losing verdict: %+v", outcome)
+			if outcome.Losses != 0 || !outcome.RetryAt.IsZero() || !time.Now().Before(runner.expansionRetryUntil("caribbean")) ||
+				!decode[time.Time](runner.snapshot, "_expansion_last_started_at").IsZero() || runner.overseasExhausted() {
+				t.Fatalf("never-paid refusal became an exhausting loss or lost its retry: %+v", outcome)
 			}
-			outcome.RetryAt = time.Now().Add(-time.Second)
+			outcome.AttemptAt = time.Now().UTC().Add(-3*time.Hour - time.Second)
 			outcomes["caribbean"] = outcome
 			runner.snapshot["_expansion_agent_outcomes"] = encode(outcomes)
-			runner.snapshot["_expansion_last_started_at"] = encode(time.Now().Add(-24*time.Hour - time.Second))
+			runner.snapshot["_expansion_agent_retries"] = encode(map[string]time.Time{"caribbean": outcome.AttemptAt})
 			if changed, err := runner.considerExpansionAgent(h.ctx); err != nil || !changed {
-				t.Fatalf("region could not retry after 24 real hours: changed=%t err=%v", changed, err)
+				t.Fatalf("never-paid region could not retry after its window plus one real hour: changed=%t err=%v", changed, err)
 			}
 		})
 	}
@@ -881,7 +882,7 @@ func TestExpansionFactorHirePreflightRechecksRegionalRealizedBuild(t *testing.T)
 	}
 }
 
-func TestExpansionFactorMissingQuoteReasonPrecedesMeasuredGate(t *testing.T) {
+func TestExpansionFactorWithoutQuoteProbesWithOrWithoutMeasuredIncome(t *testing.T) {
 	t.Parallel()
 	for _, measured := range []bool{false, true} {
 		t.Run(map[bool]string{false: "unavailable measured rate", true: "available measured rate"}[measured], func(t *testing.T) {
@@ -894,15 +895,20 @@ func TestExpansionFactorMissingQuoteReasonPrecedesMeasuredGate(t *testing.T) {
 			runner := h.runner(primaryTestKey)
 			refreshExpansionFactor(t, h, runner)
 			runner.stateCache.Quotes = nil
-			if changed, err := runner.considerExpansionAgent(h.ctx); err != nil || changed {
-				t.Fatalf("missing quote changed an expansion mission: %t %v", changed, err)
+			changed, err := runner.considerExpansionAgent(h.ctx)
+			if err != nil || !changed {
+				t.Fatalf("quote-free probe changed=%t, measured income=%t, error=%v", changed, measured, err)
 			}
-			if row := expansionFactorDecision(t, h, "caribbean"); row.Reason != expansionAgentQuoteReason {
-				t.Fatalf("missing quote recorded reason: %+v", row)
+			agents := decode[[]expansionAgent](runner.snapshot, "_expansion_agents")
+			if len(agents) != 2 || !agents[0].Probe || !agents[1].Probe {
+				t.Fatalf("fresh safe evidence did not permit a quote-free probe: %+v", agents)
 			}
-			h.missingMission("__treasury")
-			if h.api.mutationCount("/v1/company/hire-factor") != 0 {
-				t.Fatal("missing observed quote paid for an expansion agent")
+			_, data := h.mission("__treasury")
+			if data.Action == nil || data.Action.Stage != "hire-factor" {
+				t.Fatalf("quote-free probe authorized a hull instead of evidence: %+v", data)
+			}
+			if h.api.mutationCount("/v1/company/hire-factor") != 0 || h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
+				t.Fatal("quote-free admission bypassed immutable staging or built a hull")
 			}
 		})
 	}
@@ -967,7 +973,7 @@ func TestExpansionStrandedRegionalCashFundsAdmittedHomeBuild(t *testing.T) {
 func TestExpansionLosingRegionBackoffScheduleAndCap(t *testing.T) {
 	t.Parallel()
 	runner := &Runner{snapshot: make(map[string]json.RawMessage)}
-	agent := expansionAgent{Region: "america", CreatedAt: time.Now().UTC()}
+	agent := expansionAgent{Region: "america", CreatedAt: time.Now().UTC(), HiredAt: time.Now().UTC()}
 	for loss, delay := range []time.Duration{24 * time.Hour, 48 * time.Hour, 96 * time.Hour, 96 * time.Hour, 96 * time.Hour} {
 		outcomes := decode[map[string]expansionOutcome](runner.snapshot, "_expansion_agent_outcomes")
 		if outcomes == nil {
@@ -975,6 +981,7 @@ func TestExpansionLosingRegionBackoffScheduleAndCap(t *testing.T) {
 		}
 		outcome := outcomes[agent.Region]
 		outcome.AttemptAt, outcome.Reason = time.Now().UTC(), ""
+		agent.CreatedAt, agent.HiredAt = outcome.AttemptAt, outcome.AttemptAt
 		outcomes[agent.Region] = outcome
 		runner.snapshot["_expansion_agent_outcomes"] = encode(outcomes)
 		start := time.Now().UTC()
@@ -1007,7 +1014,8 @@ func TestExpansionPrehireRejectsUnsafeArrivalZone(t *testing.T) {
 			runner.stateCache.Catalog.SeaZones = append(runner.stateCache.Catalog.SeaZones, unsafe)
 			for i := range runner.stateCache.Catalog.Ports {
 				port := runner.stateCache.Catalog.Ports[i]
-				if port.ID == portID || portID == "yard-a" && port.HasShipyard && port.BankingRegion == "caribbean" {
+				if port.ID == portID || portID == "yard-a" && port.HasShipyard && port.BankingRegion == "caribbean" ||
+					portID == "demand" && port.BankingRegion == "caribbean" && port.ID != "yard-a" {
 					runner.stateCache.Catalog.Ports[i].SeaZoneID = unsafe.ID
 				}
 			}

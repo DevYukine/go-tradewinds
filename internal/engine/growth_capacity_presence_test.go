@@ -8,6 +8,60 @@ import (
 	"github.com/DevYukine/go-tradewinds/internal/gameapi"
 )
 
+func TestOverseasFactorYardUsesCalibratedHazardWithoutOwnedLaneQuote(t *testing.T) {
+	t.Parallel()
+	for _, profitable := range []bool{true, false} {
+		t.Run(map[bool]string{true: "profitable local quay work", false: "priced local work is unprofitable"}[profitable], func(t *testing.T) {
+			h, runner, yard, hull, quote := overseasCapacityFixture(t)
+			runner.stateCache.Factors = append(runner.stateCache.Factors, yard.ID, "new_york")
+			if runner.ownedShipInRegion(yard.BankingRegion) {
+				t.Fatal("factor-only yard unexpectedly has an owned regional ship")
+			}
+			for _, sample := range runner.stateCache.HazardQuotes {
+				if sample.Origin == yard.ID {
+					t.Fatal("factor-only yard unexpectedly has a Lloyd's lane quote")
+				}
+			}
+			if !profitable {
+				bookCommodity(runner.stateCache.Markets["new_york"], recoveryGrain).Depth.Bids[0].PricePence = 1
+				// Another destination really is beyond the calibrated leg bound.
+				// It must not overwrite the priced local lane's economic rejection.
+				for _, pair := range [][2]string{{yard.ID, recoveryFarPort}, {recoveryFarPort, yard.ID}} {
+					key := routeKey(pair[0], pair[1], hull.ID)
+					runner.stateCache.Routes[key] = Route{
+						FromPort: pair[0], ToPort: pair[1], ShipClass: hull.ID, TotalDistanceNM: 1_000, SafeProvisionsTons: 1,
+						Legs: []RouteLeg{{FromNode: pair[0], ToNode: "zone-south", EdgeClass: "coastal", DistanceNM: 500},
+							{FromNode: "zone-south", ToNode: pair[1], EdgeClass: "coastal", DistanceNM: 500}},
+					}
+					runner.meta["routes/"+key] = runner.meta["routes/"+routeKey(yard.ID, "new_york", hull.ID)]
+				}
+			}
+			at := time.Now().UTC()
+			overseasMetric(t, h, 10_000_000, at)
+			evidence, input := overseasCapacityEvidence(t, h, runner, at)
+			decision, _, err := runner.capacityAtYard(h.ctx, yard, hull, quote, input, &evidence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := overseasCapacityDecision(t, h, yard.ID, hull.ID)
+			if profitable {
+				if !decision.Accepted || !strings.HasPrefix(decision.HazardSource, "zone estimate") {
+					t.Fatalf("factor-only overseas yard could not evaluate a calibrated candidate: %+v %s", decision, row.Details)
+				}
+				overseasRequireEstimatePayload(t, row)
+				return
+			}
+			if decision.Accepted || decision.EconomicallyViable || decision.Reason == hazardUnavailable ||
+				!strings.Contains(string(row.Details), "non-positive destination contribution") {
+				t.Fatalf("a different unquoted route concealed the priced local economic rejection: %+v %s", decision, row.Details)
+			}
+			if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
+				t.Fatal("unprofitable calibrated work bypassed the ordinary capacity gate")
+			}
+		})
+	}
+}
+
 func TestCapacityFinancedBuildRevalidatesEstimateRouteAgainstLivePiracy(t *testing.T) {
 	t.Parallel()
 	for _, change := range []string{"unchanged control", "piracy beyond calibration limit", "negative piracy observation", "missing piracy observation"} {

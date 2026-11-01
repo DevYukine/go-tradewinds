@@ -1054,7 +1054,9 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 			}
 		}
 	}
-	if !found {
+	if !found || r.phaseOneYard(best.port) && r.overseasYardPresent() {
+		// An overseas yard we can see competes in the capacity comparison,
+		// which builds there before any Phase 1 yard.
 		return r.considerCapacityGrowth(ctx, &evidence)
 	}
 	agents := decode[[]expansionAgent](r.snapshot, "_expansion_agents")
@@ -1065,7 +1067,7 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 			return r.considerCapacityGrowth(ctx, &evidence)
 		}
 	}
-	if handled, changed, err := r.holdExpansionGrowth(ctx, true); handled || err != nil {
+	if handled, changed, err := r.holdExpansionGrowth(ctx, true, r.phaseOneYard(best.port)); handled || err != nil {
 		return changed, err
 	}
 	savingsTarget, err := r.liveCapacitySavingsTarget(ctx)
