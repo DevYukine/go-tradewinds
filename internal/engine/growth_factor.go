@@ -1626,7 +1626,11 @@ func (r *Runner) manageExpansionAgents(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	flagship := decode[americaFlagshipState](r.snapshot, "_america_flagship")
 	for _, agent := range agents {
+		if agent.PortID == "boston" && flagship.BuiltShipID == "" && (flagship.Pending || flagship.LoanID != "" || !flagship.RetryAt.IsZero()) {
+			continue
+		}
 		if agent.HiredAt.IsZero() || !slices.Contains(r.stateCache.Factors, agent.PortID) {
 			continue
 		}

@@ -2,8 +2,10 @@ package engine
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ func americaFlagshipFixture(t *testing.T) (*recoveryHarness, *Runner, *bool) {
 	t.Helper()
 	h := newRecoveryHarness(t)
 	h.api.setVaultBalance("america", 100_500)
+	h.api.setFactorPorts("boston")
 	available := true
 	base := h.api.server.Config.Handler
 	h.api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -26,7 +29,38 @@ func americaFlagshipFixture(t *testing.T) (*recoveryHarness, *Runner, *bool) {
 			h.api.writeJSON(w, http.StatusOK, clock)
 			return
 		}
+		if req.Method == http.MethodGet && req.URL.Path == "/v1/world/catalog" {
+			catalog := h.api.catalogDocument()
+			catalog["ports"] = append(catalog["ports"].([]any), map[string]any{
+				"id": "boston", "name": "Boston", "banking_region": "america", "sea_zone_id": "zone-north", "phase": 2, "has_shipyard": true,
+			})
+			h.api.writeJSON(w, http.StatusOK, catalog)
+			return
+		}
+		if req.Method == http.MethodPost && req.URL.Path == "/v1/company/hire-factor" {
+			body, err := io.ReadAll(req.Body)
+			if err != nil || string(body) != `{"port_id":"boston"}` || req.Header.Get("Idempotency-Key") == "" {
+				t.Errorf("Boston factor lost its exact durable request: %s %v", body, err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			h.api.mu.Lock()
+			defer h.api.mu.Unlock()
+			if !slices.Contains(h.api.factorPorts, "boston") {
+				h.api.factorPorts = append(h.api.factorPorts, "boston")
+				h.api.vaultBalance["america"] -= expansionAgentHireFeePence
+			}
+			h.api.record(req, body, http.StatusOK)
+			h.api.writeJSON(w, http.StatusOK, map[string]any{"port_id": "boston", "has_factor": true})
+			return
+		}
 		if req.Method == http.MethodGet && req.URL.Path == "/v1/shipyard/quote" && req.URL.Query().Get("port_id") == "boston" {
+			h.api.mu.Lock()
+			defer h.api.mu.Unlock()
+			if !slices.Contains(h.api.factorPorts, "boston") {
+				h.api.writeProblem(w, http.StatusForbidden, "no_port_presence", "Boston requires ship or factor presence")
+				return
+			}
 			if req.URL.Query().Get("build_mode") != "turnkey_cash" {
 				t.Error("flagship quote omitted turnkey_cash")
 			}
@@ -57,6 +91,64 @@ func americaFlagshipTestQuote(request gameapi.LoanRequestView, lender, name, id 
 		BorrowerCompanyID: recoveryCompanyID, BankingRegion: "america", PrincipalPence: request.PrincipalPence,
 		AnnualRateBPS: rate, TermGameDays: 360, Repayment: "amortised", InstallmentPence: &installment,
 		TotalRepayablePence: installment * 36, Status: "open", CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+}
+func TestAmericaFlagshipHiresAndKeepsBostonFactorAcrossRestart(t *testing.T) {
+	h, runner, _ := americaFlagshipFixture(t)
+	h.api.setFactorPorts()
+	if _, err := runner.americaFlagshipQuote(h.ctx, "barque"); err == nil {
+		t.Fatal("fixture accepted a Boston quote without presence")
+	}
+	americaFlagshipTick(t, h, runner)
+	_, data := h.mission(americaFlagshipMission)
+	if data.Action == nil || data.Action.Stage != "hire-factor" || string(data.Action.Body) != `{"port_id":"boston"}` {
+		t.Fatalf("missing presence did not stage a durable Boston factor: %+v", data.Action)
+	}
+	runner = h.runner(primaryTestKey)
+	for range 4 {
+		americaFlagshipTick(t, h, runner)
+		if h.api.mutationCount("/v1/company/hire-factor") != 0 {
+			break
+		}
+	}
+	if h.api.mutationCount("/v1/company/hire-factor") != 1 || h.api.mutationCount("/v1/loan/request") != 0 {
+		t.Fatal("restart lost the single Boston hire or requested before its receipt")
+	}
+	runner = h.runner(primaryTestKey)
+	for range 6 {
+		americaFlagshipTick(t, h, runner)
+		if h.api.mutationCount("/v1/loan/request") != 0 {
+			break
+		}
+	}
+	if h.api.mutationCount("/v1/company/hire-factor") != 1 || h.api.mutationCount("/v1/loan/request") != 1 {
+		t.Fatal("Boston hire did not unblock one priced flagship loan request")
+	}
+
+	// Retention must also survive a control-mission gap and the six-hour retry.
+	if err := h.db.DeleteMission(h.ctx, h.account.ID, americaFlagshipMission); err != nil {
+		t.Fatal(err)
+	}
+	aged := time.Now().UTC().Add(-3 * time.Hour)
+	runner.snapshot["_expansion_agents"] = encode([]expansionAgent{{PortID: "boston", Region: "america", CreatedAt: aged, HiredAt: aged}})
+	for _, state := range []americaFlagshipState{{Pending: true}, {RetryAt: time.Now().UTC().Add(6 * time.Hour)}} {
+		if err := runner.saveAmericaFlagship(h.ctx, state); err != nil {
+			t.Fatal(err)
+		}
+		if changed, err := runner.manageExpansionAgents(h.ctx); changed || err != nil {
+			t.Fatalf("pending flagship dismissed Boston: changed=%v err=%v", changed, err)
+		}
+		h.missingMission("__treasury")
+	}
+	if err := runner.saveAmericaFlagship(h.ctx, americaFlagshipState{BuiltShipID: recoveryBuiltShipID}); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := runner.manageExpansionAgents(h.ctx); !changed || err != nil {
+		t.Fatalf("finished flagship did not release normal Boston cleanup: changed=%v err=%v", changed, err)
+	}
+	_, dismissal := h.mission("__treasury")
+	if dismissal.Action == nil || dismissal.Action.Stage != "dismiss-factor" || string(dismissal.Action.Body) != `{"port_id":"boston"}` {
+		t.Fatalf("finished flagship did not use normal factor dismissal: %+v", dismissal.Action)
 	}
 }
 

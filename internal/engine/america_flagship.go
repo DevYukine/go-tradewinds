@@ -68,8 +68,17 @@ func (r *Runner) driveAmericaFlagship(ctx context.Context, mission *store.Missio
 			r.wakeBy(state.RetryAt)
 			return false, nil
 		}
-		if !r.loanAuthority() || !r.loanRequestAuthority() || !r.fresh("vaults") || !r.fresh("ships") || r.openOwnLoanRequest() {
+		if !r.loanAuthority() || !r.loanRequestAuthority() || !r.fresh("vaults") || !r.fresh("ships") || !r.fresh("factors") || r.openOwnLoanRequest() {
 			return false, nil
+		}
+		if !r.portPresence("boston") {
+			state.Pending = true
+			if err := r.saveAmericaFlagship(ctx, state); err != nil {
+				return false, err
+			}
+			mission = &store.Mission{AccountID: r.account.ID, ShipID: americaFlagshipMission, Phase: "flagship_presence", Generation: uuid.NewString(), Destination: "boston"}
+			*data = missionData{BuildPort: "boston", CostsKnown: true, StartedAt: now}
+			return true, r.stage(ctx, mission, data, ShipState{}, "hire-factor", "/v1/company/hire-factor", map[string]any{"port_id": "boston"})
 		}
 		class := "barque"
 		quote, err := r.americaFlagshipQuote(ctx, class)
@@ -128,6 +137,15 @@ func (r *Runner) driveAmericaFlagship(ctx context.Context, mission *store.Missio
 			return false, err
 		}
 		// Normal per-ship maintenance buys guns and stores before voyage planning.
+		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+	}
+	if !r.fresh("factors") {
+		return false, nil
+	}
+	if !r.portPresence("boston") {
+		return true, r.stage(ctx, mission, data, ShipState{}, "hire-factor", "/v1/company/hire-factor", map[string]any{"port_id": "boston"})
+	}
+	if data.PlayerLoan == nil {
 		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 	}
 	if data.Capacity != nil && data.Capacity.Financing != nil && len(data.Capacity.Financing.Loans) != 0 {
@@ -226,6 +244,16 @@ func (r *Runner) americaFlagshipBuildQuote(ctx context.Context, data *missionDat
 }
 
 func (r *Runner) americaFlagshipPreflight(ctx context.Context, data *missionData) error {
+	if data.Action.Stage == "hire-factor" {
+		var body struct {
+			PortID string `json:"port_id"`
+		}
+		if r.stateCache.Clock.UnlockedPhase < 2 || data.BuildPort != "boston" || !r.fresh("factors") ||
+			json.Unmarshal(data.Action.Body, &body) != nil || body.PortID != "boston" || r.portPresence("boston") {
+			return errors.New("America flagship factor requires missing Boston presence")
+		}
+		return nil
+	}
 	if r.stateCache.Clock.UnlockedPhase < 2 || data.PlayerLoan == nil || data.BuildPort != "boston" || data.BuildClass != data.PlayerLoan.HullID {
 		return errors.New("America flagship requires its recorded Boston loan intent")
 	}
