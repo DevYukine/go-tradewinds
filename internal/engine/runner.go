@@ -605,12 +605,20 @@ func (r *Runner) decision(ctx context.Context, shipID, kind, reason string, deta
 	const retention = 7 * 24 * time.Hour
 	key := shipID + "|" + kind
 	fingerprintDetails := competitionFingerprintDetails(details)
+	classReason := blockingReasonNumbers.ReplaceAllString(reason, "#")
+	if family, _, _ := strings.Cut(kind, ":"); family == "expansion_agent" {
+		fields, _ := details.(map[string]any)
+		for _, field := range []string{"region", "port_id", "partner_port_id", "hull_class"} {
+			value, _ := fields[field].(string)
+			classReason += "\x00" + value
+		}
+	}
 	digest := sha256.New()
 	digest.Write([]byte(reason))
 	digest.Write([]byte{0})
 	digest.Write(encode(fingerprintDetails))
 	current := decisionFingerprint{
-		class:     sha256.Sum256([]byte(blockingReasonNumbers.ReplaceAllString(reason, "#"))),
+		class:     sha256.Sum256([]byte(classReason)),
 		writtenAt: time.Now(),
 	}
 	digest.Sum(current.hash[:0])
@@ -634,7 +642,7 @@ func (r *Runner) decision(ctx context.Context, shipID, kind, reason string, deta
 func evaluationDecision(kind string) bool {
 	family, _, _ := strings.Cut(kind, ":")
 	switch family {
-	case "rejected", "ranked", "marque_rejected", "scouting", "capacity_candidate", "sourcing", "capacity_financing":
+	case "rejected", "ranked", "marque_rejected", "scouting", "capacity_candidate", "sourcing", "capacity_financing", "expansion_agent":
 		return true
 	}
 	return false

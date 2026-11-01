@@ -27,6 +27,7 @@ type Port struct {
 	ID            string                `json:"id"`
 	BankingRegion string                `json:"banking_region"`
 	SeaZoneID     string                `json:"sea_zone_id"`
+	CustomsBPS    int64                 `json:"customs_bps"`
 	Phase         int                   `json:"phase"`
 	IsHub         bool                  `json:"is_hub"`
 	HasShipyard   bool                  `json:"has_shipyard"`

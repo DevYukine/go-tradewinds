@@ -22,6 +22,16 @@ func requireReviewHold(t *testing.T, runner *Runner, reason string, expected boo
 	t.Fatalf("no hold containing %q in %+v", reason, runner.holding)
 }
 
+func requireReviewExpansionSkip(t *testing.T, h *recoveryHarness, reason string) {
+	t.Helper()
+	for _, decision := range uwExecDecisions(t, h) {
+		if strings.HasPrefix(decision.Kind, "expansion_agent:") && strings.Contains(decision.Reason, reason) {
+			return
+		}
+	}
+	t.Fatalf("no quiet expansion decision containing %q", reason)
+}
+
 func TestHoldReviewCapacitySavingsAndAdmissionAreExpected(t *testing.T) {
 	t.Parallel()
 	t.Run("capacity savings admission", func(t *testing.T) {
@@ -47,7 +57,9 @@ func TestHoldReviewCapacitySavingsAndAdmissionAreExpected(t *testing.T) {
 	})
 	t.Run("expansion respects savings", func(t *testing.T) {
 		h := newRecoveryHarness(t)
+		newMeasuredExpansionFactorAPI(h)
 		runner := h.runner(primaryTestKey)
+		refreshExpansionFactor(t, h, runner)
 		runner.snapshot["_capacity_savings_target"] = encode(capacitySavingsTarget{
 			PortID: recoveryHomePort, HullID: recoveryHull, RequiredPence: 200_000,
 			CapitalPence: 100_000, DepthNetPencePerGameDay: 10_000,
@@ -56,7 +68,7 @@ func TestHoldReviewCapacitySavingsAndAdmissionAreExpected(t *testing.T) {
 		if _, err := runner.considerExpansionAgent(h.ctx); err != nil {
 			t.Fatal(err)
 		}
-		requireReviewHold(t, runner, capacitySavingsReason, true)
+		requireReviewExpansionSkip(t, h, capacitySavingsReason)
 	})
 	t.Run("expansion awaits an observed quote", func(t *testing.T) {
 		h := newRecoveryHarness(t)
@@ -66,7 +78,7 @@ func TestHoldReviewCapacitySavingsAndAdmissionAreExpected(t *testing.T) {
 		if _, err := runner.considerExpansionAgent(h.ctx); err != nil {
 			t.Fatal(err)
 		}
-		requireReviewHold(t, runner, "needs a previously observed regional hull quote", true)
+		requireReviewExpansionSkip(t, h, "needs a previously observed regional hull quote")
 	})
 }
 
@@ -131,7 +143,7 @@ func TestHoldReviewExpansionAndExecutionFailuresRemainReal(t *testing.T) {
 		if _, err := runner.considerExpansionAgent(h.ctx); err != nil {
 			t.Fatal(err)
 		}
-		requireReviewHold(t, runner, "current successful profile authority", false)
+		requireReviewExpansionSkip(t, h, "current successful profile authority")
 	})
 	t.Run("unobserved built hull", func(t *testing.T) {
 		h := newRecoveryHarness(t)

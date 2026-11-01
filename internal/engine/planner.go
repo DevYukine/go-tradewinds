@@ -279,6 +279,7 @@ type PlanningInput struct {
 	singleLegOnly             bool
 	onwardDelay               time.Duration
 	hazardBounds              map[string]planningHazardBound
+	hazardEstimate            *hazardCalibration
 }
 
 func (in PlanningInput) fresh(dataset string) bool {

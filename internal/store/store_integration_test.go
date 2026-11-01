@@ -95,6 +95,31 @@ func saveTestAccount(t *testing.T, db *Store, id string) Credentials {
 	return credentials
 }
 
+func TestPostgresLatestMetricSelectsNamedPublication(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	ctx := context.Background()
+	saveTestAccount(t, db, "metric-owner")
+	if metric, err := db.LatestMetric(ctx, "metric-owner", "net_worth_pence"); err != nil || metric != nil {
+		t.Fatalf("empty metric: %+v %v", metric, err)
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	rows := []Metric{
+		{AccountID: "metric-owner", Name: "net_worth_pence", Value: 300, RecordedAt: now},
+		{AccountID: "metric-owner", Name: "net_worth_pence", Value: 100, RecordedAt: now.Add(-time.Hour)},
+		{AccountID: "metric-owner", Name: "other", Value: 900, RecordedAt: now.Add(time.Hour)},
+	}
+	if err := db.db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	metric, err := db.LatestMetric(ctx, "metric-owner", "net_worth_pence")
+	if err != nil || metric == nil || metric.Value != 300 || !metric.RecordedAt.Equal(now) {
+		t.Fatalf("newest named metric: %+v %v", metric, err)
+	}
+	if metric, err := db.LatestMetric(ctx, "other-owner", "net_worth_pence"); err != nil || metric != nil {
+		t.Fatalf("metric account isolation: %+v %v", metric, err)
+	}
+}
+
 func insertOldPending(t *testing.T, db *Store, accountID, id string, age time.Duration) *Action {
 	t.Helper()
 	body := json.RawMessage(`{"quantity":4}`)

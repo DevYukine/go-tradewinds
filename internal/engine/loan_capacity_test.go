@@ -133,7 +133,8 @@ func TestLoanCapacityFiniteCharterCannotFinancePerpetualRate(t *testing.T) {
 		t.Fatal(err)
 	}
 	decision, _, err := runner.capacityAtYard(h.ctx, port, hull, quote, input, evidence)
-	buffer := max(input.ReservePence, ceilBPS(*quote.TotalCostPence, 1_500)) + int64(input.FleetSize+1)*lot
+	buffer := max(input.ReservePence, ceilBPS(*quote.TotalCostPence, 1_500)) +
+		int64(input.FleetSize)*input.LotCashPence + max(input.LotCashPence, lot)
 	if err != nil || decision.IncrementalNetPencePerGameDay != rate || decision.WorkingCapitalPence != buffer {
 		t.Fatalf("finite charter inflated perpetual earnings or lost its first-load cash: %+v, rate %v, buffer %d, %v", decision, rate, buffer, err)
 	}

@@ -70,10 +70,16 @@ type GrowthDecision struct {
 	DepthNetPencePerGameDay       float64                `json:"depth_net_pence_per_game_day"`
 	PaybackGameDays               float64                `json:"payback_game_days"`
 	EvidenceBasis                 string                 `json:"evidence_basis"`
+	HazardSource                  string                 `json:"hazard_source,omitempty"`
+	HazardDestination             string                 `json:"hazard_destination,omitempty"`
+	DepthHazardSource             string                 `json:"depth_hazard_source,omitempty"`
+	DepthHazardDestination        string                 `json:"depth_hazard_destination,omitempty"`
+	ExpansionEstimate             *expansionRateEstimate `json:"expansion_estimate,omitempty"`
 	Competition                   CompetitionEvidence    `json:"competition"`
 	DepthCompetition              CompetitionEvidence    `json:"depth_competition"`
 	Mortgage                      *gameapi.MortgageTerms `json:"mortgage,omitempty"`
 	competitionComparable         bool
+	rejection                     capacityRejection
 	depthCompetitionComparable    bool
 }
 
@@ -342,6 +348,7 @@ type growthEvidence struct {
 	markets         map[string]Market
 	home            Port
 	available       int64
+	hazard          growthHazardEvidence
 }
 
 func (r *Runner) reserveGrowthMission(evidence *growthEvidence, mission *store.Mission, data *missionData) bool {
@@ -1032,7 +1039,7 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 			}
 			candidate := growthCandidate(port, hull)
 			grownFleet[len(grownFleet)-1] = candidate
-			deltaUpkeep := DailyUpkeep(grownFleet, r.stateCache.Catalog, len(r.stateCache.Factors)) - oldUpkeep
+			deltaUpkeep := DailyUpkeep(grownFleet, r.stateCache.Catalog, len(r.stateCache.Factors)) - oldUpkeep + r.expansionFactorUpkeep(port)
 			pack, feasible, err := r.growthAtYard(ctx, port, hull, quote, deltaUpkeep, &evidence, nil)
 			if err != nil {
 				return false, err
@@ -1044,6 +1051,17 @@ func (r *Runner) considerGrowth(ctx context.Context) (bool, error) {
 	}
 	if !found {
 		return r.considerCapacityGrowth(ctx, &evidence)
+	}
+	agents := decode[[]expansionAgent](r.snapshot, "_expansion_agents")
+	for _, agent := range agents {
+		if _, paired := expansionMate(agents, agent); paired && time.Now().Before(expansionPairTime(agents, agent).Add(2*time.Hour)) {
+			// Only the exploration floor redirects lanes into the regional
+			// capacity comparison; a retained pair must not disable lane growth.
+			return r.considerCapacityGrowth(ctx, &evidence)
+		}
+	}
+	if handled, changed, err := r.holdExpansionGrowth(ctx, true); handled || err != nil {
+		return changed, err
 	}
 	savingsTarget, err := r.liveCapacitySavingsTarget(ctx)
 	if err != nil {

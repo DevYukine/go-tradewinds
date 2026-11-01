@@ -30,6 +30,62 @@ const capacityNoSpareWorkReason = "capacity growth needs an executable profitabl
 
 const capacitySavingsReason = "capacity growth saves for a better hull"
 
+const capacitySolvencyReason = "estimated-hazard exposure exceeds 35% of fresh net worth"
+
+type growthHazardEvidence struct {
+	loaded       bool
+	netWorth     int64
+	calibrations map[string]*hazardCalibration
+}
+
+func (r *Runner) growthNetWorth(ctx context.Context, evidence *growthEvidence) (int64, error) {
+	if !evidence.hazard.loaded {
+		metric, err := r.db.LatestMetric(ctx, r.account.ID, "net_worth_pence")
+		if err != nil {
+			return 0, err
+		}
+		evidence.hazard.loaded = true
+		if metric != nil && !metric.RecordedAt.IsZero() && !metric.RecordedAt.After(evidence.asOf) &&
+			evidence.asOf.Sub(metric.RecordedAt) <= 6*time.Hour && metric.Value > 0 &&
+			!math.IsNaN(metric.Value) && !math.IsInf(metric.Value, 0) && metric.Value < float64(math.MaxInt64) {
+			evidence.hazard.netWorth = int64(metric.Value)
+		}
+	}
+	return evidence.hazard.netWorth, nil
+}
+
+func (r *Runner) capacityHazardEstimate(ctx context.Context, planning *PlanningInput, port Port, hull Hull, evidence *growthEvidence) error {
+	netWorth, err := r.growthNetWorth(ctx, evidence)
+	if err != nil || netWorth <= 0 {
+		return err
+	}
+	if r.ownedShipInRegion(port.BankingRegion) {
+		return nil
+	}
+	if evidence.hazard.calibrations == nil {
+		evidence.hazard.calibrations = make(map[string]*hazardCalibration)
+	}
+	calibration, found := evidence.hazard.calibrations[hull.ID]
+	if !found {
+		calibration = calibrateZoneHazard(*planning, hull, min(4, hull.MaxCannons))
+		evidence.hazard.calibrations[hull.ID] = calibration
+	}
+	planning.hazardEstimate = calibration
+	return nil
+}
+
+func capacityEstimatedExposure(decision GrowthDecision, netWorth int64) GrowthDecision {
+	exposure := growthCashTotal(decision.QuotedHullPence, decision.SlippageReservePence,
+		decision.CannonsPence, decision.InitialStoresPence)
+	// Floor 7/20 in integer pence without overflowing on a large valuation.
+	limit := netWorth/20*7 + netWorth%20*7/20
+	if exposure > limit {
+		decision.Accepted, decision.EconomicallyViable = false, false
+		decision.Reason = capacitySolvencyReason
+	}
+	return decision
+}
+
 var capacityShipLossReason = fmt.Sprintf("capacity growth waits %.0f real hours after a ship loss", capacityHistoryWindow.Hours())
 
 type CapacityGrowthInput struct {
@@ -43,6 +99,7 @@ type CapacityGrowthInput struct {
 	SampleHullGameDays           float64
 	MeasuredNetAvailable         bool
 	LotCashPence                 int64
+	CandidateLotCashPence        int64
 	IncrementalDailyUpkeepPence  int64
 	ReservePence                 int64
 	MaxPaybackDays               float64
@@ -59,6 +116,16 @@ func cheapCapacityHull(hull Hull) bool {
 		return false
 	}
 }
+
+type capacityRejection uint8
+
+const (
+	capacityRejectionNone capacityRejection = iota
+	capacityRejectionUpkeep
+	capacityRejectionPayback
+	capacityRejectionHullRating
+	capacityRejectionHazard
+)
 
 // Every hull must repay its capital from an accepted plan while preserving
 // quote reserves and a cash lot for every ship.
@@ -107,13 +174,18 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 		}
 		in.CandidateRatePencePerGameDay = min(in.CandidateRatePencePerGameDay, in.MeasuredRatePencePerGameDay)
 	}
-	if in.FleetSize < 0 || in.LotCashPence < 0 ||
-		in.LotCashPence > 0 && int64(in.FleetSize) >= math.MaxInt64/in.LotCashPence {
+	if in.FleetSize < 0 || in.LotCashPence < 0 || in.CandidateLotCashPence < 0 ||
+		in.FleetSize > 0 && in.LotCashPence > math.MaxInt64/int64(in.FleetSize) {
 		decision.Reason = "capacity growth working cash exceeds integer-pence bounds"
 		return decision
 	}
+	// A candidate whose own lot evidence is smaller than the fleet's median
+	// delivery lot keeps the fleet lot: ordinary European growth still reserves
+	// (fleet+1) fleet lots, while an overseas candidate only raises the shared
+	// lot to its own larger evidence.
+	candidateLot := max(in.LotCashPence, in.CandidateLotCashPence)
 	buffer := growthCashTotal(max(in.ReservePence, ceilBPS(in.HullPricePence, 1_500)),
-		(int64(in.FleetSize)+1)*in.LotCashPence, mortgageReserve(in.Mortgage))
+		int64(in.FleetSize)*in.LotCashPence, candidateLot, mortgageReserve(in.Mortgage))
 	decision.WorkingCapitalPence = buffer
 	required := growthCashTotal(capital, buffer)
 	if required == math.MaxInt64 {
@@ -128,12 +200,14 @@ func EvaluateCapacityGrowth(in CapacityGrowthInput) GrowthDecision {
 	net := in.CandidateRatePencePerGameDay - float64(in.IncrementalDailyUpkeepPence) - mortgageInterestPerGameDay(in.Mortgage)
 	if net <= 0 || math.IsNaN(net) || math.IsInf(net, 0) {
 		decision.Reason = "capacity growth marginal fleet upkeep consumes the candidate voyage earning rate"
+		decision.rejection = capacityRejectionUpkeep
 		return decision
 	}
 	decision.IncrementalNetPencePerGameDay = net
 	decision.PaybackGameDays = float64(capital) / net
 	if in.MaxPaybackDays <= 0 || math.IsNaN(in.MaxPaybackDays) || math.IsInf(in.MaxPaybackDays, 0) || decision.PaybackGameDays > in.MaxPaybackDays {
 		decision.Reason = "capacity growth hull, slippage, cannon and store capital exceeds maximum game-day payback"
+		decision.rejection = capacityRejectionPayback
 		return decision
 	}
 	decision.EconomicallyViable = true
@@ -661,12 +735,16 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 	if err != nil {
 		return GrowthDecision{}, nil, err
 	}
+	if err := r.capacityHazardEstimate(ctx, &planning, port, hull, evidence); err != nil {
+		return GrowthDecision{}, nil, err
+	}
 	// Charge the candidate's nonlinear marginal upkeep separately from its
 	// voyage rate rather than assigning the incumbent fleet's upkeep to it.
 	planning.FleetDailyUpkeepPence = 0
 	plans := PlanVoyages(planning)
 	input.Hull = hull
 	input.HullPricePence = *quote.TotalCostPence
+	input.IncrementalDailyUpkeepPence += r.expansionFactorUpkeep(port)
 	var earningPlan, depthPlan Plan
 	for _, plan := range plans {
 		basis := plan.Economics.RevenueBasis
@@ -674,8 +752,10 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		if !plan.Accepted || len(plan.FreightIDs) > 0 {
 			continue
 		}
-		// A finite charter can be the first load, but never a perpetual rate.
-		input.LotCashPence = max(input.LotCashPence, growthCashTotal(plan.Economics.PurchasePence, plan.Economics.CustomsPence, plan.Economics.StoreCashPence))
+		// A finite charter can be the first load, but never a perpetual rate;
+		// its cash lot costs the candidate alone while every incumbent hull
+		// keeps the existing fleet's median delivery lot.
+		input.CandidateLotCashPence = max(input.CandidateLotCashPence, growthCashTotal(plan.Economics.PurchasePence, plan.Economics.CustomsPence, plan.Economics.StoreCashPence))
 		if plan.ContractID != "" || basis != "depth" && basis != "gossip" && basis != "retained" {
 			continue
 		}
@@ -717,10 +797,61 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		}
 	}
 	decision.Competition = earningPlan.Competition
-	// Only the best candidate is recorded by the caller; record every yard and
-	// hull too so an operator can see why a present yard does not build and
-	// whether the predicted voyage rate is limited by measured fleet earnings.
+	estimated := strings.HasPrefix(earningPlan.Economics.HazardSource, "zone estimate")
+	var hazardEstimate map[string]any
+	if estimated {
+		decision = capacityEstimatedExposure(decision, evidence.hazard.netWorth)
+		hazardEstimate = map[string]any{
+			"k": planning.hazardEstimate.k, "n": planning.hazardEstimate.n,
+			"expected_loss_bps": earningPlan.Economics.HazardBPS,
+		}
+	}
+	var required map[string]int64
+	if decision.EconomicallyViable {
+		required = clonePence(evidence.required)
+		required[port.BankingRegion] = growthCashTotal(required[port.BankingRegion], growthCapital(decision), mortgageReserve(decision.Mortgage))
+		_, fees, _, funded := measuredFunding(evidence.balances, required, planning.Rates)
+		decision.FundingFeesPence = fees
+		if !funded {
+			decision.Accepted = false
+			decision.Reason = "capacity growth cannot fund the yard while preserving incumbent commitments and regional reserves"
+		} else {
+			input.SurplusPence -= fees
+			decision = EvaluateCapacityGrowth(input)
+			decision.FundingFeesPence = fees
+			decision.Competition = earningPlan.Competition
+			if estimated {
+				decision = capacityEstimatedExposure(decision, evidence.hazard.netWorth)
+			}
+		}
+		depthRate := capacityVoyageRate(depthPlan.Economics)
+		if input.Mortgage == nil {
+			decision.DepthNetPencePerGameDay = max(0, depthRate-float64(input.IncrementalDailyUpkeepPence))
+		} else if input.MeasuredNetAvailable {
+			decision.DepthNetPencePerGameDay = max(0, min(depthRate, input.MeasuredRatePencePerGameDay)-float64(input.IncrementalDailyUpkeepPence)-mortgageInterestPerGameDay(decision.Mortgage))
+		}
+		decision.DepthCompetition = depthPlan.Competition
+	}
+	decision.HazardSource = earningPlan.Economics.HazardSource
+	decision.HazardDestination = earningPlan.Destination
+	decision.DepthHazardSource = depthPlan.Economics.HazardSource
+	decision.DepthHazardDestination = depthPlan.Destination
 	rejections := make(map[string]int)
+	if !input.HasSpareWork {
+		for _, plan := range plans {
+			route, routeErr := observedPlanningRoute(planning, port.ID, plan.Destination, hull)
+			if routeErr != nil {
+				continue
+			}
+			if _, _, available := planHazard(planning, route); !available {
+				if !r.ownedShipInRegion(port.BankingRegion) {
+					decision.Reason = hazardUnavailable
+				}
+				rejections[hazardUnavailable] = 1
+				break
+			}
+		}
+	}
 	var acceptedRoutes []string
 	for _, plan := range plans {
 		route := plan.Kind + " " + plan.Origin + ">" + plan.Destination + " " + plan.Commodity
@@ -729,6 +860,32 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		}
 		if plan.Accepted && len(acceptedRoutes) < 3 {
 			acceptedRoutes = append(acceptedRoutes, route)
+		}
+	}
+	agents := decode[[]expansionAgent](r.snapshot, "_expansion_agents")
+	for i, agent := range agents {
+		mate, paired := expansionMate(agents, agent)
+		if agent.PortID != port.ID || !paired || agent.HiredAt.IsZero() || mate.HiredAt.IsZero() ||
+			!r.fresh("yard_quotes/"+port.ID+"|"+hull.ID) || !r.fresh("books/"+port.ID) ||
+			!r.fresh("books/"+mate.PortID) || r.stateCache.Markets[port.ID].Visibility != "quay" ||
+			r.stateCache.Markets[mate.PortID].Visibility != "quay" ||
+			agent.EvaluatedAt.After(expansionPairTime(agents, agent)) {
+			continue
+		}
+		for _, plan := range plans {
+			if plan.Destination == "" {
+				continue
+			}
+			if _, err := observedPlanningRoute(planning, port.ID, plan.Destination, hull); err != nil {
+				continue
+			}
+			agents[i].EvaluatedAt = time.Now().UTC()
+			r.snapshot["_expansion_agents"] = encode(agents)
+			r.resetExpansionUnevaluated(port.BankingRegion)
+			if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+				return GrowthDecision{}, nil, err
+			}
+			break
 		}
 	}
 	if err := r.decision(ctx, "", "capacity_candidate:"+port.ID+"|"+hull.ID, decision.Reason, map[string]any{
@@ -750,33 +907,11 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		"plan_rejections":                       rejections,
 		"competition":                           decision.Competition,
 		"depth_competition":                     depthPlan.Competition,
+		"hazard_source":                         earningPlan.Economics.HazardSource,
+		"hazard_estimate":                       hazardEstimate,
 	}); err != nil {
 		return GrowthDecision{}, nil, err
 	}
-	if !decision.EconomicallyViable {
-		return decision, nil, nil
-	}
-	required := clonePence(evidence.required)
-	capital := growthCapital(decision)
-	required[port.BankingRegion] = growthCashTotal(required[port.BankingRegion], capital, mortgageReserve(decision.Mortgage))
-	_, fees, _, funded := measuredFunding(evidence.balances, required, planning.Rates)
-	decision.FundingFeesPence = fees
-	if !funded {
-		decision.Accepted = false
-		decision.Reason = "capacity growth cannot fund the yard while preserving incumbent commitments and regional reserves"
-	} else {
-		input.SurplusPence -= fees
-		decision = EvaluateCapacityGrowth(input)
-		decision.FundingFeesPence = fees
-		decision.Competition = earningPlan.Competition
-	}
-	depthRate := capacityVoyageRate(depthPlan.Economics)
-	if input.Mortgage == nil {
-		decision.DepthNetPencePerGameDay = max(0, depthRate-float64(input.IncrementalDailyUpkeepPence))
-	} else if input.MeasuredNetAvailable {
-		decision.DepthNetPencePerGameDay = max(0, min(depthRate, input.MeasuredRatePencePerGameDay)-float64(input.IncrementalDailyUpkeepPence)-mortgageInterestPerGameDay(decision.Mortgage))
-	}
-	decision.DepthCompetition = depthPlan.Competition
 	return decision, required, nil
 }
 
@@ -815,7 +950,7 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 		targetPort, hasPort := findPort(r.stateCache.Catalog, savingsTarget.PortID)
 		if input.MeasuredNetAvailable && hasHull && hasPort {
 			grownFleet[len(grownFleet)-1] = growthCandidate(targetPort, targetHull)
-			upkeep := DailyUpkeep(grownFleet, r.stateCache.Catalog, len(r.stateCache.Factors)) - oldUpkeep
+			upkeep := DailyUpkeep(grownFleet, r.stateCache.Catalog, len(r.stateCache.Factors)) - oldUpkeep + r.expansionFactorUpkeep(targetPort)
 			targetNet = min(savingsTarget.DepthNetPencePerGameDay, input.MeasuredRatePencePerGameDay-float64(upkeep))
 		}
 		if targetNet <= 0 || float64(savingsTarget.CapitalPence)/targetNet > input.MaxPaybackDays {
@@ -861,6 +996,10 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 					// An observed unavailable hull is not missing authority.
 					canExpand = false
 				}
+				if recordErr := r.decision(ctx, "", "capacity_candidate:"+key, err.Error(),
+					map[string]any{"accepted": false, "reason": err.Error(), "hazard_source": "", "hazard_estimate": nil}); recordErr != nil {
+					return false, recordErr
+				}
 				if !evaluated {
 					bestDecision.Reason = err.Error()
 				}
@@ -902,8 +1041,14 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 		found = found || decision.Accepted
 		evaluated = true
 	}
+	if portID == "" && found {
+		if handled, changed, err := r.holdExpansionGrowth(ctx, true); handled || err != nil {
+			return changed, err
+		}
+	}
 	savingsRate := float64(0)
-	if found || savingsTarget.PortID != "" {
+	pairedSavings := r.expansionPairLive(expansionAgents, bestPort.ID, time.Now())
+	if found || savingsTarget.PortID != "" || pairedSavings && bestDecision.EconomicallyViable {
 		savingsRate, err = r.capacitySavingsRate(ctx, evidence.asOf)
 		if err != nil {
 			return false, err
@@ -927,6 +1072,16 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 			return false, err
 		}
 	}
+	// A pair still awaiting its fresh capacity evaluation holds every savings
+	// and direct debt call here: after real candidate evaluations could mark
+	// the pair and release it, but before any quote or acceptance mutation.
+	// Without an awaiting pair this is a no-op and financing keeps preceding
+	// the ordinary exploration hold below.
+	if portID == "" {
+		if handled, changed, err := r.holdExpansionGrowth(ctx, false); handled || err != nil {
+			return changed, err
+		}
+	}
 	saveIndex := -1
 	bestMargin, saveWait := float64(0), float64(0)
 	maxWait := capacityHistoryWindow.Seconds() * float64(r.stateCache.Clock.Calendar.TimeScale) / 86_400
@@ -947,7 +1102,7 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 				continue
 			}
 			agentOnly := slices.ContainsFunc(expansionAgents, func(agent expansionAgent) bool {
-				return agent.PortID == candidate.port.ID
+				return agent.PortID == candidate.port.ID && agent.Partner == ""
 			})
 			for _, ship := range r.stateCache.Ships {
 				if ship.Voyage == nil && ship.Ship.CurrentPortID == candidate.port.ID &&
@@ -981,6 +1136,23 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 				saveIndex, bestMargin, saveWait = i, margin, wait
 			}
 		}
+	} else if pairedSavings && bestDecision.EconomicallyViable && bestDecision.CashShortfallPence > 0 &&
+		savingsRate > 0 && !math.IsNaN(savingsRate) && !math.IsInf(savingsRate, 0) {
+		for i, candidate := range candidates {
+			if candidate.port.ID != bestPort.ID || candidate.hull.ID != bestHull.ID {
+				continue
+			}
+			if until := expiredSavings[candidate.port.ID+"|"+candidate.hull.ID]; time.Now().Before(until) {
+				r.wakeBy(until)
+				continue
+			}
+			save := capacitySavingsDecision(candidate.decision, input)
+			wait := float64(save.CashShortfallPence) / savingsRate
+			if save.DepthNetPencePerGameDay > 0 && wait <= maxWait {
+				saveIndex, saveWait = i, wait
+			}
+			break
+		}
 	}
 	if saveIndex >= 0 {
 		save := candidates[saveIndex]
@@ -997,10 +1169,19 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 		if err := r.setCapacitySavingsTarget(ctx, savingsTarget); err != nil {
 			return false, err
 		}
-		if changed, err := r.considerCapacitySavingsFinancing(ctx, bestDecision, &save, savingsRate, input.FleetSize, evidence); changed || err != nil {
+		buy := GrowthDecision{}
+		if found {
+			buy = bestDecision
+		}
+		if changed, err := r.considerCapacitySavingsFinancing(ctx, buy, &save, savingsRate, input.FleetSize, evidence); changed || err != nil {
 			return changed, err
 		}
-		return r.holdCapacitySavings(ctx, savingsTarget, bestDecision, evidence.available, savingsRate)
+		if !found && portID == "" {
+			if handled, changed, err := r.holdExpansionGrowth(ctx, canExpand); handled || err != nil {
+				return changed, err
+			}
+		}
+		return r.holdCapacitySavings(ctx, savingsTarget, buy, evidence.available, savingsRate)
 	}
 	savingsHold := false
 	selectedSavingsHull := found && bestPort.ID == savingsTarget.PortID && bestHull.ID == savingsTarget.HullID
@@ -1014,7 +1195,7 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 			save := candidates[savingsIndex]
 			save.decision = capacitySavingsDecision(save.decision, input)
 			agentOnly := slices.ContainsFunc(expansionAgents, func(agent expansionAgent) bool {
-				return agent.PortID == save.port.ID
+				return agent.PortID == save.port.ID && agent.Partner == ""
 			})
 			for _, ship := range r.stateCache.Ships {
 				if ship.Voyage == nil && ship.Ship.CurrentPortID == save.port.ID &&
@@ -1068,9 +1249,16 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 				return changed, err
 			}
 		}
+		if handled, changed, err := r.holdExpansionGrowth(ctx, canExpand); handled || err != nil {
+			return changed, err
+		}
 	}
 	if savingsHold {
-		return r.holdCapacitySavings(ctx, savingsTarget, bestDecision, evidence.available, savingsRate)
+		buy := GrowthDecision{}
+		if found {
+			buy = bestDecision
+		}
+		return r.holdCapacitySavings(ctx, savingsTarget, buy, evidence.available, savingsRate)
 	}
 	if !found {
 		if err := r.holdExpected(ctx, "", bestDecision.Reason); err != nil {
@@ -1079,9 +1267,6 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 		if r.opts.Execute && portID == "" {
 			if changed, err := r.prepayLoans(ctx); changed || err != nil {
 				return changed, err
-			}
-			if canExpand {
-				return r.considerExpansionAgent(ctx)
 			}
 		}
 		return false, nil
@@ -1141,6 +1326,52 @@ func (r *Runner) startCapacityGrowth(ctx context.Context, port Port, hull Hull, 
 	return data.Action != nil, nil
 }
 
+// capacityZoneEstimateReady revalidates an admitted financed build against the
+// current world before any debt is accepted or the yard contract is sent: the
+// pinned estimate route must still price through fresh catalog, zones and
+// clock with current piracy, the net-worth metric must be at most six real
+// hours old, and the live turnkey quote plus slippage, cannons and initial
+// stores must stay within 35% of that net worth. Non-zone-estimate admissions
+// pass unchanged.
+func (r *Runner) capacityZoneEstimateReady(ctx context.Context, data *missionData, decision GrowthDecision) error {
+	live, err := r.capacityYardReady(ctx, data)
+	if err != nil || !strings.HasPrefix(decision.HazardSource, "zone estimate") {
+		return err
+	}
+	hazardCurrent := r.fresh("catalog") && r.fresh("zones") && r.fresh("clock")
+	port, exists := findPort(r.stateCache.Catalog, data.BuildPort)
+	if !exists {
+		return errors.New("capacity build yard is absent from the current catalog")
+	}
+	hull, exists := findHull(r.stateCache.Catalog, data.BuildClass)
+	if !exists {
+		return errors.New("capacity build hull is absent from the current catalog")
+	}
+	planning := r.planningInput(growthCandidate(port, hull))
+	evidence := growthEvidence{asOf: time.Now().UTC()}
+	if err := r.capacityHazardEstimate(ctx, &planning, port, hull, &evidence); err != nil {
+		return err
+	}
+	route, routeErr := observedPlanningRoute(planning, port.ID, decision.HazardDestination, hull)
+	_, _, riskValid := estimatedZoneHazard(planning, route)
+	hazardCurrent = hazardCurrent && decision.HazardDestination != "" && routeErr == nil && riskValid
+	if !hazardCurrent || planning.hazardEstimate == nil {
+		if err := r.decision(ctx, "", "capacity_candidate:"+port.ID+"|"+hull.ID, hazardUnavailable, map[string]any{
+			"accepted": false, "hazard_source": "", "hazard_estimate": nil,
+			"plan_rejections": map[string]int{hazardUnavailable: 1},
+		}); err != nil {
+			return err
+		}
+		return errors.New(hazardUnavailable)
+	}
+	decision.QuotedHullPence = *live.TotalCostPence
+	decision.SlippageReservePence = ceilBPS(*live.TotalCostPence, 1_000)
+	if capped := capacityEstimatedExposure(decision, evidence.hazard.netWorth); !capped.EconomicallyViable {
+		return errors.New(capped.Reason)
+	}
+	return nil
+}
+
 func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) error {
 	intent := data.Capacity
 	if intent == nil || intent.BuildPort != data.BuildPort || intent.BuildClass != data.BuildClass ||
@@ -1154,7 +1385,7 @@ func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) erro
 		if intent.Financing.Cancel || len(intent.Financing.Loans) != len(intent.Financing.Quotes) {
 			return errors.New("financed build requires its complete uncanceled debt package")
 		}
-		_, required, err := r.capacityFinanceReady(ctx, data)
+		decision, required, err := r.capacityFinanceReady(ctx, data)
 		if err != nil {
 			return err
 		}
@@ -1164,8 +1395,7 @@ func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) erro
 				return errors.New("financed build waits for its frozen package and protected debt cash")
 			}
 		}
-		_, err = r.capacityYardReady(ctx, data)
-		return err
+		return r.capacityZoneEstimateReady(ctx, data, decision)
 	}
 	for _, dataset := range []string{"vaults", "ships", "catalog", "clock", "zones", "rates", "factors", "profile", "warehouses", "contracts", "orders", "fills"} {
 		if !r.fresh(dataset) {
@@ -1282,6 +1512,14 @@ func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) erro
 	live, err := r.capacityYardReady(ctx, data)
 	if err != nil {
 		return err
+	}
+	if strings.HasPrefix(decision.HazardSource, "zone estimate") {
+		exposure := decision
+		exposure.QuotedHullPence = *live.TotalCostPence
+		exposure.SlippageReservePence = ceilBPS(*live.TotalCostPence, 1_000)
+		if capped := capacityEstimatedExposure(exposure, evidence.hazard.netWorth); !capped.EconomicallyViable {
+			return errors.New(capped.Reason)
+		}
 	}
 	extra := max(0, *live.TotalCostPence-growthCashTotal(*quote.TotalCostPence, decision.SlippageReservePence))
 	if evidence.balances[port.BankingRegion]-extra < required[port.BankingRegion] {

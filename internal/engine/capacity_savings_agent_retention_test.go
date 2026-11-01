@@ -31,11 +31,24 @@ func TestCapacitySavingsRetainsAgedAgentOnlyPresence(t *testing.T) {
 			if err := h.db.DeleteMission(h.ctx, h.account.ID, "__treasury"); err != nil {
 				t.Fatal(err)
 			}
+			refreshExpansionFactor(t, h, runner)
+			if changed, err := runner.manageExpansionAgents(h.ctx); err != nil || !changed {
+				t.Fatalf("partner hire staging: changed=%t err=%v", changed, err)
+			}
+			mission, data = h.mission("__treasury")
+			if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed {
+				t.Fatalf("partner hire dispatch: changed=%t err=%v", changed, err)
+			}
+			if err := h.db.DeleteMission(h.ctx, h.account.ID, "__treasury"); err != nil {
+				t.Fatal(err)
+			}
 			agents := decode[[]expansionAgent](runner.snapshot, "_expansion_agents")
-			if len(agents) != 1 || agents[0].PortID != "yard-a" {
+			if len(agents) != 2 || agents[0].PortID != "yard-a" || agents[1].PortID != "demand" || agents[1].HiredAt.IsZero() {
 				t.Fatalf("hire did not persist the yard agent: %+v", agents)
 			}
-			agents[0].HiredAt = time.Now().UTC().Add(-3 * time.Hour)
+			for i := range agents {
+				agents[i].HiredAt = time.Now().UTC().Add(-3 * time.Hour)
+			}
 			runner.snapshot["_expansion_agents"] = encode(agents)
 			if err := h.db.SaveSnapshot(h.ctx, h.account.ID, runner.snapshot); err != nil {
 				t.Fatal(err)
@@ -43,7 +56,7 @@ func TestCapacitySavingsRetainsAgedAgentOnlyPresence(t *testing.T) {
 			runner = h.runner(primaryTestKey)
 			refreshExpansionFactor(t, h, runner)
 			agents = decode[[]expansionAgent](runner.snapshot, "_expansion_agents")
-			if len(agents) != 1 || !agents[0].HiredAt.Add(2*time.Hour).Before(time.Now().UTC()) ||
+			if len(agents) != 2 || !agents[0].HiredAt.Add(2*time.Hour).Before(time.Now().UTC()) ||
 				!slices.Contains(runner.stateCache.Factors, "yard-a") || !runner.fresh("factors") {
 				t.Fatalf("fixture needs an aged, currently present agent after restart: %+v", agents)
 			}

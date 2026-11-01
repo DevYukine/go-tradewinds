@@ -150,6 +150,113 @@ func hazardPiracyCovers(in PlanningInput, quote HazardQuote, route Route, exact 
 	return true
 }
 
+type hazardCalibration struct {
+	k           float64
+	n           int
+	longestLeg  int64
+	highestRisk int64
+}
+
+// Samples use the quote's observed piracy, targets use current piracy. Both
+// count every leg's arrival, resolving port nodes to their catalog sea zone.
+func hazardZoneRisk(in PlanningInput, route Route, piracy map[string]int64) (int64, int64, int64, bool) {
+	if len(route.Legs) == 0 {
+		return 0, 0, 0, false
+	}
+	var total, longest, highest int64
+	for _, leg := range route.Legs {
+		if leg.DistanceNM < 0 {
+			return 0, 0, 0, false
+		}
+		zoneID := leg.ToNode
+		if port, found := findPort(in.Catalog, zoneID); found {
+			zoneID = port.SeaZoneID
+		}
+		var storm int64
+		found := false
+		for _, zone := range in.Catalog.SeaZones {
+			if zone.ID == zoneID {
+				storm, found = zone.BaseStormBPS, true
+				break
+			}
+		}
+		if !found || storm < 0 {
+			return 0, 0, 0, false
+		}
+		netPiracy, observed := piracy[zoneID]
+		if piracy == nil {
+			for _, zone := range in.Zones {
+				if zone.SeaZoneID == zoneID {
+					netPiracy, observed = zone.NetPiracyBPS, true
+					break
+				}
+			}
+		}
+		if !observed || netPiracy < 0 {
+			return 0, 0, 0, false
+		}
+		risk := growthCashTotal(storm, netPiracy)
+		total = growthCashTotal(total, risk)
+		if total == math.MaxInt64 {
+			return 0, 0, 0, false
+		}
+		longest, highest = max(longest, leg.DistanceNM), max(highest, risk)
+	}
+	return total, longest, highest, true
+}
+
+func calibrateZoneHazard(in PlanningInput, hull Hull, cannons int64) *hazardCalibration {
+	targetRank := classRank(hull.HullCategory)
+	if targetRank <= 0 || cannons < 0 {
+		return nil
+	}
+	calibration := &hazardCalibration{}
+	var ratios []float64
+	for _, quote := range in.HazardQuotes {
+		age, validAge := hazardAgeGameHours(in.Now, quote.ObservedAt, in.Clock.Calendar.TimeScale)
+		source, knownHull := findHull(in.Catalog, quote.ShipClass)
+		sourceRank := classRank(source.HullCategory)
+		if !quote.Laden || quote.Error != "" || quote.Illegal || quote.ExpectedLossBPS < 0 || quote.NetPiracyBPS == nil ||
+			!validAge || age > hazardPublishedGameHours || !hazardSameStormSeason(quote.Month, in.Clock.Calendar.Month) ||
+			!hazardQuoteOwned(in, quote.ShipID) || !knownHull || sourceRank <= 0 || sourceRank > targetRank ||
+			quote.CannonsCount < 0 || quote.CannonsCount > cannons {
+			continue
+		}
+		route, knownRoute := in.Routes[routeKey(quote.Origin, quote.Destination, quote.ShipClass)]
+		if !knownRoute {
+			continue
+		}
+		risk, longest, highest, valid := hazardZoneRisk(in, route, quote.NetPiracyBPS)
+		if !valid || risk <= 0 {
+			continue
+		}
+		ratios = append(ratios, float64(quote.ExpectedLossBPS)/float64(risk))
+		calibration.longestLeg = max(calibration.longestLeg, longest)
+		calibration.highestRisk = max(calibration.highestRisk, highest)
+	}
+	calibration.n = len(ratios)
+	if calibration.n < 10 {
+		return nil
+	}
+	sort.Float64s(ratios)
+	calibration.k = ratios[(9*calibration.n+9)/10-1]
+	return calibration
+}
+
+func estimatedZoneHazard(in PlanningInput, route Route) (int64, string, bool) {
+	calibration := in.hazardEstimate
+	if calibration == nil || in.Ship.Ship.ID != "growth-candidate" {
+		return 0, "", false
+	}
+	risk, longest, highest, valid := hazardZoneRisk(in, route, nil)
+	if !valid || float64(longest) > 2*float64(calibration.longestLeg) ||
+		float64(highest) > 1.5*float64(calibration.highestRisk) {
+		return 0, "", false
+	}
+	bps := int64(min(10_000, math.Ceil(calibration.k*float64(risk))))
+	return bps, fmt.Sprintf("zone estimate (k=%g, n=%d, Z=%d)", calibration.k, calibration.n, risk), true
+}
+
 func planHazard(in PlanningInput, route Route) (int64, string, bool) {
 	if !in.fresh("zones") {
 		return 0, "", false
@@ -205,7 +312,7 @@ func planHazard(in PlanningInput, route Route) (int64, string, bool) {
 		}
 	}
 	if !failed {
-		return 0, "", false
+		return estimatedZoneHazard(in, route)
 	}
 	for _, candidate := range in.HazardQuotes {
 		age, valid := hazardAgeGameHours(in.Now, candidate.ObservedAt, in.Clock.Calendar.TimeScale)
@@ -220,7 +327,7 @@ func planHazard(in PlanningInput, route Route) (int64, string, bool) {
 		}
 	}
 	if !exists {
-		return 0, "", false
+		return estimatedZoneHazard(in, route)
 	}
 	source = "hull-only"
 	if quote.Laden {

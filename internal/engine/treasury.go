@@ -138,6 +138,9 @@ func obligationReserves(state AccountState, snapshot map[string]json.RawMessage,
 	for _, loan := range state.Loans {
 		required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], loanReserve(loan))
 	}
+	for region, fees := range expansionFeeCommitments(state, snapshot) {
+		required[region] = growthCashTotal(max(required[region], base), fees)
+	}
 	return required
 }
 
@@ -179,6 +182,9 @@ func (r *Runner) treasuryReservesExceptLoan(ctx context.Context, excludedLoan st
 func (r *Runner) manageTreasury(ctx context.Context) (bool, error) {
 	if !r.fresh("rates") || !r.fresh("settings") || !r.fresh("profile") {
 		return false, r.hold(ctx, "", "treasury requires live regional fee matrix, settings and company home")
+	}
+	if err := r.expireAwaitingExpansion(ctx, time.Now().UTC()); err != nil {
+		return false, err
 	}
 	state := r.stateCache
 	input, err := r.committedPlanningInput(ctx, ShipState{})

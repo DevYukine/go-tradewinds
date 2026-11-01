@@ -156,9 +156,10 @@ func TestCapacitySavingsTotalInterestRefusalRecordsTargetDecision(t *testing.T) 
 	// Make the wait cheaper than total interest, without approaching the P1
 	// comparison boundary or relying on an undersized principal to block debt.
 	wantRate := 4 * (buy.IncrementalNetPencePerGameDay + save.DepthNetPencePerGameDay) * float64(save.CashShortfallPence) / interest
+	// Vary income without adding a delivery lot that changes B's cash floor.
 	persistGrowthWindowSettlement(t, h, store.Settlement{
-		ID: "savings-interest-income", Kind: "charter", CostsKnown: true,
-		QuantityTons: 1, GameSeconds: 3_600, ProceedsPence: int64(math.Ceil(wantRate * 60)),
+		ID: "savings-interest-income", Kind: "aborted", CostsKnown: true,
+		GameSeconds: 3_600, ProceedsPence: int64(math.Ceil(wantRate * 60)),
 		CompletedAt: time.Now().UTC().Add(-13 * time.Hour),
 	})
 	rate, err := runner.capacitySavingsRate(h.ctx, time.Now().UTC())

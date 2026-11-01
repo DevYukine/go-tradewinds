@@ -263,6 +263,24 @@ func (s *Store) RecordMetric(ctx context.Context, accountID, name string, value 
 	return db.Create(&Metric{AccountID: accountID, Name: name, Value: value, RecordedAt: time.Now().UTC()}).Error
 }
 
+func (s *Store) LatestMetric(ctx context.Context, accountID, name string) (*Metric, error) {
+	if !validID(accountID) || strings.TrimSpace(name) == "" || len(name) > 128 {
+		return nil, fmt.Errorf("metric fields: %w", ErrInvalidInput)
+	}
+	db, cancel := s.query(ctx)
+	defer cancel()
+	var metric Metric
+	err := db.Where("account_id = ? AND name = ?", accountID, name).
+		Order("recorded_at DESC, id DESC").Take(&metric).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &metric, nil
+}
+
 func (s *Store) Prune(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()

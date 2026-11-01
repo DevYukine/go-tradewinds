@@ -786,6 +786,56 @@ func (r *Runner) refresh(ctx context.Context) error {
 	if err := r.captureWave(ctx, childTasks, groups); err != nil {
 		return err
 	}
+	for _, pair := range expansionAgentYards(state, r.planningInput(ShipState{})) {
+		if time.Now().Before(r.expansionRetryUntil(pair.yard.BankingRegion)) {
+			continue
+		}
+		for _, hull := range state.Catalog.ShipClasses {
+			if !cheapCapacityHull(hull) || hull.Phase > state.Clock.UnlockedPhase {
+				continue
+			}
+			for _, ports := range [][2]string{{pair.yard.ID, pair.partner.ID}, {pair.partner.ID, pair.yard.ID}} {
+				key := routeKey(ports[0], ports[1], hull.ID)
+				if r.fresh("routes/" + key) {
+					exploredRoutes[key] = true
+				}
+			}
+		}
+	}
+	// Persisted pairs keep their explored history while hiring, funding or
+	// retained: regional backoff and factor presence hide these regions from
+	// expansionAgentYards, and a candidate hull outside the fleet has no
+	// fleet index entry to protect the marks otherwise.
+	agents := decode[[]expansionAgent](r.snapshot, "_expansion_agents")
+	factors := make(map[string]bool, len(state.Factors))
+	for _, portID := range state.Factors {
+		factors[portID] = true
+	}
+	for _, agent := range agents {
+		if agent.Partner == "" || agent.Partner < agent.PortID {
+			continue
+		}
+		mate, paired := expansionMate(agents, agent)
+		if !paired {
+			continue
+		}
+		hired := !agent.HiredAt.IsZero() && !mate.HiredAt.IsZero()
+		present := factors[agent.PortID] && factors[agent.Partner]
+		if !now.Before(expansionPairTime(agents, agent).Add(2*time.Hour)) && (!hired || !present) {
+			continue
+		}
+		for _, hull := range state.Catalog.ShipClasses {
+			if !cheapCapacityHull(hull) || hull.Phase > state.Clock.UnlockedPhase {
+				continue
+			}
+			for _, ports := range [][2]string{{agent.PortID, agent.Partner}, {agent.Partner, agent.PortID}} {
+				key := routeKey(ports[0], ports[1], hull.ID)
+				if r.fresh("routes/" + key) {
+					exploredRoutes[key] = true
+				}
+			}
+		}
+	}
 	// Rejected exploratory pairs are optional too, even when a GET was sent
 	// this pass. Never let the request-deduplication set bypass history caps.
 	var historyKeys []string
@@ -899,9 +949,15 @@ func (r *Runner) refresh(ctx context.Context) error {
 		route := state.Routes[key]
 		from, rest, hasFrom := strings.Cut(key, "|")
 		to, class, hasClass := strings.Cut(rest, "|")
-		hull, exists := hulls[class]
-		if !hasFrom || !hasClass || !exists ||
+		if !hasFrom || !hasClass ||
 			route.FromPort != from || route.ToPort != to || route.ShipClass != class {
+			continue
+		}
+		hull, exists := hulls[class]
+		// Cheap candidate hulls outside the fleet never enter the fleet
+		// index; this pass's fresh expansion pair marks keep their observed
+		// history instead of pruning it.
+		if !exists && !exploredRoutes[key] {
 			continue
 		}
 		if !exploredRoutes[key] {

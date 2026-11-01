@@ -441,7 +441,8 @@ func TestCapacityGrowthPlanRateAndLotCashFloor(t *testing.T) {
 		t.Fatalf("fixture lacks a positive earning rate and cargo lot: %v, %d", rate, lot)
 	}
 	decision, _, err := runner.capacityAtYard(h.ctx, port, hull, quote, input, &evidence)
-	buffer := max(input.ReservePence, ceilBPS(*quote.TotalCostPence, 1_500)) + int64(input.FleetSize+1)*lot
+	buffer := max(input.ReservePence, ceilBPS(*quote.TotalCostPence, 1_500)) +
+		int64(input.FleetSize)*input.LotCashPence + max(input.LotCashPence, lot)
 	if err != nil || !decision.Accepted || decision.InitialStoresPence != stores ||
 		math.Abs(decision.IncrementalNetPencePerGameDay-(rate-100)) > 1e-9 || decision.WorkingCapitalPence != buffer {
 		t.Fatalf("capacity quote did not use best plan rate, its stores and the plan cash floor: %+v, %v", decision, err)
@@ -1078,7 +1079,7 @@ func TestCapacityGrowthComputedLosingRepeatDoesNotUseOutboundProfit(t *testing.T
 func TestCapacityGrowthRejectedPaybackDoesNotFundInadmissibleExpansion(t *testing.T) {
 	t.Parallel()
 	h, runner := capacityExecutionFixture(t, false)
-	newExpansionFactorAPI(h)
+	newMeasuredExpansionFactorAPI(h)
 	refreshExpansionFactor(t, h, runner)
 	runner.opts.CapacityPaybackDays = 0.000001
 	evidence := growthEvidence{workingByRegion: make(map[string]int64)}
@@ -1103,12 +1104,21 @@ func TestCapacityGrowthRejectedPaybackDoesNotFundInadmissibleExpansion(t *testin
 		t.Fatalf("bad regional payback paid for an inadmissible overseas build: changed=%t err=%v holds=%v", changed, err, runner.holding)
 	}
 	h.missingMission("__treasury")
-	found := false
-	for _, hold := range runner.holding {
-		found = found || hold.Reason == expansionAgentAdmissionReason
+	row := expansionFactorDecision(t, h, "caribbean")
+	var details struct {
+		HullClass string `json:"hull_class"`
+		QuotePort string `json:"estimated_quote_port"`
+		Capital   int64  `json:"estimated_hull_capital_pence"`
+		Needed    int64  `json:"needed_cash_pence"`
 	}
-	if !found || h.api.mutationCount("/v1/company/hire-factor") != 0 {
-		t.Fatalf("inadmissible paid expansion did not preserve its measured-build hold: %v", runner.holding)
+	if err := json.Unmarshal(row.Details, &details); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(row.Reason, "payback") || details.HullClass == "" || details.QuotePort == "" || details.Capital <= 0 || details.Needed < details.Capital {
+		t.Fatalf("growth pass lost its rejected-build diagnostics: %+v %s", row, row.Details)
+	}
+	if h.api.mutationCount("/v1/company/hire-factor") != 0 {
+		t.Fatal("inadmissible expansion paid a factor hire fee")
 	}
 	h.missingMission("__growth")
 }
@@ -1149,7 +1159,7 @@ func TestCapacityGrowthUnavailableHullStillRequiresAdmissibleExpansion(t *testin
 	for _, refusal := range []string{"unavailable", "non-turnkey", "unpriced", "missing", "stale"} {
 		t.Run(refusal, func(t *testing.T) {
 			h, runner := capacityExecutionFixture(t, false)
-			newExpansionFactorAPI(h)
+			newMeasuredExpansionFactorAPI(h)
 			refreshExpansionFactor(t, h, runner)
 			runner.opts.CapacityPaybackDays = 0.000001
 			hull := runner.stateCache.Catalog.ShipClasses[0]
@@ -1189,12 +1199,8 @@ func TestCapacityGrowthUnavailableHullStillRequiresAdmissibleExpansion(t *testin
 			h.missingMission("__treasury")
 			h.missingMission("__growth")
 			if refusal != "missing" && refusal != "stale" {
-				found := false
-				for _, hold := range runner.holding {
-					found = found || hold.Reason == expansionAgentAdmissionReason
-				}
-				if !found {
-					t.Fatalf("quote %s lost the measured-build expansion hold: %v", refusal, runner.holding)
+				if row := expansionFactorDecision(t, h, "caribbean"); !strings.Contains(row.Reason, "payback") {
+					t.Fatalf("quote %s lost its persisted measured-build reason: %+v", refusal, row)
 				}
 			}
 		})

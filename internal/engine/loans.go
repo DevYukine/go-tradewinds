@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/gameapi"
@@ -324,6 +325,15 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 	}
 	decision.IncrementalNetPencePerGameDay = decision.DepthNetPencePerGameDay
 	decision.PaybackGameDays = float64(capital) / decision.DepthNetPencePerGameDay
+	if decision.DepthHazardDestination != "" {
+		decision.HazardSource = decision.DepthHazardSource
+		decision.HazardDestination = decision.DepthHazardDestination
+	}
+	if strings.HasPrefix(decision.HazardSource, "zone estimate") {
+		if capped := capacityEstimatedExposure(decision, evidence.hazard.netWorth); !capped.EconomicallyViable {
+			return refuse(capped.Reason)
+		}
+	}
 	var ships []string
 	for _, ship := range r.stateCache.Ships {
 		if ship.Ship.Status == "sunk" {
@@ -521,6 +531,9 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 // Scheduled debt service stays ahead of growth in serviceLoans.
 func (r *Runner) prepayLoans(ctx context.Context) (bool, error) {
 	if !r.opts.Execute {
+		return false, nil
+	}
+	if r.expansionAwaitingEvaluation() {
 		return false, nil
 	}
 	pending, err := r.db.PendingActions(ctx, r.account.ID)
@@ -791,11 +804,11 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 		if json.Unmarshal(data.Action.Body, &request) != nil || len(financing.Loans) >= len(financing.Quotes) || request.QuoteID != financing.Quotes[len(financing.Loans)].ID || financing.Cancel {
 			return errors.New("new borrowing disagrees with its admitted quote")
 		}
-		if _, _, err := r.capacityFinanceReady(ctx, data); err != nil {
+		decision, _, err := r.capacityFinanceReady(ctx, data)
+		if err != nil {
 			return err
 		}
-		_, err := r.capacityYardReady(ctx, data)
-		return err
+		return r.capacityZoneEstimateReady(ctx, data, decision)
 	}
 	intent := data.LoanRepayment
 	var request gameapi.RepayLoanRequest

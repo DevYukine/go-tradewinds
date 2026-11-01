@@ -215,14 +215,14 @@ func TestCompetitionCapacityRanking(t *testing.T) {
 }
 
 func TestCompetitionExpansionRanking(t *testing.T) {
-	for _, bid := range []int64{295, 180} {
+	for _, bid := range []int64{270, 180} {
 		state := expansionFactorFixture()
-		// Existing region has a stressed spread of 50; 295 yields 48 after
-		// gossip stress against a 173 ask, within five percent of that best.
+		// The existing pair scores 100; 270 against a 173 ask scores 97,
+		// within five percent, so lower competition breaks the close result.
 		ask := int64(173)
 		state.Catalog.Ports = append(state.Catalog.Ports,
-			Port{ID: "new-yard", BankingRegion: "new", SeaZoneID: "fixture_sea", HasShipyard: true, Phase: 1},
-			Port{ID: "new-demand", BankingRegion: "new", SeaZoneID: "fixture_sea", Phase: 1})
+			Port{ID: "new-yard", BankingRegion: "new", SeaZoneID: "fixture_sea", HasShipyard: true, Phase: 2},
+			Port{ID: "new-demand", BankingRegion: "new", SeaZoneID: "fixture_sea", Phase: 2})
 		detail := state.Ports[recoveryHomePort]
 		now := time.Now().Add(-time.Second)
 		detail.CoffeeHouseGossip = append(detail.CoffeeHouseGossip,
@@ -233,7 +233,11 @@ func TestCompetitionExpansionRanking(t *testing.T) {
 		input.Competition = competitionFixture()
 		input.Competition.Regions[0].ID = "new"
 		input.Competition.Regions[1].ID = "caribbean"
-		yard, _ := expansionAgentYard(state, input, nil, input.Now)
+		pairs := expansionAgentYards(state, input)
+		if len(pairs) == 0 {
+			t.Fatal("competition fixture has no ranked expansion pair")
+		}
+		yard := pairs[0].yard
 		want := "new-yard"
 		if bid == 180 {
 			want = "yard-a"

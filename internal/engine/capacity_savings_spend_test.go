@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,7 +69,11 @@ func TestCapacitySavingsOptionalSpendingWaits(t *testing.T) {
 							h := newRecoveryHarness(t)
 							entry.setup(t, h)
 							runner := h.runner(primaryTestKey)
-							underwritingReviewRefresh(t, h, runner)
+							if entry.name == "expansion agent" {
+								refreshExpansionFactor(t, h, runner)
+							} else {
+								underwritingReviewRefresh(t, h, runner)
+							}
 							if saving && boundary == "admission" {
 								capacitySavingsSpendMarker(runner)
 							}
@@ -113,7 +118,9 @@ func TestCapacitySavingsOptionalSpendingWaits(t *testing.T) {
 							if saving {
 								found := false
 								for _, decision := range uwExecDecisions(t, h) {
-									found = found || decision.Kind == "hold" && decision.Reason == "capacity growth saves for a better hull"
+									quietExpansion := entry.name == "expansion agent" && boundary == "admission" &&
+										strings.HasPrefix(decision.Kind, "expansion_agent:")
+									found = found || (decision.Kind == "hold" || quietExpansion) && decision.Reason == capacitySavingsReason
 								}
 								if !found {
 									t.Fatal("optional-spend guard did not record the exact capacity savings hold reason")

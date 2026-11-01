@@ -339,6 +339,9 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 		if err := r.clearCapacitySavingsAfterBuild(ctx); err != nil {
 			return false, err
 		}
+		if err := r.clearExpansionLossAfterBuild(ctx, data.BuildPort); err != nil {
+			return false, err
+		}
 		if data.Capacity != nil && *result.Cost > data.Capacity.QuoteLimitPence {
 			reason := "capacity build receipt exceeded the admitted turnkey quote ceiling"
 			if err := r.decision(ctx, result.ShipID, "capacity_build_price_overrun", reason, map[string]int64{
@@ -384,8 +387,8 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 	domainRefusal := status >= 400 && status < 500 && status != 401 && status != 403 && status != 429
 	factorStage := stage == "hire-factor" || stage == "dismiss-factor"
 	factorDomainRefusal := factorStage && (domainRefusal || status == 403 && (problem.Code == "no_factor_at_cove" || problem.Code == "no_port_presence"))
-	if stage == "hire-factor" && factorDomainRefusal && (problem.Code == "no_factor_at_cove" || problem.Code == "no_port_presence") {
-		if err := r.recordExpansionAgent(ctx, data); err != nil {
+	if stage == "hire-factor" && factorDomainRefusal {
+		if err := r.clearAwaitingExpansion(ctx, data.Action.Body, true); err != nil {
 			return false, err
 		}
 	}
@@ -422,12 +425,6 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 		data.CooldownUntil = maxTime(data.CooldownUntil, r.gameDelay(1))
 		if status == 409 {
 			data.CooldownUntil = maxTime(data.CooldownUntil, time.Now().Add(5*time.Second))
-		}
-	}
-	if stage == "hire-factor" && factorDomainRefusal && problem.Code != "no_factor_at_cove" && problem.Code != "no_port_presence" {
-		r.snapshot["_expansion_agent_retry_at"] = encode(data.CooldownUntil)
-		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
-			return false, err
 		}
 	}
 	if stage == "deliver-charter" && status != 401 && status != 403 && status != 429 {

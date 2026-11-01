@@ -1037,6 +1037,9 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 		if err := r.clearCapacitySavingsAfterBuild(ctx); err != nil {
 			return false, err
 		}
+		if err := r.clearExpansionLossAfterBuild(ctx, data.BuildPort); err != nil {
+			return false, err
+		}
 	case "offshore":
 		if mission.Phase == "closing" {
 			data.ClosingObservedAt = time.Now()
@@ -1108,7 +1111,13 @@ func (r *Runner) spendingPort(ship ShipState) (Port, error) {
 
 // This applies only to a proven first send. Attempted requests and stored
 // outcomes must retain their exact journal identity despite later state changes.
-func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission, data *missionData) error {
+func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission, data *missionData) (preflightErr error) {
+	defer func() {
+		var rejection *expansionAdmissionError
+		if errors.As(preflightErr, &rejection) && data.Action != nil && data.Action.Stage == "hire-factor" {
+			preflightErr = errors.Join(preflightErr, r.clearAwaitingExpansion(ctx, data.Action.Body, !rejection.retryOnly))
+		}
+	}()
 	if data.Futures != nil {
 		return r.futuresPreflight(ctx, data)
 	}
@@ -1123,51 +1132,8 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		return r.passengerActionReady(ctx, mission, data)
 	}
 	if action.Stage == "hire-factor" {
-		target, err := r.liveCapacitySavingsTarget(ctx)
-		if err != nil {
+		if err := r.expansionHireReady(ctx, action.Body); err != nil {
 			return err
-		}
-		if target.PortID != "" {
-			return errors.New(capacitySavingsReason)
-		}
-		for _, dataset := range []string{"catalog", "ships", "factors", "vaults", "rates", "profile"} {
-			if !r.fresh(dataset) {
-				return errors.New("expansion agent requires current successful " + dataset + " authority")
-			}
-		}
-		var hire struct {
-			PortID string `json:"port_id"`
-		}
-		if json.Unmarshal(action.Body, &hire) != nil {
-			return errors.New("expansion agent has an invalid immutable request")
-		}
-		yard, exists := findPort(r.stateCache.Catalog, hire.PortID)
-		if !exists || !yard.HasShipyard || yard.IsCove || !regionalWater(r.stateCache.Catalog, yard) {
-			return errors.New(expansionAgentAdmissionReason)
-		}
-		evidence := growthEvidence{}
-		if reason, err := r.growthCashFunding(ctx, &evidence); err != nil {
-			return err
-		} else if reason != "" {
-			return errors.New(reason)
-		}
-		input, err := r.committedPlanningInput(ctx, ShipState{})
-		if err != nil {
-			return err
-		}
-		evidence.available = 0
-		for region, balance := range input.Balances {
-			evidence.available = growthCashTotal(evidence.available, max(0, balance-input.ReserveByRegion[region]))
-		}
-		capacity, reason, err := r.capacityFleetInput(ctx, &evidence)
-		if err != nil {
-			return err
-		}
-		if reason != "" {
-			return errors.New(reason)
-		}
-		if build, _, _ := r.expansionBuildEstimate(yard, capacity); !build.Accepted {
-			return errors.New(build.Reason)
 		}
 	}
 	if action.Stage == "loan-accept" || action.Stage == "loan-repay" {
