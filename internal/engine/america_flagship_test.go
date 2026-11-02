@@ -293,6 +293,45 @@ func TestAmericaFlagshipClosedRequestRepostsAfterTenRealMinutes(t *testing.T) {
 	}
 }
 
+func TestAmericaFlagshipRepostsLastPrincipalWhileBostonQuoteIsUnpriced(t *testing.T) {
+	h, runner, _ := americaFlagshipFixture(t)
+	americaFlagshipTick(t, h, runner)
+	americaFlagshipTick(t, h, runner)
+	h.api.mu.Lock()
+	firstPrincipal := h.api.loanRequests[0].PrincipalPence
+	h.api.loanRequests[0].Status = "lapsed"
+	h.api.mu.Unlock()
+	americaFlagshipTick(t, h, runner)
+	state := decode[americaFlagshipState](runner.snapshot, "_america_flagship")
+	state.RetryAt = time.Now().Add(-time.Second)
+	if err := runner.saveAmericaFlagship(h.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	// An out-of-stock material removes the turnkey total for every class.
+	downstream := h.api.server.Config.Handler
+	h.api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/v1/shipyard/quote" && req.URL.Query().Get("port_id") == "boston" {
+			class := req.URL.Query().Get("ship_class")
+			h.api.writeJSON(w, http.StatusOK, YardQuote{PortID: "boston", ShipClass: class, BuildMode: "turnkey_cash"})
+			return
+		}
+		downstream.ServeHTTP(w, req)
+	})
+	americaFlagshipTick(t, h, runner)
+	americaFlagshipTick(t, h, runner)
+	requests := h.api.mutationsFor("/v1/loan/request")
+	if len(requests) != 2 {
+		t.Fatalf("unpriced Boston quote stopped the lapsed request from being reposted: %d requests", len(requests))
+	}
+	var body gameapi.PostLoanRequest
+	if err := json.Unmarshal(requests[1].Body, &body); err != nil || body.PrincipalPence != firstPrincipal {
+		t.Fatalf("repost did not reuse the last principal %d: %+v, %v", firstPrincipal, body, err)
+	}
+	if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {
+		t.Fatal("an unpriced quote led to a build")
+	}
+}
+
 func TestAmericaFlagshipLostRequestAndApprovalReceiptsReconcile(t *testing.T) {
 	h, runner, _ := americaFlagshipFixture(t)
 	h.api.loanRequestMode = "drop"

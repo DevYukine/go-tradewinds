@@ -58,6 +58,26 @@ func (r *Runner) americaFlagshipQuote(ctx context.Context, class string) (YardQu
 	return quote, err
 }
 
+// lastAmericaFlagshipPrincipal returns the principal of the newest own
+// unsecured amortised America request, or 0 when none was recorded.
+func (r *Runner) lastAmericaFlagshipPrincipal() int64 {
+	var newest *gameapi.LoanRequestView
+	for index := range r.stateCache.LoanRequests {
+		request := &r.stateCache.LoanRequests[index]
+		if request.BorrowerCompanyID != r.account.CompanyID || request.BankingRegion != "america" ||
+			request.CollateralKind != "unsecured" || request.Repayment != "amortised" || request.TermGameDays != 360 {
+			continue
+		}
+		if newest == nil || request.CreatedAt.After(newest.CreatedAt) {
+			newest = request
+		}
+	}
+	if newest == nil {
+		return 0
+	}
+	return newest.PrincipalPence
+}
+
 func (r *Runner) driveAmericaFlagship(ctx context.Context, mission *store.Mission, data *missionData) (bool, error) {
 	if !r.opts.Execute || r.stateCache.Clock.UnlockedPhase < 2 || r.stateCache.Clock.Paused || !r.fresh("clock") {
 		return false, nil
@@ -90,15 +110,24 @@ func (r *Runner) driveAmericaFlagship(ctx context.Context, mission *store.Missio
 			class = "frigate"
 			quote, err = r.americaFlagshipQuote(ctx, class)
 		}
-		if err != nil {
-			return false, r.holdExpected(ctx, americaFlagshipMission, "America flagship waits for a priced Boston barque or frigate")
+		var principal int64
+		if err == nil {
+			shortfall := max(int64(0), growthCashTotal(*quote.TotalCostPence, ceilBPS(*quote.TotalCostPence, 1_000))-r.planningInput(ShipState{}).Balances["america"])
+			principal = shortfall / 100_000 * 100_000
+			if shortfall%100_000 != 0 {
+				principal += 100_000
+			}
+			principal = max(int64(10_000), principal)
+		} else {
+			// Boston turnkey quotes lose their total while a material such as
+			// canvas is out of stock. Lenders still need a visible request, so
+			// repost the last flagship principal; the build itself waits for a
+			// priced quote before spending.
+			class, principal = "barque", r.lastAmericaFlagshipPrincipal()
+			if principal == 0 {
+				return false, r.holdExpected(ctx, americaFlagshipMission, "America flagship waits for a priced Boston barque or frigate")
+			}
 		}
-		shortfall := max(int64(0), growthCashTotal(*quote.TotalCostPence, ceilBPS(*quote.TotalCostPence, 1_000))-r.planningInput(ShipState{}).Balances["america"])
-		principal := shortfall / 100_000 * 100_000
-		if shortfall%100_000 != 0 {
-			principal += 100_000
-		}
-		principal = max(int64(10_000), principal)
 		lower, _, ok := r.serverBounds()
 		if !ok || r.stateCache.Clock.Paused {
 			return false, nil
