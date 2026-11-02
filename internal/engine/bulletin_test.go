@@ -239,7 +239,7 @@ func makeBulletinDue(t *testing.T, h *recoveryHarness, runner *Runner) bulletinS
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.LastPostAt = time.Now().UTC().Add(-4 * time.Hour)
+	state.LastPostAt = time.Now().UTC().Add(-bulletinInterval - time.Hour)
 	state.NextDue = time.Now().UTC().Add(-time.Hour)
 	state.CooldownUntil = time.Time{}
 	if err := runner.saveBulletinState(h.ctx, state); err != nil {
@@ -261,7 +261,7 @@ func TestBulletinScheduleAndAlternation(t *testing.T) {
 	}
 	sendBulletinFixture(t, h, runner, mission, &data)
 	state, err := runner.bulletinState()
-	if err != nil || state.LastPostID == "" || state.LastPostAt.IsZero() || !state.NextReply || state.ThreadCursor != 1 || state.NextDue.Before(state.LastPostAt.Add(3*time.Hour)) {
+	if err != nil || state.LastPostID == "" || state.LastPostAt.IsZero() || !state.NextReply || state.ThreadCursor != 1 || state.NextDue.Before(state.LastPostAt.Add(bulletinInterval)) {
 		t.Fatalf("successful thread lost its schedule: %+v, %v", state, err)
 	}
 	reads := proxy.boardReads
@@ -673,6 +673,9 @@ func TestBulletinReplyHistoryIsBounded(t *testing.T) {
 
 func TestBulletinPoolsExhaustBeforeRepeating(t *testing.T) {
 	h, proxy, runner := newBulletinFixture(t)
+	// The pools outnumber one board page; hiding our own threads keeps every
+	// ally thread on the first page the reply search reads.
+	proxy.hideOwn = true
 	threadBodies := make(map[string]bool)
 	replyBodies := make(map[string]bool)
 	for index := range 2 * len(bulletinThreads) {

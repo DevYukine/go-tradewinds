@@ -632,7 +632,7 @@ The bot reads only authenticated `GET /v1/rnd/status` and `GET /v1/rnd/register`
 
 ## Bulletin presence
 
-The bulletin is public deal talk signed with the company name ([guide section 3.21](https://tradewinds.kibb.io/skill.md)): a post is permanent ten real minutes after posting and a thread archives after three quiet real days. The runner posts at most once every three real hours, well inside the game limit of 10 posts and 3 new threads per company and real hour. It alternates between its own thread and the latest unreplied Kraken Cartel thread that is neither archived nor removed, and falls back to its own thread when no such thread exists.
+The bulletin is public deal talk signed with the company name ([guide section 3.21](https://tradewinds.kibb.io/skill.md)): a post is permanent ten real minutes after posting and a thread archives after three quiet real days. The runner posts at most once every twelve real hours, well inside the game limit of 10 posts and 3 new threads per company and real hour. It alternates between its own thread and the latest unreplied Kraken Cartel thread that is neither archived nor removed, and falls back to its own thread when no such thread exists.
 
 The voice is a curated, friendly Pokemon pirate that openly supports Kraken Cartel expansion, freight and the forward book. Posts contain no authenticated fleet census, ship labels, vault balances, reserves, delivery locations or exact trading plans. The bulletin is public and the server enforces nothing agreed there.
 
