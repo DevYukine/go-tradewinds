@@ -668,6 +668,10 @@ func (r *Runner) refresh(ctx context.Context) error {
 		return true, nil
 	}
 	shortlisted := 0
+	sourceMissions := make(map[string]*store.Mission, len(state.Ships))
+	for i, ship := range state.Ships {
+		sourceMissions[ship.Ship.ID] = shipMissions[i].mission
+	}
 	sourcingBudgetLoaded := false
 	for i, ship := range state.Ships {
 		mission := shipMissions[i].mission
@@ -690,6 +694,30 @@ func (r *Runner) refresh(ctx context.Context) error {
 			hull, exists := findHull(state.Catalog, ship.Ship.ShipClass)
 			if !exists {
 				continue
+			}
+			for _, plan := range realizedRelocationCandidates(sourcingInput, r.scoutBlockedPorts(sourcingInput, sourceMissions)) {
+				if !plan.Accepted || shortlisted >= sourcingPairLimit {
+					continue
+				}
+				pair := [2]string{plan.Destination, plan.Continuation.Destination}
+				captured, err := captureSourcePair(pair, hull.ID)
+				if err != nil {
+					return err
+				}
+				if !captured {
+					continue
+				}
+				sourcingInput.Now = time.Now()
+				if validateRealizedRelocation(sourcingInput, plan).Accepted {
+					shortlisted++
+					for _, endpoints := range [][2]string{pair, {pair[1], pair[0]}} {
+						key := routeKey(endpoints[0], endpoints[1], hull.ID)
+						if !requiredRoutes[key] {
+							requiredRoutes[key] = true
+							routeKeys = append(routeKeys, key)
+						}
+					}
+				}
 			}
 			for _, plan := range sourcingCandidates(sourcingInput) {
 				var target string

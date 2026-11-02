@@ -17,7 +17,7 @@ const scoutBookRecentGameHours = 6
 const bookRefreshPriceSource = "book refresh; no executable profit evidence"
 const bookRefreshAgeGameDays = 1.5
 const scoutDailyBudgetPence int64 = 200_000
-const scoutDailySeedPence int64 = 20_000
+const scoutDailySeedPence int64 = 100_000
 const scoutNoConversionWindow = 12 * time.Hour
 
 func scoutAllowance(in PlanningInput) int64 {
@@ -27,14 +27,15 @@ func scoutAllowance(in PlanningInput) int64 {
 		return 0
 	}
 	dailyCap := scoutDailySeedPence + min(scoutDailyBudgetPence-scoutDailySeedPence, max(0, history.ScoutConversionNetPence)/2)
-	return min(sourcingFreeCash(in)/50, max(0, dailyCap-history.ScoutExpensePence))
+	remaining := max(0, dailyCap-history.ScoutExpensePence)
+	return min(sourcingFreeCash(in)/50, max(0, remaining-in.ScoutCommittedPence))
 }
 
 func scoutBudgetReason(in PlanningInput, exposure, allowance int64) string {
 	if in.SourcingProbeCostsUnknown || in.SourcingProbeExpensePence < 0 || in.SourcingProbeHistory.ScoutCostsUnknown {
 		return "unpriced probe expense in the rolling window leaves the scout allowance at 0p"
 	}
-	return fmt.Sprintf("scouting modeled exposure %dp exceeds scout allowance %dp from protected free cash and measured scout conversion net %dp; daily seed 200 Cr, hard cap 2000 Cr", exposure, allowance, in.SourcingProbeHistory.ScoutConversionNetPence)
+	return fmt.Sprintf("scouting modeled exposure %dp exceeds scout allowance %dp from protected free cash and measured scout conversion net %dp; daily floor 1000 Cr, hard cap 2000 Cr", exposure, allowance, in.SourcingProbeHistory.ScoutConversionNetPence)
 }
 
 func isBookRefresh(plan Plan) bool {
@@ -594,6 +595,12 @@ func (r *Runner) scoutTargetReady(ctx context.Context, in PlanningInput, plan Pl
 	}
 	if book := in.Markets[origin]; book.Visibility != "quay" || book.CustomsBPS < 0 {
 		return errors.New("scouting requires fresh local quay ask depth and valid buyer customs")
+	}
+	if isRealizedRelocation(plan) {
+		if costed := currentRealizedRelocation(in, plan); !costed.Accepted {
+			return errors.New(costed.Reason)
+		}
+		return nil
 	}
 	if !isBookRefresh(plan) {
 		_, upside, _ := scoutHintUpside(in, scoutBidHints(in)[target])

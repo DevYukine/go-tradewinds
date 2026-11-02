@@ -421,7 +421,7 @@ func scoutAcceptanceMissionCount(t *testing.T, h *recoveryHarness, runner *Runne
 	return count
 }
 
-func TestScoutAdmissionCreatesOneMissionOnSmallestHoldThenLowestID(t *testing.T) {
+func TestScoutAdmissionCreatesOneMissionPerPassInHoldOrder(t *testing.T) {
 	h, runner := scoutAcceptanceRunner(t)
 	core, logs := observer.New(zap.DebugLevel)
 	runner.log = zap.New(core)
@@ -481,10 +481,13 @@ func TestScoutAdmissionCreatesOneMissionOnSmallestHoldThenLowestID(t *testing.T)
 	if _, err := runner.work(h.ctx); err != nil {
 		t.Fatal(err)
 	}
-	if count := scoutAcceptanceMissionCount(t, h, runner); count != 1 {
-		t.Fatalf("second pass created %d missions, want exactly one", count)
+	if count := scoutAcceptanceMissionCount(t, h, runner); count != 2 {
+		t.Fatalf("second pass created %d missions, want two independent relocations", count)
 	}
-	h.missingMission(recoveryShipCharizard)
+	_, second := h.mission(recoveryShipCharizard)
+	if second.Relocation == nil || second.Plan.Destination == data.Plan.Destination {
+		t.Fatalf("next free hull did not receive a distinct scout target: first=%+v second=%+v", data.Plan, second.Plan)
+	}
 	h.missingMission(recoveryShipLapras)
 	for _, entry := range logs.FilterLevelExact(zap.InfoLevel).All() {
 		switch entry.Message {

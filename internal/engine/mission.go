@@ -363,10 +363,6 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return changed, err
 		}
 	}
-	sourcingActive := false
-	for _, data := range dataByShip {
-		sourcingActive = sourcingActive || data.Relocation != nil
-	}
 	for _, ship := range r.stateCache.Ships {
 		if growth := dataByShip["__growth"]; growth.BuiltShipID != "" && growth.BuiltShipID == ship.Ship.ID {
 			continue
@@ -471,13 +467,9 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			}
 		}
 		holdsBeforeSourcing := len(r.holding)
-		sourcingReason := ""
-		if !sourcingActive {
-			changed, reason, err := r.considerSourcing(ctx, ship)
-			if changed || err != nil {
-				return changed, err
-			}
-			sourcingReason = reason
+		changed, sourcingReason, err := r.considerSourcing(ctx, ship)
+		if changed || err != nil {
+			return changed, err
 		}
 		sourcingHeld := false
 		for _, hold := range r.holding[holdsBeforeSourcing:] {

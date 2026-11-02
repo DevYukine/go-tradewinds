@@ -83,6 +83,7 @@ type sourcingProbeHistory struct {
 	ScoutCostsUnknown       bool                          `json:"scout_costs_unknown"`
 	ScoutConversionNetPence int64                         `json:"scout_conversion_net_pence"`
 	Conversions             []probeConversion             `json:"conversions,omitempty"`
+	RealizedLanes           []realizedSourcingLane        `json:"realized_lanes,omitempty"`
 }
 
 type sourcingHistoryCache struct {
@@ -346,6 +347,11 @@ func (h *sourcingProbeHistory) rollingBudget(rows []store.Settlement, now time.T
 	if now.IsZero() || scale <= 0 {
 		return fmt.Errorf("rolling exploration budget requires a current positive game clock")
 	}
+	lanes, err := recentRealizedSourcingLanes(rows, now)
+	if err != nil {
+		return err
+	}
+	h.RealizedLanes = lanes
 	h.BudgetAsOf = now
 	h.BudgetWindowStart = now.Add(-SourcingBudgetWindow(scale))
 	h.ConversionNetPence, h.ProbeExpensePence = 0, 0
@@ -490,7 +496,7 @@ func (r *Runner) loadRollingSourcingBudget(ctx context.Context, input *PlanningI
 	if input.Now.IsZero() || input.Clock.Calendar.TimeScale <= 0 {
 		return fmt.Errorf("rolling exploration budget requires a current positive game clock")
 	}
-	window := max(SourcingBudgetWindow(input.Clock.Calendar.TimeScale), 24*time.Hour)
+	window := max(SourcingBudgetWindow(input.Clock.Calendar.TimeScale), realizedRelocationWindow)
 	rows, err := r.db.SourcingBudgetSettlements(ctx, r.account.ID, input.Now.Add(-window), input.Now)
 	if err != nil {
 		return err

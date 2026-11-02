@@ -248,6 +248,10 @@ type PlanningInput struct {
 	ReserveByRegion        map[string]int64
 	ReservePence           int64
 	SourcingAllowancePence *int64
+	// Other active relocations retain their modeled or already incurred risk.
+	SourcingCommittedPence int64
+	ScoutCommittedPence    int64
+	RelocationTargets      map[string]string
 	// Nil retains the live 200-bps per-probe cash cap.
 	SourcingCashBPS           *int64
 	NextRungReceiptStress     bool

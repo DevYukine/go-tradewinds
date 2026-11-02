@@ -11,8 +11,6 @@ import (
 	"github.com/google/uuid"
 )
 
-const minimumOperatingRemitPence int64 = 5_000
-
 func (r *Runner) startMaintenance(ctx context.Context, ship ShipState, stage, path string, body any) (bool, error) {
 	mission := &store.Mission{AccountID: r.account.ID, ShipID: ship.Ship.ID, Phase: "maintenance", Generation: uuid.NewString()}
 	data := missionData{Plan: Plan{Kind: "maintenance", ShipID: ship.Ship.ID}, CostsKnown: true}
@@ -246,22 +244,14 @@ func (r *Runner) manageTreasury(ctx context.Context) (bool, error) {
 			"auto_remit_min_reserve_pence": minimumReserve,
 		})
 	}
-	return r.fundOperatingTreasury(ctx, balances, required)
+	return r.fundTreasury(ctx, balances, required)
 }
 
 func (r *Runner) fundTreasury(ctx context.Context, balances, required map[string]int64) (bool, error) {
 	return r.fundTreasuryMission(ctx, balances, required, "__treasury", nil, nil)
 }
 
-func (r *Runner) fundOperatingTreasury(ctx context.Context, balances, required map[string]int64) (bool, error) {
-	return r.fundTreasuryMode(ctx, balances, required, "__treasury", nil, nil, true)
-}
-
 func (r *Runner) fundTreasuryMission(ctx context.Context, balances, required map[string]int64, owner string, repayment *loanRepaymentIntent, funding *store.Mission) (bool, error) {
-	return r.fundTreasuryMode(ctx, balances, required, owner, repayment, funding, false)
-}
-
-func (r *Runner) fundTreasuryMode(ctx context.Context, balances, required map[string]int64, owner string, repayment *loanRepaymentIntent, funding *store.Mission, operating bool) (bool, error) {
 	current, data, err := r.loadMission(ctx, owner)
 	if err != nil {
 		return false, err
@@ -269,13 +259,6 @@ func (r *Runner) fundTreasuryMode(ctx context.Context, balances, required map[st
 	if current != nil {
 		r.wakeBy(data.CooldownUntil)
 		return false, r.holdExpected(ctx, owner, "regional funding waits for the existing treasury intent and its persisted retry")
-	}
-	var obligations map[string]int64
-	if operating {
-		obligations, err = r.treasuryReserves(ctx)
-		if err != nil {
-			return false, err
-		}
 	}
 	regions := make([]string, 0, len(required))
 	for region := range required {
@@ -290,18 +273,8 @@ func (r *Runner) fundTreasuryMode(ctx context.Context, balances, required map[st
 		if shortfall <= 0 {
 			continue
 		}
-		minimum := int64(0)
-		if operating && balances[destination] >= obligations[destination] {
-			minimum = minimumOperatingRemitPence
-		}
-		best, gross, net, ok := bestRemittanceMinimum(balances, required, r.stateCache.Rates, destination, minimum)
+		best, gross, net, ok := bestRemittance(balances, required, r.stateCache.Rates, destination)
 		if !ok {
-			if minimum > 0 {
-				if err := r.holdExpected(ctx, owner, "discretionary remittance waits for at least 5,000 pence gross while preserving reserves"); err != nil {
-					return false, err
-				}
-				continue
-			}
 			if err := r.hold(ctx, "", "regional reserve shortfall in "+destination+"; no observed-fee remittance preserves source reserves"); err != nil {
 				return false, err
 			}
@@ -345,10 +318,6 @@ func (r *Runner) fundTreasuryMode(ctx context.Context, balances, required map[st
 }
 
 func bestRemittance(balances, required map[string]int64, rates []Rate, destination string) (Rate, int64, int64, bool) {
-	return bestRemittanceMinimum(balances, required, rates, destination, 0)
-}
-
-func bestRemittanceMinimum(balances, required map[string]int64, rates []Rate, destination string, minimum int64) (Rate, int64, int64, bool) {
 	shortfall := required[destination] - balances[destination]
 	var best Rate
 	var gross, net int64
@@ -366,7 +335,7 @@ func bestRemittanceMinimum(balances, required map[string]int64, rates []Rate, de
 		}
 		surplus := balances[rate.FromRegion] - required[rate.FromRegion]
 		amount := min(needed, surplus)
-		if amount <= 0 || amount < minimum || amount > maximumPence {
+		if amount <= 0 || amount > maximumPence {
 			continue
 		}
 		// This is the observed server's gross-fee rounding, not a hypothetical

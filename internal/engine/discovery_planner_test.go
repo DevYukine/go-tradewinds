@@ -170,13 +170,13 @@ func TestBookRefreshTreatsMissingAndPrunedBooksAsStale(t *testing.T) {
 
 func TestScoutDailyCapScalesOnlyWithAttributedMeasuredNet(t *testing.T) {
 	for _, test := range []struct{ net, spent, want int64 }{
-		{0, 0, 20_000},
-		{-100_000, 0, 20_000},
-		{20_000, 0, 30_000},
-		{360_000, 0, 200_000},
+		{0, 0, 100_000},
+		{-100_000, 0, 100_000},
+		{20_000, 0, 110_000},
+		{200_000, 0, 200_000},
 		{math.MaxInt64, 0, 200_000},
-		{20_000, 29_999, 1},
-		{20_000, 30_000, 0},
+		{20_000, 109_999, 1},
+		{20_000, 110_000, 0},
 	} {
 		in := bookRefreshInput(t)
 		in.Balances["north"] = 100_000_000
@@ -280,12 +280,16 @@ func TestScoutSettledDailyExpenseBlocksFreshRunnerAdmissionAndFirstSend(t *testi
 	}
 }
 
-func TestBookRefreshActiveMissionBlocksSecondDiscovery(t *testing.T) {
+func TestBookRefreshActiveMissionAllowsDistinctTarget(t *testing.T) {
 	h, runner := bookRefreshRunner(t, 6)
-	scoutAcceptanceAdmit(t, h, runner)
-	changed, _, err := runner.considerSourcing(h.ctx, harnessShip(t, runner, recoveryShipCharizard))
-	if err != nil || changed || scoutAcceptanceMissionCount(t, h, runner) != 1 {
-		t.Fatalf("active refresh did not block a second relocation: changed=%v err=%v", changed, err)
+	_, first := scoutAcceptanceAdmit(t, h, runner)
+	changed, reason, err := runner.considerSourcing(h.ctx, harnessShip(t, runner, recoveryShipCharizard))
+	if err != nil || !changed || scoutAcceptanceMissionCount(t, h, runner) != 2 {
+		t.Fatalf("active refresh blocked a distinct relocation: changed=%v reason=%q err=%v", changed, reason, err)
+	}
+	_, second := h.mission(recoveryShipCharizard)
+	if second.Relocation == nil || !isBookRefresh(second.Plan) || first.Plan.Destination == second.Plan.Destination {
+		t.Fatalf("concurrent refresh did not retain a distinct target: first=%+v second=%+v", first.Plan, second.Plan)
 	}
 }
 

@@ -73,7 +73,7 @@ func sourcingAllowance(in PlanningInput) int64 {
 	if in.SourcingAllowancePence != nil {
 		budget = max(0, *in.SourcingAllowancePence)
 	}
-	return min(sourcingCashCap(in), budget)
+	return min(sourcingCashCap(in), max(0, budget-in.SourcingCommittedPence))
 }
 
 func sourcingBudgetReason(in PlanningInput, exposure, allowance int64) string {
@@ -294,7 +294,9 @@ func sortSourcingPlans(in PlanningInput, plans []Plan) {
 func sourcingPairs(in PlanningInput) []Plan {
 	pairs := sourcingCandidates(in)
 	for i := range pairs {
-		if pairs[i].Accepted {
+		if reason := in.RelocationTargets[pairs[i].Destination]; reason != "" {
+			pairs[i] = reject(pairs[i], reason)
+		} else if pairs[i].Accepted {
 			pairs[i] = validateRelocationTarget(in, pairs[i])
 		}
 	}
@@ -775,6 +777,34 @@ func (r *Runner) committedPlanningInputExceptLoan(ctx context.Context, ship Ship
 			}
 		}
 		r.reserveMissionCash(required, mission, &data, owner)
+		if data.Relocation != nil && data.Settlement == nil {
+			if input.RelocationTargets == nil {
+				input.RelocationTargets = make(map[string]string)
+			}
+			input.RelocationTargets[mission.Destination] = "another relocation already targets " + mission.Destination
+			expense := data.Relocation.ModeledExpensePence
+			if expense == 0 && data.Plan.Economics.ExpectedNetPence < 0 {
+				if data.Plan.Economics.ExpectedNetPence == math.MinInt64 {
+					expense = math.MaxInt64
+				} else {
+					expense = -data.Plan.Economics.ExpectedNetPence
+				}
+			}
+			spent, known := relocationSpentExpense(&data, owner)
+			if !known || expense < 0 {
+				expense = math.MaxInt64
+				input.SourcingCommittedPence = math.MaxInt64
+				input.ScoutCommittedPence = math.MaxInt64
+			} else {
+				bills, _ := r.unclaimedBillsSince(&data)
+				expense = max(expense, growthCashTotal(spent, bills))
+			}
+			if data.Relocation.Scout && !isRealizedRelocation(data.Plan) {
+				input.ScoutCommittedPence = growthCashTotal(input.ScoutCommittedPence, expense)
+			} else {
+				input.SourcingCommittedPence = growthCashTotal(input.SourcingCommittedPence, expense)
+			}
+		}
 		// Unsubmitted idle quotes must not mutually block scarce stores.
 		// Work serializes the winner's staged action before another consumer;
 		// attached requests and every mission's cash remain protected.
@@ -933,17 +963,17 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 			return false, "", err
 		}
 		if mission != nil {
-			return false, "", nil
+			return false, "idle relocation waits for the existing " + id + " intent", nil
 		}
 	}
 	missions := make(map[string]*store.Mission, len(r.stateCache.Ships))
 	for _, other := range r.stateCache.Ships {
-		mission, data, err := r.loadMission(ctx, other.Ship.ID)
+		mission, err := r.db.GetMission(ctx, r.account.ID, other.Ship.ID)
 		if err != nil {
 			return false, "", err
 		}
-		if mission != nil && (data.Relocation != nil || data.SourcingHandoff != nil) {
-			return false, "", nil
+		if mission != nil && other.Ship.ID == ship.Ship.ID {
+			return false, "ship already has a durable mission; relocation cannot replace it", nil
 		}
 		missions[other.Ship.ID] = mission
 	}
@@ -954,7 +984,15 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 	admissionReason := sourcingAdmissionRejection(input)
 	plans := []Plan{reject(Plan{Kind: "relocation", ShipID: ship.Ship.ID}, admissionReason)}
 	if admissionReason == "" {
-		plans = sourcingPairs(input)
+		plans = realizedRelocationPlans(input, r.scoutBlockedPorts(input, missions))
+		for _, plan := range plans[:min(3, len(plans))] {
+			if err := r.decision(ctx, ship.Ship.ID, "sourcing:realized:"+plan.Destination+":"+plan.Commodity, plan.Reason, plan); err != nil {
+				return false, "", err
+			}
+		}
+		if len(plans) == 0 || !plans[0].Accepted {
+			plans = sourcingPairs(input)
+		}
 	}
 	accepted := 0
 	for _, plan := range plans {
@@ -968,6 +1006,9 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 		return false, "", err
 	}
 	for _, plan := range plans[:shown] {
+		if isRealizedRelocation(plan) {
+			continue
+		}
 		if err := r.decision(ctx, ship.Ship.ID, "sourcing:"+plan.Destination+":"+plan.ContractID, plan.Reason, plan); err != nil {
 			return false, "", err
 		}
@@ -991,7 +1032,7 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 	if len(plans) == 0 {
 		return false, "", nil
 	}
-	scout := false
+	scout := isRealizedRelocation(plans[0])
 	if !plans[0].Accepted {
 		if admissionReason != "" {
 			return false, plans[0].Reason, nil
@@ -1045,7 +1086,9 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 	mission, data := r.newVoyage(ship, plan)
 	mission.Phase = "sourcing_fund"
 	expenseCap := sourcingAllowance(input)
-	if scout {
+	if isRealizedRelocation(plan) {
+		expenseCap = min(expenseCap, plan.Continuation.NetPence-1)
+	} else if scout {
 		expenseCap = scoutAllowance(input)
 	}
 	data.Relocation = &relocationIntent{
@@ -1061,6 +1104,10 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 		},
 	}
 	data.ProvenLane = scoutLaneKey(source.ID, plan.Origin, plan.Commodity)
+	if isRealizedRelocation(plan) {
+		data.ProvenLane = realizedRelocationKey(plan.Destination, plan.Continuation.Destination, plan.Commodity)
+		data.Relocation.TargetDestination = plan.Continuation.Destination
+	}
 	if !scout {
 		contract, exists := r.contract(plan.ContractID)
 		if !exists {
@@ -1221,10 +1268,13 @@ func (r *Runner) relocationSpendingReadyAtPrice(ctx context.Context, ship ShipSt
 	}
 	atOrigin := ship.Ship.CurrentPortID == data.Plan.Origin && ship.Voyage == nil
 	if atOrigin {
+		if reason := input.RelocationTargets[data.Plan.Destination]; reason != "" {
+			return errors.New(reason)
+		}
 		if (data.Relocation.IdlePilot || data.Relocation.Scout) && !r.shipIdleEligible(input) {
 			return scoutTransientError(data, errors.New("unstarted idle inspection waits for a coherent six-observed-game-hour idle baseline"))
 		}
-		if data.Relocation.Scout && !isBookRefresh(data.Plan) && !r.shipIdleFor(input, scoutIdleGameHours) {
+		if data.Relocation.Scout && !isBookRefresh(data.Plan) && !isRealizedRelocation(data.Plan) && !r.shipIdleFor(input, scoutIdleGameHours) {
 			return scoutTransientError(data, errors.New("unstarted scouting relocation waits for twelve coherent idle game hours at this port"))
 		}
 		if data.Relocation.Scout {
@@ -1250,9 +1300,17 @@ func (r *Runner) relocationSpendingReadyAtPrice(ctx context.Context, ship ShipSt
 	intent := *data.Relocation
 	allowance := sourcingAllowance(input)
 	capital := fmt.Sprintf("current rolling exploration budget %dp", allowance)
-	if intent.Scout {
+	if intent.Scout && !isRealizedRelocation(data.Plan) {
 		allowance = scoutAllowance(input)
 		capital = "current scout allowance"
+	}
+	if isRealizedRelocation(data.Plan) && atOrigin {
+		for _, lane := range input.SourcingProbeHistory.RealizedLanes {
+			if lane.Origin == data.Plan.Destination && lane.Destination == data.Relocation.TargetDestination && lane.Commodity == data.Plan.Commodity {
+				allowance = min(allowance, realizedRelocationNet(input, lane)-1)
+				break
+			}
+		}
 	}
 	intent.ExpenseCapPence = min(intent.ExpenseCapPence, allowance)
 	bounded.Relocation = &intent
@@ -1364,6 +1422,15 @@ func (r *Runner) relocationDepartureReady(ctx context.Context, ship ShipState, d
 	if data.Relocation == nil || !emptyCargo(ship) || len(freightStops(data.Freight)) != 0 || len(r.activeFreight(ship.Ship.ID)) != 0 {
 		return errors.New("relocation departure requires empty cargo and no sealed obligations")
 	}
+	input, err := r.sourcingInput(ctx, ship)
+	if err != nil {
+		return scoutTransientError(data, err)
+	}
+	if ship.Ship.CurrentPortID == data.Plan.Origin && ship.Voyage == nil {
+		if reason := input.RelocationTargets[data.Plan.Destination]; reason != "" {
+			return errors.New(reason)
+		}
+	}
 	if voyageLegInsured(data, ship.Ship.CurrentPortID, data.Plan.Destination) {
 		// The paid policy commits this exact leg. Generic departure preparation
 		// and preflight still enforce its route, stores and policy binding.
@@ -1377,10 +1444,6 @@ func (r *Runner) relocationDepartureReady(ctx context.Context, ship ShipState, d
 	}
 	if err := r.relocationSpendingReady(ctx, ship, data, 0); err != nil {
 		return err
-	}
-	input, err := r.sourcingInput(ctx, ship)
-	if err != nil {
-		return scoutTransientError(data, err)
 	}
 	if data.Relocation.Scout {
 		if err := r.scoutTargetReady(ctx, input, data.Plan); err != nil {

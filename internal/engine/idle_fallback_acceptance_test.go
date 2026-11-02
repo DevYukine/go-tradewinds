@@ -539,7 +539,7 @@ func TestIdleFallbackDoesNotOverrideIncomeOrSafetyGuards(t *testing.T) {
 	}
 }
 
-func TestIdleFallbackKeepsActiveAndAmbiguousExplorationExclusive(t *testing.T) {
+func TestIdleFallbackKeepsShipOwnershipAndUnknownExpenseGuard(t *testing.T) {
 	t.Parallel()
 	for _, ambiguous := range []bool{false, true} {
 		t.Run(fmt.Sprintf("ambiguous=%v", ambiguous), func(t *testing.T) {
@@ -559,14 +559,21 @@ func TestIdleFallbackKeepsActiveAndAmbiguousExplorationExclusive(t *testing.T) {
 			}
 			w.h.putMission(recoveryShipCharizard, "exclusive-idle-probe", "sourcing_fund", data)
 			ship, _ := runner.ship(recoveryShipBlastoise)
-			started, _, err := runner.considerSourcing(w.h.ctx, ship)
+			started, reason, err := runner.considerSourcing(w.h.ctx, ship)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if started {
-				t.Fatal("another idle ship started exploration while an active or ambiguous probe remained")
+			if started == ambiguous {
+				t.Fatalf("known-cost distinct targets should proceed; unknown costs should block: started=%t ambiguous=%t reason=%q", started, ambiguous, reason)
 			}
-			w.h.missingMission(recoveryShipBlastoise)
+			if ambiguous {
+				w.h.missingMission(recoveryShipBlastoise)
+			} else {
+				_, second := w.h.mission(recoveryShipBlastoise)
+				if second.Relocation == nil || second.Plan.Destination == data.Plan.Destination {
+					t.Fatalf("concurrent idle inspection reused the existing target: %+v", second)
+				}
+			}
 			_, retained := w.h.mission(recoveryShipCharizard)
 			if retained.Relocation == nil || retained.Relocation.ExpenseCapPence != 1000 || retained.CostsKnown != !ambiguous {
 				t.Fatalf("competing idle work rewrote the existing probe's durable cap or accounting: %+v", retained)
