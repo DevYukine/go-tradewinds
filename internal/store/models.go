@@ -27,12 +27,14 @@ const (
 	MaxHistoryLimit     = 500
 
 	// MaxSnapshotBytes bounds the encoded account snapshot row, excluding routes.
-	MaxSnapshotBytes = 8 * 1024 * 1024
+	// The live row reached 8 MiB on 2026-11-02 and every save failed, so the
+	// cap leaves room for a nine-hull fleet's retained history.
+	MaxSnapshotBytes = 16 * 1024 * 1024
 	// MaxSnapshotRoutesBytes independently bounds the encoded route cache.
 	MaxSnapshotRoutesBytes = 64 * 1024 * 1024
 
 	maxDiagnosticBytes        = 32 * 1024
-	maxDashboardSnapshotBytes = 16 * 1024 * 1024
+	maxDashboardSnapshotBytes = 32 * 1024 * 1024
 	maxDashboardAccounts      = 100
 )
 

@@ -16,11 +16,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// store.SaveSnapshot persists at most maxSnapshotBytes (8 MiB) of encoded
+// store.SaveSnapshot persists at most store.MaxSnapshotBytes of encoded
 // snapshot per account and rejects anything larger with ErrResponseTooLarge.
 // Retained history must shrink back under that budget instead of poisoning
 // every future save, so the tests below compare against the same bound.
-const storeSnapshotBudgetBytes = 8 * 1024 * 1024
+const storeSnapshotBudgetBytes = store.MaxSnapshotBytes
 
 func newRetentionRunner(t *testing.T, handler http.Handler) *Runner {
 	t.Helper()
