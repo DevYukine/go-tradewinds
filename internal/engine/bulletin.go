@@ -175,6 +175,10 @@ func bulletinPath(path string) bool {
 	return path == "/v1/bulletin/thread" || path == "/v1/bulletin/reply"
 }
 
+func optionalControlPath(path string) bool {
+	return bulletinPath(path) || path == "/v1/fleet/rename-ship"
+}
+
 func bulletinAuthorizationError(ctx context.Context, status int, err error) error {
 	if canceled := ctx.Err(); canceled != nil {
 		return errors.Join(canceled, err)
@@ -187,7 +191,7 @@ func bulletinAuthorizationError(ctx context.Context, status int, err error) erro
 
 func tradingActionsPending(actions []store.Action) bool {
 	for _, action := range actions {
-		if !bulletinPath(action.Path) {
+		if !optionalControlPath(action.Path) {
 			return true
 		}
 	}

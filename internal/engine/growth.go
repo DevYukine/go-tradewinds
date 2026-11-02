@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/gameapi"
-	"github.com/DevYukine/go-tradewinds/internal/names"
 	"github.com/DevYukine/go-tradewinds/internal/store"
 	"github.com/google/uuid"
 )
@@ -1121,11 +1120,10 @@ func (r *Runner) startGrowth(ctx context.Context, port Port, hull Hull, plan Pla
 	if r.phaseOneYard(port) {
 		return false, r.holdExpected(ctx, "", r.overseasGrowthHoldReason(""))
 	}
-	used := decode[[]string](r.snapshot, "_used_ship_names")
-	for _, ship := range r.stateCache.Ships {
-		used = append(used, ship.Ship.Name)
+	name, ready, err := r.reserveShipName(ctx, "__growth")
+	if err != nil || !ready {
+		return false, err
 	}
-	name := names.Next(used)
 	mission := &store.Mission{
 		AccountID:   r.account.ID,
 		ShipID:      "__growth",

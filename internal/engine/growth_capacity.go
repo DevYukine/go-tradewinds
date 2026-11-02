@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/gameapi"
-	"github.com/DevYukine/go-tradewinds/internal/names"
 	"github.com/DevYukine/go-tradewinds/internal/store"
 	"github.com/google/uuid"
 )
@@ -521,6 +520,13 @@ func (r *Runner) capacityLosses(ctx context.Context, asOf time.Time) (string, er
 	undatedLoss, futureLoss := false, false
 	for _, ship := range r.stateCache.Ships {
 		if ship.Ship.Status != "sunk" {
+			continue
+		}
+		if !shipVoyageLoss(ship) {
+			if _, exists := losses[ship.Ship.ID]; exists {
+				delete(losses, ship.Ship.ID)
+				changed = true
+			}
 			continue
 		}
 		if ship.Ship.UpdatedAt == nil || ship.Ship.UpdatedAt.IsZero() {
@@ -1516,11 +1522,10 @@ func (r *Runner) startCapacityGrowth(ctx context.Context, port Port, hull Hull, 
 	if r.phaseOneYard(port) && (financing == nil || len(financing.Loans) == 0) {
 		return false, r.holdExpected(ctx, "", r.overseasGrowthHoldReason(""))
 	}
-	used := decode[[]string](r.snapshot, "_used_ship_names")
-	for _, ship := range r.stateCache.Ships {
-		used = append(used, ship.Ship.Name)
+	name, ready, err := r.reserveShipName(ctx, "__growth")
+	if err != nil || !ready {
+		return false, err
 	}
-	name := names.Next(used)
 	now := time.Now().UTC()
 	mission := &store.Mission{
 		AccountID: r.account.ID, ShipID: "__growth", Phase: "growth_build",
@@ -1638,7 +1643,7 @@ func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) erro
 		return err
 	}
 	for _, action := range pending {
-		if bulletinPath(action.Path) {
+		if optionalControlPath(action.Path) {
 			continue
 		}
 		if data.Action == nil || action.ID != data.Action.ID {

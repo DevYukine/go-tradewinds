@@ -9,6 +9,8 @@ import {
   Circle,
   Clock3,
   Database,
+  Flag,
+  Hammer,
   Search,
   Ship,
   Skull,
@@ -16,8 +18,12 @@ import {
 import { useState, type ReactNode } from "react";
 import { useNow } from "@/app/providers";
 import { dataset, metadata } from "@/lib/data";
-import { age, dateTime, humanize } from "@/lib/format";
-import { datasetObservation, observationLabel } from "@/lib/operations";
+import { age, dateTime } from "@/lib/format";
+import {
+  datasetObservation,
+  observationLabel,
+  shipStatusLabel,
+} from "@/lib/operations";
 import type { Account } from "@/lib/types";
 import { pokemonSprite } from "@/lib/sprites";
 export { DataTable, type Column } from "./data-table";
@@ -39,7 +45,15 @@ export function Badge({
   );
 }
 
-export function StatusBadge({ status }: { status: string }) {
+export function StatusBadge({
+  status,
+  fate,
+}: {
+  status: string;
+  fate?: string | null;
+}) {
+  const goneFate = status === "sunk" ? fate : undefined;
+  const label = shipStatusLabel(status, fate);
   const tone = [
     "sailing",
     "active",
@@ -57,7 +71,10 @@ export function StatusBadge({ status }: { status: string }) {
           "claimed_loss",
           "error",
           "rejected",
-        ].includes(status)
+        ].includes(status) &&
+        goneFate !== "broken_up" &&
+        goneFate !== "royal_navy" &&
+        label !== "Gone"
       ? "danger"
       : [
             "anchored_roadstead",
@@ -77,7 +94,15 @@ export function StatusBadge({ status }: { status: string }) {
       : ["berthed", "anchored_roadstead"].includes(status)
         ? Anchor
         : status === "sunk"
-          ? Skull
+          ? label === "Gone"
+            ? Circle
+            : goneFate === "broken_up"
+              ? Hammer
+              : goneFate === "royal_navy"
+                ? Flag
+                : goneFate && goneFate !== "lost_at_sea"
+                  ? AlertTriangle
+                  : Skull
           : tone === "danger" || ["warning", "frozen"].includes(status)
             ? AlertTriangle
             : ["waiting", "pending", "held"].includes(status)
@@ -87,7 +112,7 @@ export function StatusBadge({ status }: { status: string }) {
                 : Circle;
   return (
     <Badge tone={tone} icon={Icon}>
-      {humanize(status)}
+      {label}
     </Badge>
   );
 }

@@ -64,7 +64,7 @@ type WarningReport struct {
 	Unmonitored []UnmonitoredAccount `json:"unmonitored"`
 }
 
-// Suppressed codes were not assessed, so their absence is not a clear signal.
+// Suppressed codes lack a complete current assessment, so absence is not a clear signal.
 type WarningAssessment struct {
 	Warnings   []Warning `json:"warnings"`
 	Suppressed []string  `json:"suppressed"`
@@ -159,6 +159,29 @@ func AssessWarnings(input WarningInput, at time.Time) WarningAssessment {
 		if len(datasets) == 0 && incomplete {
 			assessment.Suppressed = append(assessment.Suppressed, "refresh_failing")
 		}
+	}
+	for i := range input.Ships {
+		ship := warningShipDetail(&input, i, at)
+		if ship.Ship.Status != "sunk" || ship.Ship.Fate == nil {
+			continue
+		}
+		reason := ""
+		switch *ship.Ship.Fate {
+		case "seized_bailiff":
+			reason = "Ship seized by the bailiff because upkeep went unpaid."
+		case "seized_bankruptcy":
+			reason = "Ship seized in bankruptcy because upkeep went unpaid."
+		default:
+			continue
+		}
+		result = append(result, Warning{
+			Code: "upkeep_seizure", Severity: "critical", Since: ship.Ship.UpdatedAt,
+			Names:  map[string]string{"ship": ship.Ship.Name, "ship_id": ship.Ship.ID, "fate": *ship.Ship.Fate},
+			Reason: reason,
+		})
+	}
+	if !warningDatasetCurrent(input.Metadata["ships"], at) {
+		assessment.Suppressed = append(assessment.Suppressed, "upkeep_seizure")
 	}
 	if input.Engine != nil && input.Engine.Mode != "observe" && !input.Clock.Paused &&
 		warningDatasetCurrent(input.Metadata["ships"], at) && warningDatasetCurrent(input.Metadata["_engine"], at) &&

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { companyMoney, controllerStatus, shipOperation } from "./operations";
+import {
+  companyMoney,
+  controllerStatus,
+  shipOperation,
+  shipStatusLabel,
+} from "./operations";
 import type { Account, DashboardData, Settlement, ShipDetail } from "./types";
 
 const observedAt = "2026-10-24T00:00:00.000Z";
@@ -82,6 +87,38 @@ function settlement(id: string, changes: Partial<Settlement>): Settlement {
     ...changes,
   };
 }
+
+describe("ship fate labels", () => {
+  it.each([
+    ["lost_at_sea", "Lost at sea"],
+    ["captured", "Captured by pirates"],
+    ["seized_smuggling", "Seized for smuggling"],
+    ["seized_bailiff", "Seized by the bailiff"],
+    ["seized_bankruptcy", "Seized after bankruptcy"],
+    ["broken_up", "Broken up"],
+    ["royal_navy", "Joined the Royal Navy"],
+    [undefined, "Sunk"],
+    [null, "Sunk"],
+    ["", "Sunk"],
+    ["unknown_fate", "Gone"],
+  ])("shows %s as %s in recorded ship activity", (fate, label) => {
+    const detail = { ...ship, ship: { ...ship.ship, status: "sunk", fate } };
+    expect(shipOperation(account(), detail, now).activity).toBe(label);
+    expect(shipOperation(account(), detail, now + 3_600_000).activity).toBe(
+      label,
+    );
+  });
+
+  it.each([
+    ["sailing", "Sailing"],
+    ["berthed", "Berthed"],
+    ["anchored_roadstead", "Anchored roadstead"],
+    ["building", "Building"],
+  ])("preserves the normal %s status label", (status, label) => {
+    expect(shipStatusLabel(status)).toBe(label);
+    expect(shipStatusLabel(status, "captured")).toBe(label);
+  });
+});
 
 describe("operational evidence boundaries", () => {
   it("does not attach an old completed controller assessment to a newer ship capture", () => {

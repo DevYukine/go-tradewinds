@@ -262,6 +262,8 @@ func TestAmericaFlagshipClosedRequestRepostsAfterTenRealMinutes(t *testing.T) {
 	h, runner, _ := americaFlagshipFixture(t)
 	americaFlagshipTick(t, h, runner)
 	americaFlagshipTick(t, h, runner)
+	_, first := h.mission(americaFlagshipMission)
+	reserved := len(decode[[]string](runner.snapshot, "_used_ship_names"))
 	h.api.mu.Lock()
 	h.api.loanRequests[0].Status = "lapsed"
 	h.api.mu.Unlock()
@@ -283,6 +285,11 @@ func TestAmericaFlagshipClosedRequestRepostsAfterTenRealMinutes(t *testing.T) {
 	americaFlagshipTick(t, h, runner)
 	if h.api.mutationCount("/v1/loan/request") != 2 {
 		t.Fatal("expired real-time backoff did not post a replacement request")
+	}
+	_, reposted := h.mission(americaFlagshipMission)
+	if first.BuildName == "" || reposted.BuildName != first.BuildName ||
+		len(decode[[]string](runner.snapshot, "_used_ship_names")) != reserved {
+		t.Fatalf("reposting an unfunded request consumed another ship name: first=%q, reposted=%q", first.BuildName, reposted.BuildName)
 	}
 }
 

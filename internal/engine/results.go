@@ -95,6 +95,11 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 	}
 	stage := data.Action.Stage
 	switch stage {
+	case "rename":
+		if status != http.StatusOK || !validShipRenameResult(data, response) {
+			return r.reconcileCommitted(ctx, mission, data)
+		}
+		mission.Phase = "done"
 	case "loan-request":
 		if status != http.StatusCreated || !r.acceptPlayerLoanRequest(data, response) {
 			return r.reconcileCommitted(ctx, mission, data)
@@ -393,6 +398,13 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 		return r.rejectAmericaFlagship(ctx, mission, data, status)
 	}
 	domainRefusal := status >= 400 && status < 500 && status != 401 && status != 403 && status != 429
+	if stage == "rename" && domainRefusal {
+		if err := r.recordShipRenameRefusal(ctx, data); err != nil {
+			return false, err
+		}
+		applyRejectedResult(mission, data, status, problem.Detail)
+		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+	}
 	factorStage := stage == "hire-factor" || stage == "dismiss-factor"
 	factorDomainRefusal := factorStage && (domainRefusal || status == 403 && (problem.Code == "no_factor_at_cove" || problem.Code == "no_port_presence"))
 	if stage == "hire-factor" && factorDomainRefusal {
@@ -449,6 +461,9 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 	if stage == "refit" && data.Capacity != nil {
 		data.Capacity.RefitAttempts++
 		data.Capacity.RefitRefused = domainRefusal
+	}
+	if stage == "rename" {
+		data.CooldownUntil = maxTime(data.CooldownUntil, time.Now().UTC().Add(shipRenameRetry))
 	}
 	// A domain refusal already has a durable, offer-specific latch. It must
 	// not delay selling other cargo or accepting a newly changed offer.

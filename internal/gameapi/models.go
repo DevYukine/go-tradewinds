@@ -136,6 +136,7 @@ type Ship struct {
 	Name                  string     `json:"name"`
 	ShipClass             string     `json:"ship_class"`
 	Status                string     `json:"status"`
+	Fate                  *string    `json:"fate"`
 	CurrentLegIdx         int32      `json:"current_leg_idx"`
 	CannonsCount          int32      `json:"cannons_count"`
 	StoresProvisionsUnits int64      `json:"stores_provisions_units"`
@@ -162,6 +163,12 @@ type ShipDetail struct {
 	CargoManifest             map[string]int32 `json:"cargo_manifest"`
 	RouteLegs                 []RouteLeg       `json:"route_legs"`
 	Voyage                    *VoyageEstimate  `json:"voyage"`
+	FormerNames               []FormerShipName `json:"former_names"`
+}
+
+type FormerShipName struct {
+	Name      string    `json:"name"`
+	RenamedAt time.Time `json:"renamed_at"`
 }
 
 type ShipStores struct {

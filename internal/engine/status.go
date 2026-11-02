@@ -38,7 +38,7 @@ func (r *Runner) assessShip(shipID string) {
 		return
 	}
 	switch shipID {
-	case "__treasury", "__growth", "__loans", "__underwriting", "__marque", "__futures", "__bulletin":
+	case "__treasury", "__growth", "__loans", "__underwriting", "__marque", "__futures", "__bulletin", shipRenameMission:
 		r.assessHold(shipID)
 		return
 	}
@@ -81,7 +81,15 @@ func (r *Runner) logStatus(ctx context.Context, now time.Time) {
 		case previous == "sailing" && (ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead"):
 			message = "ship arrived"
 		case ship.Ship.Status == "sunk":
-			message, level = "ship sunk", zap.WarnLevel
+			message, level = "ship removed from fleet", zap.WarnLevel
+			switch {
+			case ship.Ship.Fate == "captured":
+				message = "ship captured"
+			case shipVoyageLoss(ship):
+				message = "ship sunk"
+			case ship.Ship.Fate == "seized_bailiff" || ship.Ship.Fate == "seized_bankruptcy":
+				message = "ship seized because upkeep went unpaid"
+			}
 		default:
 			continue
 		}
@@ -90,12 +98,13 @@ func (r *Runner) logStatus(ctx context.Context, now time.Time) {
 			continue
 		}
 		texts := r.db.ScrubOutcomeTexts(ctx, r.account.ID, []string{
-			ship.Ship.ID, ship.Ship.Name, ship.Ship.CurrentPortID,
+			ship.Ship.ID, ship.Ship.Name, ship.Ship.CurrentPortID, ship.Ship.Fate,
 		})
 		entry.Write(
 			zap.String("ship_id", texts[0]),
 			zap.String("ship", texts[1]),
 			zap.String("port_id", texts[2]),
+			zap.String("fate", texts[3]),
 			zap.Time("observed_at", r.meta["ships"].UpdatedAt),
 		)
 	}
@@ -153,7 +162,7 @@ func (r *Runner) logBlockingStatus(ctx context.Context, now time.Time, fleetFres
 	}
 	for id, status := range r.blockingStatuses {
 		switch id {
-		case "", "__growth", "__treasury", "__loans", "__underwriting", "__marque":
+		case "", "__growth", "__treasury", "__loans", "__underwriting", "__marque", shipRenameMission:
 		default:
 			if _, exists := r.ship(id); fleetFresh && !exists {
 				delete(r.blockingStatuses, id)
@@ -231,7 +240,7 @@ func (r *Runner) logStartupFleet(ctx context.Context, now time.Time) {
 	if r.opts.Execute {
 		mode = "execute"
 	}
-	sailing, inPort, sunk, other := 0, 0, 0, 0
+	sailing, inPort, gone, other := 0, 0, 0, 0
 	for _, ship := range r.stateCache.Ships {
 		switch ship.Ship.Status {
 		case "sailing":
@@ -239,7 +248,7 @@ func (r *Runner) logStartupFleet(ctx context.Context, now time.Time) {
 		case "berthed", "anchored_roadstead":
 			inPort++
 		case "sunk":
-			sunk++
+			gone++
 		default:
 			other++
 		}
@@ -252,7 +261,7 @@ func (r *Runner) logStartupFleet(ctx context.Context, now time.Time) {
 		zap.Int("ships", len(r.stateCache.Ships)),
 		zap.Int("sailing", sailing),
 		zap.Int("in_port", inPort),
-		zap.Int("sunk", sunk),
+		zap.Int("gone", gone),
 		zap.Int("other", other),
 		zap.Int("holding_reasons", len(r.holding)),
 	}
@@ -271,4 +280,10 @@ func (r *Runner) logStartupFleet(ctx context.Context, now time.Time) {
 		fields = append(fields, zap.String("holding_reason", reason))
 	}
 	entry.Write(fields...)
+}
+
+// Missing fate preserves the loss semantics of snapshots from before 0.7.3.
+func shipVoyageLoss(ship ShipState) bool {
+	return ship.Ship.Status == "sunk" &&
+		(ship.Ship.Fate == "" || ship.Ship.Fate == "lost_at_sea" || ship.Ship.Fate == "captured")
 }

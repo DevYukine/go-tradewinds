@@ -570,14 +570,14 @@ func TestBulletinPendingAndOrphanRequestsNeverBlockTrading(t *testing.T) {
 	}
 }
 
-func TestBulletinTradingPendingFilterKeepsMoneyActions(t *testing.T) {
-	posts := []store.Action{{Path: "/v1/bulletin/thread"}, {Path: "/v1/bulletin/reply"}}
-	if tradingActionsPending(posts) {
-		t.Fatal("zero-cost public posts block growth or prepayment")
+func TestOptionalControlPendingFilterKeepsMoneyActions(t *testing.T) {
+	actions := []store.Action{{Path: "/v1/bulletin/thread"}, {Path: "/v1/bulletin/reply"}, {Path: "/v1/fleet/rename-ship"}}
+	if tradingActionsPending(actions) {
+		t.Fatal("optional public posts or ship renames block growth or prepayment")
 	}
-	posts = append(posts, store.Action{Path: "/v1/treasury/remit"})
-	if !tradingActionsPending(posts) {
-		t.Fatal("public-post exemption discarded a genuine unresolved money action")
+	actions = append(actions, store.Action{Path: "/v1/treasury/remit"})
+	if !tradingActionsPending(actions) {
+		t.Fatal("optional-control exemption discarded a genuine unresolved money action")
 	}
 }
 

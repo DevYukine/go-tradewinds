@@ -45,6 +45,9 @@ export function warningText(
         message += ` ${count(warning.facts.other_count)} other ${warning.facts.other_count === 1 ? "ship also held" : "ships also held"}.`;
       }
       break;
+    case "upkeep_seizure":
+      message = `${warning.names.ship}: ${reason}.`;
+      break;
     case "loss_streak":
       message = `Last ${count(warning.facts.count)} settlements lost ${money(Math.abs(warning.facts.net_pence))} since ${warningTime(warning.since)}.`;
       break;

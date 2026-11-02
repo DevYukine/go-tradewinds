@@ -44,11 +44,14 @@ func TestStartupStatusRetainsFleetCountsHoldsAndConfiguredMode(t *testing.T) {
 			h := newRecoveryHarness(t)
 			runner, logs := observedStatusRunner(h)
 			runner.opts.Execute = execute
+			seized := operationShip("seized-hull", "Nidoqueen", "sunk", "")
+			seized.Ship.Fate = "seized_bailiff"
 			runner.stateCache.Ships = []ShipState{
 				operationShip(recoveryShipLapras, "Lapras", "sailing", recoveryHomePort),
 				operationShip(recoveryShipCharizard, "Charizard", "berthed", recoveryFarPort),
 				operationShip(recoveryShipBlastoise, "Blastoise", "anchored_roadstead", recoveryHomePort),
 				operationShip("sunk-hull", "Pikachu", "sunk", ""),
+				seized,
 				operationShip("building-hull", "Raichu", "building", recoveryHomePort),
 			}
 			runner.holding = []currentHold{
@@ -66,8 +69,8 @@ func TestStartupStatusRetainsFleetCountsHoldsAndConfiguredMode(t *testing.T) {
 				t.Fatalf("startup mode = %v, want %s", fields["mode"], mode)
 			}
 			for key, want := range map[string]int64{
-				"ships": 5, "sailing": 1, "in_port": 2,
-				"sunk": 1, "other": 1, "holding_reasons": 2,
+				"ships": 6, "sailing": 1, "in_port": 2,
+				"gone": 2, "other": 1, "holding_reasons": 2,
 			} {
 				if fields[key] != want {
 					t.Fatalf("startup %s = %v, want %d", key, fields[key], want)

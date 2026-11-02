@@ -155,6 +155,30 @@ export function controllerStatus(account: Account, now: number) {
   };
 }
 
+export function shipStatusLabel(status: string, fate?: string | null): string {
+  if (status !== "sunk") {
+    return humanize(status);
+  }
+  switch (fate) {
+    case "lost_at_sea":
+      return "Lost at sea";
+    case "captured":
+      return "Captured by pirates";
+    case "seized_smuggling":
+      return "Seized for smuggling";
+    case "seized_bailiff":
+      return "Seized by the bailiff";
+    case "seized_bankruptcy":
+      return "Seized after bankruptcy";
+    case "broken_up":
+      return "Broken up";
+    case "royal_navy":
+      return "Joined the Royal Navy";
+    default:
+      return fate ? "Gone" : "Sunk";
+  }
+}
+
 export function shipOperation(
   account: Account,
   detail: ShipDetail,
@@ -192,7 +216,7 @@ export function shipOperation(
     : "Cargo not recorded";
   return {
     observation,
-    activity: humanize(detail.ship.status),
+    activity: shipStatusLabel(detail.ship.status, detail.ship.fate),
     route,
     cargo,
     starving: Boolean(detail.voyage?.legs?.some((leg) => leg.starving)),

@@ -15,7 +15,11 @@ import { useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useNow } from "@/app/providers";
 import { dataset, fleet, shipSource } from "@/lib/data";
 import { count, dateTime, humanize } from "@/lib/format";
-import { observationLabel, shipOperation } from "@/lib/operations";
+import {
+  observationLabel,
+  shipOperation,
+  shipStatusLabel,
+} from "@/lib/operations";
 import type {
   Account,
   Catalog,
@@ -215,13 +219,16 @@ export function FleetPanel({
       {
         label: "Observed activity",
         value: ({ detail }) =>
-          `${humanize(detail.ship.status)}${detail.voyage?.legs?.some((leg) => leg.starving) ? " starving" : ""}`,
+          `${shipStatusLabel(detail.ship.status, detail.ship.fate)}${detail.voyage?.legs?.some((leg) => leg.starving) ? " starving" : ""}`,
         render: ({ account, detail }) => {
           const operation = shipOperation(account, detail, now);
           return (
             <span>
               {operation.observation.current ? (
-                <StatusBadge status={detail.ship.status} />
+                <StatusBadge
+                  status={detail.ship.status}
+                  fate={detail.ship.fate}
+                />
               ) : (
                 <Badge>Last recorded: {operation.activity}</Badge>
               )}
@@ -379,7 +386,7 @@ export function FleetPanel({
                   <option value="">All recorded states</option>
                   {statuses.map((status) => (
                     <option key={status} value={status}>
-                      {humanize(status)}
+                      {status === "sunk" ? "Gone" : humanize(status)}
                     </option>
                   ))}
                   <option value="starving">
@@ -544,11 +551,24 @@ export function ShipInspector({
         <div>
           <strong>{detail.ship.name}</strong>
           <span className={styles.identity}>
-            <StatusBadge status={detail.ship.status} />
+            <StatusBadge status={detail.ship.status} fate={detail.ship.fate} />
             {shipClass?.name ?? humanize(detail.ship.ship_class)}
           </span>
         </div>
       </div>
+      {detail.former_names && detail.former_names.length > 0 && (
+        <section className={styles.inspectorSection}>
+          <h3>Former names</h3>
+          <dl className={styles.facts}>
+            {detail.former_names.map((former, index) => (
+              <div key={`${former.renamed_at}:${index}`}>
+                <dt>{former.name}</dt>
+                <dd>Dropped {dateTime(former.renamed_at)}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      )}
       <DatasetStatus
         account={account}
         name={shipSource(account, detail.ship.id)}

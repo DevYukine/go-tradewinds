@@ -1896,6 +1896,7 @@ func TestRecoverySunkShipNameSurvivesRestartAndIsNeverReused(t *testing.T) {
 		sailingShipRow(recoveryShipCharizard, "Charizard", recoveryFarPort, recoveryHomePort),
 	})
 	h.seedLaneProofs()
+	expected := names.Next(used)
 	restarted := h.runner(primaryTestKey)
 	if _, err := h.tick(restarted); err != nil {
 		t.Fatalf("restarted growth tick: %v", err)
@@ -1909,11 +1910,11 @@ func TestRecoverySunkShipNameSurvivesRestartAndIsNeverReused(t *testing.T) {
 	if data.Action == nil || data.BuildName == "" {
 		t.Fatalf("no staged build intent: action %+v name %q", data.Action, data.BuildName)
 	}
-	// The vendored catalog starts at Lapras, then National Pokedex order, so
-	// the first free name after Lapras/Blastoise/Charizard is Bulbasaur.
-	expected := names.Next(slices.Concat(used, []string{"Blastoise", "Charizard"}))
 	if data.BuildName != expected {
 		t.Fatalf("build name %q, want %q from the actual catalog", data.BuildName, expected)
+	}
+	if !slices.Contains(used, data.BuildName) {
+		t.Fatalf("staged build name was not permanently reserved: %v", used)
 	}
 	if data.BuildName == "Lapras" {
 		t.Fatal("the sunk ship name was reused for a new build")

@@ -20,6 +20,28 @@ var pokemon = strings.FieldsFunc(catalog, func(r rune) bool {
 	return r == '\n' || r == '\r'
 })
 
+var catalogNames = func() map[string]bool {
+	result := make(map[string]bool, len(pokemon))
+	for _, name := range pokemon {
+		result[name] = true
+	}
+	return result
+}()
+
+// IsAssigned recognizes the catalog and the numbered generations Next emits.
+func IsAssigned(name string) bool {
+	if catalogNames[name] {
+		return true
+	}
+	split := strings.LastIndexByte(name, ' ')
+	if split < 0 || !catalogNames[name[:split]] {
+		return false
+	}
+	suffix := name[split+1:]
+	generation, err := strconv.Atoi(suffix)
+	return err == nil && generation >= 2 && strconv.Itoa(generation) == suffix
+}
+
 // Next returns the first unused name. Numbered generations keep names unique
 // after the vocabulary is exhausted, including names already used by sunk ships.
 func Next(used []string) string {

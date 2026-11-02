@@ -86,6 +86,7 @@ type ShipState struct {
 		Name                string     `json:"name"`
 		ShipClass           string     `json:"ship_class"`
 		Status              string     `json:"status"`
+		Fate                string     `json:"fate"`
 		CurrentPortID       string     `json:"current_port_id"`
 		CannonsCount        int64      `json:"cannons_count"`
 		ConvoyID            string     `json:"convoy_id"`
@@ -96,11 +97,12 @@ type ShipState struct {
 		UpdatedAt           *time.Time `json:"updated_at"`
 		DispatchesSealed    bool       `json:"dispatches_sealed"`
 	} `json:"ship"`
-	HoldCapacityTons          int64            `json:"hold_capacity_tons"`
-	EffectiveHoldCapacityTons int64            `json:"effective_hold_capacity_tons"`
-	CargoUsedTons             int64            `json:"cargo_used_tons"`
-	PassengerHoldTons         int64            `json:"passenger_hold_tons"`
-	CargoManifest             map[string]int64 `json:"cargo_manifest"`
+	HoldCapacityTons          int64                    `json:"hold_capacity_tons"`
+	EffectiveHoldCapacityTons int64                    `json:"effective_hold_capacity_tons"`
+	CargoUsedTons             int64                    `json:"cargo_used_tons"`
+	PassengerHoldTons         int64                    `json:"passenger_hold_tons"`
+	CargoManifest             map[string]int64         `json:"cargo_manifest"`
+	FormerNames               []gameapi.FormerShipName `json:"former_names"`
 	Stores                    struct {
 		ProvisionsTons float64 `json:"provisions_tons"`
 	} `json:"stores"`

@@ -163,7 +163,10 @@ export function OperationsOverview({
                       </div>
                       <div className={styles.activity}>
                         {operation.observation.current ? (
-                          <StatusBadge status={detail.ship.status} />
+                          <StatusBadge
+                            status={detail.ship.status}
+                            fate={detail.ship.fate}
+                          />
                         ) : (
                           <Badge>Last recorded: {operation.activity}</Badge>
                         )}

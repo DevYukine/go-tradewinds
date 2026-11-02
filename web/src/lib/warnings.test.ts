@@ -20,6 +20,34 @@ function WarningQuery() {
 }
 
 describe("warning presentation", () => {
+  it.each([
+    [
+      "seized_bailiff",
+      "Ship seized by the bailiff because upkeep went unpaid.",
+    ],
+    [
+      "seized_bankruptcy",
+      "Ship seized in bankruptcy because upkeep went unpaid.",
+    ],
+  ])(
+    "identifies unpaid upkeep and the affected ship for %s",
+    (fate, reason) => {
+      expect(
+        warningText(
+          {
+            ...common,
+            severity: "critical",
+            code: "upkeep_seizure",
+            facts: {},
+            names: { ship: "Lapras", ship_id: "ship-lapras", fate },
+            reason,
+          },
+          "Yukine",
+        ),
+      ).toBe(`Yukine: Lapras: ${reason}`);
+    },
+  );
+
   it("keeps unknown idle times separate from measured idle ships", () => {
     expect(
       warningText({

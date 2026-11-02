@@ -210,7 +210,7 @@ func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission,
 		}
 	}
 	r.localRetirements++
-	if data.Bulletin != nil && (kind == neverSentFinancialEvent || kind == neverSentControlEvent) {
+	if (data.Bulletin != nil || data.Rename != nil) && (kind == neverSentFinancialEvent || kind == neverSentControlEvent) {
 		exists, err := r.db.HasAction(ctx, r.account.ID, data.Action.ID)
 		if err != nil {
 			return false, err
@@ -354,11 +354,13 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 	}
 	if persisted.State == store.ActionReconciled {
 		var evidence struct {
-			Kind    string                  `json:"kind"`
-			Ship    ShipState               `json:"ship"`
-			Marque  letterOfMarque          `json:"marque"`
-			Loan    gameapi.Loan            `json:"loan"`
-			Request gameapi.LoanRequestView `json:"request"`
+			Kind        string                  `json:"kind"`
+			Ship        ShipState               `json:"ship"`
+			ShipID      string                  `json:"ship_id"`
+			ShipMissing bool                    `json:"ship_missing"`
+			Marque      letterOfMarque          `json:"marque"`
+			Loan        gameapi.Loan            `json:"loan"`
+			Request     gameapi.LoanRequestView `json:"request"`
 		}
 		if err := json.Unmarshal(persisted.Response, &evidence); err != nil {
 			return false, fmt.Errorf("invalid reconciliation evidence for %s: %w", persisted.ID, err)
@@ -399,6 +401,16 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 		}
 		if action.Stage == "loan-repay" && (evidence.Kind != "authoritative_loan" || !loanRepaymentObserved(evidence.Loan, data.LoanRepayment)) {
 			return false, r.hold(ctx, mission.ShipID, "reconciled repayment lacks its named paid debt")
+		}
+		if action.Stage == "rename" && data.Rename != nil && evidence.Kind == "authoritative_ship_rename_moot" &&
+			evidence.ShipID == data.Rename.ShipID &&
+			(evidence.ShipMissing || evidence.Ship.Ship.ID == data.Rename.ShipID &&
+				(evidence.Ship.Ship.Fate != "" || evidence.Ship.Ship.Status == "sunk")) {
+			return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
+		}
+		if action.Stage == "rename" && (data.Rename == nil || evidence.Kind != "authoritative_ship_rename" ||
+			evidence.Ship.Ship.ID != data.Rename.ShipID || !shipRenameObserved(evidence.Ship, data.Rename.Name)) {
+			return false, r.hold(ctx, mission.ShipID, "reconciled rename lacks its matching hull and assigned name")
 		}
 		return r.applyReconciliation(ctx, mission, data)
 	}
@@ -1061,6 +1073,8 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 	action := data.Action
 	data.CostsKnown = false
 	switch data.Action.Stage {
+	case "rename":
+		mission.Phase = "done"
 	case "loan-request":
 		mission.Phase = "growth_loan_request"
 	case "loan-accept", "loan-repay":
@@ -1168,6 +1182,9 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 	}
 	if bulletinStage(data.Action.Stage) {
 		return r.bulletinPreflight(data)
+	}
+	if data.Action.Stage == "rename" {
+		return r.shipRenameReady(mission, data)
 	}
 	if mission.ShipID == americaFlagshipMission {
 		return r.americaFlagshipPreflight(ctx, data)
@@ -1592,6 +1609,9 @@ func (r *Runner) reconcileObservedAction(ctx context.Context, mission *store.Mis
 	}
 	if data.Action.Stage == "build" && data.Capacity != nil && data.Capacity.Mortgage != nil {
 		return r.reconcileMortgageBuild(ctx, mission, data, action)
+	}
+	if data.Action.Stage == "rename" {
+		return r.reconcileShipRename(ctx, mission, data, action)
 	}
 	if !r.fresh("ships") {
 		return false, nil

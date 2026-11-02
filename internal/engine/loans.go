@@ -751,7 +751,7 @@ func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (G
 		return financing.Decision, nil, err
 	}
 	for _, action := range pending {
-		if bulletinPath(action.Path) {
+		if optionalControlPath(action.Path) {
 			continue
 		}
 		if data.Action == nil || action.ID != data.Action.ID {

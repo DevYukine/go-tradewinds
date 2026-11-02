@@ -421,6 +421,12 @@ func (r *Runner) refresh(ctx context.Context) error {
 			used = append(used, ship.Ship.Name)
 			usedSet[ship.Ship.Name] = true
 		}
+		for _, former := range ship.FormerNames {
+			if !usedSet[former.Name] {
+				used = append(used, former.Name)
+				usedSet[former.Name] = true
+			}
+		}
 		cargo[ship.Ship.ID] = ship.CargoManifest
 		if ship.Ship.Status != "sunk" {
 			classes[ship.Ship.ShipClass] = true

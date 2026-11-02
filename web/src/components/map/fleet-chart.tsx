@@ -49,6 +49,7 @@ import {
   type ChartPosition,
   travelBearing,
 } from "@/lib/geography";
+import { shipStatusLabel } from "@/lib/operations";
 import type {
   Account,
   Catalog,
@@ -641,9 +642,9 @@ function ShipMarkers({
         awaiting: 0,
         frozen: 0,
         unavailable: 0,
-        sunk: 0,
       };
       const legendCounts = { ...EMPTY_LEGEND };
+      const gone = new Map<string, number>();
       for (const row of frame.ships) {
         present.add(row.key);
         const previous = tracked.current.get(row.key);
@@ -658,7 +659,11 @@ function ShipMarkers({
         if (!position) {
           legendCounts.unavailable += 1;
           if (row.detail.ship.status === "sunk") {
-            counts.sunk += 1;
+            const label = shipStatusLabel(
+              row.detail.ship.status,
+              row.detail.ship.fate,
+            );
+            gone.set(label, (gone.get(label) ?? 0) + 1);
           } else {
             counts.unavailable += 1;
           }
@@ -673,7 +678,7 @@ function ShipMarkers({
         }
         const starving =
           row.detail.voyage?.legs?.some((leg) => leg.starving) ?? false;
-        const label = `Inspect ${row.detail.ship.name}, ${humanize(row.detail.ship.status)}. ${row.identity}. ${position.label}${starving ? ". Starvation recorded in voyage estimate" : ""}`;
+        const label = `Inspect ${row.detail.ship.name}, ${shipStatusLabel(row.detail.ship.status, row.detail.ship.fate)}. ${row.identity}. ${position.label}${starving ? ". Starvation recorded in voyage estimate" : ""}`;
         let entry = previous;
         if (!entry) {
           const tooltip = document.createElement("div");
@@ -762,7 +767,10 @@ function ShipMarkers({
       ]
         .filter(Boolean)
         .join("; ");
-      const description = `${summary || "No ship position is available"}.${counts.unavailable ? ` Position unavailable for ${counts.unavailable} ${counts.unavailable === 1 ? "ship" : "ships"}: estimates need usable ship and clock recordings, valid times and known endpoints.` : ""}${counts.sunk ? ` ${counts.sunk} sunk ${counts.sunk === 1 ? "ship has" : "ships have"} no recorded sinking position.` : ""}`;
+      const goneSummary = [...gone]
+        .map(([label, total]) => `${label} (${total})`)
+        .join("; ");
+      const description = `${summary || "No ship position is available"}.${counts.unavailable ? ` Position unavailable for ${counts.unavailable} ${counts.unavailable === 1 ? "ship" : "ships"}: estimates need usable ship and clock recordings, valid times and known endpoints.` : ""}${goneSummary ? ` No recorded position for gone ships: ${goneSummary}.` : ""}`;
       onStatusChange(description, legendCounts);
     },
     [map, selectShip, onStatusChange],

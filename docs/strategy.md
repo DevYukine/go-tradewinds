@@ -377,7 +377,7 @@ Allocate source, destination and contract reservations only to actual competing 
 
 Commissioning stores and funding fees remain operating costs through handoff, abort or hull loss; they cannot disappear when the growth control is deleted. Preserve unknown cost state rather than manufacturing profit. Routine planning and first-send procurement use the same residual quantities as growth, so an ordinary ship cannot spend a returning ship's reserved next lot. Re-price changing dues without waiting for the quote to stop changing.
 
-The player market supports voluntary ship listings and purchases through `/v1/fleet/list-ship` and `/v1/fleet/buy-ship`. The engine does not use either endpoint: a purchased hull retains its seller's name, and there is no agreed exception to the Pokemon naming rule. Do not count hypothetical resale proceeds or deliberately trigger bailiff seizure to finance expansion.
+The player market supports voluntary ship listings and purchases through `/v1/fleet/list-ship` and `/v1/fleet/buy-ship`. The engine does not use either endpoint. An owned afloat hull with a non-catalog name, including a second-hand or broker hull, receives the next unused Pokemon name through durable `__rename`; catalog-named and listed hulls are left alone. Do not count hypothetical resale proceeds or deliberately trigger bailiff seizure to finance expansion.
 
 ### Measured capacity growth
 
@@ -517,7 +517,7 @@ The immutable 200 response must identify one exact owned slice with present, bou
 | Futures and market-making | One permanent covered pilot pair only; no speculative income forecast or scale-up |
 | Marques | Off by default (`MARQUES_ENABLED`); when enabled, follow the bounded pilot below |
 | Convoys | Require economic justification and an owner-provided naming theme before creation |
-| Ship disposal and purchase | Players may list and buy ships in port; not used yet because a bought hull keeps its seller's name |
+| Ship disposal and purchase | Players may list and buy ships in port; not automated. Owned afloat non-catalog hulls receive an unused Pokemon name unless listed for sale. |
 
 ### Pilot limits and underworld observations
 
@@ -536,17 +536,19 @@ The [underworld observer](../internal/engine/underworld.go) is observe-only. `un
 
 The owner's announcement adds cargo-value targeting, variable seizures, capture, stronger corsairs, single-victim convoy raids, full-cargo declarations and more collier armament. At this audit, the [published guide](https://tradewinds.kibb.io/skill.md) still describes fixed quarter-loss raids, and the [OpenAPI schema](https://tradewinds.kibb.io/api-docs/openapi.json) still lists only `berthed`, `anchored_roadstead`, `sailing` and `sunk`. These documents do not establish whether the announced server behavior is already deployed.
 
+Game 0.7.3 supersedes the terminal-status uncertainty from this dated audit: `status: sunk` now has a nullable `fate`, including `captured`. The other unmeasured piracy probabilities below are not inferred from that representation.
+
 | Area | Controller treatment and remaining limit |
 | --- | --- |
 | Rich cargo and variable raids | Use actual remaining manifests and preserve sealed reservations; neither a fixed 25% loss nor an invented cargo-value encounter multiplier is used to settle a voyage. Unpublished attack and capture odds remain unpriced. |
 | Stronger corsairs | Require fresh live zone observations and a legal route before a new departure, including the post-rate-wait preflight. A zone rating is not a calibrated encounter probability. |
-| Ship capture | Existing `claimed_loss` underwriting closure consumes the full recorded collateral, irrespective of the loss's cause. The ship-status, ownership-transfer and event representation of capture is not yet established by the published contract; missing ships are not invented sinkings or completed settlements. |
+| Ship capture | `status: sunk` with `fate: captured` is a piracy hull loss; other known non-sea fates are not. Existing `claimed_loss` underwriting closure consumes the full recorded collateral, irrespective of the loss's cause. A ship's fate or disappearance does not prove a claim payout, ownership-transfer payment or completed financial settlement. |
 | Convoys | Observe existing membership and prohibit independent departure while bound. Do not assume equal `1/N` victim risk when valuable holds are weighted, create convoys automatically, or invent a pooled-gun probability discount. |
 | Own voyage policies | Protect every observed own open/active policy from new cargo loading and a conflicting departure. This preserves the observed declaration prospectively; without the original manifest it cannot prove that earlier external loading was compliant. |
 | Premiums and underwriting | Use observed policy premiums, not a fixed premium estimate. Preserve full-loss, shared-capital and permanent-pilot limits; all-era policy outcomes do not establish post-patch capture risk. |
 | Collier guns | The [live catalog](https://tradewinds.kibb.io/v1/world/catalog) reports `max_cannons: 4`. Existing maintenance targets `min(4, max_cannons)` before new economic work. A larger future cap alone is not evidence that the extra cost and displaced cargo pay back. |
 
-Recheck the authoritative contract before adding capture-specific terminal handling or changing the hazard model. Preserve unresolved ownership, policy terms and payments rather than assuming that a cancelled policy returned collateral.
+A terminal fate clarifies the hull's exit, not its encounter probability or financial receipts. Recheck the authoritative contract before changing the hazard model. Preserve unresolved ownership, policy terms and payments rather than assuming that a cancelled policy returned collateral.
 
 ### Recorded comparison and bounded simulation (2026-10-24)
 

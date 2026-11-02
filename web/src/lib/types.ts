@@ -44,6 +44,7 @@ export type EngineWarning = {
     }
   | { code: "hold_stuck"; facts: { minutes: number; other_count: number } }
   | { code: "loss_streak"; facts: { count: number; net_pence: number } }
+  | { code: "upkeep_seizure"; facts: Record<string, never> }
   | {
       code: "falling_behind";
       facts: (
@@ -592,6 +593,7 @@ export interface ShipDetail {
     name: string;
     ship_class: string;
     status: string;
+    fate?: string | null;
     current_port_id?: string | null;
     current_leg_idx: number;
     cannons_count: number;
@@ -605,6 +607,7 @@ export interface ShipDetail {
     created_at?: string;
     updated_at: string;
   };
+  former_names?: { name: string; renamed_at: string }[];
   hold_capacity_tons: number;
   effective_hold_capacity_tons: number;
   cargo_used_tons: number;

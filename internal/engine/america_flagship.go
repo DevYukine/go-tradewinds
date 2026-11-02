@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/gameapi"
-	"github.com/DevYukine/go-tradewinds/internal/names"
 	"github.com/DevYukine/go-tradewinds/internal/store"
 	"github.com/google/uuid"
 )
@@ -26,6 +25,7 @@ const americaFlagshipRequestRetry = 10 * time.Minute
 type americaFlagshipState struct {
 	Pending     bool      `json:"pending"`
 	LoanID      string    `json:"loan_id,omitempty"`
+	BuildName   string    `json:"build_name,omitempty"`
 	BuiltShipID string    `json:"built_ship_id,omitempty"`
 	RetryAt     time.Time `json:"retry_at,omitempty"`
 }
@@ -108,17 +108,14 @@ func (r *Runner) driveAmericaFlagship(ctx context.Context, mission *store.Missio
 			TermGameDays: 360, Repayment: "amortised", CollateralKind: "unsecured", OpenGameHours: 72,
 			PostedAt: lower.Add(-playerLoanClockSkew),
 		}
-		used := decode[[]string](r.snapshot, "_used_ship_names")
-		for _, ship := range r.stateCache.Ships {
-			used = append(used, ship.Ship.Name)
+		name := state.BuildName
+		if name == "" {
+			reserved, ready, err := r.reserveShipName(ctx, americaFlagshipMission)
+			if err != nil || !ready {
+				return false, err
+			}
+			name, state.BuildName = reserved, reserved
 		}
-		if growth, growthData, err := r.loadMission(ctx, "__growth"); err != nil {
-			return false, err
-		} else if growth != nil {
-			used = append(used, growthData.BuildName)
-		}
-		name := names.Next(used)
-		r.snapshot["_used_ship_names"] = encode(append(used, name))
 		state.Pending, state.RetryAt = true, time.Time{}
 		if err := r.saveAmericaFlagship(ctx, state); err != nil {
 			return false, err

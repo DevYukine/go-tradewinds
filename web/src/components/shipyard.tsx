@@ -14,6 +14,7 @@ import {
 import { useState } from "react";
 import { dataset, fleet, shipSource } from "@/lib/data";
 import { count, dateTime, humanize, money, percent } from "@/lib/format";
+import { shipStatusLabel } from "@/lib/operations";
 import type { Account, Catalog, Clock, YardQuote } from "@/lib/types";
 import {
   Badge,
@@ -466,8 +467,14 @@ export function ShipyardView({ account }: { account: Account }) {
                 },
                 {
                   label: "Status",
-                  value: (item) => item.ship.status,
-                  render: (item) => <StatusBadge status={item.ship.status} />,
+                  value: (item) =>
+                    shipStatusLabel(item.ship.status, item.ship.fate),
+                  render: (item) => (
+                    <StatusBadge
+                      status={item.ship.status}
+                      fate={item.ship.fate}
+                    />
+                  ),
                 },
                 {
                   label: "Port",

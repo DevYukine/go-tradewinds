@@ -88,7 +88,10 @@ export function VoyagesView({ account }: { account: Account }) {
                 <SpriteImage name={focused.ship.name} />
                 <div>
                   <h3>{focused.ship.name}</h3>
-                  <StatusBadge status={focused.ship.status} />
+                  <StatusBadge
+                    status={focused.ship.status}
+                    fate={focused.ship.fate}
+                  />
                 </div>
               </div>
               <DatasetStatus

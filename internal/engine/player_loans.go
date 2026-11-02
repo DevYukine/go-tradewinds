@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/gameapi"
-	"github.com/DevYukine/go-tradewinds/internal/names"
 	"github.com/DevYukine/go-tradewinds/internal/store"
 	"github.com/google/uuid"
 )
@@ -606,11 +605,14 @@ func (r *Runner) drivePlayerLoan(ctx context.Context, mission *store.Mission, da
 		if err := r.recordCapacityLoan(ctx, port, hull, result); err != nil {
 			return false, err
 		}
-		used := decode[[]string](r.snapshot, "_used_ship_names")
-		for _, ship := range r.stateCache.Ships {
-			used = append(used, ship.Ship.Name)
+		if data.BuildName == "" {
+			name, ready, err := r.reserveShipName(ctx, mission.ShipID)
+			if err != nil || !ready {
+				return false, err
+			}
+			data.BuildName = name
 		}
-		data.BuildName, data.TargetCannons = names.Next(used), min(4, hull.MaxCannons)
+		data.TargetCannons = min(4, hull.MaxCannons)
 		mission.Phase = "growth_finance"
 		return true, r.stage(ctx, mission, data, ShipState{}, "loan-accept", "/v1/loan/approve", gameapi.QuoteActionRequest{QuoteID: quote.ID})
 	}
