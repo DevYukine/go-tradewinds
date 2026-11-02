@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/engine"
+	"github.com/DevYukine/go-tradewinds/internal/store"
 )
 
 func fixture[T any](t *testing.T, raw string) T {
@@ -82,6 +83,9 @@ func inputFixture(t *testing.T) engine.PlanningInput {
 		ReserveByRegion: map[string]int64{"channel": 75_000},
 		Metadata:        meta,
 		Generation:      "sync-a",
+		RevenueCalibration: store.RevenueCalibrationModel{Cells: map[string]store.RevenueCalibrationCell{
+			"global": {Samples: 30, MedianBPS: 10_000, AdverseBPS: 10_000},
+		}},
 	}
 }
 
@@ -140,11 +144,11 @@ func TestPlannerUsesRetainedQuayDepthWithoutRepeatFunding(t *testing.T) {
 	}
 	plan := engine.PlanVoyages(in)[0]
 	if !plan.Accepted || plan.Kind != "spot" || plan.Quantity != 20 ||
-		plan.Economics.RevenueBasis != "retained" || plan.Economics.RevenuePence != 94_000 ||
-		plan.Economics.PriceUncertaintyStressPence != 9_000 || plan.SellLimitPence != 4_250 {
+		plan.Economics.RevenueBasis != "retained" || plan.Economics.RevenuePence != 95_000 ||
+		plan.Economics.PriceUncertaintyStressPence != 0 || plan.SellLimitPence != 4_750 {
 		t.Fatalf("remembered quay depth did not fund the complete delivery lot: %+v", plan)
 	}
-	if plan.PriceSource != "our quay book 6.0 game days old; 600 bps age haircut" ||
+	if plan.PriceSource != "our quay book 6.0 game days old" ||
 		plan.Economics.BallastRepeatGameDays != 0 || plan.Economics.BallastRepeatNetPence != 0 {
 		t.Fatalf("retained estimates lost their source or financed a repeat: %+v", plan)
 	}
@@ -877,7 +881,7 @@ func TestMinimumMarginBoundaryTable(t *testing.T) {
 
 func TestMinimumMarginAppliesToGrowthAndOneTonProbes(t *testing.T) {
 	for _, kind := range []string{"growth", "probe"} {
-		for _, net := range []int64{1_999, 2_000} {
+		for _, net := range []int64{1_999, 2_000, 40_000} {
 			in := minimumMarginInput(t, "spot", net)
 			if kind == "growth" {
 				in.Fleet = []engine.ShipState{in.Ship}
@@ -894,15 +898,25 @@ func TestMinimumMarginAppliesToGrowthAndOneTonProbes(t *testing.T) {
 				in.Ports["le_havre"] = detail
 			}
 			plan := engine.PlanVoyages(in)[0]
-			if plan.Accepted != (net >= 2_000) || plan.Economics.ExpectedNetPence != net || plan.Quantity != 1 {
-				t.Fatalf("%s net %dp bypassed minimum margin: %+v", kind, net, plan)
+			accepted := net >= 2_000
+			if kind == "probe" {
+				// Unverified one-ton gossip also needs a positive contribution
+				// after its 25% fallback stress, even at the 2% margin boundary.
+				wantStress := (100_000 + net + 3) / 4
+				if plan.Economics.PriceUncertaintyStressPence != wantStress {
+					t.Fatalf("probe net %dp lost its unverified-bid stress: %+v", net, plan)
+				}
+				accepted = accepted && net > wantStress
+			}
+			if plan.Accepted != accepted || plan.Economics.ExpectedNetPence != net || plan.Quantity != 1 {
+				t.Fatalf("%s net %dp bypassed margin or price uncertainty admission: %+v", kind, net, plan)
 			}
 		}
 	}
 }
 
-func TestMinimumMarginRetainedPlansAlsoRequireStressFloor(t *testing.T) {
-	for _, net := range []int64{2_000, 4_000} {
+func TestMinimumMarginRetainedPlansUseCommonBoundary(t *testing.T) {
+	for _, net := range []int64{1_999, 2_000, 4_000} {
 		in := minimumMarginInput(t, "spot", net)
 		delete(in.Markets, "portsmouth")
 		delete(in.Metadata, "books/portsmouth")
@@ -911,8 +925,8 @@ func TestMinimumMarginRetainedPlansAlsoRequireStressFloor(t *testing.T) {
 			Bids:       map[string][]engine.RetainedBid{"provisions": {{PricePence: 100_000 + net, RemainingQuantity: 1}}},
 		}}
 		plan := engine.PlanVoyages(in)[0]
-		if plan.Accepted != (net == 4_000) || plan.Economics.ExpectedNetPence != net {
-			t.Fatalf("retained net %dp did not enforce both independent gates: %+v", net, plan)
+		if plan.Accepted != (net >= 2_000) || plan.Economics.ExpectedNetPence != net || plan.Economics.PriceUncertaintyStressPence != 0 {
+			t.Fatalf("retained net %dp did not use the common measured admission: %+v", net, plan)
 		}
 	}
 }

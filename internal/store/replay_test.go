@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -373,6 +374,123 @@ func TestReplayPlanHeadersAndExactBytes(t *testing.T) {
 			}()
 			if _, err := db.ReplayPlans(context.Background(), account); err == nil {
 				t.Fatalf("plan %s tamper was not authenticated", test.column)
+			}
+		})
+	}
+}
+
+func TestReplayPlansForMissionsFiltersAndAuthenticatesExactPlans(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	const account = "bounded-plans"
+	saveTestAccount(t, db, account)
+	saveTestAccount(t, db, "bounded-plans-other")
+	ctx := context.Background()
+	at := time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)
+	for i := range replayEvidencePageSize + 3 {
+		plan := ReplayPlan{AccountID: account, MissionID: fmt.Sprintf("kept-%d", i%2), ShipID: "private-ship",
+			Phase: "buy", Generation: fmt.Sprintf("generation-%d", i), Sequence: int64(i), Revision: "private-revision",
+			ObservedAt: at.Add(time.Duration((replayEvidencePageSize+2-i)/2) * time.Microsecond),
+			Plan:       []byte(fmt.Sprintf("{\n \"net\": %d\n}", i)), Policy: []byte("{ \"reserve\": 5 }")}
+		if err := db.RecordReplayPlan(ctx, plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, identity := range [][2]string{{account, "excluded"}, {"bounded-plans-other", "kept-0"}} {
+		if err := db.RecordReplayPlan(ctx, ReplayPlan{AccountID: identity[0], MissionID: identity[1],
+			Generation: "excluded", ObservedAt: at, Plan: []byte(`{"excluded":true}`), Policy: []byte(`{}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := db.ReplayPlans(ctx, account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expected []ReplayPlan
+	for _, plan := range all {
+		if plan.MissionID != "excluded" {
+			expected = append(expected, plan)
+		}
+	}
+	missions := []string{"kept-1", "kept-0", "kept-0"}
+	actual, err := db.ReplayPlansForMissions(ctx, account, missions)
+	if err != nil || len(actual) != replayEvidencePageSize+3 || !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("bounded filter, ordering, pagination or decrypt parity changed: rows=%d err=%v", len(actual), err)
+	}
+	if empty, err := db.ReplayPlansForMissions(ctx, account, nil); err != nil || len(empty) != 0 {
+		t.Fatalf("empty mission selection read lifetime plans: %+v, %v", empty, err)
+	}
+	if _, err := db.ReplayPlansForMissions(ctx, account, []string{""}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("invalid mission selection was accepted: %v", err)
+	}
+	if err := db.db.Exec("UPDATE replay_plans SET plan_cipher = ? WHERE mission_id = 'excluded' OR account_id = ?", []byte{1}, "bounded-plans-other").Error; err != nil {
+		t.Fatal(err)
+	}
+	if actual, err := db.ReplayPlansForMissions(ctx, account, missions); err != nil || !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("unselected or other-account ciphertext was fetched: rows=%d err=%v", len(actual), err)
+	}
+	if err := db.db.Exec("UPDATE replay_plans SET generation = 'tampered' WHERE id = ?", expected[len(expected)-1].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if actual, err := db.ReplayPlansForMissions(ctx, account, missions); err == nil || actual != nil || errors.Is(err, ErrReplayEvidenceBudget) {
+		t.Fatalf("selected plan header tamper returned partial or unauthenticated evidence: rows=%d err=%v", len(actual), err)
+	}
+}
+
+func TestReplayPlansForMissionsRejectsRowAndRetainedBudgets(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	const account = "plan-budgets"
+	saveTestAccount(t, db, account)
+	ctx := context.Background()
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	if err := db.RecordReplayPlan(ctx, ReplayPlan{AccountID: account, MissionID: "row-limit", Generation: "original",
+		ObservedAt: at, Plan: []byte(`{}`), Policy: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.db.Exec("UPDATE replay_plans SET generation = repeat('x', ?) WHERE account_id = ?", MaxReplayEvidenceMetadataBytes+1, account).Error; err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := db.ReplayPlansForMissions(ctx, account, []string{"row-limit"}); !errors.Is(err, ErrReplayEvidenceBudget) || rows != nil {
+		t.Fatalf("oversized metadata reached authentication or produced partial evidence: rows=%d err=%v", len(rows), err)
+	}
+	if err := db.db.Exec("UPDATE replay_plans SET generation = 'original', plan_cipher = decode(repeat('aa', ?), 'hex') WHERE account_id = ?",
+		MaxReplayPlaintextBytes+db.aead.NonceSize()+db.aead.Overhead()+1, account).Error; err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := db.ReplayPlansForMissions(ctx, account, []string{"row-limit"}); !errors.Is(err, ErrReplayEvidenceBudget) || rows != nil {
+		t.Fatalf("oversized ciphertext reached authentication or produced partial evidence: rows=%d err=%v", len(rows), err)
+	}
+	large, err := json.Marshal(map[string]string{"padding": strings.Repeat("x", 7<<20)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 5 {
+		if err := db.RecordReplayPlan(ctx, ReplayPlan{AccountID: account, MissionID: "retained-limit",
+			Generation: fmt.Sprintf("large-%d", i), Revision: fmt.Sprint(i), Sequence: int64(i), ObservedAt: at.Add(time.Duration(i) * time.Second),
+			Plan: large, Policy: []byte(`{}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rows, err := db.ReplayPlansForMissions(ctx, account, []string{"retained-limit"}); !errors.Is(err, ErrReplayEvidenceBudget) || rows != nil {
+		t.Fatalf("aggregate plan budget returned a truncated prefix: rows=%d err=%v", len(rows), err)
+	}
+}
+
+func TestReplayPruningRejectsNonpositiveRetentionWithoutDeletingEvidence(t *testing.T) {
+	for _, retention := range []time.Duration{0, -time.Hour} {
+		t.Run(retention.String(), func(t *testing.T) {
+			db, _, _ := integrationStore(t)
+			const account = "pruning-floor"
+			saveTestAccount(t, db, account)
+			now := time.Now().UTC()
+			replayAcceptanceRecord(t, db, replayAcceptanceFrame(account, "old", now.Add(-48*time.Hour), []byte(`{}`)))
+			replayAcceptanceRecord(t, db, replayAcceptanceFrame(account, "recent", now.Add(-12*time.Hour), []byte(`{}`)))
+			cutoff, err := db.PruneReplay(context.Background(), retention, 0)
+			if err == nil || !cutoff.IsZero() {
+				t.Fatalf("nonpositive retention accepted: %s, %v", cutoff, err)
+			}
+			frames := replayAcceptanceFrames(t, db, account)
+			if len(frames) != 2 {
+				t.Fatalf("invalid pruning request deleted evidence: %+v", frames)
 			}
 		})
 	}

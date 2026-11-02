@@ -36,6 +36,43 @@ type growthHazardEvidence struct {
 	calibrations map[string]*hazardCalibration
 }
 
+type capacityHazardRejection struct {
+	RetryAt  time.Time      `json:"retry_at"`
+	Decision GrowthDecision `json:"decision"`
+}
+
+func (r *Runner) capacityHazardBackoff(portID, hullID string) (GrowthDecision, bool) {
+	rejection := decode[map[string]capacityHazardRejection](r.snapshot, "_growth_hazard_backoffs")[portID+"|"+hullID]
+	if !time.Now().Before(rejection.RetryAt) {
+		return GrowthDecision{}, false
+	}
+	r.wakeBy(rejection.RetryAt)
+	return rejection.Decision, true
+}
+
+func (r *Runner) recordCapacityHazardRejection(ctx context.Context, portID, hullID string, decision GrowthDecision) error {
+	backoffs := decode[map[string]capacityHazardRejection](r.snapshot, "_growth_hazard_backoffs")
+	if backoffs == nil {
+		backoffs = make(map[string]capacityHazardRejection)
+	}
+	now := time.Now().UTC()
+	for key, rejection := range backoffs {
+		if !now.Before(rejection.RetryAt) {
+			delete(backoffs, key)
+		}
+	}
+	// Quote unavailability is not a yard refusal: retry after six game hours,
+	// without extending the separate six-real-hour build refusal backoff.
+	until := now.Add(gameDuration(0.25, max(1, r.stateCache.Clock.Calendar.TimeScale)))
+	backoffs[portID+"|"+hullID] = capacityHazardRejection{RetryAt: until, Decision: decision}
+	r.snapshot["_growth_hazard_backoffs"] = encode(backoffs)
+	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+		return err
+	}
+	r.wakeBy(until)
+	return nil
+}
+
 func (r *Runner) growthNetWorth(ctx context.Context, evidence *growthEvidence) (int64, error) {
 	if !evidence.hazard.loaded {
 		metric, err := r.db.LatestMetric(ctx, r.account.ID, "net_worth_pence")
@@ -589,8 +626,8 @@ func (r *Runner) capacityLosses(ctx context.Context, asOf time.Time) (string, er
 func (r *Runner) capacityFleetInput(ctx context.Context, evidence *growthEvidence) (CapacityGrowthInput, string, error) {
 	input := CapacityGrowthInput{
 		SurplusPence:   evidence.available,
-		ReservePence:   r.opts.ReservePence,
-		MaxPaybackDays: r.opts.CapacityPaybackDays,
+		ReservePence:   r.protectedReservePence(),
+		MaxPaybackDays: capacityPaybackGameDays,
 	}
 	if until := decode[time.Time](r.snapshot, "_capacity_growth_paused_until"); evidence.asOf.Before(until) {
 		r.wakeBy(until)
@@ -802,6 +839,9 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 	if !capacityHull(hull) {
 		return EvaluateCapacityGrowth(CapacityGrowthInput{Hull: hull}), nil, nil
 	}
+	if decision, waiting := r.capacityHazardBackoff(port.ID, hull.ID); waiting {
+		return decision, nil, nil
+	}
 	planning, err := r.committedPlanningInputExcept(ctx, growthCandidate(port, hull), "__growth")
 	if err != nil {
 		return GrowthDecision{}, nil, err
@@ -932,7 +972,7 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		if gate == "" && !capacityPackageCoverage(decision, 0) {
 			gate = "dscr"
 		}
-		if gate == "" && decision.PaybackGameDays > min(420, input.MaxPaybackDays) {
+		if gate == "" && decision.PaybackGameDays > capacityPaybackGameDays {
 			gate = "payback"
 		}
 		if gate != "" {
@@ -949,9 +989,7 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 				continue
 			}
 			if _, _, available := planHazard(planning, route); !available {
-				if !r.ownedShipInRegion(port.BankingRegion) {
-					decision.Reason = hazardUnavailable
-				}
+				decision.Reason = hazardUnavailable
 				rejections[hazardUnavailable] = 1
 				break
 			}
@@ -1039,6 +1077,12 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		"hazard_estimate":                       hazardEstimate,
 	}); err != nil {
 		return GrowthDecision{}, nil, err
+	}
+	if rejections[hazardUnavailable] > 0 && !hazardPriced &&
+		planning.fresh("catalog") && planning.fresh("zones") && planning.fresh("clock") {
+		if err := r.recordCapacityHazardRejection(ctx, port.ID, hull.ID, decision); err != nil {
+			return GrowthDecision{}, nil, err
+		}
 	}
 	return decision, required, nil
 }
@@ -1221,11 +1265,12 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 			if err != nil {
 				return false, err
 			}
-			if decision.Reason == hazardUnavailable || decision.Reason == capacityMeasuredNetReason || decision.Verdict == "measured_net" ||
+			_, hazardWaiting := r.capacityHazardBackoff(port.ID, hull.ID)
+			if hazardWaiting || decision.Reason == hazardUnavailable || decision.Reason == capacityMeasuredNetReason || decision.Verdict == "measured_net" ||
 				!decision.EconomicallyViable && !r.capacityQuayRouteMeasured(port, hull) {
 				completeYards[port.ID] = false
 			}
-			if decision.Accepted || !decision.EconomicallyViable {
+			if !hazardWaiting && (decision.Accepted || !decision.EconomicallyViable) {
 				noLoan := capacityLoanDecision{ShortfallPence: decision.CashShortfallPence, Reason: "no borrowing: " + decision.Reason,
 					Verdict: decision.Verdict, EvidenceBasis: decision.EvidenceBasis, Package: decision.Package}
 				if decision.Accepted {
@@ -1293,8 +1338,10 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 		if evaluated {
 			key += ":" + bestPort.ID + "|" + bestHull.ID
 		}
-		if err := r.decision(ctx, "", key, bestDecision.Reason, bestDecision); err != nil {
-			return false, err
+		if _, hazardWaiting := r.capacityHazardBackoff(bestPort.ID, bestHull.ID); !hazardWaiting {
+			if err := r.decision(ctx, "", key, bestDecision.Reason, bestDecision); err != nil {
+				return false, err
+			}
 		}
 	}
 	// A pair still awaiting its fresh capacity evaluation holds every savings
@@ -1564,11 +1611,18 @@ func (r *Runner) startCapacityGrowth(ctx context.Context, port Port, hull Hull, 
 // stores must stay within 35% of that net worth. Non-zone-estimate admissions
 // pass unchanged.
 func (r *Runner) capacityZoneEstimateReady(ctx context.Context, data *missionData, decision GrowthDecision) error {
+	if decision, waiting := r.capacityHazardBackoff(data.BuildPort, data.BuildClass); waiting {
+		return capacityGate("zone_exposure", true, decision.Reason)
+	}
 	live, err := r.capacityYardReady(ctx, data)
 	if err != nil || !strings.HasPrefix(decision.HazardSource, "zone estimate") {
 		return err
 	}
-	hazardCurrent := r.fresh("catalog") && r.fresh("zones") && r.fresh("clock")
+	for _, dataset := range []string{"catalog", "zones", "clock"} {
+		if !r.fresh(dataset) {
+			return capacityGate("zone_exposure", true, "capacity build requires current successful "+dataset+" authority")
+		}
+	}
 	port, exists := findPort(r.stateCache.Catalog, data.BuildPort)
 	if !exists {
 		return errors.New("capacity build yard is absent from the current catalog")
@@ -1578,20 +1632,28 @@ func (r *Runner) capacityZoneEstimateReady(ctx context.Context, data *missionDat
 		return errors.New("capacity build hull is absent from the current catalog")
 	}
 	planning := r.planningInput(growthCandidate(port, hull))
+	if !planning.fresh("routes/" + routeKey(port.ID, decision.HazardDestination, hull.ID)) {
+		return capacityGate("zone_exposure", true, "capacity build requires current successful estimate route authority")
+	}
 	evidence := growthEvidence{asOf: time.Now().UTC()}
 	if err := r.capacityHazardEstimate(ctx, &planning, port, hull, &evidence); err != nil {
 		return err
 	}
 	route, routeErr := observedPlanningRoute(planning, port.ID, decision.HazardDestination, hull)
 	_, _, riskValid := estimatedZoneHazard(planning, route)
-	hazardCurrent = hazardCurrent && decision.HazardDestination != "" && routeErr == nil && riskValid
-	if !hazardCurrent || planning.hazardEstimate == nil {
+	if decision.HazardDestination == "" || routeErr != nil || !riskValid || planning.hazardEstimate == nil {
 		if err := r.decision(ctx, "", "capacity_candidate:"+port.ID+"|"+hull.ID, hazardUnavailable, map[string]any{
 			"accepted": false, "hazard_source": "", "hazard_estimate": nil,
 			"hull_category": hull.HullCategory, "evidence_basis": decision.EvidenceBasis,
 			"package": decision.Package, "verdict": "zone_exposure",
 			"plan_rejections": map[string]int{hazardUnavailable: 1},
 		}); err != nil {
+			return err
+		}
+		rejected := decision
+		rejected.Accepted, rejected.EconomicallyViable = false, false
+		rejected.Reason, rejected.Verdict = hazardUnavailable, "zone_exposure"
+		if err := r.recordCapacityHazardRejection(ctx, port.ID, hull.ID, rejected); err != nil {
 			return err
 		}
 		return capacityGate("zone_exposure", true, hazardUnavailable)
@@ -1613,6 +1675,9 @@ func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) erro
 	hull, exists := findHull(r.stateCache.Catalog, intent.BuildClass)
 	if !exists || !capacityHull(hull) {
 		return errors.New("capacity build requires an admitted trading hull")
+	}
+	if decision, waiting := r.capacityHazardBackoff(data.BuildPort, data.BuildClass); waiting {
+		return errors.New(decision.Reason)
 	}
 	if intent.Financing != nil {
 		if intent.Financing.Cancel || len(intent.Financing.Loans) != len(intent.Financing.Quotes) {

@@ -222,6 +222,9 @@ func TestDispatchCommittedInfoFailsClosedWhenCredentialsBecomeUnreadable(t *test
 				outcome.BuiltShipID != returnedShipID || outcome.BuildCostPence != 60000 {
 				t.Fatalf("credential failure was injected before durable success: phase %s, data %+v", persisted.Phase, outcome)
 			}
+			// Recording is always on. Drain its committed evidence before
+			// closing the store so only credential lookup fails in this fixture.
+			runner.stopReplay(h.ctx)
 			if err := h.db.Close(); err != nil {
 				t.Fatal(err)
 			}
@@ -307,7 +310,7 @@ func stageLoggingSettings(t *testing.T, h *recoveryHarness, runner *Runner, gene
 func stageLoggingGrowth(t *testing.T, h *recoveryHarness, runner *Runner) (*store.Mission, missionData) {
 	t.Helper()
 	h.api.setVaultBalance("north", 500_000)
-	h.api.setVaultBalance("south", 100_000)
+	h.api.setVaultBalance("south", 150_000)
 	h.seedLaneProofs()
 	if _, err := h.tick(runner); err != nil {
 		t.Fatalf("stage funded growth with current quote and lane proof: %v", err)

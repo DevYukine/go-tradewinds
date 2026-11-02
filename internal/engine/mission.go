@@ -45,6 +45,7 @@ type relocationIntent struct {
 
 type missionData struct {
 	Plan                      Plan                    `json:"plan"`
+	AdmissionRevenue          *store.RevenueForecast  `json:"admission_revenue,omitempty"`
 	FinishAtDestination       bool                    `json:"finish_at_destination"`
 	Relocation                *relocationIntent       `json:"relocation,omitempty"`
 	SourcingHandoff           *relocationIntent       `json:"sourcing_handoff,omitempty"`
@@ -53,11 +54,14 @@ type missionData struct {
 	Passage                   *passageIntent          `json:"passage,omitempty"`
 	Underwriting              *underwritingIntent     `json:"underwriting,omitempty"`
 	Marque                    *marqueIntent           `json:"marque,omitempty"`
-	Futures                   *futuresPilotIntent     `json:"futures,omitempty"`
+	Futures                   *futuresState           `json:"futures,omitempty"`
 	Bulletin                  *bulletinIntent         `json:"bulletin,omitempty"`
 	LoanRepayment             *loanRepaymentIntent    `json:"loan_repayment,omitempty"`
 	PlayerLoan                *playerLoanIntent       `json:"player_loan,omitempty"`
 	Rename                    *shipRenameIntent       `json:"rename,omitempty"`
+	Commission                *commissionIntent       `json:"commission,omitempty"`
+	VoyageInsurance           []voyageInsuranceIntent `json:"voyage_insurance,omitempty"`
+	VoyageInsuranceSettledAt  time.Time               `json:"voyage_insurance_settled_at,omitempty"`
 	FundingMission            string                  `json:"funding_mission,omitempty"`
 	FundingGeneration         string                  `json:"funding_generation,omitempty"`
 	SourcingSpentPence        int64                   `json:"sourcing_spent_pence"`
@@ -137,12 +141,12 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	// pending request blocks all new account mutations rather than being guessed.
 	missions := make(map[string]*store.Mission)
 	dataByShip := make(map[string]missionData)
-	ids := make([]string, 0, len(r.stateCache.Ships)+9)
+	ids := make([]string, 0, len(r.stateCache.Ships)+10)
 	ids = append(ids, "__loans")
 	for _, ship := range r.stateCache.Ships {
 		ids = append(ids, ship.Ship.ID)
 	}
-	ids = append(ids, "__treasury", "__growth", americaFlagshipMission, shipRenameMission, "__underwriting", "__marque", "__futures", "__bulletin")
+	ids = append(ids, "__treasury", "__growth", americaFlagshipMission, shipRenameMission, "__underwriting", "__marque", "__futures", "__bulletin", commissionMission)
 	attached := make(map[string]bool)
 	for _, id := range ids {
 		mission, data, err := r.loadMission(ctx, id)
@@ -272,6 +276,11 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	if unresolved {
 		return r.creditOnlyWork(ctx, missions, dataByShip)
 	}
+	if missions[commissionMission] != nil {
+		if changed, err := r.driveCommissions(ctx); changed || err != nil {
+			return changed, err
+		}
+	}
 	if r.opts.Execute {
 		r.assessHold(shipRenameMission)
 		data := dataByShip[shipRenameMission]
@@ -282,7 +291,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		}
 		renameChanged = renameChanged || changed
 	}
-	if r.opts.Execute && (r.opts.FuturesPilotEnabled || missions["__futures"] != nil) {
+	if r.opts.Execute {
 		r.assessHold("__futures")
 		data := dataByShip["__futures"]
 		if changed, err := r.driveFutures(ctx, missions["__futures"], &data); changed || err != nil {
@@ -332,11 +341,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			treasuryReleased = true
 		}
 	}
-	sourcingActive := false
-	for _, data := range dataByShip {
-		sourcingActive = sourcingActive || data.Relocation != nil || data.SourcingHandoff != nil
-	}
-	if r.opts.Execute && !treasuryReleased && missions["__treasury"] == nil && !sourcingActive {
+	if r.opts.Execute && !treasuryReleased && missions["__treasury"] == nil {
 		r.assessHold("__treasury")
 		changed, err := r.manageTreasury(ctx)
 		if changed || err != nil {
@@ -357,6 +362,10 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		if err != nil || changed && before == r.localRetirements {
 			return changed, err
 		}
+	}
+	sourcingActive := false
+	for _, data := range dataByShip {
+		sourcingActive = sourcingActive || data.Relocation != nil
 	}
 	for _, ship := range r.stateCache.Ships {
 		if growth := dataByShip["__growth"]; growth.BuiltShipID != "" && growth.BuiltShipID == ship.Ship.ID {
@@ -456,6 +465,11 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			}
 			voyageHeld = true
 		}
+		if !voyageHeld && r.opts.Execute {
+			if changed, err := r.considerPassage(ctx, ship, input, missions); changed || err != nil {
+				return changed, err
+			}
+		}
 		holdsBeforeSourcing := len(r.holding)
 		sourcingReason := ""
 		if !sourcingActive {
@@ -492,15 +506,15 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			if err := r.hold(ctx, ship.Ship.ID, reason); err != nil {
 				return false, err
 			}
-			if r.opts.Execute {
-				if changed, err := r.considerPassage(ctx, ship, input, missions); changed || err != nil {
-					return changed, err
-				}
-			}
 		}
 		if r.opts.Execute && ship.Ship.Status == "berthed" && r.shipUnlocked(ship) {
 			changed, err := r.startMaintenance(ctx, ship, "offshore", "/v1/fleet/offshore", map[string]any{"ship_id": ship.Ship.ID})
 			return changed || renameChanged, err
+		}
+	}
+	if missions[commissionMission] == nil {
+		if changed, err := r.driveCommissions(ctx); changed || err != nil {
+			return changed, err
 		}
 	}
 	if r.opts.Execute && missions["__underwriting"] == nil && missions["__growth"] == nil && missions["__treasury"] == nil {
@@ -509,13 +523,13 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return changed, err
 		}
 	}
-	if r.opts.Execute && r.opts.MarquesEnabled && missions["__marque"] == nil && missions["__growth"] == nil && missions["__treasury"] == nil {
+	if r.opts.Execute && missions["__marque"] == nil && missions["__growth"] == nil && missions["__treasury"] == nil {
 		r.assessHold("__marque")
 		if changed, err := r.considerMarque(ctx); changed || err != nil {
 			return changed, err
 		}
 	}
-	if err := r.decision(ctx, "", "excluded_liabilities", "futures are pilot-only: one covered Amsterdam water/beer pair with no scale-up; patrols and extra companies rejected without measured positive incremental return and modeled liabilities", nil); err != nil {
+	if err := r.decision(ctx, "", "excluded_liabilities", "futures admit warehouse-stock covered player bids and inventory-backed atomic crosses after carry and credit stress; patrols and extra companies rejected without measured positive incremental return and modeled liabilities", nil); err != nil {
 		return false, err
 	}
 	if err := r.syncBulletinMirror(ctx); err != nil {
@@ -624,6 +638,13 @@ func (r *Runner) newVoyage(ship ShipState, plan Plan) (*store.Mission, missionDa
 		InitialLedgerIDs:    r.ledgerIDs(),
 		CostsKnown:          true,
 		Eligible:            make(map[string]int64),
+	}
+	if plan.Economics.UncalibratedRevenuePence != nil {
+		data.AdmissionRevenue = &store.RevenueForecast{
+			Kind: plan.Kind, Commodity: plan.Commodity, Basis: plan.Economics.RevenueBasis,
+			QuantityTons: plan.Economics.RevenueQuantityTons, RevenuePence: *plan.Economics.UncalibratedRevenuePence,
+			HorizonGameDays: plan.Economics.RevenueHorizonGameDays, EventStress: plan.EventPriceStress,
+		}
 	}
 	return mission, data
 }
@@ -841,7 +862,8 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 	}
 	// Tender at the roadstead before joining a potentially long berth queue
 	// for maintenance. A refused tender performs its idle maintenance below.
-	if ship.Ship.Status != "sailing" && mission.Phase != "provision" && !deliveryReady {
+	if ship.Ship.Status != "sailing" && mission.Phase != "provision" && !deliveryReady &&
+		!voyageLegInsured(data, ship.Ship.CurrentPortID, mission.Destination) {
 		changed, err := r.maintain(ctx, ship, mission, data)
 		if changed || err != nil {
 			return changed, err
@@ -1182,7 +1204,7 @@ func (r *Runner) prepareDeparture(ctx context.Context, ship ShipState, mission *
 	if err := r.validateFreightDeparture(ship, mission.Destination, data, hull); err != nil {
 		return false, r.hold(ctx, ship.Ship.ID, err.Error())
 	}
-	if data.Relocation == nil && !data.ReturnJourney && data.Plan.Kind != "recovery" {
+	if data.Relocation == nil && !data.ReturnJourney && data.Plan.Kind != "recovery" && !voyageLegInsured(data, route.FromPort, route.ToPort) {
 		proceed, err := r.committedProcurementDepartureDecision(ctx, ship, mission.Destination, data)
 		if err != nil {
 			return false, r.hold(ctx, ship.Ship.ID, err.Error())
@@ -1196,6 +1218,9 @@ func (r *Runner) prepareDeparture(ctx context.Context, ship ShipState, mission *
 	}
 	if data.Relocation != nil {
 		data.Relocation.TransientHoldSince = time.Time{}
+	}
+	if handled, changed, err := r.prepareVoyageInsurance(ctx, ship, hull, route, mission, data); handled || err != nil {
+		return changed, err
 	}
 	return true, r.stage(ctx, mission, data, ship, "depart", "/v1/fleet/depart", map[string]any{"ship_id": ship.Ship.ID, "dest_port_id": mission.Destination})
 }
@@ -1441,7 +1466,7 @@ func (r *Runner) finishMission(ctx context.Context, ship ShipState, mission *sto
 	if data.Settlement == nil && (data.GrowthLane != nil || committedGrowth) && r.normalizeGrowthAccounting(data) {
 		return true, r.saveMission(ctx, mission, data)
 	}
-	if data.Plan.Kind == "recovery" || data.Plan.Kind == "maintenance" {
+	if (data.Plan.Kind == "recovery" || data.Plan.Kind == "maintenance") && !hasIssuedVoyageInsurance(data) {
 		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 	}
 	if mission.Phase == "settled" && data.Settlement != nil {
@@ -1463,6 +1488,13 @@ func (r *Runner) finishMission(ctx context.Context, ship ShipState, mission *sto
 		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 	}
 	if data.Settlement == nil {
+		if hasIssuedVoyageInsurance(data) && data.VoyageInsuranceSettledAt.IsZero() && r.voyagePoliciesTerminal(data) {
+			data.VoyageInsuranceSettledAt = time.Now().UTC()
+			return true, r.saveMission(ctx, mission, data)
+		}
+		if err := r.settleVoyageInsurance(data); err != nil {
+			return false, r.hold(ctx, ship.Ship.ID, err.Error())
+		}
 		// Persist the complete immutable settlement before inserting it. A
 		// crash between those writes must replay identical timestamps/costs.
 		bills, expenseIDs := r.claimBillsSince(data, mission.Generation)
@@ -1497,6 +1529,10 @@ func (r *Runner) finishMission(ctx context.Context, ship ShipState, mission *sto
 			hazardBPS = new(data.Plan.Economics.HazardBPS)
 		}
 		plannedRevenue := data.Plan.Economics.UncalibratedRevenuePence
+		admissionRevenue := data.AdmissionRevenue
+		if admissionRevenue != nil && data.Plan.Kind != "freight" && data.BoughtQuantity != admissionRevenue.QuantityTons {
+			admissionRevenue = nil
+		}
 		// A partial IOC buy is not a failed price forecast for the full lot.
 		if data.Plan.Kind != "freight" && data.BoughtQuantity != data.Plan.Economics.RevenueQuantityTons {
 			plannedRevenue = nil
@@ -1523,6 +1559,7 @@ func (r *Runner) finishMission(ctx context.Context, ship ShipState, mission *sto
 			PlannedRevenuePence:     plannedRevenue,
 			RevenueBasis:            revenueBasis,
 			RevenueAgeGameHours:     data.Plan.Economics.RevenueAgeGameHours,
+			AdmissionRevenue:        admissionRevenue,
 			HazardBPS:               hazardBPS,
 			HazardSource:            hazardSource,
 			CargoShortfallPence:     shortfall,

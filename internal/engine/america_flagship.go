@@ -24,6 +24,7 @@ const americaFlagshipRequestRetry = 10 * time.Minute
 
 type americaFlagshipState struct {
 	Pending     bool      `json:"pending"`
+	HeldPence   *int64    `json:"held_pence,omitempty"`
 	LoanID      string    `json:"loan_id,omitempty"`
 	BuildName   string    `json:"build_name,omitempty"`
 	BuiltShipID string    `json:"built_ship_id,omitempty"`
@@ -31,18 +32,34 @@ type americaFlagshipState struct {
 }
 
 func (r *Runner) saveAmericaFlagship(ctx context.Context, state americaFlagshipState) error {
+	if state.Pending && !decode[americaFlagshipState](r.snapshot, "_america_flagship").Pending {
+		held := int64(0)
+		for _, vault := range r.stateCache.Vaults {
+			if vault.BankingRegion == "america" && vault.AccountType == "vault" {
+				held = max(held, vault.BalancePence)
+			}
+		}
+		state.HeldPence = &held
+	}
 	r.snapshot["_america_flagship"] = encode(state)
 	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
 }
 
-// The flagship spends its own reservation. Every other planner and treasury
-// donor sees the America cash as committed until the hull has been built.
+// The flagship spends its own fixed reservation. Later remittances must remain
+// available to the trading or growth intent that requested them.
 func reserveAmericaFlagship(required map[string]int64, state AccountState, snapshot map[string]json.RawMessage) {
 	flagship := decode[americaFlagshipState](snapshot, "_america_flagship")
 	if flagship.Pending && flagship.BuiltShipID == "" {
+		var held int64
+		if flagship.HeldPence != nil {
+			held = *flagship.HeldPence
+		} else {
+			profile := decode[gameapi.Profile](snapshot, "profile")
+			held = lastAmericaFlagshipPrincipal(state.LoanRequests, profile.Company.ID)
+		}
 		for _, vault := range state.Vaults {
 			if vault.BankingRegion == "america" && vault.AccountType == "vault" {
-				required["america"] = max(required["america"], vault.BalancePence)
+				required["america"] = max(required["america"], min(vault.BalancePence, held))
 			}
 		}
 	}
@@ -61,10 +78,14 @@ func (r *Runner) americaFlagshipQuote(ctx context.Context, class string) (YardQu
 // lastAmericaFlagshipPrincipal returns the principal of the newest own
 // unsecured amortised America request, or 0 when none was recorded.
 func (r *Runner) lastAmericaFlagshipPrincipal() int64 {
+	return lastAmericaFlagshipPrincipal(r.stateCache.LoanRequests, r.account.CompanyID)
+}
+
+func lastAmericaFlagshipPrincipal(requests []gameapi.LoanRequestView, companyID string) int64 {
 	var newest *gameapi.LoanRequestView
-	for index := range r.stateCache.LoanRequests {
-		request := &r.stateCache.LoanRequests[index]
-		if request.BorrowerCompanyID != r.account.CompanyID || request.BankingRegion != "america" ||
+	for index := range requests {
+		request := &requests[index]
+		if request.BorrowerCompanyID != companyID || request.BankingRegion != "america" ||
 			request.CollateralKind != "unsecured" || request.Repayment != "amortised" || request.TermGameDays != 360 {
 			continue
 		}
@@ -267,8 +288,12 @@ func (r *Runner) americaFlagshipBuildQuote(ctx context.Context, data *missionDat
 		r.wakeBy(data.CooldownUntil)
 		return quote, errors.New("America flagship waits 30 real minutes for Boston turnkey materials")
 	}
-	if !r.fresh("vaults") || r.planningInput(ShipState{}).Balances["america"] < *quote.TotalCostPence {
-		return quote, errors.New("America flagship waits for America cash to cover the live Boston quote")
+	input, err := r.committedPlanningInputExcept(ctx, ShipState{}, americaFlagshipMission)
+	if err != nil {
+		return quote, err
+	}
+	if !r.fresh("vaults") || input.Balances["america"]-input.ReserveByRegion["america"] < *quote.TotalCostPence {
+		return quote, errors.New("America flagship waits for America cash above other committed reservations to cover the live Boston quote")
 	}
 	return quote, nil
 }

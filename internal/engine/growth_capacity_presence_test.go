@@ -52,7 +52,7 @@ func TestOverseasFactorYardUsesCalibratedHazardWithoutOwnedLaneQuote(t *testing.
 				return
 			}
 			if decision.Accepted || decision.EconomicallyViable || decision.Reason == hazardUnavailable ||
-				!strings.Contains(string(row.Details), "non-positive destination contribution") {
+				!strings.Contains(string(row.Details), "non-positive stressed destination contribution") {
 				t.Fatalf("a different unquoted route concealed the priced local economic rejection: %+v %s", decision, row.Details)
 			}
 			if h.api.mutationCount("/v1/shipyard/build-ship") != 0 {

@@ -659,7 +659,6 @@ func TestBulletinBoardFailureLeavesTradingRunning(t *testing.T) {
 	h.api.server.Config.Handler = proxy
 	h.api.setFactorPorts(recoveryFarPort)
 	runner := h.runner(primaryTestKey)
-	runner.opts.BulletinEnabled = false
 	refreshBulletinRunner(t, h, runner)
 	// The mirror proves its outage behavior on the same runner before any
 	// trading starts: the board read fails and only a decision is recorded.
@@ -716,7 +715,6 @@ func TestBulletinBoardFailureLeavesTradingRunning(t *testing.T) {
 	idleH.api.setFleet([]map[string]any{})
 	idleProxy.readStatus = http.StatusInternalServerError
 	idleRunner.opts.Execute = false
-	idleRunner.opts.BulletinEnabled = false
 	if _, err := idleH.tick(idleRunner); err != nil {
 		t.Fatalf("an idle pass with a refused board failed: %v", err)
 	}

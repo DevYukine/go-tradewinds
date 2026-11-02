@@ -1734,7 +1734,7 @@ func TestPiracyInsuranceHeldGrowthCargoDoesNotStageReplacementFunding(t *testing
 	if data.Action != nil || data.BuyDone || data.BoughtQuantity != 0 {
 		t.Fatalf("fixture did not retain only unattempted growth loading: %+v", data)
 	}
-	w.h.api.setVaultBalance("north", runner.opts.ReservePence+10)
+	w.h.api.setVaultBalance("north", runner.protectedReservePence()+10)
 	w.h.api.setVaultBalance("south", 50_000_000)
 	piracyInsuranceRefresh(t, w.h, runner)
 	before := w.h.api.mutationCount("/v1/treasury/remit")

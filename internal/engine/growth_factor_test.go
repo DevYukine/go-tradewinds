@@ -649,7 +649,7 @@ func TestExpansionFactorFundsRegionalFeeFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if input.Balances["caribbean"] < 2*expansionAgentHireFeePence+runner.opts.ReservePence {
+	if input.Balances["caribbean"] < 2*expansionAgentHireFeePence+runner.protectedReservePence() {
 		t.Fatalf("funding omitted both regional fees or reserve: %d", input.Balances["caribbean"])
 	}
 	if changed, err := runner.manageExpansionAgents(h.ctx); err != nil || !changed {
@@ -1129,7 +1129,7 @@ func TestExpansionPartnerFundingCapsOtherMissionCommitments(t *testing.T) {
 	if want := max(base["north"], input.Balances["north"]); required["north"] != want {
 		t.Fatalf("partner controller tried funding another mission's raw shortfall: got=%d want=%d", required["north"], want)
 	}
-	want := growthCashTotal(max(base["caribbean"], input.ReserveByRegion["caribbean"], runner.opts.ReservePence), expansionAgentHireFeePence)
+	want := growthCashTotal(max(base["caribbean"], input.ReserveByRegion["caribbean"], runner.protectedReservePence()), expansionAgentHireFeePence)
 	if required["caribbean"] != want {
 		t.Fatalf("partner fee or protected local reserve lost: got=%d want=%d", required["caribbean"], want)
 	}

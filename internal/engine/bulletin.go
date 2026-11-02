@@ -420,12 +420,6 @@ func (r *Runner) driveBulletin(ctx context.Context, mission *store.Mission, data
 		}
 		return changed, err
 	}
-	if !r.opts.BulletinEnabled {
-		if mission != nil {
-			return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
-		}
-		return false, r.decision(ctx, "__bulletin", "bulletin", "public posting disabled by BULLETIN_ENABLED=false", nil)
-	}
 	if time.Now().Before(state.due()) {
 		r.wakeBy(state.due())
 		return false, r.decision(ctx, "__bulletin", "bulletin", "public posting waits for the three-real-hour schedule or cooldown", map[string]any{"until": state.due()})
@@ -613,9 +607,6 @@ func validBulletinText(title, body string) error {
 }
 
 func (r *Runner) bulletinPreflight(data *missionData) error {
-	if !r.opts.BulletinEnabled {
-		return errors.New("public posting is disabled (BULLETIN_ENABLED=false)")
-	}
 	intent, action := data.Bulletin, data.Action
 	if intent == nil || action == nil || intent.CompanyName != names.DefaultCompany || intent.NotBefore.IsZero() {
 		return errors.New("bulletin request lacks its immutable company intent")

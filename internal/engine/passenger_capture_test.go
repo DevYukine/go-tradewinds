@@ -226,6 +226,8 @@ func TestPassengerCaptureFaresUseTenGameHourAttemptGate(t *testing.T) {
 					} else {
 						_, _ = w.Write([]byte(passengerFareFixture))
 					}
+				case "/v1/passengers/fares/summary":
+					_, _ = w.Write([]byte(`{"bands":[],"unmet":[]}`))
 				default:
 					t.Errorf("unexpected passenger read %s", req.URL)
 					w.WriteHeader(http.StatusNotFound)
@@ -396,6 +398,8 @@ func TestPassengerFareBudgetPrunesIrrelevantLanesAndBoundsPayload(t *testing.T) 
 			fareReads++
 			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(laneRows(req.URL.Query().Get("from"), req.URL.Query().Get("to")))
+		case "/v1/passengers/fares/summary":
+			_, _ = w.Write([]byte(`{"bands":[],"unmet":[]}`))
 		default:
 			t.Errorf("unexpected passenger read %s", req.URL)
 			w.WriteHeader(http.StatusNotFound)
@@ -530,6 +534,8 @@ func TestPassengerFareGateSurvivesFailedWaitingAndStaleFleet(t *testing.T) {
 					_, _ = w.Write([]byte(passengerWaitingFixture))
 				case "/v1/passengers/fares":
 					_, _ = w.Write([]byte(passengerFareFixture))
+				case "/v1/passengers/fares/summary":
+					_, _ = w.Write([]byte(`{"bands":[],"unmet":[]}`))
 				default:
 					t.Errorf("unexpected passenger read %s", req.URL)
 					w.WriteHeader(http.StatusNotFound)
@@ -589,7 +595,7 @@ func TestPassengerFareGateSurvivesFailedWaitingAndStaleFleet(t *testing.T) {
 			// Every pass with an occupied port re-reads waiting and offers;
 			// the fares count is the consumer-visible gate: exactly one read
 			// survives a failed waiting capture or a stale fleet pass.
-			want := map[string]int{"/v1/passengers/offers": 2, "/v1/passengers/waiting": 2, "/v1/passengers/fares": 1}
+			want := map[string]int{"/v1/passengers/offers": 2, "/v1/passengers/waiting": 2, "/v1/passengers/fares": 1, "/v1/passengers/fares/summary": 1}
 			if failWaiting {
 				want["/v1/passengers/offers"] = 3
 				want["/v1/passengers/waiting"] = 3
@@ -654,6 +660,11 @@ func TestPassengerCaptureOffersPaginateButOtherReadsDoNot(t *testing.T) {
 				t.Errorf("fare capture must remain one bounded public page: %s", req.URL)
 			}
 			_ = json.NewEncoder(w).Encode(fares)
+		case "/v1/passengers/fares/summary":
+			if req.Header.Get("Authorization") != "" || len(query) != 0 {
+				t.Errorf("fare summary must be one unauthenticated unpaginated read: %s", req.URL)
+			}
+			_, _ = w.Write([]byte(`{"bands":[],"unmet":[]}`))
 		default:
 			t.Errorf("unexpected passenger read %s", req.URL)
 			w.WriteHeader(http.StatusNotFound)
@@ -664,7 +675,7 @@ func TestPassengerCaptureOffersPaginateButOtherReadsDoNot(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if want := map[string]int{"/v1/passengers/offers": 2, "/v1/passengers/waiting": 1, "/v1/passengers/aboard": 1, "/v1/passengers/fares": 1}; !reflect.DeepEqual(counts, want) {
+	if want := map[string]int{"/v1/passengers/offers": 2, "/v1/passengers/waiting": 1, "/v1/passengers/aboard": 1, "/v1/passengers/fares": 1, "/v1/passengers/fares/summary": 1}; !reflect.DeepEqual(counts, want) {
 		t.Fatalf("endpoint pagination/counts %v, want %v", counts, want)
 	}
 	if got := len(decode[[]gameapi.PassengerOffer](runner.snapshot, "passenger_offers")); got != 201 {

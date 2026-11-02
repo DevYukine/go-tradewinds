@@ -19,17 +19,9 @@ import (
 )
 
 type Options struct {
-	Execute             bool
-	ReservePence        int64
-	MaxPaybackDays      float64
-	CapacityPaybackDays float64
-	MarquesEnabled      bool
-	BulletinEnabled     bool
-	FuturesPilotEnabled bool
-	ReplayRetentionDays int
-	ReplayMaxGiB        float64
-	GameVersion         func() string `json:"-"`
-	UnderworldAPI       UnderworldAPI `json:"-"`
+	Execute       bool
+	GameVersion   func() string `json:"-"`
+	UnderworldAPI UnderworldAPI `json:"-"`
 }
 
 type decisionFingerprint struct {
@@ -99,15 +91,6 @@ type Runner struct {
 func New(api *gameapi.Client, db *store.Store, account store.Account, log *zap.Logger, opts Options) *Runner {
 	if log == nil {
 		log = zap.NewNop()
-	}
-	if opts.ReservePence <= 0 {
-		opts.ReservePence = 75_000
-	}
-	if opts.MaxPaybackDays <= 0 {
-		opts.MaxPaybackDays = 12
-	}
-	if opts.CapacityPaybackDays <= 0 || opts.CapacityPaybackDays > 720 {
-		opts.CapacityPaybackDays = 420
 	}
 	return &Runner{
 		api:              api,
@@ -305,6 +288,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			handledFinancial = message.financialEpoch
 		}
 		if message.closed {
+			r.invalidateFutures()
 			var upstream *gameapi.APIError
 			if errors.As(message.err, &upstream) && (upstream.Status == 401 || upstream.Status == 403) {
 				return message.err
@@ -329,10 +313,14 @@ func (r *Runner) Run(ctx context.Context) error {
 			return nil
 		}
 		event := message.event
+		if futuresDatasetEvent(event.Type) {
+			r.invalidateFutures()
+		}
 		if event.Type == "auth_revoked" || event.Type == "auth_expired" {
 			return fmt.Errorf("%w: %s", ErrAuthorizationEnded, event.Type)
 		}
 		if event.Type == "gap" {
+			r.invalidateFutures()
 			if err := r.db.ResetCursor(ctx, r.account.ID); err != nil {
 				return err
 			}
@@ -405,7 +393,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			return err
 		}
 		if err := r.refreshRevenueCalibration(ctx); err != nil {
-			return err
+			r.log.Warn("revenue calibration unavailable; retaining last model or unmeasured prior", zap.Error(err))
 		}
 		pending := len(messages)
 		refreshPending := pending > 0
@@ -575,7 +563,23 @@ func (r *Runner) verifyIdentity() error {
 }
 
 func (r *Runner) fresh(dataset string) bool {
+	if dataset == "futures" {
+		meta := r.meta[dataset]
+		now := time.Now()
+		return meta.Complete && !meta.Stale && meta.Error == "" && !meta.UpdatedAt.IsZero() &&
+			!meta.UpdatedAt.After(now.Add(time.Second)) && now.Sub(meta.UpdatedAt) < futuresBackstop
+	}
 	return (PlanningInput{Now: time.Now(), Clock: r.stateCache.Clock, Metadata: r.meta, Generation: r.generation}).fresh(dataset)
+}
+
+func futuresDatasetEvent(eventType string) bool {
+	return strings.HasPrefix(eventType, "futures_") || strings.HasPrefix(eventType, "exchange_")
+}
+
+func (r *Runner) invalidateFutures() {
+	meta := r.meta["futures"]
+	meta.Stale = true
+	r.meta["futures"] = meta
 }
 
 func (r *Runner) nextWake() time.Duration {
@@ -688,7 +692,7 @@ func (r *Runner) holdExpected(ctx context.Context, shipID, reason string) error 
 func (r *Runner) recordHold(ctx context.Context, shipID, reason string, expected bool) error {
 	holdShipID := shipID
 	switch shipID {
-	case "__treasury", "__growth", "__loans", "__underwriting", "__marque", "__futures", "__bulletin", shipRenameMission:
+	case "__treasury", "__growth", "__loans", "__underwriting", "__marque", "__futures", "__bulletin", shipRenameMission, commissionMission:
 		holdShipID = ""
 	}
 	subjectID := shipID
@@ -726,8 +730,8 @@ func (r *Runner) planningInput(ship ShipState) PlanningInput {
 
 func (r *Runner) planningInputFrom(ship ShipState, state AccountState) PlanningInput {
 	return PlanningInputFor(time.Now(), ship, state, r.snapshot, PlanningSources{
-		CompanyID: r.account.CompanyID, ReservePence: r.opts.ReservePence,
-		Metadata: r.meta, Generation: r.generation,
+		CompanyID: r.account.CompanyID,
+		Metadata:  r.meta, Generation: r.generation,
 		CharterProceedsPence: r.charterProceedsPence, Competition: r.competition,
 	})
 }

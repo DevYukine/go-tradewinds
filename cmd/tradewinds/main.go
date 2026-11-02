@@ -36,15 +36,14 @@ func command(args []string) error {
 		fmt.Println(`Tradewinds
   register [--handle Yukine --company 'The Pokemon Pirates' --home le_havre]
   underworld-key [--handle Yukine]
-  futures-rearm --account <account-id>
   accounts
-  run [--execute]
+  run [--observe]
 
 Credentials are encrypted in PostgreSQL.
-run observes by default; --execute enables trading and fleet growth.`)
+run trades and grows the fleet by default; --observe disables game mutations.`)
 		return nil
 	}
-	if args[0] != "register" && args[0] != "underworld-key" && args[0] != "futures-rearm" && args[0] != "accounts" && args[0] != "run" {
+	if args[0] != "register" && args[0] != "underworld-key" && args[0] != "accounts" && args[0] != "run" {
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 
@@ -72,8 +71,6 @@ run observes by default; --execute enables trading and fleet growth.`)
 		return register(cfg, db, log, args[1:])
 	case "underworld-key":
 		return underworldKey(cfg, db, log, args[1:])
-	case "futures-rearm":
-		return futuresRearm(db, log, args[1:])
 	case "accounts":
 		if len(args) != 1 {
 			return errors.New("accounts takes no arguments")
@@ -92,32 +89,10 @@ run observes by default; --execute enables trading and fleet growth.`)
 	}
 }
 
-func futuresRearm(db *store.Store, log *zap.Logger, args []string) error {
-	flags := flag.NewFlagSet("futures-rearm", flag.ContinueOnError)
-	accountID := flags.String("account", "", "Exact configured account ID")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if flags.NArg() != 0 || *accountID == "" {
-		return errors.New("futures-rearm requires --account and no positional arguments")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := engine.RearmUnusedFuturesPilot(ctx, db, *accountID); err != nil {
-		return err
-	}
-	log.Info("unused futures pilot explicitly re-armed", zap.String("account_id", *accountID))
-	return nil
-}
-
 func run(cfg config.Config, db *store.Store, log *zap.Logger, args []string) error {
-	flags := flag.NewFlagSet("run", flag.ContinueOnError)
-	execute := flags.Bool("execute", false, "Enable autonomous game mutations")
-	if err := flags.Parse(args); err != nil {
+	execute, err := parseRunMode(args)
+	if err != nil {
 		return err
-	}
-	if flags.NArg() != 0 {
-		return errors.New("run takes no positional arguments")
 	}
 
 	app := fx.New(
@@ -129,11 +104,23 @@ func run(cfg config.Config, db *store.Store, log *zap.Logger, args []string) err
 			return events
 		}),
 		fx.Invoke(func(lifecycle fx.Lifecycle, shutdown fx.Shutdowner) {
-			startRuntime(lifecycle, shutdown, cfg, db, log, *execute)
+			startRuntime(lifecycle, shutdown, cfg, db, log, execute)
 		}),
 	)
 	app.Run()
 	return app.Err()
+}
+
+func parseRunMode(args []string) (bool, error) {
+	flags := flag.NewFlagSet("run", flag.ContinueOnError)
+	observe := flags.Bool("observe", false, "Observe without autonomous game mutations")
+	if err := flags.Parse(args); err != nil {
+		return false, err
+	}
+	if flags.NArg() != 0 {
+		return false, errors.New("run takes no positional arguments")
+	}
+	return !*observe, nil
 }
 
 type underworldReader struct {
@@ -200,17 +187,9 @@ func startRuntime(lifecycle fx.Lifecycle, shutdown fx.Shutdowner, cfg config.Con
 				}
 				engineLog := accountLog.Named("engine")
 				options := engine.Options{
-					Execute:             execute,
-					ReservePence:        cfg.ReservePence,
-					MaxPaybackDays:      cfg.MaxPaybackDays,
-					CapacityPaybackDays: cfg.CapacityPaybackDays,
-					MarquesEnabled:      cfg.MarquesEnabled,
-					FuturesPilotEnabled: cfg.FuturesPilotEnabled,
-					BulletinEnabled:     cfg.BulletinEnabled,
-					ReplayRetentionDays: cfg.ReplayRetentionDays,
-					ReplayMaxGiB:        cfg.ReplayMaxGiB,
-					GameVersion:         gameVersion.Current,
-					UnderworldAPI:       underworld,
+					Execute:       execute,
+					GameVersion:   gameVersion.Current,
+					UnderworldAPI: underworld,
 				}
 				// Each attempt starts from fresh in-memory state; durable state is
 				// reloaded from the store by Run.
@@ -295,22 +274,20 @@ func prunePeriodically(ctx context.Context, db *store.Store, log *zap.Logger, cf
 		if err := db.Prune(ctx); err != nil && ctx.Err() == nil {
 			log.Warn("retention failed", zap.Error(err))
 		}
-		if cfg.ReplayRetentionDays > 0 {
-			retention := time.Duration(cfg.ReplayRetentionDays) * 24 * time.Hour
-			cutoff, err := db.PruneReplay(ctx, retention, int64(cfg.ReplayMaxGiB*(1<<30)))
+		retention := time.Duration(cfg.ReplayRetentionDays) * 24 * time.Hour
+		cutoff, err := db.PruneReplay(ctx, retention, int64(cfg.ReplayMaxGiB*(1<<30)))
+		if err != nil && ctx.Err() == nil {
+			log.Warn("replay retention failed", zap.Error(err))
+		} else if err == nil {
+			if cutoff.After(time.Now().UTC().Add(-retention + time.Second)) {
+				log.Warn("replay byte cap forced a younger cutoff", zap.Time("cutoff", cutoff))
+			}
+			stored, daily, physical, err := db.ReplayBytes(ctx)
 			if err != nil && ctx.Err() == nil {
-				log.Warn("replay retention failed", zap.Error(err))
+				log.Warn("replay size measurement failed", zap.Error(err))
 			} else if err == nil {
-				if cutoff.After(time.Now().UTC().Add(-retention + time.Second)) {
-					log.Warn("replay byte cap forced a younger cutoff", zap.Time("cutoff", cutoff))
-				}
-				stored, daily, physical, err := db.ReplayBytes(ctx)
-				if err != nil && ctx.Err() == nil {
-					log.Warn("replay size measurement failed", zap.Error(err))
-				} else if err == nil {
-					log.Info("replay storage", zap.Int64("stored_bytes", stored),
-						zap.Int64("daily_replay_bytes", daily), zap.Int64("physical_bytes", physical))
-				}
+				log.Info("replay storage", zap.Int64("stored_bytes", stored),
+					zap.Int64("daily_replay_bytes", daily), zap.Int64("physical_bytes", physical))
 			}
 		}
 		select {

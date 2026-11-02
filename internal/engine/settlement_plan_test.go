@@ -157,7 +157,7 @@ func TestMoneyCalibrationSettledCalibratedQuotesKeepTheirRawRevenue(t *testing.T
 	runner.snapshot["ledger"] = json.RawMessage(`[]`)
 	ship := harnessShip(t, runner, recoveryShipBlastoise)
 	in := moneyInput(t, time.Now().UTC(), "canvas_sails", 6_000, 10_000, 1, 30)
-	in.RevenueCalibration = map[string]int64{"depth": 9500}
+	in.RevenueCalibration = revenueCalibrationFixture(9500, 9500)
 	plan := moneySpot(t, in, "canvas_sails")
 	if !plan.Accepted || plan.Economics.RevenuePence != 9500 {
 		t.Fatalf("fixture needs an already calibrated quote: %+v", plan)
@@ -166,11 +166,10 @@ func TestMoneyCalibrationSettledCalibratedQuotesKeepTheirRawRevenue(t *testing.T
 	for i := range 30 {
 		id := fmt.Sprintf("calibrated-settlement-%d", i)
 		destinationSeedAction(t, h, id, "/v1/market/place-order", `{"quantity":1}`, `{"filled_quantity":1}`)
-		data := missionData{
-			Plan: plan, BoughtQuantity: 1, DeliveredQuantity: 1, BuyDone: true, CostsKnown: true,
-			AcquisitionPence: 6000, ProceedsPence: 9500, LastActionID: id, FinishAtDestination: true,
-			StartedAt: since.Add(time.Minute), ProvenLane: laneKey(plan), InitialLedgerIDs: map[string]bool{},
-		}
+		_, data := runner.newVoyage(ship, plan)
+		data.BoughtQuantity, data.DeliveredQuantity, data.BuyDone = 1, 1, true
+		data.AcquisitionPence, data.ProceedsPence, data.LastActionID = 6000, 9500, id
+		data.StartedAt, data.InitialLedgerIDs = since.Add(time.Minute), map[string]bool{}
 		h.putMission(ship.Ship.ID, id, "closing", data)
 		mission, data := h.mission(ship.Ship.ID)
 		if _, err := runner.finishMission(h.ctx, ship, mission, &data); err != nil {
@@ -185,9 +184,13 @@ func TestMoneyCalibrationSettledCalibratedQuotesKeepTheirRawRevenue(t *testing.T
 			data.Settlement.PlannedNetPence == nil || *data.Settlement.PlannedNetPence != plan.Economics.ExpectedNetPence {
 			t.Fatalf("settlement mixed calibrated net with the wrong revenue baseline: %+v", data.Settlement)
 		}
+		if forecast := data.Settlement.AdmissionRevenue; forecast == nil || forecast.RevenuePence != 10_000 ||
+			forecast.HorizonGameDays != plan.Economics.RevenueHorizonGameDays || forecast.Basis != "depth" {
+			t.Fatalf("admission denominator or forecast horizon changed across restart: %+v", forecast)
+		}
 		if i == 9 || i == 29 {
-			factors, err := h.db.RevenueCalibration(h.ctx, h.account.ID, since, time.Now().UTC().Add(time.Second))
-			if err != nil || factors["depth"] != 9500 {
+			factors, err := h.db.RevenueCalibration(h.ctx, h.account.ID, since, time.Time{}, time.Now().UTC().Add(time.Second))
+			if err != nil || factors.Factor("canvas_sails", "depth", plan.Economics.GameDays).MedianBPS != 9500 {
 				t.Fatalf("calibration cancelled itself after %d receipts: %v, %v", i+1, factors, err)
 			}
 		}
@@ -207,11 +210,11 @@ func TestMoneyCalibrationPartialIOCBuyDoesNotBecomeAFullLotPriceMiss(t *testing.
 			body := `{"commodity_id":"canvas_sails","quantity":10}`
 			response := fmt.Sprintf(`{"commodity_id":"canvas_sails","filled_quantity":%d,"total_gross_pence":%d,"customs_duty_pence":0}`, filled, filled*100)
 			destinationSeedAction(t, h, "partial-calibration-buy", "/v1/market/place-order", body, response)
-			data := missionData{
-				Plan: plan, CostsKnown: true, FinishAtDestination: true, StartedAt: time.Now().UTC().Add(-time.Minute),
-				ProvenLane: laneKey(plan), InitialLedgerIDs: map[string]bool{},
-				Action: &durableAction{ID: "partial-calibration-buy", Stage: "buy", Body: json.RawMessage(body)},
-			}
+			_, data := runner.newVoyage(ship, plan)
+			data.CostsKnown, data.FinishAtDestination = true, true
+			data.StartedAt, data.ProvenLane = time.Now().UTC().Add(-time.Minute), laneKey(plan)
+			data.InitialLedgerIDs = map[string]bool{}
+			data.Action = &durableAction{ID: "partial-calibration-buy", Stage: "buy", Body: json.RawMessage(body)}
 			h.putMission(ship.Ship.ID, "partial-calibration", "buy", data)
 			mission, data := h.mission(ship.Ship.ID)
 			if _, err := runner.consumeResult(h.ctx, mission, &data, http.StatusOK, json.RawMessage(response)); err != nil {
@@ -234,6 +237,10 @@ func TestMoneyCalibrationPartialIOCBuyDoesNotBecomeAFullLotPriceMiss(t *testing.
 			if filled == 5 && row.PlannedRevenuePence != nil ||
 				filled == 10 && (row.PlannedRevenuePence == nil || *row.PlannedRevenuePence != 2000) {
 				t.Fatalf("forecast denominator did not distinguish partial from full IOC fill: %+v", row)
+			}
+			if filled == 5 && row.AdmissionRevenue != nil ||
+				filled == 10 && (row.AdmissionRevenue == nil || row.AdmissionRevenue.RevenuePence != 2000) {
+				t.Fatalf("partial IOC settlement retained an incompatible admission denominator: %+v", row.AdmissionRevenue)
 			}
 		})
 	}

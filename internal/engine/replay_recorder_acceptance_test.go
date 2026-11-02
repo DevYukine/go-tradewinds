@@ -1,8 +1,7 @@
 package engine
 
 // Assumed seam: (*Runner).flushReplay(context.Context, time.Time) (no return),
-// called after work and before SaveSnapshot. Options and config.Config have
-// ReplayRetentionDays int and ReplayMaxGiB float64. Store replay signatures and
+// called after work and before SaveSnapshot. Store replay signatures and
 // types are documented in internal/store/replay_acceptance_test.go; Meta is the
 // JSON encoding of DatasetMeta, not a second metadata schema. ReplayPlan.MissionID
 // is the mission's Generation; ReplayActionLink.Generation is the staging pass.
@@ -18,6 +17,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -54,10 +54,7 @@ func replayRecorderWait(t *testing.T, condition func() bool) {
 
 func replayRecorderRunner(t *testing.T, h *recoveryHarness) *Runner {
 	t.Helper()
-	r := h.runner(primaryTestKey)
-	r.opts.ReplayRetentionDays = 90
-	r.opts.ReplayMaxGiB = 20
-	return r
+	return h.runner(primaryTestKey)
 }
 
 func replayRecorderSeed(t *testing.T, h *recoveryHarness, r *Runner, at time.Time) {
@@ -74,7 +71,7 @@ func replayRecorderSeed(t *testing.T, h *recoveryHarness, r *Runner, at time.Tim
 	for _, key := range []string{
 		"clock", "catalog", "zones", "profile", "vaults", "loans", "rates", "ships",
 		"warehouses", "orders", "fills", "factors", "monopolies", "marques", "contracts", "expansion",
-		"_ship_idle", "_book_observed", "_book_refresh", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_underwriting_pending", "_route_phase", "_game_version",
+		"_ship_idle", "_book_observed", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_underwriting_pending", "_route_phase", "_game_version",
 		"_capacity_savings_target", "_capacity_savings_expired", "_capacity_growth_port", "_expansion_agents",
 		"_sourcing_probe_history", "_growth_build_backoffs", "_capacity_financing_backoffs", "_capacity_growth_paused_until", "_ship_losses",
 	} {
@@ -187,7 +184,7 @@ func TestReplayRecorderAcceptanceGenerationAllowlistAndSweep(t *testing.T) {
 	for _, key := range []string{
 		"clock", "catalog", "profile", "vaults", "loans", "rates", "ships", "warehouses", "orders", "fills", "factors", "monopolies", "marques", "contracts", "expansion", "events",
 		"ship_details/ship-current", "books/quay-port", "ports/quay-port", "ports/remote-port", "routes/quay-port|remote-port|hoy", "yard_quotes/quay-port|hoy",
-		"_ship_idle", "_book_observed", "_book_refresh", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase", "_game_version",
+		"_ship_idle", "_book_observed", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase", "_game_version",
 		"_capacity_savings_target", "_capacity_savings_expired", "_capacity_growth_port", "_expansion_agents",
 		"_sourcing_probe_history", "_growth_build_backoffs", "_capacity_financing_backoffs", "_capacity_growth_paused_until", "_ship_losses",
 	} {
@@ -439,35 +436,7 @@ func TestReplayRecorderAcceptanceTimeoutDoesNotBlockMissionMutation(t *testing.T
 	t.Fatal("write timeout did not increment replay_record_errors_total")
 }
 
-func TestReplayRecorderAcceptanceDisabledWritesAndPrunesNothing(t *testing.T) {
-	h := newRecoveryHarness(t)
-	r := replayRecorderRunner(t, h)
-	r.opts.ReplayRetentionDays = 0
-	at := time.Now().UTC()
-	replayRecorderSeed(t, h, r, at)
-	mission := &store.Mission{AccountID: h.account.ID, ShipID: recoveryShipLapras, Phase: "buy", Generation: "disabled"}
-	data := missionData{Plan: Plan{Kind: "spot", ShipID: recoveryShipLapras}}
-	if err := r.stageAction(h.ctx, mission, &data, ShipState{}, "buy", "/v1/market/place-order", map[string]int{"quantity": 1}, false); err != nil {
-		t.Fatal(err)
-	}
-	r.flushReplay(h.ctx, at)
-	plans, err := h.db.ReplayPlans(h.ctx, h.account.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	links, err := h.db.ReplayActionLinks(h.ctx, h.account.ID, time.Unix(0, 0).UTC(), at.Add(time.Hour), []string{mission.Generation})
-	if err != nil || len(plans) != 0 || len(links) != 0 || len(replayRecorderFrames(t, h)) != 0 {
-		t.Fatalf("disabled recorder wrote rows: plans=%v links=%v err=%v", plans, links, err)
-	}
-	if _, err := h.db.RecordReplayFrame(h.ctx, store.ReplayFrame{AccountID: h.account.ID, Generation: "old", Source: "live", ObservedAt: at.Add(-100 * 24 * time.Hour), Datasets: map[string]store.ReplayDataset{}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := h.db.PruneReplay(h.ctx, 0, 1); err != nil || len(replayRecorderFrames(t, h)) != 1 {
-		t.Fatalf("disabled retention pruned existing tape: %v", err)
-	}
-}
-
-func TestReplayRecorderAcceptanceConfigurationDefaultsAndDisable(t *testing.T) {
+func TestReplayRecorderAcceptanceConfigurationDefaultsAndMinimum(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost/synthetic")
 	t.Setenv("CREDENTIAL_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)))
 	t.Setenv("REPLAY_RETENTION_DAYS", "")
@@ -478,8 +447,13 @@ func TestReplayRecorderAcceptanceConfigurationDefaultsAndDisable(t *testing.T) {
 	}
 	t.Setenv("REPLAY_RETENTION_DAYS", "0")
 	cfg, err = config.Load()
-	if err != nil || cfg.ReplayRetentionDays != 0 {
-		t.Fatalf("zero must disable replay: %+v, %v", cfg, err)
+	if err == nil {
+		t.Fatalf("zero retention accepted: %+v", cfg)
+	}
+	t.Setenv("REPLAY_RETENTION_DAYS", "1")
+	cfg, err = config.Load()
+	if err != nil || cfg.ReplayRetentionDays != 1 {
+		t.Fatalf("one-day retention rejected: %+v, %v", cfg, err)
 	}
 }
 
@@ -492,7 +466,7 @@ func TestReplayRecorderAcceptanceTickProducesRunnerInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	expected := make(map[string]json.RawMessage)
-	for _, key := range []string{"_ship_idle", "_book_observed", "_book_refresh", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase", "_game_version"} {
+	for _, key := range []string{"_ship_idle", "_book_observed", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_underwriting_pending", "_competition", "_charter_proceeds", "_route_phase", "_game_version"} {
 		if _, exists := r.meta[key]; exists {
 			t.Fatalf("real tick polluted persisted metadata with runner input %s", key)
 		}
@@ -505,8 +479,6 @@ func TestReplayRecorderAcceptanceTickProducesRunnerInputs(t *testing.T) {
 			expected[key] = encode(decode[marquePending](r.snapshot, key))
 		case "_underwriting_pending":
 			expected[key] = encode(decode[underwritingPending](r.snapshot, key))
-		case "_book_refresh":
-			expected[key] = encode(decode[bookRefreshState](r.snapshot, key))
 		default:
 			expected[key] = bytes.Clone(r.snapshot[key])
 			if len(expected[key]) == 0 {
@@ -649,12 +621,15 @@ func TestReplayRecorderAcceptanceBoundedSingleWriterCountsDrops(t *testing.T) {
 
 func TestReplayRecorderAcceptanceStartupImportsPersistedMissionAndAction(t *testing.T) {
 	h := newRecoveryHarness(t)
-	old := h.runner(primaryTestKey)
-	old.opts.ReplayRetentionDays = 0
-	old.generation = "pre-deploy-pass"
 	mission := &store.Mission{AccountID: h.account.ID, ShipID: recoveryShipLapras, Phase: "buy", Generation: "pre-deploy-mission"}
 	data := missionData{Sequence: 4, Plan: Plan{Kind: "spot", ShipID: recoveryShipLapras, Economics: Economics{ExpectedNetPence: 1234}}}
-	if err := old.stageAction(h.ctx, mission, &data, ShipState{}, "buy", "/v1/market/place-order", map[string]int{"quantity": 1}, false); err != nil {
+	data.Action = &durableAction{
+		ID:    ActionID(h.account.ID, mission.Generation, "buy", data.Sequence),
+		Stage: "buy", Method: http.MethodPost, Path: "/v1/market/place-order",
+		Body: json.RawMessage(`{"quantity":1}`), CreatedAt: time.Now().UTC(),
+	}
+	mission.Data = encode(data)
+	if err := h.db.PutMission(h.ctx, mission); err != nil {
 		t.Fatal(err)
 	}
 	restarted := replayRecorderRunner(t, h)

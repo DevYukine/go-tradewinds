@@ -542,21 +542,12 @@ func (r *Runner) refreshHazardQuotes(ctx context.Context, state AccountState) er
 			ShipClass: request.ship.Ship.ShipClass, CannonsCount: request.ship.Ship.CannonsCount,
 			Month: in.Clock.Calendar.Month, Laden: request.laden, NetPiracyBPS: piracy, AttemptedAt: time.Now(),
 		}
-		var response struct {
-			ExpectedLossBPS   *int64   `json:"lloyds_expected_loss_bps"`
-			MaxInsurablePence int64    `json:"max_insurable_pence"`
-			PricedConsorts    []string `json:"priced_consort_ship_ids"`
-		}
-		query := url.Values{
-			"ship_id": {request.ship.Ship.ID}, "dest_port_id": {request.route.ToPort},
-			"insured_value_pence": {strconv.FormatInt(request.insured, 10)},
-		}
-		err := r.api.GetOnce(ctx, "/v1/insurance/quote?"+query.Encode(), &response)
+		response, err := r.lloydsVoyageQuote(ctx, request.ship.Ship.ID, request.route.ToPort, request.insured)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err == nil && (response.ExpectedLossBPS == nil || *response.ExpectedLossBPS < 0 ||
-			response.MaxInsurablePence < request.insured || len(response.PricedConsorts) != 0) {
+		if err == nil && (response.LloydsExpectedLossBPS == nil || *response.LloydsExpectedLossBPS < 0 ||
+			response.MaxInsurablePence < request.insured || len(response.PricedConsortShipIDs) != 0) {
 			err = errors.New("Lloyd's hazard response lacks an independent ship's valid published bound")
 		}
 		if err != nil {
@@ -583,7 +574,7 @@ func (r *Runner) refreshHazardQuotes(ctx context.Context, state AccountState) er
 			}
 		} else {
 			quote.ObservedAt = time.Now()
-			quote.ExpectedLossBPS = *response.ExpectedLossBPS
+			quote.ExpectedLossBPS = *response.LloydsExpectedLossBPS
 			quote.MaxInsurablePence = response.MaxInsurablePence
 			if request.laden {
 				hull := quotes[hazardHullKey(request.ship.Ship.ID, request.route.FromPort, request.route.ToPort)]
@@ -608,4 +599,14 @@ func (r *Runner) refreshHazardQuotes(ctx context.Context, state AccountState) er
 	}
 	r.snapshot[hazardQuoteSnapshotKey] = encode(quotes)
 	return nil
+}
+
+func (r *Runner) lloydsVoyageQuote(ctx context.Context, shipID, destination string, insured int64) (gameapi.LloydsQuoteResult, error) {
+	query := url.Values{
+		"ship_id": {shipID}, "dest_port_id": {destination},
+		"insured_value_pence": {strconv.FormatInt(insured, 10)},
+	}
+	var quote gameapi.LloydsQuoteResult
+	err := r.api.GetOnce(ctx, "/v1/insurance/quote?"+query.Encode(), &quote)
+	return quote, err
 }

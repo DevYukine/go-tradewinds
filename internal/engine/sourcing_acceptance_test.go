@@ -89,6 +89,7 @@ func sourcingInputFixture(t *testing.T) PlanningInput {
 		ReserveByRegion:       map[string]int64{"channel": 75_000},
 		Generation:            "sourcing-sync",
 		FleetDailyUpkeepPence: 1_200,
+		RevenueCalibration:    revenueCalibrationFixture(10_000, 10_000),
 	}
 	in.Ports = map[string]PortDetail{
 		"le_havre":   {ID: "le_havre", BerthDuesPerDayPence: 1000, EffectiveBerths: 4},

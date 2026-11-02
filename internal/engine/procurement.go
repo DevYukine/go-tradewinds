@@ -82,7 +82,7 @@ func acquiredRevenue(in PlanningInput, plan Plan, bought int64, obligations []fr
 		revenue += min(bought, charter.RemainingQuantity) * *charter.RewardPerTonPence
 	}
 	if strings.HasPrefix(plan.Kind, "spot") && bought > 0 {
-		gross, _, _, _, reason, _ := destinationRevenue(in, plan.Destination, plan.Commodity, bought, procurementArrival(in, plan, bought))
+		gross, _, _, reason := paidDestinationRevenue(in, plan.Destination, plan.Commodity, bought, procurementArrival(in, plan, bought))
 		if reason != "" {
 			return revenue, reason
 		}
@@ -146,6 +146,9 @@ func (r *Runner) procurementDepartureDecision(input PlanningInput, ship ShipStat
 			return false, errors.New("actual active freight is absent from the durable recovery itinerary")
 		}
 	}
+	if intent := voyageInsuranceForLeg(data, ship.Ship.CurrentPortID, destination); intent != nil && intent.PolicyID != "" {
+		return true, nil
+	}
 	if (sealed || data.BoughtQuantity > 0) &&
 		(!r.fresh("ports/"+ship.Ship.CurrentPortID) || !r.fresh("ports/"+destination)) {
 		return false, errors.New("procurement recovery needs fresh local and destination harbour costs")
@@ -173,7 +176,7 @@ func (r *Runner) procurementDepartureDecision(input PlanningInput, ship ShipStat
 	var destinationSource string
 	if eventPaidSpot {
 		var reason string
-		revenue, _, _, destinationSource, reason, _ = destinationRevenue(input, data.Plan.Destination, data.Plan.Commodity, data.BoughtQuantity, procurementArrival(input, data.Plan, data.BoughtQuantity))
+		revenue, _, destinationSource, reason = paidDestinationRevenue(input, data.Plan.Destination, data.Plan.Commodity, data.BoughtQuantity, procurementArrival(input, data.Plan, data.BoughtQuantity))
 		if reason != "" {
 			err = errors.New("destination procurement recovery lacks current bounded receipt evidence")
 		}
@@ -324,7 +327,7 @@ func paidSpotRevenue(in PlanningInput, plan Plan, quantity int64) (int64, bool) 
 			return 0, false
 		}
 		if _, eventReason := in.marketObservationPolicy(plan.Destination, plan.Commodity, from, to, arrival); eventReason != "" {
-			revenue, _, _, _, reason, _ := destinationRevenue(in, plan.Destination, plan.Commodity, quantity, arrival)
+			revenue, _, _, reason := paidDestinationRevenue(in, plan.Destination, plan.Commodity, quantity, arrival)
 			return revenue, reason == ""
 		}
 		receipts, _, err := procurementBidRevenue(in, plan.Destination, plan.Commodity, quantity)
@@ -336,11 +339,11 @@ func paidSpotRevenue(in PlanningInput, plan Plan, quantity int64) (int64, bool) 
 	if plan.EventPriceStress {
 		// An admitted shock bid is not a permanent liquidation floor after
 		// presence is lost. Only a current bounded whole-lot quote can replace it.
-		revenue, _, _, _, reason, _ := destinationRevenue(in, plan.Destination, plan.Commodity, quantity, arrival)
+		revenue, _, _, reason := paidDestinationRevenue(in, plan.Destination, plan.Commodity, quantity, arrival)
 		return revenue, reason == ""
 	}
 	perTon := plan.SellLimitPence
-	if _, gossipFloor, _, _, reason, _ := destinationRevenue(in, plan.Destination, plan.Commodity, 1, arrival); reason == "" {
+	if _, gossipFloor, _, reason := paidDestinationRevenue(in, plan.Destination, plan.Commodity, 1, arrival); reason == "" {
 		perTon = min(perTon, gossipFloor)
 	}
 	if perTon <= 0 {

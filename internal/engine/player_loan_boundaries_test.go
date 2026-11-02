@@ -268,7 +268,7 @@ func TestPlayerLoanForecastCoverageCannotOverrideRealizedCash(t *testing.T) {
 	h, runner := playerLoanAcceptanceFixture(t)
 	port, hull, forecast, required, evidence := loanCapacityDecision(t, h, runner)
 	principal, installment := estimatedPlayerPrincipal(growthCashTotal(forecast.CashShortfallPence, runner.capacityLoanHeadroom(forecast)))
-	if !evaluateCapacityLoan(forecast, forecast.CashShortfallPence, math.MaxInt64, principal, installment, 3_000, 420).Borrow {
+	if !evaluateCapacityLoan(forecast, forecast.CashShortfallPence, math.MaxInt64, principal, installment, 3_000).Borrow {
 		t.Fatal("fixture's executable depth forecast does not pass coverage")
 	}
 	persistGrowthWindowSettlement(t, h, store.Settlement{

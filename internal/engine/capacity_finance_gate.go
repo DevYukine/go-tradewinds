@@ -40,9 +40,7 @@ func (r *Runner) capacityInputsReady() error {
 	return nil
 }
 
-func (r *Runner) capacityPaybackLimit() float64 {
-	return min(420, r.opts.CapacityPaybackDays)
-}
+const capacityPaybackGameDays = 420
 
 func (r *Runner) playerFallback(portID, hullID string) bool {
 	until := decode[map[string]time.Time](r.snapshot, "_player_loan_fallback")[portID+"|"+hullID]

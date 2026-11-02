@@ -38,7 +38,7 @@ func TestExpansionFundingResumesSelectedPairAcrossChangingRankings(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if committed.ReserveByRegion["america"] < runner.opts.ReservePence+2*expansionAgentHireFeePence {
+	if committed.ReserveByRegion["america"] < runner.protectedReservePence()+2*expansionAgentHireFeePence {
 		t.Fatalf("other consumers can spend the selected pair's pending fees: %+v", committed.ReserveByRegion)
 	}
 	if !decode[time.Time](runner.snapshot, "_expansion_last_started_at").IsZero() || h.api.mutationCount("/v1/treasury/remit") != 0 {

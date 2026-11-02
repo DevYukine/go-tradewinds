@@ -17,6 +17,27 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
+func TestRunModeDefaultsToExecutionAndRequiresExplicitObservation(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		args    []string
+		execute bool
+		wantErr bool
+	}{
+		{name: "default", execute: true},
+		{name: "observe", args: []string{"--observe"}},
+		{name: "removed execute flag", args: []string{"--execute"}, wantErr: true},
+		{name: "positional argument", args: []string{"unexpected"}, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			execute, err := parseRunMode(test.args)
+			if (err != nil) != test.wantErr || execute != test.execute {
+				t.Fatalf("run mode = execute %t, error %v; want execute %t, error %t", execute, err, test.execute, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestRuntimeStartsHealthyAccountAndDashboardWithUnreadableCredentials(t *testing.T) {
 	db, admin, schema := registrationStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

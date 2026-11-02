@@ -189,17 +189,31 @@ func ballastContinuation(input PlanningInput, plan Plan, hull Hull) *Continuatio
 
 func (r *Runner) refreshRevenueCalibration(ctx context.Context) error {
 	since := decode[time.Time](r.snapshot, "_revenue_calibration_since")
+	retainedSince := decode[time.Time](r.snapshot, "_revenue_calibration_v2_since")
+	calibration := decode[store.RevenueCalibrationModel](r.snapshot, "_revenue_calibration")
 	asOf := time.Now().UTC()
+	boundaryChanged := false
 	if since.IsZero() {
 		since = asOf
 		r.snapshot["_revenue_calibration_since"] = encode(since)
-		// The regime boundary must survive a crash before any calibrated plan
-		// is admitted, rather than restarting its sample window each launch.
+		boundaryChanged = true
+	}
+	if retainedSince.IsZero() {
+		retainedSince = asOf
+		r.snapshot["_revenue_calibration_v2_since"] = encode(retainedSince)
+		boundaryChanged = true
+	}
+	if boundaryChanged {
 		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
 			return err
 		}
 	}
-	calibration, err := r.db.RevenueCalibration(ctx, r.account.ID, since, asOf)
+	if calibration.Version == store.RevenueCalibrationVersion && calibration.Since.Equal(since) &&
+		calibration.RetainedSince.Equal(retainedSince) && !calibration.FittedAt.IsZero() &&
+		!calibration.FittedAt.After(asOf) && asOf.Sub(calibration.FittedAt) < time.Minute {
+		return nil
+	}
+	calibration, err := r.db.RevenueCalibration(ctx, r.account.ID, since, retainedSince, asOf)
 	if err != nil {
 		return err
 	}

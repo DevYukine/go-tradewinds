@@ -180,10 +180,10 @@ func TestCapacitySavingsFinancingRefusalKeepsSaving(t *testing.T) {
 	quote.TotalCostPence = &price
 	runner.stateCache.Quotes[key] = quote
 	oldCapital := growthCashTotal(save.QuotedHullPence, save.SlippageReservePence)
-	oldBuffer := max(runner.opts.ReservePence, ceilBPS(save.QuotedHullPence, 1_500))
+	oldBuffer := max(runner.protectedReservePence(), ceilBPS(save.QuotedHullPence, 1_500))
 	save.QuotedHullPence, save.SlippageReservePence = price, ceilBPS(price, 1_000)
 	save.CashShortfallPence += growthCashTotal(price, save.SlippageReservePence) - oldCapital +
-		max(runner.opts.ReservePence, ceilBPS(price, 1_500)) - oldBuffer
+		max(runner.protectedReservePence(), ceilBPS(price, 1_500)) - oldBuffer
 	rate, err := runner.capacitySavingsRate(h.ctx, time.Now())
 	if _, margin, wins := capacitySavingsMargin(buy, save, rate, 0); err != nil || !wins {
 		t.Fatalf("financing fixture must still prefer saving: margin=%v err=%v", margin, err)

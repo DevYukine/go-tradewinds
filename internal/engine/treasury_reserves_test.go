@@ -1,10 +1,15 @@
 package engine
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/DevYukine/go-tradewinds/internal/gameapi"
+)
 
 func TestObligationReservesFundObservedArrivalNotSailingOrigin(t *testing.T) {
 	t.Parallel()
-	const reserve int64 = 75_000
+	const reserve int64 = 100_000
 	state := AccountState{
 		HomePortID: recoveryHomePort,
 		Catalog: Catalog{
@@ -37,7 +42,7 @@ func TestObligationReservesFundObservedArrivalNotSailingOrigin(t *testing.T) {
 	// Both committed arrivals need funding before the treasury recovery can
 	// finish: north for the returning ship, south for the outgoing ship.
 	required := obligationReserves(state, nil, reserve)
-	if required["south"] != 75_300 {
+	if required["south"] != reserve+300 {
 		t.Fatalf("outgoing arrival did not preserve its regional reserve and 300p harbour envelope: %v", required)
 	}
 	wantNorth := reserve + 3*DailyUpkeep(state.Ships, state.Catalog, 0) + 300
@@ -62,5 +67,66 @@ func TestObligationReservesFundObservedArrivalNotSailingOrigin(t *testing.T) {
 	wantNorth = reserve + 3*DailyUpkeep(state.Ships, state.Catalog, len(state.Factors)) + 600
 	if required["north"] != wantNorth {
 		t.Fatalf("stationary presence, incoming arrival and factor-inclusive home bills need %dp, got %v", wantNorth, required)
+	}
+}
+
+func TestRegionalReserveFloorAddsUpkeepOnlyAtHome(t *testing.T) {
+	t.Parallel()
+	loan := snapshotTestLoan()
+	loan.BankingRegion = "north"
+	state := AccountState{
+		HomePortID: "home",
+		Catalog: Catalog{
+			Ports: []Port{
+				{ID: "home", BankingRegion: "north"},
+				{ID: "away", BankingRegion: "south"},
+			},
+			ShipClasses: []Hull{{ID: recoveryHull, HullCategory: "coastal", HoldCapacityTons: 60}},
+		},
+		Factors: []string{"one", "two", "three", "four"},
+		Loans:   []gameapi.Loan{loan},
+	}
+	ship := ShipState{}
+	ship.Ship.ID = "away-ship"
+	ship.Ship.ShipClass = recoveryHull
+	ship.Ship.Status = "berthed"
+	ship.Ship.CurrentPortID = "away"
+	state.Ships = []ShipState{ship}
+	floor := ProtectedReservePence(state)
+	if floor != 100_000 {
+		t.Fatalf("regional operating floor = %d, want 100000", floor)
+	}
+	required := obligationReserves(state, nil, floor)
+	upkeep := DailyUpkeep(state.Ships, state.Catalog, len(state.Factors))
+	if want := floor + 3*upkeep + loanReserve(state.Loans[0]); required["north"] != want {
+		t.Fatalf("home upkeep and debt not protected: got %d, want %d", required["north"], want)
+	}
+	if required["south"] != floor {
+		t.Fatalf("fleet upkeep incorrectly reserved away from home: %v", required)
+	}
+}
+
+func TestAutoRemitReserveAddsHomeUpkeepToRegionalFloor(t *testing.T) {
+	h := newRecoveryHarness(t)
+	h.api.setFactorPorts(recoveryHomePort, recoveryFarPort)
+	h.api.setAutoRemit(false, 0)
+	runner := h.runner(primaryTestKey)
+	if _, err := h.tick(runner); err != nil {
+		t.Fatal(err)
+	}
+	_, data := h.mission("__treasury")
+	if data.Action == nil || data.Action.Stage != "settings" {
+		t.Fatalf("missing automatic bill-remittance settings action: %+v", data.Action)
+	}
+	var settings struct {
+		Enabled bool  `json:"auto_remit_for_bills"`
+		Reserve int64 `json:"auto_remit_min_reserve_pence"`
+	}
+	if err := json.Unmarshal(data.Action.Body, &settings); err != nil {
+		t.Fatal(err)
+	}
+	want := int64(100_000) + 3*DailyUpkeep(runner.stateCache.Ships, runner.stateCache.Catalog, len(runner.stateCache.Factors))
+	if !settings.Enabled || settings.Reserve != want {
+		t.Fatalf("automatic bill-remittance reserve = %+v, want enabled with %dp", settings, want)
 	}
 }

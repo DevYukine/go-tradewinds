@@ -78,9 +78,12 @@ func moneySnapshotInput(in PlanningInput, snapshot map[string]json.RawMessage) P
 	if snapshot == nil {
 		snapshot = map[string]json.RawMessage{}
 	}
+	if _, exists := snapshot["_revenue_calibration"]; !exists {
+		snapshot["_revenue_calibration"] = encode(in.RevenueCalibration)
+	}
 	snapshot["zones"] = encode(in.Zones)
 	return PlanningInputFor(in.Now, in.Ship, state, snapshot, PlanningSources{
-		CompanyID: in.CompanyID, ReservePence: in.ReservePence, Metadata: in.Metadata, Generation: in.Generation,
+		CompanyID: in.CompanyID, Metadata: in.Metadata, Generation: in.Generation,
 	})
 }
 
@@ -127,7 +130,7 @@ func TestMoneyEventInsideWindowRequiresQuarterRevenueStressAtBoundary(t *testing
 	for _, tc := range []struct {
 		ask      int64
 		accepted bool
-	}{{749, true}, {750, false}} {
+	}{{748, true}, {749, false}} {
 		t.Run(fmt.Sprint(tc.ask), func(t *testing.T) {
 			in := moneyInput(t, moneyTime("2026-10-28T11:10:00Z"), "canvas_sails", tc.ask, 1000, 1, 30)
 			plan := moneySpot(t, moneySnapshotInput(in, map[string]json.RawMessage{"world_events": json.RawMessage(moneyCanvasShock)}), "canvas_sails")
@@ -176,8 +179,9 @@ func TestMoneyEventRecordingKeepsCommodityPreShockObservation(t *testing.T) {
 	hull, _ := findHull(in.Catalog, "hoy")
 	origin, _ := findPort(in.Catalog, "hamburg")
 	plan := evaluatePlan(planned, hull, origin, Plan{Kind: "spot", ShipID: in.Ship.Ship.ID, Origin: "hamburg", Destination: "amsterdam", Commodity: "provisions", Quantity: 1}, 0, 0)
-	if !plan.Accepted || plan.Economics.RevenuePence >= 4000 || plan.Economics.RevenueAgeGameHours == nil || *plan.Economics.RevenueAgeGameHours < 23 {
-		t.Fatalf("14:43 admiralty book erased or re-timestamped pre-14:28 provisions bids: %+v; persisted=%s", plan, runner.snapshot["_quay_book_memory"])
+	if !plan.Accepted || plan.Economics.UncalibratedRevenuePence == nil || *plan.Economics.UncalibratedRevenuePence != 4000 ||
+		plan.Economics.RevenuePence != 2886 || plan.Economics.RevenueAgeGameHours == nil || *plan.Economics.RevenueAgeGameHours < 23 {
+		t.Fatalf("14:43 admiralty book lost the pre-14:28 raw bid or its arrival-age haircut: %+v; persisted=%s", plan, runner.snapshot["_quay_book_memory"])
 	}
 	for _, sample := range decode[[]BookDriftSample](runner.snapshot, "_book_drift") {
 		if sample.CommodityID == "provisions" {

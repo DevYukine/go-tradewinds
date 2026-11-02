@@ -379,7 +379,7 @@ func TestPlayerLoanSurplusPrepaymentServesLienAndUnsecuredDebt(t *testing.T) {
 				t.Fatalf("player debt was not fully serviced: %+v", loan)
 			}
 			restarted := h.runner(primaryTestKey)
-			restarted.opts.CapacityPaybackDays = 0
+			restarted.snapshot["_capacity_growth_paused_until"] = encode(time.Now().Add(time.Hour))
 			loanCapacityRefresh(t, h, restarted)
 			moneyLoanWork(t, h, restarted, 3)
 			if h.api.mutationCount("/v1/loan/repay") != 1 {

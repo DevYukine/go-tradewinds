@@ -239,13 +239,14 @@ func TestPlayerLoanSourceCannotBeSpoofedByLenderName(t *testing.T) {
 	}
 }
 
-func TestCapacityLoanUsesConfiguredPaybackAtSelection(t *testing.T) {
+func TestCapacityLoanEnforcesPaybackAfterInterest(t *testing.T) {
 	decision := GrowthDecision{EconomicallyViable: true, QuotedHullPence: 200_000, IncrementalNetPencePerGameDay: 10_000}
-	if result := evaluateCapacityLoan(decision, 100_000, 110_000, 110_000, 3_500, 3_000, 420); !result.Borrow {
+	if result := evaluateCapacityLoan(decision, 100_000, 110_000, 110_000, 3_500, 3_000); !result.Borrow {
 		t.Fatalf("control debt package did not pass coverage: %+v", result)
 	}
-	if result := evaluateCapacityLoan(decision, 100_000, 110_000, 110_000, 3_500, 3_000, 10); result.Borrow || result.Verdict != "payback" {
-		t.Fatalf("selection ignored the configured lower payback: %+v", result)
+	decision.QuotedHullPence = 5_000_000
+	if result := evaluateCapacityLoan(decision, 100_000, 110_000, 110_000, 3_500, 3_000); result.Borrow || result.Verdict != "payback" {
+		t.Fatalf("selection admitted capital above the fixed after-interest payback horizon: %+v", result)
 	}
 }
 

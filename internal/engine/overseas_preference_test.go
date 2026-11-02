@@ -197,7 +197,7 @@ func TestOverseasProbeFundsAndHiresBothFactorsWithoutGossipOrBuildEstimate(t *te
 	}
 	_, fees, transfers, funded := measuredFunding(admission.input.Balances, admission.required, admission.input.Rates)
 	if !funded || fees <= 0 || len(transfers) == 0 ||
-		admission.required["america"] < runner.opts.ReservePence+2*expansionAgentHireFeePence {
+		admission.required["america"] < runner.protectedReservePence()+2*expansionAgentHireFeePence {
 		t.Fatalf("probe did not protect both hire fees, reserves and transfer fees: %+v fees=%d transfers=%+v", admission.required, fees, transfers)
 	}
 	if changed, err := runner.considerExpansionAgent(h.ctx); err != nil || !changed {
@@ -235,7 +235,7 @@ func TestOverseasProbeFundsAndHiresBothFactorsWithoutGossipOrBuildEstimate(t *te
 		}
 		overseasPairSyncFactors(h, runner)
 	}
-	if runner.planningInput(ShipState{}).Balances["america"] < runner.opts.ReservePence ||
+	if runner.planningInput(ShipState{}).Balances["america"] < runner.protectedReservePence() ||
 		h.api.mutationCount("/v1/company/hire-factor") != 2 || h.api.mutationCount("/v1/shipyard/build-ship") != 0 ||
 		decode[time.Time](runner.snapshot, "_expansion_last_started_at").IsZero() {
 		t.Fatal("probe spent its protected reserve, skipped a hire, built without evidence or omitted its paid-start floor")
@@ -760,7 +760,7 @@ func TestOverseasSpreadWithoutAdmissibleBuildFallsBackToEvidenceProbe(t *testing
 					vault := &runner.stateCache.Vaults[index]
 					vault.BalancePence = required[vault.BankingRegion]
 					if vault.BankingRegion == "america" {
-						vault.BalancePence = max(required[vault.BankingRegion], runner.opts.ReservePence) + 2*expansionAgentHireFeePence + 1
+						vault.BalancePence = max(required[vault.BankingRegion], runner.protectedReservePence()) + 2*expansionAgentHireFeePence + 1
 					}
 				}
 			}

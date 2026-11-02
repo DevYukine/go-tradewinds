@@ -27,12 +27,12 @@ func TestRevenueCalibrationExcludesPlansStartedBeforeCutover(t *testing.T) {
 				row.StartedAt = since.Add(-time.Minute)
 			})
 	}
-	got, err := database.RevenueCalibration(context.Background(), accountID, since, since.Add(2*time.Hour))
-	if err != nil || got["depth"] != 9600 {
+	got, err := database.RevenueCalibration(context.Background(), accountID, since, time.Time{}, since.Add(2*time.Hour))
+	if err != nil || got.Factor("canvas_sails", "depth", 1).MedianBPS != 9600 {
 		t.Fatalf("pre-cutover plans contaminated the new pricing regime: %v, %v", got, err)
 	}
 	for _, bounds := range [][2]time.Time{{{}, since}, {since, {}}, {since, since.Add(-time.Second)}} {
-		if _, err := database.RevenueCalibration(context.Background(), accountID, bounds[0], bounds[1]); !errors.Is(err, ErrInvalidInput) {
+		if _, err := database.RevenueCalibration(context.Background(), accountID, bounds[0], time.Time{}, bounds[1]); !errors.Is(err, ErrInvalidInput) {
 			t.Fatalf("invalid calibration window %v did not fail explicitly: %v", bounds, err)
 		}
 	}
@@ -73,6 +73,10 @@ func TestSettlementPlanRoundTripAndImmutableReplay(t *testing.T) {
 		stored.HazardBPS == nil || *stored.HazardBPS != 0 || stored.HazardSource == nil || *stored.HazardSource != "lloyds_bound" ||
 		stored.CargoShortfallPence == nil || *stored.CargoShortfallPence != 4_800 || stored.DepartedCargoPence == nil || *stored.DepartedCargoPence != 18_000 {
 		t.Fatalf("nullable plan values did not round-trip: %+v", stored)
+	}
+	bounded, err := database.SettlementsBetween(ctx, accountID, row.StartedAt, row.CompletedAt.Add(time.Second))
+	if err != nil || len(bounded) != 1 || !sameSettlement(stored, bounded[0]) {
+		t.Fatalf("bounded replay silently discarded durable forecast fields: %+v, %v", bounded, err)
 	}
 	// Independent decoding models a restarted process, not shared pointer identity.
 	var replay Settlement
@@ -197,7 +201,7 @@ func TestRevenueCalibrationExcludesMixedFreightBeforeLatestWindow(t *testing.T) 
 		}
 	}
 	got := moneyReadCalibration(t, database, accountID, since, since.Add(2*time.Hour))
-	if got["depth"] != 9500 || got["contract"] != 9600 {
+	if got.Factor("canvas_sails", "depth", 1).MedianBPS != 9500 || got.Factor("canvas_sails", "contract", 1).MedianBPS != 9600 {
 		t.Fatalf("newer mixed receipts diluted or displaced the cargo-only calibration window: %v", got)
 	}
 }

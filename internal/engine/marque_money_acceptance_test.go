@@ -2,6 +2,7 @@ package engine
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -23,20 +24,23 @@ func TestMarqueMoneyOwnerBoundaries(t *testing.T) {
 		{"1_4999_rejected", func(in *MarqueInput) { in.Quote.ExpectedNetPrizePence = 14_999 }, false},
 		{"Sound_measured_quote", func(in *MarqueInput) { in.Quote.CostPence, in.Quote.ExpectedNetPrizePence = 93_750, 154_426 }, true},
 		{"one_active_is_enough_to_stop", func(in *MarqueInput) { in.InForceCostPence = 1 }, false},
-		{"800_plus_300_Cr", func(in *MarqueInput) {
-			in.LosingCount, in.ExpiredCostPence, in.Quote.CostPence, in.Quote.ExpectedNetPrizePence = 1, 80_000, 30_000, 45_000
+		{"800_plus_300_Cr_now_fits", func(in *MarqueInput) {
+			in.ExpiredCostPence, in.Quote.CostPence, in.Quote.ExpectedNetPrizePence = 80_000, 30_000, 45_000
+		}, true},
+		{"2800_plus_200_Cr_exact_cap", func(in *MarqueInput) {
+			in.ExpiredCostPence, in.Quote.CostPence, in.Quote.ExpectedNetPrizePence = 280_000, 20_000, 30_000
+		}, true},
+		{"one_penny_above_unrecovered_cap", func(in *MarqueInput) {
+			in.ExpiredCostPence, in.Quote.CostPence, in.Quote.ExpectedNetPrizePence = 280_001, 20_000, 30_000
 		}, false},
-		{"800_plus_200_Cr", func(in *MarqueInput) {
-			in.LosingCount, in.ExpiredCostPence, in.Quote.CostPence, in.Quote.ExpectedNetPrizePence = 1, 80_000, 20_000, 30_000
-		}, true},
 		{"prizes_reduce_lifetime_unrecovered", func(in *MarqueInput) {
-			in.LosingCount, in.ExpiredCostPence, in.ExpiredPrizePence, in.Quote.CostPence, in.Quote.ExpectedNetPrizePence = 2, 120_000, 40_000, 20_000, 30_000
+			in.ExpiredCostPence, in.ExpiredPrizePence, in.Quote.CostPence, in.Quote.ExpectedNetPrizePence = 320_000, 40_000, 20_000, 30_000
 		}, true},
-		// Owner rule: three individually losing marques stop the pilot.
-		{"three_expired_at_99_percent_stop", func(in *MarqueInput) { in.LosingCount, in.ExpiredCostPence, in.ExpiredPrizePence = 3, 90_000, 89_100 }, false},
-		{"three_expired_at_cost_continue", func(in *MarqueInput) { in.LosingCount, in.ExpiredCostPence, in.ExpiredPrizePence = 0, 90_000, 90_000 }, true},
-		{"two_expired_at_99_percent_continue", func(in *MarqueInput) { in.LosingCount, in.ExpiredCostPence, in.ExpiredPrizePence = 2, 90_000, 89_100 }, true},
-		{"one_large_loser_among_three_continue", func(in *MarqueInput) { in.LosingCount, in.ExpiredCostPence, in.ExpiredPrizePence = 1, 90_000, 30_000 }, true},
+		{"exactly_five_percent_liquidity", func(in *MarqueInput) { in.LiquidPence = 200_000 }, true},
+		{"one_penny_short_of_liquidity_share", func(in *MarqueInput) { in.LiquidPence = 199_999 }, false},
+		{"manual_owner_stop_overrides_returns", func(in *MarqueInput) {
+			in.Stopped, in.Quote.ExpectedNetPrizePence = true, 100_000
+		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in := base
@@ -51,19 +55,26 @@ func TestMarqueMoneyOwnerBoundaries(t *testing.T) {
 	}
 }
 
-func TestMarqueMoneyDisabledMakesNoQuoteRequests(t *testing.T) {
+func TestMarqueMoneyManualStopSurvivesRefreshAndRestart(t *testing.T) {
 	h := newRecoveryHarness(t)
-	proxy := newMarqueExecutionAPI(h)
-	h.marques = false
+	newMarqueExecutionAPI(h)
 	runner := h.runner(primaryTestKey)
-	for range 2 {
-		refreshMarqueExecution(t, h, runner)
+	refreshMarqueExecution(t, h, runner)
+	runner.snapshot["_marque_stopped"] = encode(true)
+	if err := h.db.SaveSnapshot(h.ctx, h.account.ID, runner.snapshot); err != nil {
+		t.Fatal(err)
 	}
-	proxy.mu.Lock()
-	reads := proxy.quoteReads
-	proxy.mu.Unlock()
-	if reads != 0 {
-		t.Fatalf("MARQUES_ENABLED=false still spent %d quote reads", reads)
+	runner = h.runner(primaryTestKey)
+	refreshMarqueExecution(t, h, runner)
+	if changed, err := runner.considerMarque(h.ctx); err != nil || changed {
+		t.Fatalf("manual owner stop allowed new admission: %t %v", changed, err)
+	}
+	snapshot, err := h.db.Snapshot(h.ctx, h.account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decode[bool](snapshot, "_marque_stopped") || h.api.mutationCount("/v1/fleet/issue-marque") != 0 {
+		t.Fatal("refresh or restart cleared the manual stop or spent on a marque")
 	}
 }
 
@@ -204,7 +215,7 @@ func TestMarqueMoneyLifecycleReconcileExpiryAndNextAdmission(t *testing.T) {
 	proxy.mu.Lock()
 	issued := proxy.issued[key]
 	issued.UpdatedAt = issued.ExpiresAt.Add(time.Hour)
-	issued.PrizeEarnedPence = issued.CostPence
+	issued.PrizeEarnedPence = issued.CostPence * 105 / 100
 	proxy.issued[key] = issued
 	proxy.mu.Unlock()
 	downstream := h.api.server.Config.Handler
@@ -221,7 +232,8 @@ func TestMarqueMoneyLifecycleReconcileExpiryAndNextAdmission(t *testing.T) {
 	})
 	refreshMarqueExecution(t, h, runner)
 	outcomes := decode[map[string]marqueOutcome](runner.snapshot, "_marque_outcomes")
-	if outcomes[issued.ID].PrizePence != issued.CostPence {
+	if outcomes[issued.ID].PrizePence != issued.PrizeEarnedPence || outcomes[issued.ID].SeaZoneID != issued.SeaZoneID ||
+		!outcomes[issued.ID].ExpiredAt.Equal(issued.ExpiresAt) {
 		t.Fatalf("expiry did not permanently record realized prize: %+v", outcomes)
 	}
 	proxy.mu.Lock()
@@ -290,31 +302,190 @@ func TestMarqueMoneyExpiredNeverListedIssueReconciles(t *testing.T) {
 	}
 }
 
-func TestMarqueMoneyThreeLosingExpiriesStopAfterRestartAndListOmission(t *testing.T) {
+func TestMarqueMoneyZoneBackoffProbeAndNegativeCompletionSurviveRestart(t *testing.T) {
 	h := newRecoveryHarness(t)
 	proxy := newMarqueExecutionAPI(h)
-	now := time.Now().UTC()
-	proxy.mu.Lock()
+	proxy.clockOffset, proxy.timeScale = 48*time.Hour, 60
+	proxy.quote.ExpectedNetPrizePence = 20_000
+	now := time.Now().UTC().Add(proxy.clockOffset)
 	for range 3 {
 		id := uuid.NewString()
 		proxy.issued[id] = letterOfMarque{ID: id, SeaZoneID: marqueExecutionZone, AddedPiracyBPS: 500,
-			CostPence: 10_000, PrizeEarnedPence: 9_900, CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour), UpdatedAt: now}
+			CostPence: 10_000, PrizeEarnedPence: 9_900, CreatedAt: now.Add(-2 * time.Hour),
+			ExpiresAt: now.Add(-time.Hour), UpdatedAt: now}
 	}
-	proxy.mu.Unlock()
 	runner := h.runner(primaryTestKey)
 	refreshMarqueExecution(t, h, runner)
-	if outcomes := decode[map[string]marqueOutcome](runner.snapshot, "_marque_outcomes"); len(outcomes) != 3 {
-		t.Fatalf("expired outcomes were not recorded: %+v", outcomes)
+	until := decode[map[string]time.Time](runner.snapshot, "_marque_backoffs")[marqueExecutionZone]
+	serverNow, _, valid := runner.serverBounds()
+	duration := gameDuration(7, proxy.timeScale)
+	if !valid || until.Before(serverNow.Add(duration-time.Second)) || until.After(serverNow.Add(duration)) {
+		t.Fatalf("zone loss backoff is not seven server game days: server=%s until=%s", serverNow, until)
 	}
 	proxy.mu.Lock()
 	proxy.hideMarques = true
 	proxy.mu.Unlock()
 	runner = h.runner(primaryTestKey)
 	refreshMarqueExecution(t, h, runner)
-	if changed, err := runner.considerMarque(h.ctx); err != nil || changed {
-		t.Fatalf("three losing expiries stopped being permanent after restart/list omission: %t %v", changed, err)
+	if got := decode[map[string]time.Time](runner.snapshot, "_marque_backoffs")[marqueExecutionZone]; !got.Equal(until) {
+		t.Fatalf("restart or omitted list moved the backoff: %s -> %s", until, got)
 	}
-	if got := h.api.mutationCount("/v1/fleet/issue-marque"); got != 0 {
-		t.Fatalf("permanently stopped account sent %d paid issues", got)
+	if changed, err := runner.considerMarque(h.ctx); err != nil || changed {
+		t.Fatalf("failed zone reentered during its backoff: %t %v", changed, err)
+	}
+	data := missionData{Marque: &marqueIntent{Quote: proxy.quote, BankingRegion: "north"}}
+	if err := runner.marquePreflight(h.ctx, &data, false); err == nil || !strings.Contains(err.Error(), "backoff") {
+		t.Fatalf("send preflight ignored the zone backoff: %v", err)
+	}
+	proxy.mu.Lock()
+	proxy.clockOffset = until.Add(time.Second).Sub(time.Now().UTC())
+	proxy.mu.Unlock()
+	refreshMarqueExecution(t, h, runner)
+	if changed, err := runner.considerMarque(h.ctx); err != nil || !changed {
+		t.Fatalf("elapsed zone backoff did not allow one qualifying probe: %t %v", changed, err)
+	}
+	refreshMarqueExecution(t, h, runner)
+	mission, data := h.mission("__marque")
+	if changed, err := runner.driveMarque(h.ctx, mission, &data); err != nil || !changed {
+		t.Fatalf("stage probe: %t %v", changed, err)
+	}
+	mission, data = h.mission("__marque")
+	key := data.Action.ID
+	if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed {
+		t.Fatalf("send probe: %t %v", changed, err)
+	}
+	refreshMarqueExecution(t, h, runner)
+	mission, data = h.mission("__marque")
+	if _, err := runner.driveMarque(h.ctx, mission, &data); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := runner.considerMarque(h.ctx); err != nil || changed {
+		t.Fatalf("an active probe admitted another issue: %t %v", changed, err)
+	}
+	proxy.mu.Lock()
+	probe := proxy.issued[key]
+	probe.PrizeEarnedPence = 9_900
+	probe.UpdatedAt = probe.ExpiresAt.Add(time.Second)
+	proxy.issued[key] = probe
+	proxy.hideMarques = false
+	proxy.clockOffset = probe.UpdatedAt.Sub(time.Now().UTC())
+	proxy.mu.Unlock()
+	refreshMarqueExecution(t, h, runner)
+	nextUntil := decode[map[string]time.Time](runner.snapshot, "_marque_backoffs")[marqueExecutionZone]
+	serverNow, _, valid = runner.serverBounds()
+	if !valid || !nextUntil.After(until) || nextUntil.Before(serverNow.Add(duration-time.Second)) || nextUntil.After(serverNow.Add(duration)) {
+		t.Fatalf("negative probe did not start a new seven-game-day backoff: old=%s new=%s server=%s", until, nextUntil, serverNow)
+	}
+	if changed, err := runner.considerMarque(h.ctx); err != nil || changed {
+		t.Fatalf("negative probe immediately reissued: %t %v", changed, err)
+	}
+	runner = h.runner(primaryTestKey)
+	refreshMarqueExecution(t, h, runner)
+	if got := decode[map[string]time.Time](runner.snapshot, "_marque_backoffs")[marqueExecutionZone]; !got.Equal(nextUntil) {
+		t.Fatalf("negative probe backoff changed after restart: %s -> %s", nextUntil, got)
+	}
+	if changed, err := runner.considerMarque(h.ctx); err != nil || changed {
+		t.Fatalf("restart reopened the negative probe: %t %v", changed, err)
+	}
+	if decode[bool](runner.snapshot, "_marque_stopped") || h.api.mutationCount("/v1/fleet/issue-marque") != 1 {
+		t.Fatal("rolling zone control latched the manual stop or duplicated the paid probe")
+	}
+}
+
+func TestMarqueMoneyWindowRolloutStartsFreshBackoffWithoutNewExpiry(t *testing.T) {
+	for _, retainedLossBasis := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retained_loss_basis_%t", retainedLossBasis), func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			proxy := newMarqueExecutionAPI(h)
+			proxy.timeScale = 60
+			proxy.quote.ExpectedNetPrizePence = 20_000
+			proxy.hideMarques = true
+			runner := h.runner(primaryTestKey)
+			refreshMarqueExecution(t, h, runner)
+			now, _, _ := runner.serverBounds()
+			outcomes := make(map[string]marqueOutcome)
+			for i := range 3 {
+				id := uuid.NewString()
+				outcomes[id] = marqueOutcome{ID: id, SeaZoneID: marqueExecutionZone,
+					ExpiredAt: now.Add(-gameDuration(float64(i+1), 60)), CostPence: 10_000}
+			}
+			id := uuid.NewString()
+			outcomes[id] = marqueOutcome{ID: id, SeaZoneID: marqueExecutionZone,
+				ExpiredAt: now.Add(-gameDuration(31, 60)), CostPence: 10_000, PrizePence: 100_000}
+			zones, _ := rollingMarqueReturns(outcomes, now, 60)
+			oldUntil := now.Add(-time.Second)
+			runner.snapshot["_marque_outcomes"] = encode(outcomes)
+			runner.snapshot["_marque_backoffs"] = encode(map[string]time.Time{marqueExecutionZone: oldUntil})
+			if retainedLossBasis {
+				old := zones[marqueExecutionZone]
+				old.PrizePence = old.CostPence - 1
+				runner.snapshot["_marque_backoff_basis"] = encode(map[string]marqueBackoffBasis{
+					marqueExecutionZone: {Returns: old, Until: oldUntil},
+				})
+			}
+			if err := runner.recordMarques(h.ctx); err != nil {
+				t.Fatal(err)
+			}
+			until := decode[map[string]time.Time](runner.snapshot, "_marque_backoffs")[marqueExecutionZone]
+			if until.Before(now.Add(gameDuration(7, 60))) {
+				t.Fatalf("rolling-window loss reused an older wait: %s", until)
+			}
+			if changed, err := runner.considerMarque(h.ctx); err != nil || changed {
+				t.Fatalf("window rollout admitted a paid probe before a fresh wait: %t %v", changed, err)
+			}
+			if h.api.mutationCount("/v1/fleet/issue-marque") != 0 {
+				t.Fatal("window rollout sent a new paid issue")
+			}
+		})
+	}
+}
+
+func TestMarqueMoneyFinalPrizeRequiresPostExpiryListAndCorrectedReturnReleasesLossBackoff(t *testing.T) {
+	h := newRecoveryHarness(t)
+	proxy := newMarqueExecutionAPI(h)
+	proxy.timeScale = 60
+	runner := h.runner(primaryTestKey)
+	refreshMarqueExecution(t, h, runner)
+	now, _, _ := runner.serverBounds()
+	id := uuid.NewString()
+	marque := letterOfMarque{ID: id, SeaZoneID: marqueExecutionZone, AddedPiracyBPS: 500,
+		CostPence: 10_000, CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(-time.Second), UpdatedAt: now}
+	runner.snapshot["marques"] = encode([]letterOfMarque{marque})
+	meta := runner.meta["marques"]
+	meta.AttemptedAt = time.Now().Add(-2 * time.Second)
+	runner.meta["marques"] = meta
+	if err := runner.recordMarques(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := decode[map[string]marqueOutcome](runner.snapshot, "_marque_outcomes")[id]; exists {
+		t.Fatal("a pre-expiry list was treated as the final prize")
+	}
+	if _, exists := decode[map[string]letterOfMarque](runner.snapshot, "_marque_active")[id]; !exists {
+		t.Fatal("the pending final prize released its active cost")
+	}
+	marques := []letterOfMarque{marque}
+	for range 2 {
+		next := marque
+		next.ID = uuid.NewString()
+		marques = append(marques, next)
+	}
+	meta.AttemptedAt = time.Now()
+	runner.meta["marques"] = meta
+	runner.snapshot["marques"] = encode(marques)
+	if err := runner.recordMarques(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if until := decode[map[string]time.Time](runner.snapshot, "_marque_backoffs")[marqueExecutionZone]; !now.Before(until) {
+		t.Fatal("three authoritative losing expiries did not start a wait")
+	}
+	for i := range marques {
+		marques[i].PrizeEarnedPence = marques[i].CostPence
+	}
+	runner.snapshot["marques"] = encode(marques)
+	if err := runner.recordMarques(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if until := decode[map[string]time.Time](runner.snapshot, "_marque_backoffs")[marqueExecutionZone]; !until.IsZero() {
+		t.Fatal("corrected final prize left a purely loss-driven backoff in place")
 	}
 }

@@ -38,7 +38,7 @@ const (
 	replayActionMetadataBytesSQL   = "octet_length(id)::bigint + octet_length(account_id) + octet_length(method) + octet_length(path) + octet_length(state)"
 
 	replaySettlementCiphertextBytesSQL = "octet_length(context_cipher)::bigint"
-	replaySettlementMetadataBytesSQL   = "octet_length(id)::bigint + octet_length(account_id) + octet_length(mission_id) + COALESCE(octet_length(action_id), 0) + COALESCE(octet_length(event_id), 0) + octet_length(lane_lookup) + octet_length(kind)"
+	replaySettlementMetadataBytesSQL   = "octet_length(id)::bigint + octet_length(account_id) + octet_length(mission_id) + COALESCE(octet_length(action_id), 0) + COALESCE(octet_length(event_id), 0) + octet_length(lane_lookup) + octet_length(kind) + COALESCE(octet_length(revenue_basis), 0) + COALESCE(octet_length(hazard_source), 0)"
 )
 
 type replayAccountingSnapshotRow struct {

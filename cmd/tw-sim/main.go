@@ -26,7 +26,7 @@ func main() {
 	if err := command(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		var failedGate gateError
-		if errors.As(err, &failedGate) {
+		if errors.As(err, &failedGate) || errors.Is(err, store.ErrReplayEvidenceBudget) {
 			os.Exit(2)
 		}
 		os.Exit(1)
@@ -39,11 +39,11 @@ func command(args []string) error {
 
 func commandTo(args []string, output io.Writer) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		_, err := fmt.Fprintln(output, "tw-sim backfill --account <label-or-ID>\ntw-sim validate [--account <label-or-ID>] [--from RFC3339] [--to RFC3339]\ntw-sim run [--account <label-or-ID>] [--from RFC3339] [--fit-until RFC3339] [--to RFC3339] [--out result.json]\nValidate and run are database-read-only and make no game requests. Comparisons are simulated estimates, not live profits.")
+		_, err := fmt.Fprintln(output, "tw-sim backfill --account <label-or-ID>\ntw-sim validate [--account <label-or-ID>] [--from RFC3339] [--to RFC3339]\ntw-sim run [--account <label-or-ID>] [--from RFC3339] [--fit-until RFC3339] [--to RFC3339] [--out result.json]\ntw-sim accuracy [--account <label-or-ID>] [--from RFC3339] [--to RFC3339] [--fit-until RFC3339] [--out accuracy.json]\nValidate, run and accuracy are database-read-only and make no game requests. Run comparisons are simulated estimates, not live profits. Accuracy measures recorded forecasts against realized outcomes without a validation gate.")
 		return err
 	}
 	operation := args[0]
-	if operation != "backfill" && operation != "validate" && operation != "run" {
+	if operation != "backfill" && operation != "validate" && operation != "run" && operation != "accuracy" {
 		return fmt.Errorf("unknown command %q", operation)
 	}
 	flags := flag.NewFlagSet(operation, flag.ContinueOnError)
@@ -53,16 +53,18 @@ func commandTo(args []string, output io.Writer) error {
 		fromFlag = flags.String("from", "", "Inclusive real UTC start; defaults to first retained frame (first usable observation for run)")
 		toFlag = flags.String("to", "", "Exclusive real UTC end; defaults to last replay frame")
 	}
-	if operation == "run" {
+	if operation == "run" || operation == "accuracy" {
 		fitFlag = flags.String("fit-until", "", "Training/holdout boundary; defaults to midpoint")
-		outFlag = flags.String("out", "", "Write deterministic comparison JSON")
+		outFlag = flags.String("out", "", "Write deterministic report JSON")
+	}
+	if operation == "run" {
 		profileFlag = flags.String("cpuprofile", "", "Write an offline calibration and simulation CPU profile")
 	}
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || operation == "backfill" && *selector == "" {
-		return errors.New("usage: tw-sim backfill --account <label-or-ID>, validate, or run; see --help")
+		return errors.New("usage: tw-sim backfill --account <label-or-ID>, validate, run, or accuracy; see --help")
 	}
 	from, to := time.Time{}, time.Now().UTC()
 	if fromFlag != nil && *fromFlag != "" {
@@ -81,6 +83,22 @@ func commandTo(args []string, output io.Writer) error {
 	}
 	if !to.After(from) {
 		return errors.New("--to must follow --from")
+	}
+	var fitUntil time.Time
+	if fitFlag != nil && *fitFlag != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, *fitFlag)
+		if err != nil {
+			return errors.New("--fit-until must be RFC3339")
+		}
+		fitUntil = parsed
+		if fromFlag != nil && *fromFlag != "" && !fitUntil.After(from) ||
+			toFlag != nil && *toFlag != "" && !fitUntil.Before(to) {
+			return errors.New("--fit-until must be strictly between --from and --to")
+		}
+	}
+	evidenceError := replayEvidenceError
+	if operation == "accuracy" {
+		evidenceError = accuracyEvidenceError
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -123,7 +141,7 @@ func commandTo(args []string, output io.Writer) error {
 		if *fromFlag == "" || *toFlag == "" {
 			first, last, err := db.ReplayFrameBounds(ctx, account.ID, to)
 			if err != nil {
-				return replayEvidenceError(output, err, "replay frame bounds unavailable")
+				return evidenceError(output, err, "replay frame bounds unavailable")
 			}
 			if first.IsZero() {
 				return errors.New("no replay frames in the requested window")
@@ -138,9 +156,13 @@ func commandTo(args []string, output io.Writer) error {
 		if !to.After(from) {
 			return errors.New("replay window is empty")
 		}
-		tape, err := sim.LoadTape(ctx, db, account.ID, from, to)
+		loadTape := sim.LoadTape
+		if operation == "accuracy" {
+			loadTape = sim.LoadAccuracyTape
+		}
+		tape, err := loadTape(ctx, db, account.ID, from, to)
 		if err != nil {
-			return replayEvidenceError(output, err, "replay evidence unavailable")
+			return evidenceError(output, err, "replay evidence unavailable")
 		}
 		first, _ := tape.FrameBounds()
 		if first.IsZero() {
@@ -161,6 +183,33 @@ func commandTo(args []string, output io.Writer) error {
 		if !to.After(from) {
 			return errors.New("replay window is empty")
 		}
+		if operation != "validate" {
+			if *fitFlag == "" {
+				fitUntil = from.Add(to.Sub(from) / 2)
+			}
+			if !fitUntil.After(from) || !fitUntil.Before(to) {
+				return errors.New("--fit-until must be strictly between --from and --to")
+			}
+		}
+		if operation == "accuracy" {
+			report, err := sim.Accuracy(tape.Settlements, tape.Plans, from, to, fitUntil, tape.RevenueCalibration)
+			if err != nil {
+				return evidenceError(output, err, "forecast accuracy unavailable")
+			}
+			if _, err := report.WriteTo(output); err != nil {
+				return err
+			}
+			if *outFlag != "" {
+				encoded, err := json.MarshalIndent(report, "", "  ")
+				if err != nil {
+					return errors.New("accuracy JSON encoding failed")
+				}
+				if err := os.WriteFile(*outFlag, append(encoded, '\n'), 0600); err != nil {
+					return errors.New("accuracy JSON write failed")
+				}
+			}
+			return nil
+		}
 		validation, err := sim.Validate(tape, from, to)
 		if err != nil {
 			return replayEvidenceError(output, err, "validation failed to read model evidence")
@@ -173,16 +222,6 @@ func commandTo(args []string, output io.Writer) error {
 				return gateError{}
 			}
 			return nil
-		}
-		fitUntil := from.Add(to.Sub(from) / 2)
-		if *fitFlag != "" {
-			fitUntil, err = time.Parse(time.RFC3339Nano, *fitFlag)
-			if err != nil {
-				return errors.New("--fit-until must be RFC3339")
-			}
-		}
-		if !fitUntil.After(from) || !fitUntil.Before(to) {
-			return errors.New("--fit-until must be strictly between --from and --to")
 		}
 		started := time.Now()
 		if *profileFlag != "" {
@@ -213,7 +252,7 @@ func commandTo(args []string, output io.Writer) error {
 			name  string
 			regen float64
 		}{{"conservative", calibration.Conservative}, {"base", calibration.Base}, {"optimistic", calibration.Optimistic}} {
-			rows, err := sim.Run(ctx, tape, sim.RunOptions{From: fitUntil, FleetAt: from, To: to, Regen: scenario.regen, ReservePence: cfg.ReservePence, CompanyID: account.CompanyID, SpeedFactors: calibration.Speeds})
+			rows, err := sim.Run(ctx, tape, sim.RunOptions{From: fitUntil, FleetAt: from, To: to, Regen: scenario.regen, CompanyID: account.CompanyID, SpeedFactors: calibration.Speeds})
 			if err != nil {
 				return replayEvidenceError(output, err, "simulation failed")
 			}
@@ -309,6 +348,16 @@ func replayEvidenceError(output io.Writer, err error, fallback string) error {
 		return writeErr
 	}
 	return gateError{}
+}
+
+func accuracyEvidenceError(output io.Writer, err error, fallback string) error {
+	if !errors.Is(err, store.ErrReplayEvidenceBudget) {
+		return errors.New(fallback)
+	}
+	if _, writeErr := fmt.Fprintf(output, "Evidence budget: %v\nNo accuracy report produced from incomplete evidence.\n", err); writeErr != nil {
+		return writeErr
+	}
+	return fmt.Errorf("accuracy evidence unavailable: %w", store.ErrReplayEvidenceBudget)
 }
 
 type comparisonRow struct {

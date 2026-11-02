@@ -114,10 +114,11 @@ func TestPassengerLateBoardedGroupStagesSafeDeparture(t *testing.T) {
 
 func TestPassengerShortLadderQuotesFloorImmediately(t *testing.T) {
 	in := passengerInputFixture()
-	group := gameapi.PassengerWaitingGroup{ID: "short", Kind: "travellers", Size: 10, OriginPortID: "origin", DestPortID: "destination", BoardBy: in.Now.Add(gameDuration(2.5/24, in.Clock.Calendar.TimeScale))}
-	quote, err := quotePassage(in, "destination", []gameapi.PassengerWaitingGroup{group}, nil, nil)
+	group := gameapi.PassengerWaitingGroup{ID: "short", Kind: "travellers", Size: 10, OriginPortID: "origin", DestPortID: "destination", BoardBy: in.Now.Add(gameDuration(17.5/24, in.Clock.Calendar.TimeScale))}
+	summary := gameapi.PassengerFareSummary{Bands: []gameapi.PassengerFareBand{{MinNM: 0, Fares: 10, MedianFarePerHeadPence: new(int64(10_000))}}}
+	quote, err := quotePassage(in, "destination", []gameapi.PassengerWaitingGroup{group}, nil, summary, nil)
 	if err != nil || quote.Ceiling != quote.Floor {
-		t.Fatalf("short deadline leaves no full floor hour: %+v %v", quote, err)
+		t.Fatalf("short deadline leaves no full floor offer after repricing: %+v %v", quote, err)
 	}
 }
 

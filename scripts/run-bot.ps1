@@ -19,7 +19,15 @@ $logPath = Join-Path (Split-Path -Parent $Binary) "bot-$Version.log"
 Write-Host "Tradewinds $Version. Ctrl+C stops trading safely."
 Write-Host "Console copy: $logPath"
 
-& cmd.exe /d /c "`"$Binary`" run --execute 2>&1" | Tee-Object -FilePath $logPath -Append
+$runArguments = 'run'
+$binaryHelp = & $Binary help 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) {
+    throw "Cannot determine execution mode for $Binary."
+}
+if ($binaryHelp -notmatch '--observe') {
+    $runArguments += ' --execute'
+}
+& cmd.exe /d /c "`"$Binary`" $runArguments 2>&1" | Tee-Object -FilePath $logPath -Append
 $botExitCode = $LASTEXITCODE
 if ($botExitCode -ne 0) {
     Write-Host "Bot exited with code $botExitCode. Inspect the log before restarting." -ForegroundColor Red

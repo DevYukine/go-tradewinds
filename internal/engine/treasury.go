@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const minimumOperatingRemitPence int64 = 5_000
+
 func (r *Runner) startMaintenance(ctx context.Context, ship ShipState, stage, path string, body any) (bool, error) {
 	mission := &store.Mission{AccountID: r.account.ID, ShipID: ship.Ship.ID, Phase: "maintenance", Generation: uuid.NewString()}
 	data := missionData{Plan: Plan{Kind: "maintenance", ShipID: ship.Ship.ID}, CostsKnown: true}
@@ -75,12 +77,23 @@ func (r *Runner) maintain(ctx context.Context, ship ShipState, mission *store.Mi
 	return r.startMaintenance(ctx, ship, "refit", "/v1/shipyard/modify-ship", body)
 }
 
+// ProtectedReservePence is the regional operating floor. Fleet and factor
+// upkeep is billed only at home and is added by obligationReserves.
+func ProtectedReservePence(AccountState) int64 {
+	return 100_000
+}
+
+func (r *Runner) protectedReservePence() int64 {
+	return ProtectedReservePence(r.stateCache)
+}
+
 // obligationReserves protects observed obligations, not every vault or every
 // hypothetical destination. Candidate-specific funding adds its chosen ports.
 func obligationReserves(state AccountState, snapshot map[string]json.RawMessage, base int64) map[string]int64 {
 	required := make(map[string]int64)
 	if home, exists := findPort(state.Catalog, state.HomePortID); exists {
-		required[home.BankingRegion] = base + 3*DailyUpkeep(state.Ships, state.Catalog, len(state.Factors))
+		upkeep := max(0, DailyUpkeep(state.Ships, state.Catalog, len(state.Factors)))
+		required[home.BankingRegion] = growthCashTotal(base, upkeep, upkeep, upkeep)
 	}
 	ships := make(map[string]bool, len(state.Ships))
 	for _, ship := range state.Ships {
@@ -150,16 +163,27 @@ func (r *Runner) treasuryReserves(ctx context.Context) (map[string]int64, error)
 }
 
 func (r *Runner) treasuryReservesExceptLoan(ctx context.Context, excludedLoan string) (map[string]int64, error) {
+	return r.treasuryReservesFor(ctx, excludedLoan, r.snapshot)
+}
+
+func (r *Runner) treasuryReservesFor(ctx context.Context, excludedLoan string, snapshot map[string]json.RawMessage) (map[string]int64, error) {
 	state := r.stateCache
-	required := obligationReserves(state, r.snapshot, r.opts.ReservePence)
+	base := r.protectedReservePence()
+	required := obligationReserves(state, snapshot, base)
 	if loan, exists := r.loanByID(excludedLoan); exists {
 		required[loan.BankingRegion] = max(0, required[loan.BankingRegion]-loanReserve(loan))
 	}
-	futuresCash, err := r.db.FuturesCashReserve(ctx, r.account.ID)
+	portRegions := make(map[string]string, len(state.Catalog.Ports))
+	for _, port := range state.Catalog.Ports {
+		portRegions[port.ID] = port.BankingRegion
+	}
+	futuresCash, err := r.db.FuturesCashReserveByRegion(ctx, r.account.ID, portRegions)
 	if err != nil {
 		return nil, err
 	}
-	required["north_sea"] = growthCashTotal(required["north_sea"], futuresCash)
+	for region, cash := range futuresCash {
+		required[region] = growthCashTotal(required[region], cash)
+	}
 	for _, ship := range state.Ships {
 		if ship.Ship.Status == "sunk" {
 			continue
@@ -173,7 +197,7 @@ func (r *Runner) treasuryReservesExceptLoan(ctx context.Context, excludedLoan st
 		if mission != nil && !conditionalIncome && !r.loadingReservationSuspended(mission, &data, ship) {
 			if destination, exists := findPort(state.Catalog, mission.Destination); exists {
 				required[destination.BankingRegion] = max(required[destination.BankingRegion],
-					r.opts.ReservePence+3*state.Ports[destination.ID].BerthDuesPerDayPence)
+					base+3*state.Ports[destination.ID].BerthDuesPerDayPence)
 			}
 		}
 	}
@@ -187,7 +211,6 @@ func (r *Runner) manageTreasury(ctx context.Context) (bool, error) {
 	if err := r.expireAwaitingExpansion(ctx, time.Now().UTC()); err != nil {
 		return false, err
 	}
-	state := r.stateCache
 	input, err := r.committedPlanningInput(ctx, ShipState{})
 	if err != nil {
 		return false, err
@@ -204,12 +227,13 @@ func (r *Runner) manageTreasury(ctx context.Context) (bool, error) {
 		// company controller still protects those funds from other donors.
 		required[region] = max(baseRequired[region], min(protected, balances[region]))
 	}
-	upkeep := DailyUpkeep(state.Ships, state.Catalog, len(state.Factors))
 	settings := decode[struct {
 		AutoRemitForBills bool  `json:"auto_remit_for_bills"`
 		MinReservePence   int64 `json:"auto_remit_min_reserve_pence"`
 	}](r.snapshot, "settings")
-	if !settings.AutoRemitForBills || settings.MinReservePence < r.opts.ReservePence+3*upkeep {
+	upkeep := max(0, DailyUpkeep(r.stateCache.Ships, r.stateCache.Catalog, len(r.stateCache.Factors)))
+	minimumReserve := growthCashTotal(r.protectedReservePence(), upkeep, upkeep, upkeep)
+	if !settings.AutoRemitForBills || settings.MinReservePence < minimumReserve {
 		mission := &store.Mission{
 			AccountID:  r.account.ID,
 			ShipID:     "__treasury",
@@ -219,17 +243,25 @@ func (r *Runner) manageTreasury(ctx context.Context) (bool, error) {
 		data := missionData{Plan: Plan{Kind: "treasury"}, CostsKnown: true}
 		return true, r.stage(ctx, mission, &data, ShipState{}, "settings", "/v1/company/settings", map[string]any{
 			"auto_remit_for_bills":         true,
-			"auto_remit_min_reserve_pence": r.opts.ReservePence + 3*upkeep,
+			"auto_remit_min_reserve_pence": minimumReserve,
 		})
 	}
-	return r.fundTreasury(ctx, balances, required)
+	return r.fundOperatingTreasury(ctx, balances, required)
 }
 
 func (r *Runner) fundTreasury(ctx context.Context, balances, required map[string]int64) (bool, error) {
 	return r.fundTreasuryMission(ctx, balances, required, "__treasury", nil, nil)
 }
 
+func (r *Runner) fundOperatingTreasury(ctx context.Context, balances, required map[string]int64) (bool, error) {
+	return r.fundTreasuryMode(ctx, balances, required, "__treasury", nil, nil, true)
+}
+
 func (r *Runner) fundTreasuryMission(ctx context.Context, balances, required map[string]int64, owner string, repayment *loanRepaymentIntent, funding *store.Mission) (bool, error) {
+	return r.fundTreasuryMode(ctx, balances, required, owner, repayment, funding, false)
+}
+
+func (r *Runner) fundTreasuryMode(ctx context.Context, balances, required map[string]int64, owner string, repayment *loanRepaymentIntent, funding *store.Mission, operating bool) (bool, error) {
 	current, data, err := r.loadMission(ctx, owner)
 	if err != nil {
 		return false, err
@@ -238,7 +270,13 @@ func (r *Runner) fundTreasuryMission(ctx context.Context, balances, required map
 		r.wakeBy(data.CooldownUntil)
 		return false, r.holdExpected(ctx, owner, "regional funding waits for the existing treasury intent and its persisted retry")
 	}
-	state := r.stateCache
+	var obligations map[string]int64
+	if operating {
+		obligations, err = r.treasuryReserves(ctx)
+		if err != nil {
+			return false, err
+		}
+	}
 	regions := make([]string, 0, len(required))
 	for region := range required {
 		regions = append(regions, region)
@@ -252,8 +290,18 @@ func (r *Runner) fundTreasuryMission(ctx context.Context, balances, required map
 		if shortfall <= 0 {
 			continue
 		}
-		best, gross, net, ok := bestRemittance(balances, required, state.Rates, destination)
+		minimum := int64(0)
+		if operating && balances[destination] >= obligations[destination] {
+			minimum = minimumOperatingRemitPence
+		}
+		best, gross, net, ok := bestRemittanceMinimum(balances, required, r.stateCache.Rates, destination, minimum)
 		if !ok {
+			if minimum > 0 {
+				if err := r.holdExpected(ctx, owner, "discretionary remittance waits for at least 5,000 pence gross while preserving reserves"); err != nil {
+					return false, err
+				}
+				continue
+			}
 			if err := r.hold(ctx, "", "regional reserve shortfall in "+destination+"; no observed-fee remittance preserves source reserves"); err != nil {
 				return false, err
 			}
@@ -280,7 +328,7 @@ func (r *Runner) fundTreasuryMission(ctx context.Context, balances, required map
 			ctx,
 			"",
 			"remittance",
-			"fund regional bills from the lowest-fee donor that preserves its reserve, staging one partial remittance per fresh state until combined surpluses cover the shortfall",
+			"fund regional cash from the lowest-fee donor that preserves its reserve, staging one partial remittance per fresh state",
 			map[string]any{
 				"from_region":       best.FromRegion,
 				"to_region":         destination,
@@ -297,6 +345,10 @@ func (r *Runner) fundTreasuryMission(ctx context.Context, balances, required map
 }
 
 func bestRemittance(balances, required map[string]int64, rates []Rate, destination string) (Rate, int64, int64, bool) {
+	return bestRemittanceMinimum(balances, required, rates, destination, 0)
+}
+
+func bestRemittanceMinimum(balances, required map[string]int64, rates []Rate, destination string, minimum int64) (Rate, int64, int64, bool) {
 	shortfall := required[destination] - balances[destination]
 	var best Rate
 	var gross, net int64
@@ -314,7 +366,7 @@ func bestRemittance(balances, required map[string]int64, rates []Rate, destinati
 		}
 		surplus := balances[rate.FromRegion] - required[rate.FromRegion]
 		amount := min(needed, surplus)
-		if amount <= 0 || amount > maximumPence {
+		if amount <= 0 || amount < minimum || amount > maximumPence {
 			continue
 		}
 		// This is the observed server's gross-fee rounding, not a hypothetical

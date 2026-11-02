@@ -90,6 +90,26 @@ func (r *Runner) growthSourceAuthority(input PlanningInput, portID string) bool 
 // Only unpaid cash is committed. Existing cargo, hardware and completed store
 // orders do not reserve their original purchase price a second time.
 func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mission, data *missionData, ship ShipState) {
+	if data.Commission != nil {
+		if mission.Phase != "done" {
+			if port, exists := findPort(r.stateCache.Catalog, data.Commission.Contract.OriginPortID); exists {
+				cash := data.Commission.BuildLimitPence
+				if !data.Commission.Accepted {
+					cash = growthCashTotal(cash, data.Commission.Contract.CollateralPence)
+				}
+				required[port.BankingRegion] = growthCashTotal(required[port.BankingRegion], cash)
+			}
+		}
+		return
+	}
+	if ship.Voyage == nil && (ship.Ship.Status == "berthed" || ship.Ship.Status == "anchored_roadstead") {
+		if intent := voyageInsuranceForLeg(data, ship.Ship.CurrentPortID, mission.Destination); intent != nil &&
+			intent.PolicyID == "" && !intent.Declined && intent.Quote.LloydsPremiumPence != nil {
+			if port, exists := findPort(r.stateCache.Catalog, intent.Quote.OriginPortID); exists {
+				required[port.BankingRegion] = growthCashTotal(required[port.BankingRegion], *intent.Quote.LloydsPremiumPence)
+			}
+		}
+	}
 	if data.PlayerLoan != nil && (data.Capacity == nil || data.Capacity.Financing == nil) {
 		for region, amount := range data.PlayerLoan.ProtectedByRegion {
 			required[region] = growthCashTotal(required[region], amount)
@@ -573,6 +593,9 @@ func (r *Runner) releaseGrowthContinuation(ctx context.Context, ship ShipState, 
 }
 
 func (r *Runner) driveGrowthReturn(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData) (bool, error) {
+	if intent := voyageInsuranceForLeg(data, ship.Ship.CurrentPortID, mission.Destination); intent != nil && intent.PolicyID != "" {
+		return r.prepareDeparture(ctx, ship, mission, data)
+	}
 	quote, err := r.quoteGrowthContinuation(ctx, ship, data)
 	if err != nil {
 		return false, err
@@ -687,6 +710,10 @@ func (r *Runner) growthAllocationReady(ctx context.Context, ship ShipState, data
 		return nil
 	}
 	if !selectedReturn && data.BuyDone {
+		return nil
+	}
+	if selectedReturn && voyageLegInsured(data, ship.Ship.CurrentPortID, data.Plan.Origin) &&
+		(action.Stage == "depart" || action.Stage == "provision") {
 		return nil
 	}
 	var quote growthOperatingQuote

@@ -183,7 +183,7 @@ func loanFullPayment(loan gameapi.Loan) int64 {
 	return growthCashTotal(loan.OwedPence, int64(math.Ceil(loanDailyInterest(loan))))
 }
 
-func evaluateCapacityLoan(decision GrowthDecision, shortfall, capacity, principal, installment int64, annualRate int32, maxPaybackDays float64) capacityLoanDecision {
+func evaluateCapacityLoan(decision GrowthDecision, shortfall, capacity, principal, installment int64, annualRate int32) capacityLoanDecision {
 	result := capacityLoanDecision{
 		ShortfallPence: shortfall, LienCapacityPence: &capacity, PrincipalPence: principal, Verdict: "debt_capacity",
 		InstallmentPence: &installment, DebtReservePence: growthCashTotal(installment, installment),
@@ -205,9 +205,9 @@ func evaluateCapacityLoan(decision GrowthDecision, shortfall, capacity, principa
 		result.Reason = "half the repeatable marginal net must cover ten-day installments by at least 1.25x after interest"
 		return result
 	}
-	if maxPaybackDays <= 0 || float64(growthCapital(decision))/result.NetAfterInterestPence > min(420, maxPaybackDays) {
+	if float64(growthCapital(decision))/result.NetAfterInterestPence > capacityPaybackGameDays {
 		result.Verdict = "payback"
-		result.Reason = "capacity capital exceeds the configured maximum game-day payback after loan interest"
+		result.Reason = "capacity capital exceeds the maximum game-day payback after loan interest"
 		return result
 	}
 	result.Borrow = true
@@ -379,7 +379,7 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 		result.Verdict = "no_depth"
 		return refuse("recourse debt requires repeatable depth-backed non-charter earnings")
 	}
-	if float64(capital)/decision.DepthNetPencePerGameDay > r.capacityPaybackLimit() {
+	if float64(capital)/decision.DepthNetPencePerGameDay > capacityPaybackGameDays {
 		result.Verdict = "payback"
 		return refuse("debt-funded capacity exceeds the maximum payback")
 	}
@@ -419,7 +419,7 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 		return refuse("gross package debt exceeds 35% of fresh net worth, or net worth is stale")
 	}
 	if !r.playerFallback(port.ID, hull.ID) {
-		result = evaluateCapacityLoan(decision, decision.CashShortfallPence, math.MaxInt64, playerPrincipal, playerInstallment, 3_000, r.capacityPaybackLimit())
+		result = evaluateCapacityLoan(decision, decision.CashShortfallPence, math.MaxInt64, playerPrincipal, playerInstallment, 3_000)
 		result.Source = "player_request"
 		result.EvidenceBasis = decision.EvidenceBasis
 		result.Package = capacityPackageFor(decision, "player_request", playerPrincipal, playerInstallment)
@@ -430,7 +430,7 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 	}
 	capacity := int64(len(ships)) * goldsmithsMaximumPence
 	principal, estimate := estimatedCapacityPrincipal(financingShortfall, int64(len(ships)))
-	result = evaluateCapacityLoan(decision, decision.CashShortfallPence, capacity, principal, estimate, 3_000, r.capacityPaybackLimit())
+	result = evaluateCapacityLoan(decision, decision.CashShortfallPence, capacity, principal, estimate, 3_000)
 	if !result.Borrow {
 		return refuse(result.Reason)
 	}
@@ -480,7 +480,7 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 		}
 		principal = needed
 	}
-	result = evaluateCapacityLoan(decision, decision.CashShortfallPence, capacity, principal, installment, quotes[0].AnnualRateBPS, r.capacityPaybackLimit())
+	result = evaluateCapacityLoan(decision, decision.CashShortfallPence, capacity, principal, installment, quotes[0].AnnualRateBPS)
 	result.Source, result.TermGameDays, result.CollateralKind = "goldsmiths", 360, "ship_lien"
 	result.Package, result.EvidenceBasis = capacityPackageFor(decision, "goldsmiths", principal, installment), decision.EvidenceBasis
 	if len(quotes) > 0 && quotes[0].CollateralShipID != nil {
@@ -818,7 +818,7 @@ func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (G
 		financing.Cancel = true
 		return financing.Decision, nil, capacityGate("dscr", false, "capacity financing dscr: realized depth earnings no longer cover the quoted debt")
 	}
-	if float64(growthCapital(financing.Decision))/netAfterInterest > r.capacityPaybackLimit() {
+	if float64(growthCapital(financing.Decision))/netAfterInterest > capacityPaybackGameDays {
 		financing.Cancel = true
 		return financing.Decision, nil, capacityGate("payback", false, "capacity financing payback: realized after-interest net exceeds maximum payback")
 	}

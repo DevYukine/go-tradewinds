@@ -31,7 +31,7 @@ func TestFinancialStageRejectsEventPublishedWhilePreparingIntent(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setVaultBalance("north", 500_000)
-	h.api.setVaultBalance("south", 100_000)
+	h.api.setVaultBalance("south", 150_000)
 	h.seedLaneProofs()
 	runner := h.runner(primaryTestKey)
 	runner.generation = uuid.NewString()
@@ -72,7 +72,7 @@ func TestRunReplansNeverSentGrowthAfterEventBetweenStageAndDispatch(t *testing.T
 		t.Run(eventType, func(t *testing.T) {
 			h := newRecoveryHarness(t)
 			h.api.setVaultBalance("north", 500_000)
-			h.api.setVaultBalance("south", 100_000)
+			h.api.setVaultBalance("south", 150_000)
 			h.seedLaneProofs()
 			runner := h.runner(primaryTestKey)
 			second := make(chan struct{})
@@ -144,7 +144,7 @@ func TestFinancialRestartReplansNeverSentGrowthFromFreshFunds(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setVaultBalance("north", 500_000)
-	h.api.setVaultBalance("south", 100_000)
+	h.api.setVaultBalance("south", 150_000)
 	h.seedLaneProofs()
 	original := h.runner(primaryTestKey)
 	if _, err := h.tick(original); err != nil {
@@ -177,7 +177,7 @@ func TestFinancialRestartReplansNeverSentGrowthFromFreshFunds(t *testing.T) {
 		t.Fatal("restart dispatched an unjournaled build funded by the previous process's capture")
 	}
 	h.api.setVaultBalance("north", 500_000)
-	h.api.setVaultBalance("south", 100_000)
+	h.api.setVaultBalance("south", 150_000)
 	if _, err := h.tick(restarted); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestFinancialEventAndRestartPreserveUnresolvedGrowthRequest(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setVaultBalance("north", 500_000)
-	h.api.setVaultBalance("south", 100_000)
+	h.api.setVaultBalance("south", 150_000)
 	h.seedLaneProofs()
 	original := h.runner(primaryTestKey)
 	if _, err := h.tick(original); err != nil {
@@ -280,7 +280,7 @@ func waitPublishedFinancial(t *testing.T, runner *Runner, want uint64) {
 func TestRunAbandonsOnlyNewJournalRequestVetoedBeforeFirstSend(t *testing.T) {
 	h := newRecoveryHarness(t)
 	h.api.setVaultBalance("north", 500_000)
-	h.api.setVaultBalance("south", 100_000)
+	h.api.setVaultBalance("south", 150_000)
 	h.seedLaneProofs()
 	runner := h.runner(primaryTestKey)
 	stream := interceptEventStream(t, h.api, []progressFrame{{id: "connected", eventType: progressOrdinaryEvent}}, 3)
@@ -359,7 +359,7 @@ func TestFinancialReplanningRechecksUnsentBuyAndFreightCollateral(t *testing.T) 
 		t.Run(stage, func(t *testing.T) {
 			h := newRecoveryHarness(t)
 			h.api.setVaultBalance("north", 500_000)
-			h.api.setVaultBalance("south", 100_000)
+			h.api.setVaultBalance("south", 150_000)
 			berthed := sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)
 			berthed["ship"].(map[string]any)["status"] = "berthed"
 			berthed["ship"].(map[string]any)["cannons_count"] = 4
@@ -478,7 +478,7 @@ func TestFinancialEventDuringWorkCannotStagePreEventGrowth(t *testing.T) {
 	t.Parallel()
 	h := newRecoveryHarness(t)
 	h.api.setVaultBalance("north", 500_000)
-	h.api.setVaultBalance("south", 100_000)
+	h.api.setVaultBalance("south", 150_000)
 	h.seedLaneProofs()
 	runner := h.runner(primaryTestKey)
 	runner.generation = uuid.NewString()

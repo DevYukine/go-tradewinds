@@ -36,13 +36,13 @@ Defaults: handle `Yukine`, company `The Pokemon Pirates`, home `le_havre`, start
 Observe without trading:
 
 ```sh
-go run ./cmd/tradewinds run
+go run ./cmd/tradewinds run --observe
 ```
 
-Enable autonomous trading and eligible fleet investment:
+Autonomous trading and eligible fleet investment run by default:
 
 ```sh
-go run ./cmd/tradewinds run --execute
+go run ./cmd/tradewinds run
 ```
 
 With execution enabled from phase 2, the one-time America flagship request borrows the live Boston barque price plus 10% for guns and stores, less America cash, rounded up to 1,000 Cr (minimum 100 Cr). The bot hires a Boston factor if no ship or factor is present and keeps it until the flagship is built. It requests an unsecured, recourse, amortised 360-game-day loan for 72 game hours, approves the cheapest eligible lender at no more than twice the request's Goldsmiths rate (Kraken Cartel wins equal-rate ties), then builds in Boston without a mortgage. A frigate is used only when the barque has no usable price. America funds remain reserved while construction waits for materials, checked every 30 real minutes; a lapsed unfunded request is reposted after ten real minutes. Normal ship maintenance supplies guns and stores, and regional treasury reserves cover installments.
@@ -81,7 +81,9 @@ The safe negative restart check uses a committed syntax error on a throwaway bra
 
 Additional account creation is explicit. `run` starts an independent worker for each enabled, fully registered database account. Company ownership locks prevent competing executors; the request limiter also coordinates the shared public IP within the process.
 
-Live passes also produce an encrypted, deduplicated replay tape. `REPLAY_RETENTION_DAYS` defaults to 90 real days (`0` disables recording and pruning); `REPLAY_MAX_GIB` defaults to 20 GiB. `tw-sim backfill` imports surviving diagnostics without game requests; reruns add no duplicate frames or payloads. `validate` checks recorded accounting and market/voyage predictions. `run` fits an earlier window and compares five fixed-fleet policies under three regeneration scenarios, printing simulated estimates and optional deterministic JSON. Both use database-enforced read-only connections with no migrations or game requests. A failed gate exits 2 and marks every comparison `UNTRUSTED`; no live policy defaults change. See [Replay recording](docs/runbook.md#replay-recording) for coverage, storage, validation and model limitations.
+The engine protects a 1,000 Cr operating floor in each region with obligations. Three game days of measured fleet and factor upkeep are added only at home and to the automatic bill-remittance setting. Regional funding also protects observed berth bills, debt service, collateral and other committed liabilities. Lane growth uses a 30-game-day payback horizon; capacity growth and its financing use 420 game days. These are engine policy, not environment settings.
+
+Live passes also produce an encrypted, deduplicated replay tape. `REPLAY_RETENTION_DAYS` defaults to 90 real days (minimum 1; recording and pruning always run); `REPLAY_MAX_GIB` defaults to 20 GiB. `tw-sim backfill` imports surviving diagnostics without game requests; reruns add no duplicate frames or payloads. `validate` checks recorded accounting and market/voyage predictions. `run` fits an earlier window and compares five fixed-fleet policies under three regeneration scenarios, printing simulated estimates and optional deterministic JSON. Both use database-enforced read-only connections with no migrations or game requests. A failed gate exits 2 and marks every comparison `UNTRUSTED`; no live policy defaults change. See [Replay recording](docs/runbook.md#replay-recording) for coverage, storage, validation and model limitations.
 
 ## Checks
 

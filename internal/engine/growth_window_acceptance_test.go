@@ -345,17 +345,20 @@ func TestGrowthWindowFreshProofDoesNotBypassEconomicGuards(t *testing.T) {
 			runner := growthWindowRunner(t, h)
 			if guard != "capital" {
 				// Isolate lane guards without weakening reserve-only capital.
-				runner.opts.CapacityPaybackDays = 0.000001
+				runner.snapshot["_capacity_growth_paused_until"] = encode(time.Now().Add(time.Hour))
 			}
 			switch guard {
 			case "capital":
 				for i := range runner.stateCache.Vaults {
 					if runner.stateCache.Vaults[i].AccountType == "vault" {
-						runner.stateCache.Vaults[i].BalancePence = runner.opts.ReservePence
+						runner.stateCache.Vaults[i].BalancePence = runner.protectedReservePence()
 					}
 				}
 			case "payback":
-				runner.opts.MaxPaybackDays = 0.01
+				for key, quote := range runner.stateCache.Quotes {
+					quote.TotalCostPence = new(int64(1_000_000_000))
+					runner.stateCache.Quotes[key] = quote
+				}
 			case "source_depth":
 				bookCommodity(runner.stateCache.Markets[recoveryHomePort], recoveryGrain).Depth.Asks = nil
 			case "destination_depth":

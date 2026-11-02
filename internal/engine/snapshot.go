@@ -322,7 +322,6 @@ func (r *Runner) refresh(ctx context.Context) error {
 		{"factors", "/v1/company/factors", fetchJSON},
 		{"insurance", "/v1/insurance/list", fetchPages},
 		{"insurance_owned", "/v1/insurance/list?underwriter_company_id=" + url.QueryEscape(r.account.CompanyID), fetchPages},
-		{"futures", "/v1/future/list", fetchPages},
 		{"convoys", "/v1/fleet/convoys", fetchPages},
 		{"marques", "/v1/fleet/marques", fetchPages},
 		{"patrols", "/v1/fleet/patrols", fetchPages},
@@ -330,6 +329,9 @@ func (r *Runner) refresh(ctx context.Context) error {
 		{"contracts", "", fetchContracts},
 	}
 	now := time.Now()
+	if !r.fresh("futures") {
+		tasks = append(tasks, fetchTask{"futures", "/v1/future/list", fetchPages})
+	}
 	rndStatusRequested := false
 	for _, task := range []fetchTask{
 		{"rnd_status", "/v1/rnd/status", fetchJSON},
@@ -393,7 +395,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 		}
 	}
 	r.snapshot["_route_phase"] = encode(state.Clock.UnlockedPhase)
-	if r.opts.MarquesEnabled && r.fresh("catalog") {
+	if r.fresh("catalog") {
 		if err := r.refreshMarqueQuotes(ctx, state.Catalog); err != nil {
 			return err
 		}
@@ -745,7 +747,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 	for i, ship := range state.Ships {
 		mission := shipMissions[i].mission
 		data := &shipMissions[i].data
-		if r.opts.MarquesEnabled && mission != nil && ship.Ship.Status != "sunk" {
+		if mission != nil && ship.Ship.Status != "sunk" {
 			for _, plan := range marqueMissionPlans(state, ship, mission, data) {
 				if plan.Origin == "" || plan.Destination == "" || plan.Origin == plan.Destination {
 					continue

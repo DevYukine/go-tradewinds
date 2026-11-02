@@ -67,6 +67,12 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 	if data.Action == nil {
 		return false, fmt.Errorf("mission %s has no attached response stage", mission.ShipID)
 	}
+	if commissionStage(data.Action.Stage) {
+		return r.consumeCommissionResult(ctx, mission, data, status, response)
+	}
+	if data.Action.Stage == "voyage-insure" {
+		return r.consumeVoyageInsuranceResult(ctx, mission, data, status, response)
+	}
 	if bulletinStage(data.Action.Stage) {
 		if gameapi.BulletinAuthorizationRefusal(status, response) {
 			_, err := r.consumeRejection(ctx, mission, data, status, response)
@@ -330,6 +336,9 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 			return false, r.hold(ctx, mission.ShipID, errUninterpretableResult.Error())
 		}
 		data.FeesPence += *result.Fee
+		if stage == "remit" && data.Commission != nil {
+			data.Commission.FundingShortfallPence = max(int64(1), *result.Net)
+		}
 		if stage == "remit" && (mission.ShipID == "__treasury" || mission.ShipID == "__loans") {
 			mission.Phase = "done"
 		}
@@ -468,9 +477,13 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 	// A domain refusal already has a durable, offer-specific latch. It must
 	// not delay selling other cargo or accepting a newly changed offer.
 	if !playerApprovalRefusal && (stage != "deliver-charter" || status == 401 || status == 403 || status == 429) {
-		data.CooldownUntil = maxTime(data.CooldownUntil, r.gameDelay(1))
-		if status == 409 {
-			data.CooldownUntil = maxTime(data.CooldownUntil, time.Now().Add(5*time.Second))
+		if domainRefusal && (stage == "voyage-insure" || stage == "remit" && data.Commission != nil) {
+			data.CooldownUntil = maxTime(data.CooldownUntil, time.Now().UTC().Add(5*time.Second))
+		} else {
+			data.CooldownUntil = maxTime(data.CooldownUntil, r.gameDelay(1))
+			if status == 409 {
+				data.CooldownUntil = maxTime(data.CooldownUntil, time.Now().Add(5*time.Second))
+			}
 		}
 	}
 	if stage == "deliver-charter" && status != 401 && status != 403 && status != 429 {

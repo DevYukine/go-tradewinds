@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const growthPaybackGameDays = 30
+
 type LaneProof struct {
 	QuantityTons int64
 	GameSeconds  int64
@@ -356,6 +358,9 @@ type growthEvidence struct {
 }
 
 func (r *Runner) reserveGrowthMission(evidence *growthEvidence, mission *store.Mission, data *missionData) bool {
+	if strings.HasPrefix(mission.ShipID, "__") && mission.ShipID != "__growth" {
+		return true
+	}
 	if data.Relocation != nil || mission.Phase == "maintenance_done" {
 		return false
 	}
@@ -426,7 +431,14 @@ func (r *Runner) growthCashFunding(ctx context.Context, evidence *growthEvidence
 		return "", err
 	}
 	for region, working := range evidence.workingByRegion {
-		required[region] = growthCashTotal(max(required[region], r.opts.ReservePence), working)
+		required[region] = growthCashTotal(max(required[region], r.protectedReservePence()), working)
+	}
+	commission, commissionData, err := r.loadMission(ctx, commissionMission)
+	if err != nil {
+		return "", err
+	}
+	if commission != nil {
+		r.reserveMissionCash(required, commission, &commissionData, ShipState{})
 	}
 	balances := r.planningInput(ShipState{}).Balances
 	for region, protected := range required {
@@ -489,11 +501,15 @@ func growthCandidate(port Port, hull Hull) ShipState {
 }
 
 func (r *Runner) growthQuote(port Port, hull Hull) (YardQuote, error) {
-	key := port.ID + "|" + hull.ID
 	if until := decode[map[string]time.Time](r.snapshot, "_growth_build_backoffs")[port.ID+"|"+hull.ID]; time.Now().Before(until) {
 		r.wakeBy(until)
 		return YardQuote{}, fmt.Errorf("growth build for this yard and hull backs off until %s after a definitive refusal", until.UTC().Format(time.RFC3339))
 	}
+	return r.presentYardQuote(port, hull)
+}
+
+func (r *Runner) presentYardQuote(port Port, hull Hull) (YardQuote, error) {
+	key := port.ID + "|" + hull.ID
 	quote := r.stateCache.Quotes[key]
 	if !port.HasShipyard || hull.CanSealDispatches || port.Phase > r.stateCache.Clock.UnlockedPhase || hull.Phase > r.stateCache.Clock.UnlockedPhase ||
 		!r.fresh("books/"+port.ID) || r.stateCache.Markets[port.ID].Visibility != "quay" || !r.fresh("yard_quotes/"+key) ||
@@ -673,7 +689,7 @@ func (r *Runner) evaluateGrowthCandidate(ctx context.Context, port Port, hull Hu
 		ContractGameDaysRemaining:   daysRemaining,
 		IncrementalDailyUpkeepPence: deltaUpkeep,
 		InitialStoresPence:          plan.Economics.StoreCashPence,
-		MaxPaybackDays:              r.opts.MaxPaybackDays,
+		MaxPaybackDays:              growthPaybackGameDays,
 	}
 	decision := evaluateGrowth(input, proof)
 	decision.Competition = quoted.destinationCompetition(plan.Destination)
@@ -681,12 +697,12 @@ func (r *Runner) evaluateGrowthCandidate(ctx context.Context, port Port, hull Hu
 		return decision, nil, nil
 	}
 	required := clonePence(evidence.required)
-	required[port.BankingRegion] = max(required[port.BankingRegion], r.opts.ReservePence)
+	required[port.BankingRegion] = max(required[port.BankingRegion], r.protectedReservePence())
 	required[port.BankingRegion] = growthCashTotal(required[port.BankingRegion], growthCapital(decision), decision.WorkingCapitalPence)
 	required[evidence.home.BankingRegion] += decision.UpkeepReservePence
 	if destination, exists := findPort(r.stateCache.Catalog, plan.Destination); exists {
 		required[destination.BankingRegion] = max(required[destination.BankingRegion],
-			r.opts.ReservePence+3*r.stateCache.Ports[destination.ID].BerthDuesPerDayPence)
+			r.protectedReservePence()+3*r.stateCache.Ports[destination.ID].BerthDuesPerDayPence)
 		if destination.BankingRegion != port.BankingRegion {
 			required[destination.BankingRegion] = growthCashTotal(required[destination.BankingRegion],
 				r.stateCache.Ports[destination.ID].BerthDuesPerDayPence)
@@ -766,13 +782,13 @@ func (r *Runner) growthAtYard(ctx context.Context, port Port, hull Hull, quote Y
 		}
 		quoted := input
 		quoted.ReserveByRegion = clonePence(evidence.required)
-		quoted.ReserveByRegion[port.BankingRegion] = max(quoted.ReserveByRegion[port.BankingRegion], r.opts.ReservePence)
+		quoted.ReserveByRegion[port.BankingRegion] = max(quoted.ReserveByRegion[port.BankingRegion], r.protectedReservePence())
 		destination, exists := findPort(input.Catalog, base.Destination)
 		if !exists {
 			return nil
 		}
 		quoted.ReserveByRegion[destination.BankingRegion] = max(quoted.ReserveByRegion[destination.BankingRegion],
-			r.opts.ReservePence+3*input.Ports[destination.ID].BerthDuesPerDayPence)
+			r.protectedReservePence()+3*input.Ports[destination.ID].BerthDuesPerDayPence)
 		target := clonePence(quoted.ReserveByRegion)
 		if destination.BankingRegion != port.BankingRegion {
 			// The delivery bill is payable cash above the protected reserve.

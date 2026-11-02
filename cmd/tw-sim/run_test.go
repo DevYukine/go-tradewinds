@@ -126,7 +126,6 @@ func TestRunCommandSyntheticTapeWritesFifteenDeterministicUntrustedRows(t *testi
 	t.Setenv("DATABASE_URL", dsn)
 	t.Setenv("CREDENTIAL_KEY", base64.StdEncoding.EncodeToString(key))
 	t.Setenv("HTTP_ADDR", "127.0.0.1:8585")
-	t.Setenv("RESERVE_PENCE", "75000")
 	var first []byte
 	for iteration := range 2 {
 		path := filepath.Join(t.TempDir(), "comparison.json")

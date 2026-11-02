@@ -116,8 +116,8 @@ func TestCapacitySavingsLaneBuildHonorsExactAffordableTarget(t *testing.T) {
 				capitalIncrease := growthCashTotal(newPrice, ceilBPS(newPrice, 1_000)) -
 					growthCashTotal(oldPrice, ceilBPS(oldPrice, 1_000))
 				target.CapitalPence += capitalIncrease
-				target.RequiredPence += capitalIncrease + max(runner.opts.ReservePence, ceilBPS(newPrice, 1_500)) -
-					max(runner.opts.ReservePence, ceilBPS(oldPrice, 1_500))
+				target.RequiredPence += capitalIncrease + max(runner.protectedReservePence(), ceilBPS(newPrice, 1_500)) -
+					max(runner.protectedReservePence(), ceilBPS(oldPrice, 1_500))
 				grown := append(append([]ShipState(nil), runner.stateCache.Ships...), growthCandidate(port, alternative))
 				deltaUpkeep := DailyUpkeep(grown, runner.stateCache.Catalog, len(runner.stateCache.Factors)) -
 					DailyUpkeep(runner.stateCache.Ships, runner.stateCache.Catalog, len(runner.stateCache.Factors))

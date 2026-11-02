@@ -44,7 +44,7 @@ func TestPassengerFloorBoundaries(t *testing.T) {
 func TestPassengerLadderDeadlineAndRatio(t *testing.T) {
 	for _, start := range []int64{118, 200, 1000, 10_000} {
 		fare := start
-		for remaining := 8.0; remaining >= 2; remaining-- {
+		for remaining := 84.0; remaining >= 12; remaining -= 12 {
 			next := passengerNextFare(fare, 100, remaining)
 			if next < 100 || next > fare || fare > 100 && next*100 > fare*85 {
 				t.Fatalf("illegal ladder step %d -> %d with %.0f hours left", fare, next, remaining)
@@ -52,11 +52,11 @@ func TestPassengerLadderDeadlineAndRatio(t *testing.T) {
 			fare = next
 		}
 		if fare != 100 {
-			t.Fatalf("ladder did not reach floor >=1gh before boarding deadline: %d", fare)
+			t.Fatalf("ladder did not reach the floor before the final offer lifetime: %d", fare)
 		}
 	}
-	if got := passengerNextFare(1000, 100, 2.75); got != 100 {
-		t.Fatalf("fractional deadline did not reserve final floor hour: %d", got)
+	if got := passengerNextFare(1000, 100, 17.75); got != 100 {
+		t.Fatalf("fractional deadline did not reserve the final floor offer: %d", got)
 	}
 }
 
@@ -79,17 +79,17 @@ func TestPassengerWholeGroupsAndHullDensity(t *testing.T) {
 func TestPassengerRouteSafetyAndProtectedCash(t *testing.T) {
 	in := passengerInputFixture()
 	groups := []gameapi.PassengerWaitingGroup{{ID: "whole", Kind: "travellers", Size: 10, OriginPortID: "origin", DestPortID: "destination", BoardBy: in.Now.Add(time.Hour)}}
-	quote, err := quotePassage(in, "destination", groups, nil, nil)
+	quote, err := quotePassage(in, "destination", groups, nil, gameapi.PassengerFareSummary{}, nil)
 	if err != nil || quote.Floor <= 0 || quote.Berths != 10 {
 		t.Fatalf("safe passage not quoted: %+v %v", quote, err)
 	}
 	in.Zones[0].NetPiracyBPS = 1000
-	if _, err := quotePassage(in, "destination", groups, nil, nil); err == nil {
+	if _, err := quotePassage(in, "destination", groups, nil, gameapi.PassengerFareSummary{}, nil); err == nil {
 		t.Fatal("1000bps route accepted")
 	}
 	in.Zones[0].NetPiracyBPS = 999
 	in.Zones[0].MarquePiracyBPS, in.Zones[0].ActiveMarques = new(int64(500)), new(int64(1))
-	if _, err := quotePassage(in, "destination", groups, nil, nil); err == nil {
+	if _, err := quotePassage(in, "destination", groups, nil, gameapi.PassengerFareSummary{}, nil); err == nil {
 		t.Fatal("public foreign marque aggregate accepted despite private own-only list being empty")
 	}
 	own := letterOfMarque{SeaZoneID: "channel", SponsorCompanyID: in.CompanyID, AddedPiracyBPS: 500, ExpiresAt: in.Now.Add(time.Hour)}
@@ -100,7 +100,7 @@ func TestPassengerRouteSafetyAndProtectedCash(t *testing.T) {
 	in.Zones[0].NetPiracyBPS = 200
 	in.Ship.Stores.ProvisionsTons = 0
 	in.Balances["channel"] = 0
-	if _, err := quotePassage(in, "destination", groups, nil, nil); err == nil {
+	if _, err := quotePassage(in, "destination", groups, nil, gameapi.PassengerFareSummary{}, nil); err == nil {
 		t.Fatal("unaffordable safe stores accepted")
 	}
 }
@@ -142,8 +142,8 @@ func passengerTick(t *testing.T, h *recoveryHarness, r *Runner) {
 	}
 }
 
-// Passages only take ships with no profitable voyage, so another hull's
-// passage never blocks one; cargo that appears later still wins.
+// Passages only take ships with no profitable voyage. Before an offer exists,
+// cargo can release the unstarted passage for the ordinary planner.
 func TestPassengerAdmitsBesideOtherPassagesAndCargoPriority(t *testing.T) {
 	h, r, in := passengerRunnerFixture(t)
 	other := in.Ship
@@ -153,13 +153,10 @@ func TestPassengerAdmitsBesideOtherPassagesAndCargoPriority(t *testing.T) {
 	if changed, err := r.considerPassage(h.ctx, in.Ship, in, map[string]*store.Mission{"ship-b": committed}); err != nil || !changed {
 		t.Fatalf("idle ship did not admit passage beside another passage: %t %v", changed, err)
 	}
-	mission, data := h.mission(in.Ship.Ship.ID)
 	// An executable delivery charter appears after the fare mission exists.
 	reward := int64(10_000)
 	r.stateCache.Contracts = []Contract{{ID: "cargo", ContractType: "charter", OriginPortID: "destination", CommodityID: "provisions", RemainingQuantity: 20, RewardPerTonPence: &reward, Status: "open"}}
-	if changed, err := r.driveMission(h.ctx, in.Ship, mission, &data); err != nil || !changed {
-		t.Fatalf("cargo did not displace unboarded offer: %t %v", changed, err)
-	}
+	passengerTick(t, h, r)
 	h.missingMission(in.Ship.Ship.ID)
 }
 
@@ -234,9 +231,11 @@ func TestPassengerLadderJournalRestartExactlyTwoWrites(t *testing.T) {
 	if len(writes) != 1 {
 		t.Fatalf("restart created second offer: %v", writes)
 	}
-	// Advance a persisted full hour without sleeps or moving the game server.
-	data.Passage.StepHour--
-	data.Passage.StepOpenedAt = data.Passage.StepOpenedAt.Add(-gameDuration(1.1/24, in.Clock.Calendar.TimeScale))
+	// Advance the persisted twelve-hour price interval without sleeps.
+	data.Passage.StepHour -= 12
+	data.Passage.StepOpenedAt = data.Passage.StepOpenedAt.Add(-gameDuration(12.1/24, in.Clock.Calendar.TimeScale))
+	offers[0].CreatedAt = data.Passage.StepOpenedAt
+	r.snapshot["passenger_offers"] = encode(offers)
 	if err := r.saveMission(h.ctx, mission, &data); err != nil {
 		t.Fatal(err)
 	}
@@ -593,7 +592,7 @@ func TestPassengerRepriceRetryRetainsFareAndCooldown(t *testing.T) {
 	mission, data := h.mission(in.Ship.Ship.ID)
 	p := data.Passage
 	p.FarePence, p.Reoffer, p.OfferID = p.FloorPence*8, true, "retry-offer"
-	p.StepOpenedAt, p.StepHour = in.Now.Add(-time.Minute), in.Clock.Calendar.TotalGameHours-1
+	p.StepOpenedAt, p.StepHour = in.Now.Add(-gameDuration(12.1/24, in.Clock.Calendar.TimeScale)), in.Clock.Calendar.TotalGameHours-12
 	open := gameapi.PassengerOffer{ID: p.OfferID, ShipID: in.Ship.Ship.ID, PortID: "origin", DestPortID: "destination", FarePerHeadPence: p.FarePence * 100 / 85, MaxBerths: p.MaxBerths, Status: "open"}
 	r.snapshot["passenger_offers"] = encode([]gameapi.PassengerOffer{open})
 	fare := p.FarePence
@@ -715,13 +714,13 @@ func TestPassengerMinimalMultiGroupPaidReceiptsAccountBatchOnce(t *testing.T) {
 	}
 }
 
-func TestPassengerQuoteIgnoresGroupLeavingBeforeFullHour(t *testing.T) {
+func TestPassengerQuoteIgnoresGroupLeavingBeforeMinimumOfferLifetime(t *testing.T) {
 	in := passengerInputFixture()
 	groups := []gameapi.PassengerWaitingGroup{
 		{ID: "too-late", Kind: "travellers", Size: 1, OriginPortID: "origin", DestPortID: "destination", BoardBy: in.Now.Add(gameDuration(0.5/24, in.Clock.Calendar.TimeScale))},
 		{ID: "viable", Kind: "travellers", Size: 10, OriginPortID: "origin", DestPortID: "destination", BoardBy: in.Now.Add(time.Hour)},
 	}
-	quote, err := quotePassage(in, "destination", groups, nil, nil)
+	quote, err := quotePassage(in, "destination", groups, nil, gameapi.PassengerFareSummary{}, nil)
 	if err != nil || quote.Berths != 10 || !quote.BoardBy.Equal(groups[1].BoardBy) {
 		t.Fatalf("expiring group poisoned viable whole-group offer: %+v %v", quote, err)
 	}
@@ -837,7 +836,7 @@ func TestPassengerAmbiguousOfferQuarantinesOnlyItsShip(t *testing.T) {
 func TestPassengerPendingCancelGETOpenPermitsSafeNewCancel(t *testing.T) {
 	h, r, in := passengerRunnerFixture(t)
 	mission, data := r.newVoyage(in.Ship, Plan{Kind: "passage", ShipID: in.Ship.Ship.ID, Origin: "origin", Destination: "destination"})
-	offer := gameapi.PassengerOffer{ID: "open-cancel-target", ShipID: in.Ship.Ship.ID, PortID: "origin", DestPortID: "destination", FarePerHeadPence: 100, MaxBerths: 10, Status: "open"}
+	offer := gameapi.PassengerOffer{ID: "open-cancel-target", ShipID: in.Ship.Ship.ID, PortID: "origin", DestPortID: "destination", FarePerHeadPence: 100, MaxBerths: 10, Status: "open", CreatedAt: in.Now.Add(-gameDuration(6.0/24, in.Clock.Calendar.TimeScale))}
 	data.Passage = &passageIntent{OfferID: offer.ID, Abandon: true}
 	r.snapshot["passenger_offers"] = encode([]gameapi.PassengerOffer{offer})
 	if err := r.stage(h.ctx, mission, &data, in.Ship, "passenger-cancel", "/v1/passengers/cancel-offer", map[string]string{"offer_id": offer.ID}); err != nil {

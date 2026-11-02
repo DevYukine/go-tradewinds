@@ -276,7 +276,7 @@ func TestMortgageStillOwedConflictWaitsForAuthoritativeLoans(t *testing.T) {
 	}
 }
 
-func TestMortgageDoesNotReplaceAffordableCashForPaybackAlone(t *testing.T) {
+func TestMortgageKeepsAffordableCashBuildUnleveraged(t *testing.T) {
 	t.Parallel()
 	h, runner, _ := newMortgageFixture(t)
 	h.api.setVaultBalance("north", 1_000_000_000)
@@ -284,16 +284,6 @@ func TestMortgageDoesNotReplaceAffordableCashForPaybackAlone(t *testing.T) {
 	_, _, cash, _, _ := loanCapacityDecision(t, h, runner)
 	if !cash.Accepted || cash.Mortgage != nil {
 		t.Fatalf("fully funded build did not prefer cash: %+v", cash)
-	}
-	financedPayback := float64(growthCapital(cash)-mortgageTestTerms().PrincipalPence) /
-		(cash.IncrementalNetPencePerGameDay - mortgageInterestPerGameDay(mortgageTestTerms()))
-	if financedPayback >= cash.PaybackGameDays {
-		t.Fatal("fixture does not isolate improved financed payback")
-	}
-	runner.opts.CapacityPaybackDays = (cash.PaybackGameDays + financedPayback) / 2
-	_, _, held, _, _ := loanCapacityDecision(t, h, runner)
-	if held.Accepted || held.Mortgage != nil {
-		t.Fatalf("mortgage introduced leverage without a binding or delaying cash constraint: %+v", held)
 	}
 }
 

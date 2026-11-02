@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const marketEventStressBPS int64 = 2_500
+const MarketEventStressBPS int64 = 2_500
 const marketEventRecentWindow = 30 * time.Minute
 
 // MarketShock identifies a temporary price regime, not a published magnitude.
@@ -124,7 +124,7 @@ func (in PlanningInput) marketObservationPolicy(port, commodity string, from, to
 
 func eventPriceStress(revenue, stress int64, required bool) int64 {
 	if required {
-		return max(stress, ceilBPS(revenue, marketEventStressBPS))
+		return max(stress, ceilBPS(revenue, MarketEventStressBPS))
 	}
 	return stress
 }

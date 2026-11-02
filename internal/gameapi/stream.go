@@ -65,7 +65,7 @@ func (c *Client) Stream(ctx context.Context, afterID string, onEvent func(Event)
 	if response.StatusCode != http.StatusOK || contentErr != nil || !strings.EqualFold(contentType, "text/event-stream") {
 		// Bound a rejected handshake's body without imposing a lifetime on a
 		// successful event connection.
-		timer := time.AfterFunc(requestTimeout, cancel)
+		timer := time.AfterFunc(RequestTimeout, cancel)
 		body, readErr := readBody(response)
 		timer.Stop()
 		failure := apiError(response.StatusCode, body, readErr)

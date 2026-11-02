@@ -18,12 +18,6 @@ type Config struct {
 	MasterKey           []byte
 	APIURL              string
 	HTTPAddr            string
-	ReservePence        int64
-	MaxPaybackDays      float64
-	CapacityPaybackDays float64
-	MarquesEnabled      bool
-	FuturesPilotEnabled bool
-	BulletinEnabled     bool
 	ReplayRetentionDays int
 	ReplayMaxGiB        float64
 }
@@ -60,33 +54,13 @@ func Load() (Config, error) {
 		return cfg, errors.New("HTTP_ADDR must bind a loopback IP; use an authenticated reverse proxy for remote access")
 	}
 
-	cfg.ReservePence, err = strconv.ParseInt(env("RESERVE_PENCE", "100000"), 10, 64)
-	if err != nil || cfg.ReservePence < 0 {
-		return cfg, errors.New("RESERVE_PENCE must be a nonnegative integer")
-	}
-	cfg.MaxPaybackDays, err = strconv.ParseFloat(env("MAX_PAYBACK_GAME_DAYS", "30"), 64)
-	if err != nil || math.IsNaN(cfg.MaxPaybackDays) || cfg.MaxPaybackDays <= 0 || cfg.MaxPaybackDays > 365 {
-		return cfg, errors.New("MAX_PAYBACK_GAME_DAYS must be within (0, 365]")
-	}
-	cfg.CapacityPaybackDays, err = strconv.ParseFloat(env("CAPACITY_PAYBACK_GAME_DAYS", "420"), 64)
-	if err != nil || math.IsNaN(cfg.CapacityPaybackDays) || cfg.CapacityPaybackDays <= 0 || cfg.CapacityPaybackDays > 720 {
-		return cfg, errors.New("CAPACITY_PAYBACK_GAME_DAYS must be within (0, 720]")
-	}
-	cfg.MarquesEnabled, err = strconv.ParseBool(env("MARQUES_ENABLED", "false"))
 	if err != nil {
-		return cfg, errors.New("MARQUES_ENABLED must be true or false")
 	}
-	cfg.FuturesPilotEnabled, err = strconv.ParseBool(env("FUTURES_PILOT_ENABLED", "false"))
 	if err != nil {
-		return cfg, errors.New("FUTURES_PILOT_ENABLED must be true or false")
-	}
-	cfg.BulletinEnabled, err = strconv.ParseBool(env("BULLETIN_ENABLED", "true"))
-	if err != nil {
-		return cfg, errors.New("BULLETIN_ENABLED must be true or false")
 	}
 	cfg.ReplayRetentionDays, err = strconv.Atoi(env("REPLAY_RETENTION_DAYS", "90"))
-	if err != nil || cfg.ReplayRetentionDays < 0 || cfg.ReplayRetentionDays > 106751 {
-		return cfg, errors.New("REPLAY_RETENTION_DAYS must be an integer within [0, 106751]; 0 disables recording and pruning")
+	if err != nil || cfg.ReplayRetentionDays < 1 || cfg.ReplayRetentionDays > 106751 {
+		return cfg, errors.New("REPLAY_RETENTION_DAYS must be an integer within [1, 106751]")
 	}
 	cfg.ReplayMaxGiB, err = strconv.ParseFloat(env("REPLAY_MAX_GIB", "20"), 64)
 	if err != nil || math.IsNaN(cfg.ReplayMaxGiB) || math.IsInf(cfg.ReplayMaxGiB, 0) || cfg.ReplayMaxGiB <= 0 || cfg.ReplayMaxGiB >= float64(math.MaxInt64)/(1<<30) {

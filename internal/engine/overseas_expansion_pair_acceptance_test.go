@@ -469,7 +469,7 @@ func TestOverseasExpansionPairFundsBothHireFeesTogether(t *testing.T) {
 		Amount int64  `json:"gross_amount_pence"`
 	}
 	if data.Action == nil || data.Action.Stage != "remit" || json.Unmarshal(data.Action.Body, &remit) != nil || remit.To != "america" ||
-		remit.Amount < max(input.ReserveByRegion["america"], runner.opts.ReservePence)+2*expansionAgentHireFeePence {
+		remit.Amount < max(input.ReserveByRegion["america"], runner.protectedReservePence())+2*expansionAgentHireFeePence {
 		t.Fatalf("pair hire fees were split or omitted: %+v %+v", mission, remit)
 	}
 	if h.api.mutationCount("/v1/company/hire-factor") != 0 {
@@ -659,7 +659,7 @@ func TestOverseasExpansionPartnerHireRestoresRegionalReserveFirst(t *testing.T) 
 	if input.ReserveByRegion["america"] < expansionAgentHireFeePence {
 		t.Fatalf("pending partner fee is not earmarked in regional reserves: %+v", input.ReserveByRegion)
 	}
-	normalReserve := max(input.ReserveByRegion["america"]-expansionAgentHireFeePence, runner.opts.ReservePence)
+	normalReserve := max(input.ReserveByRegion["america"]-expansionAgentHireFeePence, runner.protectedReservePence())
 	required := normalReserve + expansionAgentHireFeePence
 	if changed, err := runner.manageExpansionAgents(h.ctx); err != nil || !changed {
 		t.Fatalf("partner funding was not staged inside its mate's floor: %t %v", changed, err)

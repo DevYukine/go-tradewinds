@@ -20,7 +20,6 @@ type RunOptions struct {
 	To           time.Time
 	FleetAt      time.Time
 	Regen        float64
-	ReservePence int64
 	CompanyID    string
 	SpeedFactors map[string]SpeedFactor
 	Variants     []Variant
@@ -102,9 +101,6 @@ type variantWorld struct {
 func Run(ctx context.Context, tape *Tape, options RunOptions) ([]VariantResult, error) {
 	if tape == nil || !options.To.After(options.From) || math.IsNaN(options.Regen) || math.IsInf(options.Regen, 0) || options.Regen < 0 || options.Regen > 1 {
 		return nil, errors.New("invalid simulation tape, window or regeneration")
-	}
-	if options.ReservePence <= 0 {
-		options.ReservePence = 75_000
 	}
 	if len(options.Variants) == 0 {
 		options.Variants = DefaultVariants()

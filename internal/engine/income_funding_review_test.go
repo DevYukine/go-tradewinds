@@ -333,7 +333,7 @@ func TestIncomeFundingReviewAccruedBerthDuesAllowReserveSafePartialFundingProgre
 	t.Parallel()
 	h, runner, ship, plan := incomeReviewFixture(t, "charter", false, 4)
 	// Isolate voyage funding fees from independent capacity-growth remittances.
-	runner.opts.CapacityPaybackDays = 0.000001
+	runner.snapshot["_capacity_growth_paused_until"] = encode(time.Now().Add(time.Hour))
 	mission, data := incomeReviewStage(t, h, runner, ship, plan, "remit")
 	action := *data.Action
 	berthedAt := time.Now().UTC().Add(-60 * time.Hour)

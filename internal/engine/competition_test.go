@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -153,12 +154,19 @@ func TestRankOnwardDeadlineIncludesFirstLegDuration(t *testing.T) {
 func TestCalibrationRegimeBoundarySurvivesRunnerRestart(t *testing.T) {
 	h := newRecoveryHarness(t)
 	first := h.runner(primaryTestKey)
+	oldSince := time.Now().UTC().Add(-24 * time.Hour)
+	first.snapshot["_revenue_calibration_since"] = encode(oldSince)
+	first.snapshot["_revenue_calibration"] = encode(map[string]int64{"retained": 9900})
 	if err := first.refreshRevenueCalibration(h.ctx); err != nil {
 		t.Fatal(err)
 	}
 	since := decode[time.Time](first.snapshot, "_revenue_calibration_since")
-	if since.IsZero() {
-		t.Fatal("calibration did not establish its deployment boundary")
+	if !since.Equal(oldSince) {
+		t.Fatal("v2 discarded unchanged historical receipt denominators")
+	}
+	retainedSince := decode[time.Time](first.snapshot, "_revenue_calibration_v2_since")
+	if !retainedSince.After(oldSince) {
+		t.Fatal("retained denominator cutover was not recorded separately")
 	}
 	second := h.runner(primaryTestKey)
 	snapshot, err := h.db.Snapshot(h.ctx, h.account.ID)
@@ -172,8 +180,84 @@ func TestCalibrationRegimeBoundarySurvivesRunnerRestart(t *testing.T) {
 	if got := decode[time.Time](second.snapshot, "_revenue_calibration_since"); !got.Equal(since) {
 		t.Fatalf("restart reset calibration boundary from %v to %v", since, got)
 	}
-	if len(decode[map[string]int64](second.snapshot, "_revenue_calibration")) != 0 {
+	if got := decode[time.Time](second.snapshot, "_revenue_calibration_v2_since"); !got.Equal(retainedSince) {
+		t.Fatalf("restart reset retained cutover from %v to %v", retainedSince, got)
+	}
+	second.snapshot["_revenue_calibration"] = encode(map[string]int64{"retained": 9900})
+	if err := second.refreshRevenueCalibration(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := decode[time.Time](second.snapshot, "_revenue_calibration_since"); !got.Equal(since) {
+		t.Fatalf("a rollback basis map reset the original regime: %v", got)
+	}
+	if got := decode[time.Time](second.snapshot, "_revenue_calibration_v2_since"); !got.Equal(retainedSince) {
+		t.Fatalf("a rollback basis map reset the retained cutover: %v", got)
+	}
+	if len(decode[store.RevenueCalibrationModel](second.snapshot, "_revenue_calibration").Cells) != 0 {
 		t.Fatal("new pricing regime inherited pre-deployment calibration")
+	}
+}
+
+func TestCalibrationCacheRequiresMatchingVersionAndRegime(t *testing.T) {
+	h := newRecoveryHarness(t)
+	runner := h.runner(primaryTestKey)
+	since, fitted := time.Now().UTC().Add(-time.Hour), time.Now().UTC()
+	runner.snapshot["_revenue_calibration_since"] = encode(since)
+	runner.snapshot["_revenue_calibration_v2_since"] = encode(since)
+	runner.snapshot["_revenue_calibration"] = encode(store.RevenueCalibrationModel{
+		Version: store.RevenueCalibrationVersion, Since: since, RetainedSince: since, FittedAt: fitted,
+		Cells: map[string]store.RevenueCalibrationCell{"global": {Samples: 10, MedianBPS: 9700, AdverseBPS: 9300}},
+	})
+	ctx, cancel := context.WithCancel(h.ctx)
+	cancel()
+	if err := runner.refreshRevenueCalibration(ctx); err != nil {
+		t.Fatalf("fresh matching fit unexpectedly read historical evidence: %v", err)
+	}
+	runner.snapshot["_revenue_calibration_since"] = encode(since.Add(-time.Hour))
+	if err := runner.refreshRevenueCalibration(ctx); err == nil {
+		t.Fatal("a changed regime reused the old fit instead of persisting its boundary")
+	}
+	if got := decode[store.RevenueCalibrationModel](runner.snapshot, "_revenue_calibration"); got.FittedAt != fitted || got.Cells["global"].MedianBPS != 9700 {
+		t.Fatalf("failed fit discarded the last model: %+v", got)
+	}
+}
+
+func TestRunKeepsWorkingAfterCalibrationFitError(t *testing.T) {
+	h := newRecoveryHarness(t)
+	runner := h.runner(primaryTestKey)
+	h.api.setAutoRemit(false, 0)
+	if _, err := h.tick(runner); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().UTC().Add(time.Hour)
+	previous := revenueCalibrationFixture(9700, 9300)
+	previous.Version, previous.Since, previous.RetainedSince = store.RevenueCalibrationVersion, future, future
+	runner.snapshot["_revenue_calibration_since"] = encode(future)
+	runner.snapshot["_revenue_calibration_v2_since"] = encode(future)
+	runner.snapshot["_revenue_calibration"] = encode(previous)
+	if err := h.db.SaveSnapshot(h.ctx, h.account.ID, runner.snapshot); err != nil {
+		t.Fatal(err)
+	}
+	logs, observed := observer.New(zap.WarnLevel)
+	runner.log = zap.New(logs)
+	stream := interceptEventStream(t, h.api, []progressFrame{
+		{id: progressEventID(0), eventType: progressOrdinaryEvent},
+	}, progressGateCapture)
+	running := startRunner(t, runner, h.ctx)
+	stream.waitCapture(t, progressGateCapture)
+	if h.api.mutationCount("/v1/company/settings") != 1 {
+		t.Fatal("calibration helper failure stopped a journaled settings mutation")
+	}
+	if observed.FilterMessage("revenue calibration unavailable; retaining last model or unmeasured prior").Len() == 0 {
+		t.Fatal("calibration failure did not log its retained-model warning")
+	}
+	stream.releaseGates()
+	running.cancel()
+	if err := running.wait(t, 15*time.Second); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("runner stopped on the calibration helper error: %v", err)
+	}
+	if got := decode[store.RevenueCalibrationModel](runner.snapshot, "_revenue_calibration"); got.Cells["global"] != previous.Cells["global"] {
+		t.Fatalf("failed fit replaced the last usable model: %+v", got)
 	}
 }
 
@@ -486,7 +570,7 @@ func TestMoneyCalibrationFixedFreightRewardIsNotCargoRevenue(t *testing.T) {
 	for _, kind := range []string{"spot+freight", "charter+freight", "freight"} {
 		t.Run(kind, func(t *testing.T) {
 			in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 1000, 2, 30)
-			in.RevenueCalibration = map[string]int64{"depth": 9000, "contract": 9000}
+			in.RevenueCalibration = revenueCalibrationFixture(9000, 9000)
 			in.marketEventsInvalid = true
 			in.Contracts = []Contract{
 				{ID: "fixed-reward", ContractType: "freight", Status: "open", IssuerCompanyID: "other",
@@ -655,7 +739,7 @@ func TestMoneyCalibrationGrowthCharterRevenueIsScaledOnce(t *testing.T) {
 	h := newRecoveryHarness(t)
 	runner := h.runner(primaryTestKey)
 	in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 1000, 1, 30)
-	in.RevenueCalibration = map[string]int64{"contract": 9500}
+	in.RevenueCalibration = revenueCalibrationFixture(9500, 9500)
 	in.Contracts = []Contract{{
 		ID: "growth-calibration-charter", ContractType: "charter", Status: "open", OriginPortID: "hamburg",
 		CommodityID: "canvas_sails", RemainingQuantity: 1000, RewardPerTonPence: new(int64(1000)),
@@ -707,7 +791,7 @@ func TestMoneyCalibrationAllFreightRewardsSurviveIncomeRepricing(t *testing.T) {
 	for _, kind := range []string{"spot+freight", "charter+freight"} {
 		t.Run(kind, func(t *testing.T) {
 			in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 1000, 3, 30)
-			in.RevenueCalibration = map[string]int64{"depth": 9000, "contract": 9000}
+			in.RevenueCalibration = revenueCalibrationFixture(9000, 9000)
 			in.marketEventsInvalid = true
 			in.Contracts = []Contract{
 				{ID: "first-freight", ContractType: "freight", Status: "open", IssuerCompanyID: "other",
@@ -728,18 +812,18 @@ func TestMoneyCalibrationAllFreightRewardsSurviveIncomeRepricing(t *testing.T) {
 			}
 			if !plan.Accepted || plan.Economics.RevenuePence != 3900 || plan.Economics.RevenueCalibrationBPS != 9000 ||
 				plan.Economics.UncalibratedRevenuePence == nil || *plan.Economics.UncalibratedRevenuePence != 4000 ||
-				plan.Economics.RevenueCalibrationReason != "" || plan.Economics.PriceUncertaintyStressPence != wantStress {
+				plan.Economics.RevenueCalibrationReason == "" || plan.Economics.PriceUncertaintyStressPence != wantStress {
 				t.Fatalf("income reprice calibrated a fixed reward or stressed the freight receipts: %+v", plan)
 			}
 		})
 	}
 }
 
-func TestMoneyCalibrationMissingFreightTermsPreserveRevenueAndReason(t *testing.T) {
+func TestMoneyCalibrationMissingFreightTermsRejectUnknownReceiptSplit(t *testing.T) {
 	for _, kind := range []string{"spot+freight", "charter+freight"} {
 		t.Run(kind, func(t *testing.T) {
 			in := moneyInput(t, time.Now().UTC(), "canvas_sails", 100, 1000, 3, 30)
-			in.RevenueCalibration = map[string]int64{"depth": 9000, "contract": 9000}
+			in.RevenueCalibration = revenueCalibrationFixture(9000, 9000)
 			in.marketEventsInvalid = true
 			in.Contracts = []Contract{{
 				ID: "known-freight", ContractType: "freight", Status: "open", IssuerCompanyID: "other",
@@ -747,25 +831,22 @@ func TestMoneyCalibrationMissingFreightTermsPreserveRevenueAndReason(t *testing.
 			}}
 			hull, _ := findHull(in.Catalog, in.Ship.Ship.ShipClass)
 			origin, _ := findPort(in.Catalog, "amsterdam")
-			revenue, wantStress := int64(4000), int64(0)
+			revenue := int64(4000)
 			if kind == "spot+freight" {
-				revenue, wantStress = 3000, 250
+				revenue = 3000
 			}
 			plan := pricePlan(in, hull, origin, Plan{
 				Kind: kind, ShipID: in.Ship.Ship.ID, Origin: "amsterdam", Destination: "hamburg",
 				Commodity: "canvas_sails", Quantity: 1, FreightIDs: []string{"known-freight", "missing-freight"},
 			}, revenue, 2)
-			if !plan.Accepted || plan.Economics.RevenuePence != 4000 || plan.Economics.RevenueCalibrationBPS != 10000 ||
-				plan.Economics.UncalibratedRevenuePence == nil || *plan.Economics.UncalibratedRevenuePence != 4000 ||
-				plan.Economics.RevenueCalibrationReason == "" || plan.Economics.PriceUncertaintyStressPence != wantStress {
-				t.Fatalf("missing fixed terms silently calibrated an unknown receipt split: %+v", plan)
+			if plan.Accepted || plan.Reason != "fixed freight terms are unavailable for receipt calibration" {
+				t.Fatalf("missing fixed terms admitted an uncalibrated receipt split: %+v", plan)
 			}
 			var restored Plan
 			if err := json.Unmarshal(encode(plan), &restored); err != nil {
 				t.Fatal(err)
 			}
-			if restored.Economics.RevenueCalibrationReason != plan.Economics.RevenueCalibrationReason ||
-				restored.Economics.RevenueCalibrationBPS != 10000 || restored.Economics.RevenuePence != 4000 {
+			if restored.Accepted || restored.Reason != plan.Reason {
 				t.Fatalf("persisted plan lost its explicit calibration hold: %+v", restored)
 			}
 		})

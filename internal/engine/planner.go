@@ -143,6 +143,8 @@ type Economics struct {
 	RevenueAgeGameHours         *float64 `json:"revenue_age_game_hours,omitempty"`
 	RevenueCalibrationBPS       int64    `json:"revenue_calibration_bps"`
 	RevenueCalibrationReason    string   `json:"revenue_calibration_reason,omitempty"`
+	RevenueAgeAddonBPS          int64    `json:"revenue_age_addon_bps,omitempty"`
+	RevenueHorizonGameDays      float64  `json:"revenue_horizon_game_days,omitempty"`
 	RevenuePence                int64    `json:"revenue_pence"`
 	UncalibratedRevenuePence    *int64   `json:"uncalibrated_revenue_pence,omitempty"`
 	RevenueQuantityTons         int64    `json:"revenue_quantity_tons,omitempty"`
@@ -201,9 +203,7 @@ type Plan struct {
 	Competition           CompetitionEvidence `json:"competition"`
 	Continuation          *Continuation       `json:"continuation,omitempty"`
 	competitionComparable bool
-	playerBidStress       bool
 	sunkFundingFeesPence  int64
-	nextRungReceiptStress bool
 	onwardSizing          planSizing
 	onwardPriority        float64
 	EventPriceStress      bool `json:"event_price_stress,omitempty"`
@@ -261,7 +261,8 @@ type PlanningInput struct {
 	BookObservedAt            map[string]time.Time
 	QuayBookMemory            map[string]RetainedQuayBook
 	BookDrift                 []BookDriftSample
-	RevenueCalibration        map[string]int64
+	RevenueCalibration        store.RevenueCalibrationModel
+	retainedDriftByGroup      map[string]float64
 	MarketShocks              map[string]map[string][]MarketShock
 	marketEventsInvalid       bool
 	SourcingHistoryError      string
@@ -401,6 +402,7 @@ func planVoyages(in PlanningInput) []Plan {
 		return []Plan{reject(Plan{ShipID: ship.Ship.ID, Kind: "hold"}, "current port is absent from catalog")}
 	}
 	in.hazardBounds = make(map[string]planningHazardBound, len(in.Catalog.Ports))
+	in.retainedDriftByGroup = make(map[string]float64, 5)
 	var plans []Plan
 	for _, contract := range in.Contracts {
 		if contract.ContractType == "charter" && contract.OriginPortID != origin.ID {
@@ -537,19 +539,31 @@ func portTrades(port Port, commodity string) bool {
 
 func sizePlan(in PlanningInput, hull Hull, origin Port, plan Plan, maximum, rewardPerTon, freightReward, extraTons int64) Plan {
 	best := reject(plan, "no whole-ton size has positive destination contribution and adequate reserves")
+	best.onwardSizing = planSizing{}
+	best.onwardPriority = math.Inf(-1)
 	maximum = min(maximum, in.Ship.EffectiveHoldCapacityTons-in.Ship.CargoUsedTons-extraTons)
 	if in.singleLegOnly && maximum > 0 {
 		plan.Quantity = 1
 		plan = evaluatePlan(in, hull, origin, plan, rewardPerTon+freightReward, extraTons)
+		if plan.PriceSource == "recent observed gossip; one-ton probe; unverified bid size" {
+			maximum = 1
+		}
 		plan.onwardSizing = planSizing{maximum, rewardPerTon, freightReward, extraTons}
 		plan.onwardPriority = math.Inf(-1)
 		if plan.Economics.GameDays > 0 && (plan.Accepted ||
-			plan.Reason == "non-positive destination contribution after measured depth, buyer customs, consumed provisions and harbour bills" ||
+			plan.Reason == "non-positive stressed destination contribution after fitted receipt uncertainty" ||
 			plan.Reason == "below 2% minimum margin on purchase plus customs") {
+			fixedHazard := int64(0)
+			if in.pinnedHazard == nil {
+				fixedHazard, _ = hazardCharge(plan.Economics.CollateralPence, plan.Economics.HazardBPS)
+			}
 			unitContribution := float64(plan.Economics.RevenuePence) - float64(freightReward) -
-				float64(plan.Economics.PurchasePence) - float64(plan.Economics.CustomsPence) - float64(plan.Economics.HazardPence)
-			plan.onwardPriority = (float64(plan.Economics.ExpectedNetPence) +
-				unitContribution*float64(maximum-1)) / plan.Economics.GameDays
+				float64(plan.Economics.PurchasePence) - float64(plan.Economics.CustomsPence) - float64(plan.Economics.HazardPence-fixedHazard)
+			projectedNet := float64(plan.Economics.ExpectedNetPence) + unitContribution*float64(maximum-1)
+			projectedStress := float64(plan.Economics.PriceUncertaintyStressPence) * float64(maximum)
+			if projectedNet-projectedStress > 0 {
+				plan.onwardPriority = projectedNet / plan.Economics.GameDays
+			}
 		}
 		return plan
 	}
@@ -616,7 +630,7 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 		plan.StoresLimitPence = fill.LimitPence
 	}
 	var purchase, customs int64
-	priceStress := plan.Economics.PriceUncertaintyStressPence
+	priceStress := int64(0)
 	if plan.Kind != "freight" {
 		commodity := bookCommodity(originBook, plan.Commodity)
 		if commodity == nil || commodity.Depth == nil {
@@ -671,9 +685,8 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 		plan.PriceSource = "live contract terms"
 	}
 	uncalibratedRevenue := revenue
-	calibrationReason := ""
 	if !freightTermsKnown || fixedFreightRevenue == math.MaxInt64 {
-		calibrationReason = "fixed freight terms are unavailable; cargo revenue calibration skipped"
+		return reject(plan, "fixed freight terms are unavailable for receipt calibration")
 	}
 	revenueBasis := ""
 	switch {
@@ -686,17 +699,29 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 	case strings.HasPrefix(plan.PriceSource, retainedBookSource):
 		revenueBasis = "retained"
 	}
-	calibrationBPS := int64(10_000)
-	if factor, present := in.RevenueCalibration[revenueBasis]; present && calibrationReason == "" {
-		calibrationBPS = max(9000, min(10_000, factor))
+	valuationAt := upper.Add(in.onwardDelay)
+	if revenueBasis == "retained" {
+		valuationAt = retainedValuationTime(in, plan.Destination, plan.Commodity, valuationAt, arrival)
 	}
-	// A fixed freight reward is not exposed to cargo-price forecast error.
-	if calibrationReason == "" {
-		calibratedCargoRevenue := cargoRevenue/10_000*calibrationBPS + cargoRevenue%10_000*calibrationBPS/10_000
-		revenue = revenue - cargoRevenue + calibratedCargoRevenue
-		cargoRevenue = calibratedCargoRevenue
+	revenueHorizon := gameDays + in.onwardDelay.Seconds()*float64(in.Clock.Calendar.TimeScale)/86_400
+	calibration, ageAddon := revenueCalibrationFor(in, plan.Destination, plan.Commodity, revenueBasis, revenueHorizon, valuationAt)
+	quoteStress := priceStress
+	calibrationBPS := calibration.MedianBPS
+	calibratedCargoRevenue := cargoRevenue - ceilBPS(cargoRevenue, 10_000-calibrationBPS)
+	adverseCargoRevenue := cargoRevenue - ceilBPS(cargoRevenue, 10_000-calibration.AdverseBPS)
+	// Gossip bids can vanish before arrival. Keep their executable fallback
+	// floor as well as measured receipt uncertainty.
+	priceStress = max(0, calibratedCargoRevenue-adverseCargoRevenue)
+	if revenueBasis == "gossip" || in.NextRungReceiptStress && revenueBasis == "depth" {
+		priceStress = max(priceStress, ceilBPS(quoteStress, calibrationBPS))
 	}
-	priceStress = priceStress/10_000*calibrationBPS + priceStress%10_000*calibrationBPS/10_000
+	revenue = revenue - cargoRevenue + calibratedCargoRevenue
+	cargoRevenue = calibratedCargoRevenue
+	if revenueBasis == "retained" {
+		plan.SellLimitPence = plan.SellLimitPence * calibration.AdverseBPS / 10_000
+	}
+	calibrationReason := fmt.Sprintf("%s; n=%d; horizon %s game days; adverse haircut %d bps",
+		calibration.Source, calibration.Samples, store.RevenueHorizonBucket(revenueHorizon), 10_000-calibration.AdverseBPS)
 	priceStress = eventPriceStress(cargoRevenue, priceStress, plan.EventPriceStress)
 	// Whole-ton purchases fund safety stock, but only the fraction consumed is
 	// expense. Existing stores have the same measured replacement cost.
@@ -719,7 +744,7 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 			stressBPS = min(6_000, stressBPS+1_500)
 		}
 	}
-	stressHaircut := ceilBPS(revenue+plan.Economics.CollateralPence, stressBPS)
+	stressHaircut := ceilBPS(revenue, stressBPS)
 	expectedNet := revenue - purchase - customs - provisionExpense - berthCost
 	var hazardBPS, hazardPence int64
 	var hazardSource string
@@ -766,6 +791,8 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 		RevenueAgeGameHours:         revenueAge,
 		RevenueCalibrationBPS:       calibrationBPS,
 		RevenueCalibrationReason:    calibrationReason,
+		RevenueAgeAddonBPS:          ageAddon,
+		RevenueHorizonGameDays:      revenueHorizon,
 		RevenuePence:                revenue,
 		UncalibratedRevenuePence:    new(uncalibratedRevenue),
 		RevenueQuantityTons:         plan.Quantity,
@@ -792,56 +819,41 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 	if plan.StoresToBuy == 0 {
 		plan.Economics.StoreCashPence = 0
 	}
-	if plan.PriceSource == playerBidGossipSource {
-		plan.playerBidStress = true
-		if expectedNet-priceStress <= 0 {
-			if plan.Quantity == 1 {
-				playerRevenue, _, _, _, _, _ := destinationRevenue(in, plan.Destination, plan.Commodity, 1, arrival)
-				in.ignorePlayerBids = true
-				_, limit, stress, source, reason, _ := destinationRevenue(in, plan.Destination, plan.Commodity, 1, arrival)
-				if reason == "" {
-					plan.PriceSource = source
-					plan.SellLimitPence = limit
-					plan.Economics.PriceUncertaintyStressPence = stress
-					plan.playerBidStress = false
-					return pricePlan(in, hull, origin, plan, uncalibratedRevenue-playerRevenue, extraTons)
-				}
-			}
-			return reject(plan, "player bid lot is not net-positive at the stressed gossip NPC bid")
+	if plan.PriceSource == playerBidGossipSource && expectedNet-priceStress <= 0 && plan.Quantity == 1 {
+		playerRevenue, _, _, _, _, _ := destinationRevenue(in, plan.Destination, plan.Commodity, 1, arrival)
+		in.ignorePlayerBids = true
+		_, limit, stress, source, reason, _ := destinationRevenue(in, plan.Destination, plan.Commodity, 1, arrival)
+		if reason == "" {
+			plan.PriceSource = source
+			plan.SellLimitPence = limit
+			plan.Economics.PriceUncertaintyStressPence = stress
+			return pricePlan(in, hull, origin, plan, uncalibratedRevenue-playerRevenue, extraTons)
 		}
 	}
-	if plan.EventPriceStress && expectedNet-priceStress < 0 {
-		return reject(plan, "market event price does not cover the 25% revenue stress")
-	}
-	if revenueBasis == "retained" && expectedNet-priceStress <= 0 {
-		return reject(plan, "retained quay book lot is not net-positive after price uncertainty stress")
-	}
-	if in.NextRungReceiptStress && plan.Kind == "spot" && plan.PriceSource == "observed destination full depth" {
-		plan.nextRungReceiptStress = true
-		if expectedNet-priceStress <= 0 {
-			return reject(plan, "spot lot is not net-positive at the next NPC bid rung")
-		}
-	}
-	if expectedNet < 0 || expectedNet == 0 && plan.sunkFundingFeesPence == 0 {
-		return reject(plan, "non-positive destination contribution after measured depth, buyer customs, consumed provisions and harbour bills")
-	}
-	if reason := minimumMarginRejection(plan); reason != "" {
+	if reason := admissionRejection(plan, expectedNet); reason != "" {
 		return reject(plan, reason)
 	}
 	plan.Accepted = true
-	plan.Reason = "positive destination contribution after Lloyd's hazard bound and minimum margin; price stress remains diagnostic"
-	if plan.sunkFundingFeesPence > 0 {
-		plan.Reason = "non-negative remaining destination contribution; paid funding fees are sunk"
-	}
-	if plan.EventPriceStress {
-		plan.Reason = "positive destination contribution after Lloyd's hazard bound, minimum margin and 25% market event revenue stress"
-	}
+	plan.Reason = "positive stressed destination contribution and at least 2% margin after fitted receipt uncertainty"
 	return plan
 }
 
-func minimumMarginRejection(plan Plan) string {
-	if plan.sunkFundingFeesPence == 0 && plan.Kind != "freight" && plan.Economics.ExpectedNetPence <
-		ceilBPS(plan.Economics.PurchasePence+plan.Economics.CustomsPence, 200) {
+func admissionRejection(plan Plan, remainingNet int64) string {
+	if plan.sunkFundingFeesPence > 0 {
+		// Funding is already paid. Zero remaining contribution still avoids
+		// wasting that fee; this is not fresh admission.
+		if remainingNet < 0 {
+			return "negative remaining destination contribution after funding"
+		}
+		if plan.Economics.PriceUncertaintyStressPence > 0 && remainingNet <= plan.Economics.PriceUncertaintyStressPence {
+			return "non-positive stressed remaining destination contribution after funding"
+		}
+		return ""
+	}
+	if remainingNet-plan.Economics.PriceUncertaintyStressPence <= 0 {
+		return "non-positive stressed destination contribution after fitted receipt uncertainty"
+	}
+	if remainingNet < ceilBPS(plan.Economics.PurchasePence+plan.Economics.CustomsPence, 200) {
 		return "below 2% minimum margin on purchase plus customs"
 	}
 	return ""

@@ -17,6 +17,11 @@ import (
 	"github.com/google/uuid"
 )
 
+const (
+	passengerMinOfferGameHours = 6.0
+	passengerReladderGameHours = 12.0
+)
+
 // Passage promises and ladder state live in the same durable mission as their
 // immutable actions. An offer is not a promise; a boarded group is.
 type passageIntent struct {
@@ -42,6 +47,20 @@ type passageIntent struct {
 	QuarantineReason string                             `json:"quarantine_reason,omitempty"`
 	RecoveryOnly     bool                               `json:"recovery_only,omitempty"`
 	RecoveryReason   string                             `json:"recovery_reason,omitempty"`
+}
+
+func (r *Runner) passengerPriceMature(passage *passageIntent, offer gameapi.PassengerOffer, hours float64) bool {
+	lower, _, ok := r.serverBounds()
+	opened := maxTime(passage.StepOpenedAt, offer.CreatedAt)
+	if !ok || opened.IsZero() || r.stateCache.Clock.Calendar.TimeScale <= 0 {
+		return false
+	}
+	deadline := opened.Add(gameDuration(hours/24, r.stateCache.Clock.Calendar.TimeScale))
+	if lower.Before(deadline) {
+		r.wakeAtServer(deadline, false)
+		return false
+	}
+	return true
 }
 
 type passengerOfferRequest struct {
@@ -186,9 +205,9 @@ func passengerFloor(cost, heads, hazardBPS int64) (int64, error) {
 	return max(1, ceilRatio(total, 1, heads)), nil
 }
 
-// Cover the full three-game-hour ladder at the published in-port crew rate.
+// Cover three twelve-game-hour prices at the published in-port crew rate.
 func passengerLadderConsumption(hull Hull) float64 {
-	return float64(hull.CrewRequired) / 200 * (3.0 / 24)
+	return float64(hull.CrewRequired) / 200 * (3 * passengerReladderGameHours / 24)
 }
 
 func passengerFareAllowed(fare, floor int64) bool {
@@ -199,7 +218,7 @@ func passengerNextFare(current, floor int64, hoursRemaining float64) int64 {
 	if current <= floor {
 		return floor
 	}
-	if hoursRemaining < 3 {
+	if hoursRemaining < passengerReladderGameHours+passengerMinOfferGameHours {
 		return floor
 	}
 	next := current/100*85 + current%100*85/100
@@ -242,6 +261,8 @@ func passageRouteHours(route Route, hull Hull) (float64, bool) {
 	return hours, hours > 0 && !math.IsInf(hours, 0) && !math.IsNaN(hours)
 }
 
+var errPassengerRouteUnsafe = errors.New("passenger route is unsafe")
+
 func passengerRouteSafe(in PlanningInput, route Route, marques []letterOfMarque) error {
 	piracy, complete := hazardRoutePiracy(in, route)
 	if !complete || !in.fresh("zones") || !in.fresh("marques") {
@@ -252,8 +273,11 @@ func passengerRouteSafe(in PlanningInput, route Route, marques []letterOfMarque)
 		return errors.New("passage needs authoritative clock")
 	}
 	for zone, bps := range piracy {
-		if bps < 0 || bps >= 1_000 {
-			return fmt.Errorf("passage piracy in %s is at least 1000 bps or unknown", zone)
+		if bps < 0 {
+			return fmt.Errorf("passage piracy in %s is unknown", zone)
+		}
+		if bps >= 1_000 {
+			return fmt.Errorf("%w: piracy in %s is at least 1000 bps", errPassengerRouteUnsafe, zone)
 		}
 		var ownBPS, ownCount int64
 		for _, marque := range marques {
@@ -261,7 +285,7 @@ func passengerRouteSafe(in PlanningInput, route Route, marques []letterOfMarque)
 				continue
 			}
 			if marque.SponsorCompanyID != in.CompanyID {
-				return errors.New("passage crosses an active foreign marque")
+				return fmt.Errorf("%w: passage crosses an active foreign marque", errPassengerRouteUnsafe)
 			}
 			ownBPS += marque.AddedPiracyBPS
 			ownCount++
@@ -278,11 +302,72 @@ func passengerRouteSafe(in PlanningInput, route Route, marques []letterOfMarque)
 			*observed.MarquePiracyBPS < 0 || *observed.MarquePiracyBPS > 5_000 || *observed.ActiveMarques < 0 {
 			return errors.New("passage needs public marque totals")
 		}
+		if *observed.ActiveMarques > ownCount || *observed.MarquePiracyBPS > min(int64(5_000), ownBPS) {
+			return fmt.Errorf("%w: passage crosses an active foreign marque", errPassengerRouteUnsafe)
+		}
 		if *observed.ActiveMarques != ownCount || *observed.MarquePiracyBPS != min(int64(5_000), ownBPS) {
-			return errors.New("passage crosses a foreign marque or inconsistent public marque totals")
+			return errors.New("passage needs consistent public and own marque observations")
 		}
 	}
 	return nil
+}
+
+// Generic route exclusion can mask the more specific passenger risk check
+// (notably PlanningInput.MarqueZones). Prove danger only against a fresh,
+// structurally valid retained route; a failed quote alone proves nothing.
+func passengerRouteProvenUnsafe(in PlanningInput, offer gameapi.PassengerOffer, hull Hull, marques []letterOfMarque) bool {
+	key := routeKey(offer.PortID, offer.DestPortID, hull.ID)
+	route, exists := in.Routes[key]
+	if !exists || !in.fresh("routes/"+key) || ValidateRoute(route, hull, in.Catalog.SeaZones) != nil {
+		return false
+	}
+	return errors.Is(passengerRouteSafe(in, route, marques), errPassengerRouteUnsafe)
+}
+
+// A true result proves a protective closure. An error is missing authority and
+// must retain the current offer, not turn a failed quote into permission to churn.
+func passengerOpenOfferUnsafe(in PlanningInput, passage *passageIntent, offer gameapi.PassengerOffer, groups []gameapi.PassengerWaitingGroup, marques []letterOfMarque) (bool, error) {
+	if offer.PortID != in.Ship.Ship.CurrentPortID || offer.FarePerHeadPence <= 0 || offer.FarePerHeadPence > maximumPence ||
+		passage.FloorPence > 0 && !passengerFareAllowed(offer.FarePerHeadPence, passage.FloorPence) ||
+		passage.MaxBerths > 0 && offer.MaxBerths > passage.MaxBerths {
+		return true, nil
+	}
+	hull, exists := findHull(in.Catalog, in.Ship.Ship.ShipClass)
+	if !exists {
+		return false, errors.New("open passenger offer has no authoritative hull")
+	}
+	if _, upper, ok := in.serverBounds(); len(passage.Groups) == 0 && ok && in.fresh("passenger_waiting/"+offer.PortID) {
+		smallest, _, _ := passengerCapacity(in.Ship, hull, 0, groups, offer.DestPortID, upper)
+		if smallest > 0 {
+			// Existing offers need a current floor, not another full minimum
+			// lifetime for groups already inside their boarding window.
+			quote, err := quotePassageWithMinimumLifetime(in, offer.DestPortID, groups, nil, gameapi.PassengerFareSummary{}, marques, 0)
+			if err != nil {
+				if errors.Is(err, errPassengerRouteUnsafe) || err.Error() == hazardUnavailable || passengerRouteProvenUnsafe(in, offer, hull, marques) {
+					return true, nil
+				}
+				return false, err
+			}
+			return offer.FarePerHeadPence < quote.Floor, nil
+		}
+	}
+	route, err := observedPlanningRoute(in, offer.PortID, offer.DestPortID, hull)
+	if err != nil {
+		if passengerRouteProvenUnsafe(in, offer, hull, marques) {
+			return true, nil
+		}
+		return false, err
+	}
+	if err := passengerRouteSafe(in, route, marques); err != nil {
+		if errors.Is(err, errPassengerRouteUnsafe) {
+			return true, nil
+		}
+		return false, err
+	}
+	if len(passage.Groups) == 0 && !in.fresh("passenger_waiting/"+offer.PortID) {
+		return false, errors.New("open passenger offer waits for current whole-group observations")
+	}
+	return false, nil
 }
 
 type passengerQuote struct {
@@ -292,7 +377,11 @@ type passengerQuote struct {
 	StressHours            float64
 }
 
-func quotePassage(in PlanningInput, destination string, groups []gameapi.PassengerWaitingGroup, fares []gameapi.PassengerFare, marques []letterOfMarque) (passengerQuote, error) {
+func quotePassage(in PlanningInput, destination string, groups []gameapi.PassengerWaitingGroup, fares []gameapi.PassengerFare, summary gameapi.PassengerFareSummary, marques []letterOfMarque) (passengerQuote, error) {
+	return quotePassageWithMinimumLifetime(in, destination, groups, fares, summary, marques, passengerMinOfferGameHours)
+}
+
+func quotePassageWithMinimumLifetime(in PlanningInput, destination string, groups []gameapi.PassengerWaitingGroup, fares []gameapi.PassengerFare, summary gameapi.PassengerFareSummary, marques []letterOfMarque, minimumLifetime float64) (passengerQuote, error) {
 	var quote passengerQuote
 	hull, exists := findHull(in.Catalog, in.Ship.Ship.ShipClass)
 	if !exists || hull.PassengersPerTon <= 0 {
@@ -353,10 +442,10 @@ func quotePassage(in PlanningInput, destination string, groups []gameapi.Passeng
 	}
 	target := route.SafeProvisionsTons + returnStores + 1 + passengerLadderConsumption(hull)
 	stores := max(0, int64(math.Ceil(target-in.Ship.Stores.ProvisionsTons)))
-	// Groups leaving before a full price hour cannot participate in this ladder;
-	// they must not poison an otherwise viable destination's deadline.
+	// The first offer must survive its minimum lifetime before a voluntary
+	// cancellation, even when this lane is quoted directly at the floor.
 	eligible := make([]gameapi.PassengerWaitingGroup, 0, len(groups))
-	firstHour := upper.Add(gameDuration(1.0/24, in.Clock.Calendar.TimeScale))
+	firstHour := upper.Add(gameDuration(minimumLifetime/24, in.Clock.Calendar.TimeScale))
 	for _, group := range groups {
 		if !group.BoardBy.Before(firstHour) {
 			eligible = append(eligible, group)
@@ -366,8 +455,8 @@ func quotePassage(in PlanningInput, destination string, groups []gameapi.Passeng
 	if smallest == 0 {
 		return quote, errors.New("no whole waiting group fits after safe stores")
 	}
-	if upper.Add(gameDuration(1.0/24, in.Clock.Calendar.TimeScale)).After(boardBy) {
-		return quote, errors.New("waiting group leaves before one full ladder hour")
+	if firstHour.After(boardBy) {
+		return quote, errors.New("waiting group leaves before the minimum passenger offer lifetime")
 	}
 	consumption := float64(hull.CrewRequired)/100*hours/24 + passengerLadderConsumption(hull)
 	provisions, err := provisionsExpense(in.Markets[route.FromPort], consumption)
@@ -385,9 +474,22 @@ func quotePassage(in PlanningInput, destination string, groups []gameapi.Passeng
 		return quote, err
 	}
 	ceiling := floor
+	laneSamples := 0
+	sampleSince := upper.Add(-gameDuration(passengerFareIntervalGameHours/24, in.Clock.Calendar.TimeScale))
 	for _, fare := range fares {
-		if fare.OriginPortID == route.FromPort && fare.DestPortID == destination && fare.FarePerHeadPence > 0 {
+		if fare.OriginPortID == route.FromPort && fare.DestPortID == destination && fare.FarePerHeadPence > 0 &&
+			!fare.AcceptedAt.Before(sampleSince) && !fare.AcceptedAt.After(upper) {
+			laneSamples++
 			ceiling = max(ceiling, growthCashTotal(fare.FarePerHeadPence, ceilRatio(fare.FarePerHeadPence, 1, 2)))
+		}
+	}
+	if laneSamples < 3 {
+		for _, band := range summary.Bands {
+			if int64(route.TotalDistanceNM) >= band.MinNM && (band.MaxNM == nil || int64(route.TotalDistanceNM) < *band.MaxNM) &&
+				band.Fares > 0 && band.MedianFarePerHeadPence != nil && *band.MedianFarePerHeadPence > 0 {
+				ceiling = max(floor, *band.MedianFarePerHeadPence)
+				break
+			}
 		}
 	}
 	// A live freight award supplies the analog; never invent a Cr/ton/nm rate.
@@ -399,11 +501,11 @@ func quotePassage(in PlanningInput, destination string, groups []gameapi.Passeng
 	if ceiling > maximumPence {
 		return quote, errors.New("passage ceiling exceeds checked integer-pence bounds")
 	}
-	if ceiling < ceilRatio(floor, 100, 85) || !upper.Add(gameDuration(3.0/24, in.Clock.Calendar.TimeScale)).Before(boardBy) {
+	if ceiling < ceilRatio(floor, 100, 85) || !upper.Add(gameDuration((passengerReladderGameHours+passengerMinOfferGameHours)/24, in.Clock.Calendar.TimeScale)).Before(boardBy) {
 		ceiling = floor
 	}
 	plan := Plan{Kind: "passage", ShipID: in.Ship.Ship.ID, Origin: route.FromPort, Destination: destination, TargetStoresTons: target, StoresToBuy: stores, Accepted: true,
-		Reason: "idle-ship passage; whole-group cost floor with priced ballast reposition and Lloyd's bound", PriceSource: "passenger public fares and observed freight analog", Economics: Economics{Basis: "passage", RevenueBasis: "passenger_offer", ProvisionsPence: provisions, BerthDuesPence: berth, HazardBPS: bps, HazardSource: source, GameDays: hours / 24}}
+		Reason: "idle-ship passage; whole-group cost floor with priced ballast reposition and Lloyd's bound", PriceSource: "passenger lane fares, route-length band medians and observed freight analog", Economics: Economics{Basis: "passage", RevenueBasis: "passenger_offer", ProvisionsPence: provisions, BerthDuesPence: berth, HazardBPS: bps, HazardSource: source, GameDays: hours / 24}}
 	if stores > 0 {
 		order, err := quoteProvisions(in, target)
 		if err != nil {
@@ -434,6 +536,10 @@ func (r *Runner) passengerAboard(ship string) []gameapi.PassengerAboardGroup {
 }
 
 func (r *Runner) passengerFares(origin, destination string) []gameapi.PassengerFare {
+	meta := r.meta["passenger_fares/"+origin+"|"+destination]
+	if !meta.Complete || meta.Stale || meta.Error != "" {
+		return nil
+	}
 	values := decode[map[string]json.RawMessage](r.snapshot, "passenger_fares")
 	var fares []gameapi.PassengerFare
 	_ = json.Unmarshal(values[origin+"|"+destination], &fares)
@@ -497,7 +603,7 @@ func (r *Runner) considerPassage(ctx context.Context, ship ShipState, input Plan
 		if unsafePromise {
 			continue
 		}
-		quote, err := quotePassage(input, destination, r.passengerGroups(ship.Ship.CurrentPortID), r.passengerFares(ship.Ship.CurrentPortID, destination), decode[[]letterOfMarque](r.snapshot, "marques"))
+		quote, err := quotePassage(input, destination, r.passengerGroups(ship.Ship.CurrentPortID), r.passengerFares(ship.Ship.CurrentPortID, destination), decode[gameapi.PassengerFareSummary](r.snapshot, "passenger_fare_summary"), decode[[]letterOfMarque](r.snapshot, "marques"))
 		if err != nil {
 			continue
 		}
@@ -524,9 +630,13 @@ func (r *Runner) recoverPassageOffer(ctx context.Context, ship ShipState, offer 
 	defer r.passengerAdmissionError(ctx, ship.Ship.ID, &changed, &err)
 	mission, data := r.newVoyage(ship, Plan{Kind: "passage", ShipID: ship.Ship.ID, Origin: offer.PortID, Destination: offer.DestPortID})
 	mission.Phase = "passenger_loading"
-	// Unknown historical floor cannot authorize a fresh price. Cancel the
-	// orphaned offer, retaining its ship for authoritative aboard reconciliation.
-	data.Passage = &passageIntent{OfferID: offer.ID, Abandon: true}
+	// Unknown historical floor cannot authorize a fresh price. Keep the
+	// orphaned offer's lifetime while reconciling any boarded promises.
+	opened := offer.CreatedAt
+	if opened.IsZero() {
+		_, opened, _ = r.serverBounds()
+	}
+	data.Passage = &passageIntent{OfferID: offer.ID, StepOpenedAt: opened, Abandon: true}
 	data.CostsKnown = false
 	return true, r.saveMission(ctx, mission, &data)
 }
@@ -631,23 +741,48 @@ func (r *Runner) drivePassage(ctx context.Context, ship ShipState, mission *stor
 		passage.OfferID = open.ID
 		passage.Abandon = true // An unjournaled offer cannot inherit this ladder's floor.
 		passage.Reoffer = false
-		passage.FarePence, passage.MaxBerths = open.FarePerHeadPence, open.MaxBerths
+		passage.FarePence = open.FarePerHeadPence
+		if passage.MaxBerths == 0 || open.MaxBerths < passage.MaxBerths {
+			passage.MaxBerths = open.MaxBerths
+		}
+		passage.StepOpenedAt = open.CreatedAt
+		if passage.StepOpenedAt.IsZero() {
+			_, passage.StepOpenedAt, _ = r.serverBounds()
+		}
 		return true, r.saveMission(ctx, mission, data)
-	}
-	if open != nil && passage.Reoffer && len(passage.Groups) == 0 {
-		return true, r.stage(ctx, mission, data, ship, "passenger-cancel", "/v1/passengers/cancel-offer", map[string]string{"offer_id": open.ID})
 	}
 	input, err := r.committedPlanningInput(ctx, ship)
 	if err != nil {
 		return false, err
 	}
-	if len(passage.Groups) == 0 {
-		// Open fare ladders do not reserve a ship against a newly admitted cargo
-		// or charter opportunity. Cancel first; the normal planner wins next pass.
+	if open != nil {
+		unsafe, err := passengerOpenOfferUnsafe(input, passage, *open, r.passengerGroups(open.PortID), decode[[]letterOfMarque](r.snapshot, "marques"))
+		if unsafe {
+			// Minimum lifetimes protect discretionary churn, never an unsafe or
+			// below-floor offer. Closing it retains any already-boarded promises.
+			passage.Abandon, passage.Reoffer = true, false
+			return true, r.stage(ctx, mission, data, ship, "passenger-cancel", "/v1/passengers/cancel-offer", map[string]string{"offer_id": open.ID})
+		}
+		if err != nil {
+			return false, r.hold(ctx, ship.Ship.ID, "passenger offer retains its fare while protection observations refresh: "+err.Error())
+		}
+	}
+	if len(passage.Groups) == 0 && ship.PassengerHoldTons == 0 && !passage.Abandon &&
+		(open == nil || open.BerthsTaken == 0 && r.passengerPriceMature(passage, *open, passengerMinOfferGameHours)) {
 		plans := PlanVoyages(input)
 		if len(plans) > 0 && plans[0].Accepted {
-			passage.Abandon = true
+			if open == nil {
+				return true, r.db.DeleteMission(ctx, r.account.ID, ship.Ship.ID)
+			}
+			passage.Abandon, passage.Reoffer = true, false
+			return true, r.stage(ctx, mission, data, ship, "passenger-cancel", "/v1/passengers/cancel-offer", map[string]string{"offer_id": open.ID})
 		}
+	}
+	if open != nil && passage.Reoffer && len(passage.Groups) == 0 {
+		if !r.passengerPriceMature(passage, *open, passengerReladderGameHours) {
+			return false, r.hold(ctx, ship.Ship.ID, "passenger repricing waits for twelve game hours at the current fare")
+		}
+		return true, r.stage(ctx, mission, data, ship, "passenger-cancel", "/v1/passengers/cancel-offer", map[string]string{"offer_id": open.ID})
 	}
 	_, upper, clockOK := r.serverBounds()
 	if !clockOK {
@@ -691,6 +826,9 @@ func (r *Runner) drivePassage(ctx context.Context, ship ShipState, mission *stor
 			return false, r.hold(ctx, ship.Ship.ID, "passenger closure waits for authoritative boarded promises")
 		}
 		if open != nil {
+			if !r.passengerPriceMature(passage, *open, passengerMinOfferGameHours) {
+				return false, r.hold(ctx, ship.Ship.ID, "passenger closure retains an unboarded offer for six game hours")
+			}
 			return true, r.stage(ctx, mission, data, ship, "passenger-cancel", "/v1/passengers/cancel-offer", map[string]string{"offer_id": open.ID})
 		}
 		return true, r.db.DeleteMission(ctx, r.account.ID, ship.Ship.ID)
@@ -719,7 +857,7 @@ func (r *Runner) drivePassage(ctx context.Context, ship ShipState, mission *stor
 		if ship.Ship.Status == "berthed" {
 			return true, r.stage(ctx, mission, data, ship, "offshore", "/v1/fleet/offshore", map[string]string{"ship_id": ship.Ship.ID})
 		}
-		quote, err := quotePassage(input, data.Plan.Destination, r.passengerGroups(ship.Ship.CurrentPortID), r.passengerFares(ship.Ship.CurrentPortID, data.Plan.Destination), decode[[]letterOfMarque](r.snapshot, "marques"))
+		quote, err := quotePassage(input, data.Plan.Destination, r.passengerGroups(ship.Ship.CurrentPortID), r.passengerFares(ship.Ship.CurrentPortID, data.Plan.Destination), decode[gameapi.PassengerFareSummary](r.snapshot, "passenger_fare_summary"), decode[[]letterOfMarque](r.snapshot, "marques"))
 		if err != nil || passage.FarePence < quote.Floor || passage.MaxBerths > quote.Berths {
 			passage.Abandon = true
 			return true, r.saveMission(ctx, mission, data)
@@ -737,10 +875,8 @@ func (r *Runner) drivePassage(ctx context.Context, ship ShipState, mission *stor
 		}
 		return true, r.stage(ctx, mission, data, ship, "passenger-offer", "/v1/passengers/offer", passengerOfferRequest{ShipID: ship.Ship.ID, Destination: data.Plan.Destination, Fare: passage.FarePence, MaxBerths: passage.MaxBerths})
 	}
-	elapsed := r.stateCache.Clock.Calendar.TotalGameHours - passage.StepHour
-	if elapsed < 1 || upper.Before(passage.StepOpenedAt.Add(gameDuration(1.0/24, r.stateCache.Clock.Calendar.TimeScale))) {
-		r.wakeAtServer(passage.StepOpenedAt.Add(gameDuration(1.0/24, r.stateCache.Clock.Calendar.TimeScale)), false)
-		return false, r.hold(ctx, ship.Ship.ID, "passenger ladder retains each price for a full game hour")
+	if !r.passengerPriceMature(passage, *open, passengerReladderGameHours) {
+		return false, r.hold(ctx, ship.Ship.ID, "passenger ladder retains each price for twelve game hours")
 	}
 	if err := r.recordPassengerRefusals(ctx, data); err != nil {
 		return false, err
@@ -820,6 +956,27 @@ func (r *Runner) passengerActionReady(ctx context.Context, mission *store.Missio
 		}
 		for _, offer := range decode[[]gameapi.PassengerOffer](r.snapshot, "passenger_offers") {
 			if offer.ID == cancel.OfferID && offer.ShipID == mission.ShipID {
+				ship, _ := r.ship(mission.ShipID)
+				input, err := r.committedPlanningInput(ctx, ship)
+				if err != nil {
+					return err
+				}
+				unsafe, err := passengerOpenOfferUnsafe(input, data.Passage, offer, r.passengerGroups(offer.PortID), decode[[]letterOfMarque](r.snapshot, "marques"))
+				if unsafe {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				if data.Passage.Reoffer && len(data.Passage.Groups) == 0 &&
+					!r.passengerPriceMature(data.Passage, offer, passengerReladderGameHours) {
+					return errors.New("passenger repricing must retain the current fare for twelve game hours")
+				}
+				if offer.Status == "open" && offer.DestPortID == data.Plan.Destination && len(data.Passage.Groups) == 0 &&
+					offer.BerthsTaken == 0 && data.Passage.QuarantineReason == "" && !data.Passage.RecoveryOnly &&
+					!r.passengerPriceMature(data.Passage, offer, passengerMinOfferGameHours) {
+					return errors.New("passenger cancellation must retain an unboarded offer for six game hours")
+				}
 				return nil
 			}
 		}
@@ -845,7 +1002,7 @@ func (r *Runner) passengerActionReady(ctx context.Context, mission *store.Missio
 	if len(plans) > 0 && plans[0].Accepted {
 		return errors.New("profitable cargo or charter plan takes priority over passenger offers")
 	}
-	quote, err := quotePassage(input, request.Destination, r.passengerGroups(ship.Ship.CurrentPortID), r.passengerFares(ship.Ship.CurrentPortID, request.Destination), decode[[]letterOfMarque](r.snapshot, "marques"))
+	quote, err := quotePassage(input, request.Destination, r.passengerGroups(ship.Ship.CurrentPortID), r.passengerFares(ship.Ship.CurrentPortID, request.Destination), decode[gameapi.PassengerFareSummary](r.snapshot, "passenger_fare_summary"), decode[[]letterOfMarque](r.snapshot, "marques"))
 	if err != nil {
 		return err
 	}
@@ -1098,9 +1255,16 @@ func (r *Runner) reconcilePassengerAction(ctx context.Context, mission *store.Mi
 		passage.OfferID = matched.ID
 		passage.Reoffer = false
 		passage.Abandon = !passengerFareAllowed(matched.FarePerHeadPence, passage.FloorPence) || matched.MaxBerths > passage.MaxBerths
-		passage.FarePence, passage.MaxBerths = matched.FarePerHeadPence, matched.MaxBerths
+		passage.FarePence = matched.FarePerHeadPence
+		if matched.MaxBerths < passage.MaxBerths {
+			passage.MaxBerths = matched.MaxBerths
+		}
 		passage.StepHour = r.stateCache.Clock.Calendar.TotalGameHours
-		_, passage.StepOpenedAt, _ = r.serverBounds()
+		if !matched.CreatedAt.IsZero() {
+			passage.StepOpenedAt = matched.CreatedAt
+		} else if passage.StepOpenedAt.IsZero() {
+			_, passage.StepOpenedAt, _ = r.serverBounds()
+		}
 		passage.StepGroups = r.passengerGroups(data.Plan.Origin)
 		data.LastActionID = data.Action.ID
 		data.Action = nil
@@ -1121,7 +1285,7 @@ func (r *Runner) recordPassengerRefusals(ctx context.Context, data *missionData)
 		return nil
 	}
 	// Public fares list accepted business, not rival offers. If any acceptance
-	// occurred in this hour the observation cannot isolate a refusal.
+	// occurred during this price interval the observation cannot isolate a refusal.
 	meta := r.meta["passenger_fares/"+data.Plan.Origin+"|"+data.Plan.Destination]
 	if meta.Stale || !meta.Complete || meta.Error != "" || meta.UpdatedAt.Before(passage.StepOpenedAt) {
 		return nil
@@ -1138,8 +1302,8 @@ func (r *Runner) recordPassengerRefusals(ctx context.Context, data *missionData)
 			continue
 		}
 		for _, after := range current {
-			if before.ID == after.ID && before.Size == after.Size && after.BoardBy.After(passage.StepOpenedAt.Add(gameDuration(1.0/24, r.stateCache.Clock.Calendar.TimeScale))) {
-				evidence := store.PassengerEvidence{ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(fmt.Sprintf("passenger-refusal:%s:%s:%s:%d", r.account.ID, passage.OfferID, before.ID, passage.StepHour))).String(), AccountID: r.account.ID, Lane: data.Plan.Origin + "|" + data.Plan.Destination, Kind: before.Kind, FarePerHeadPence: passage.FarePence, Outcome: "refused", Heads: before.Size, GameHour: float64(passage.StepHour + 1)}
+			if before.ID == after.ID && before.Size == after.Size && after.BoardBy.After(passage.StepOpenedAt.Add(gameDuration(passengerReladderGameHours/24, r.stateCache.Clock.Calendar.TimeScale))) {
+				evidence := store.PassengerEvidence{ID: uuid.NewSHA1(uuid.NameSpaceURL, []byte(fmt.Sprintf("passenger-refusal:%s:%s:%s:%d", r.account.ID, passage.OfferID, before.ID, passage.StepHour))).String(), AccountID: r.account.ID, Lane: data.Plan.Origin + "|" + data.Plan.Destination, Kind: before.Kind, FarePerHeadPence: passage.FarePence, Outcome: "refused", Heads: before.Size, GameHour: float64(passage.StepHour) + passengerReladderGameHours}
 				if err := r.db.PutPassengerEvidence(ctx, &evidence); err != nil {
 					return err
 				}

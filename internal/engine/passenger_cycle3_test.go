@@ -136,7 +136,7 @@ func TestPassengerFirstOfferUsesOutboundStoresAndReofferNeverRedocks(t *testing.
 			hull, _ := findHull(r.stateCache.Catalog, in.Ship.Ship.ShipClass)
 			route := r.stateCache.Routes[routeKey("origin", "destination", hull.ID)]
 			data.Plan.TargetStoresTons = route.SafeProvisionsTons + 10
-			ladderConsumption := float64(hull.CrewRequired) / 200 * (3.0 / 24)
+			ladderConsumption := passengerLadderConsumption(hull)
 			in.Ship.Stores.ProvisionsTons = route.SafeProvisionsTons + 1 + ladderConsumption
 			if mode == "first offer short" {
 				in.Ship.Ship.Status = "berthed"

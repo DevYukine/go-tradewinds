@@ -32,6 +32,7 @@ type durableAction struct {
 	ControlEpoch        uint64    `json:"control_epoch"`
 	MaintenanceDock     bool      `json:"maintenance_dock,omitempty"`
 	FuturesStockBefore  *int64    `json:"futures_stock_before,omitempty"`
+	FuturesAttemptedAt  time.Time `json:"futures_attempted_at,omitempty"`
 	FuturesObserveAfter time.Time `json:"futures_observe_after,omitempty"`
 }
 
@@ -111,7 +112,7 @@ func (r *Runner) stageAction(ctx context.Context, mission *store.Mission, data *
 		method = http.MethodPatch
 	}
 	actionID := ActionID(r.account.ID, mission.Generation, stage, data.Sequence)
-	if data.Futures != nil && stage == "futures-create" {
+	if data.Futures != nil && futuresAdmissionStageName(stage) {
 		intent, err := r.futuresIntent(ctx, data)
 		if err != nil {
 			return err
@@ -131,8 +132,8 @@ func (r *Runner) stageAction(ctx context.Context, mission *store.Mission, data *
 		ControlEpoch:     r.capturedControl,
 		MaintenanceDock:  maintenanceDock,
 	}
-	if data.Futures != nil && (stage == "futures-stock" || stage == "futures-close-stock") {
-		_, unlocked := r.futuresWarehouse()
+	if data.Futures != nil && stage == "futures-close-stock" {
+		_, unlocked := r.futuresWarehouse(data.Futures.port(), data.Futures.commodity())
 		data.Action.FuturesStockBefore = &unlocked
 	}
 	if stage == "provision" || stage == "dock" {
@@ -154,6 +155,9 @@ func (r *Runner) stageAction(ctx context.Context, mission *store.Mission, data *
 func (r *Runner) saveMission(ctx context.Context, mission *store.Mission, data *missionData) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if mission.Phase == "futures_done" && data.Futures != nil && !r.futuresLeaseClosed(data) {
+		return errors.New("futures_done requires the authoritative lease back at its initial tonnage")
 	}
 	payload, err := json.Marshal(data)
 	if err != nil {
@@ -233,10 +237,21 @@ func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission,
 			data.Action.ControlEpoch = r.capturedControl
 			return true, r.saveMission(ctx, mission, data)
 		}
-		if data.Action.Stage == "futures-create" {
+		if futuresLeaseStage(data.Action.Stage) && kind == neverSentFuturesTerms {
+			if err := r.rejectFuturesLeaseAdmission(ctx, data); err != nil {
+				return false, err
+			}
+		}
+		if futuresAdmissionStageName(data.Action.Stage) {
 			if kind == neverSentFuturesTerms {
-				if err := r.db.RecordFuturesOutcome(ctx, r.account.ID, data.Futures.IntentID, "rejected", encode(map[string]string{"kind": kind})); err != nil {
+				rows, err := r.futuresActionIntents(ctx, data)
+				if err != nil {
 					return false, err
+				}
+				for _, row := range rows {
+					if err := r.db.RecordFuturesOutcome(ctx, r.account.ID, row.IntentID, "rejected", encode(map[string]string{"kind": kind})); err != nil {
+						return false, err
+					}
 				}
 			} else if exists {
 				nextID := ActionID(r.account.ID, mission.Generation, data.Action.Stage, data.Sequence+1)
@@ -246,9 +261,7 @@ func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission,
 			}
 		}
 		if kind == neverSentFuturesTerms {
-			mission.Phase = "futures_stopped"
-		} else if data.Action.Stage == "futures-lease" {
-			data.Futures.SetupAttempted = false
+			mission.Phase = "evaluating"
 		}
 		data.Action = nil
 		data.Sequence++
@@ -378,6 +391,12 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 		if passengerStage(action.Stage) {
 			return r.reconcilePassengerAction(ctx, mission, data, persisted)
 		}
+		if commissionStage(action.Stage) {
+			return r.reconcileCommission(ctx, mission, data, persisted)
+		}
+		if action.Stage == "voyage-insure" {
+			return r.reconcileVoyageInsurance(ctx, mission, data, persisted)
+		}
 		if action.Stage == "build" && (evidence.Kind == "authoritative_named_build" || evidence.Kind == "authoritative_named_mortgage_build") &&
 			evidence.Ship.Ship.ID != "" && evidence.Ship.Ship.Name == data.BuildName && evidence.Ship.Ship.ShipClass == data.BuildClass {
 			if data.Capacity != nil && data.Capacity.Mortgage != nil &&
@@ -446,13 +465,6 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 		if passengerStage(action.Stage) && (data.Passage == nil || !data.Passage.RetryOffer) {
 			return false, r.holdUnresolvedAction(ctx, mission.ShipID, action, "passenger action awaits bounded request-specific GET evidence before replay")
 		}
-	}
-	if data.Bulletin != nil && !r.opts.BulletinEnabled {
-		return false, r.decision(ctx, "__bulletin", "bulletin", "public posting disabled; unresolved request retained without a resend", nil)
-	}
-	if data.Futures != nil && !r.opts.FuturesPilotEnabled &&
-		(action.Stage == "futures-create" || action.Stage == "futures-lease" || action.Stage == "futures-stock") {
-		return false, r.hold(ctx, mission.ShipID, "futures pilot disabled; unresolved request and coverage retained without a resend")
 	}
 	if time.Now().Before(data.CooldownUntil) {
 		r.wakeBy(data.CooldownUntil)
@@ -535,12 +547,6 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 				if err := r.futuresAuthority(); err != nil {
 					return err
 				}
-				if action.Stage == "futures-stock" {
-					if !r.fresh("books/amsterdam") {
-						return fmt.Errorf("%w: pending procurement requires current bounded customs", errFuturesPrecondition)
-					}
-					return r.futuresOrderPreflight(action)
-				}
 				if action.Stage == "futures-settle" || action.Stage == "futures-close-stock" || action.Stage == "futures-close-lease" {
 					if err := r.futuresPreflight(requestContext, data); err != nil {
 						if !errors.Is(err, errFuturesPrecondition) && !errors.Is(err, errFuturesTerms) {
@@ -552,6 +558,11 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 			}
 			return nil
 		})
+	}
+	if action.Stage == "futures-accept" || action.Stage == "futures-accept-batch" {
+		// Completion bounds the last internal transport retry from above.
+		action.FuturesAttemptedAt = time.Now().UTC()
+		action.FuturesObserveAfter = time.Time{}
 	}
 	if preflightFailure != nil {
 		return false, preflightFailure
@@ -1180,6 +1191,12 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 	if _, _, ok := r.serverBounds(); !ok || r.stateCache.Clock.Paused || r.stateCache.Clock.Calendar.TimeScale <= 0 {
 		return errors.New("new action requires current successful server clock authority")
 	}
+	if commissionStage(data.Action.Stage) {
+		return r.commissionPreflight(ctx, data)
+	}
+	if data.Action.Stage == "voyage-insure" {
+		return r.voyageInsurancePreflight(ctx, mission, data)
+	}
 	if bulletinStage(data.Action.Stage) {
 		return r.bulletinPreflight(data)
 	}
@@ -1588,6 +1605,12 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 func (r *Runner) reconcileObservedAction(ctx context.Context, mission *store.Mission, data *missionData, action *store.Action) (bool, error) {
 	if data.Action == nil || action == nil {
 		return false, nil
+	}
+	if commissionStage(data.Action.Stage) {
+		return r.reconcileCommission(ctx, mission, data, action)
+	}
+	if data.Action.Stage == "voyage-insure" {
+		return r.reconcileVoyageInsurance(ctx, mission, data, action)
 	}
 	if bulletinStage(data.Action.Stage) {
 		return r.reconcileBulletin(ctx, mission, data, action)

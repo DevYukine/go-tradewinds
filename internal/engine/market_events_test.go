@@ -74,7 +74,7 @@ func TestMarketEventsPreTransitionAdverseShockStressesRetainedPlan(t *testing.T)
 				}}),
 			})
 			// Isolate event policy from the independent calibration regime.
-			in.RevenueCalibration = map[string]int64{"retained": 10_000}
+			in.RevenueCalibration = revenueCalibrationFixture(10_000, 10_000)
 			plan := moneySpot(t, in, "water_beer")
 			if !plan.ExpectedArrival.After(shock.StartsAt) || plan.ExpectedArrival.After(shock.ExpiresAt) != tc.expired {
 				t.Fatalf("fixture arrival does not cross the intended transition: arrival %s, event %+v", plan.ExpectedArrival, shock)
@@ -83,7 +83,7 @@ func TestMarketEventsPreTransitionAdverseShockStressesRetainedPlan(t *testing.T)
 				t.Fatalf("pre-transition retained quote lost event policy: %+v", plan)
 			}
 			if tc.wantStress {
-				if plan.Accepted || plan.Economics.PriceUncertaintyStressPence < ceilBPS(plan.Economics.RevenuePence, marketEventStressBPS) {
+				if plan.Accepted || plan.Economics.PriceUncertaintyStressPence < ceilBPS(plan.Economics.RevenuePence, MarketEventStressBPS) {
 					t.Fatalf("thin pre-adverse-event lot was admitted without the quarter-revenue floor: %+v", plan)
 				}
 			} else if !plan.Accepted {
@@ -166,7 +166,7 @@ func TestMarketEventsServerEnvelopeAndExpiryBoundary(t *testing.T) {
 	}
 }
 
-func TestMarketEventsPreShockHaircutIncludesRemainingVoyage(t *testing.T) {
+func TestMarketEventsPreShockQuoteLeavesHorizonHaircutToAdmission(t *testing.T) {
 	t.Parallel()
 	in := retainedBookInput(t, 1, RetainedBid{PricePence: 10_000, RemainingQuantity: 20})
 	shock := MarketShock{ID: "expiry", EventType: "demand_shortage", PortID: "portsmouth", CommodityID: "provisions", StartsAt: in.Now.Add(-10 * time.Minute), ExpiresAt: in.Now.Add(20 * time.Minute)}
@@ -175,9 +175,10 @@ func TestMarketEventsPreShockHaircutIncludesRemainingVoyage(t *testing.T) {
 	in.Markets["portsmouth"] = sourcingFixture[Market](t, `{"visibility":"quay","books":[{"commodity_id":"provisions","depth":{"bids":[{"price_pence":20000,"remaining_quantity":20}]}}]}`)
 	arrival := in.Now.Add(24 * time.Minute)
 	revenue, _, _, source, reason, required := destinationRevenue(in, "portsmouth", "provisions", 1, arrival)
-	// 24 real minutes at 60x is one additional game day of retained-book age.
-	if reason != "" || required || revenue != 9_800 || !strings.Contains(source, "2.0 game days old; 200 bps") {
-		t.Fatalf("pre-shock replacement did not age through arrival: revenue %d, source %q, reason %q, stress %t", revenue, source, reason, required)
+	// Quote selection preserves pre-shock bids. The admission model supplies
+	// the horizon haircut rather than aging the same quote a second time here.
+	if reason != "" || required || revenue != 10_000 || source != "our quay book 2.0 game days old" {
+		t.Fatalf("pre-shock replacement did not preserve its measured quote: revenue %d, source %q, reason %q, stress %t", revenue, source, reason, required)
 	}
 }
 
@@ -222,14 +223,14 @@ func TestMarketEventsFundingStressSurvivesSerialization(t *testing.T) {
 	if err := json.Unmarshal(encode(plan), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if !addFundingFees(decoded, 1).Accepted || addFundingFees(decoded, 2).Accepted {
-		t.Fatalf("funding lost the inclusive event stress boundary after restart: %+v", decoded)
+	if !addFundingFees(decoded, 0).Accepted || addFundingFees(decoded, 1).Accepted {
+		t.Fatalf("funding lost the strict positive stressed-net boundary after restart: %+v", decoded)
 	}
 }
 
 func TestMarketEventsProcurementCannotReuseAdmittedShockFloor(t *testing.T) {
 	t.Parallel()
-	in := moneyInput(t, moneyTime("2026-10-28T11:10:00Z"), "canvas_sails", 749, 1_000, 1, 30)
+	in := moneyInput(t, moneyTime("2026-10-28T11:10:00Z"), "canvas_sails", 748, 1_000, 1, 30)
 	in = moneySnapshotInput(in, map[string]json.RawMessage{"world_events": json.RawMessage(moneyCanvasShock)})
 	plan := moneySpot(t, in, "canvas_sails")
 	if !plan.Accepted || !plan.EventPriceStress {
@@ -466,7 +467,7 @@ func TestMarketEventsPaidCargoFloorUsesNetPreEventEstimate(t *testing.T) {
 				Bids:       map[string][]RetainedBid{recoveryGrain: {{PricePence: tc.preBid, RemainingQuantity: 20}}},
 			}}
 			arrival := procurementArrival(input, data.Plan, 20)
-			revenue, _, _, source, reason, _ := destinationRevenue(input, recoveryFarPort, recoveryGrain, 20, arrival)
+			revenue, _, source, reason := paidDestinationRevenue(input, recoveryFarPort, recoveryGrain, 20, arrival)
 			if reason != "" || !strings.HasPrefix(source, retainedBookSource) {
 				t.Fatalf("fixture needs a labelled, arrival-aged pre-event estimate: %d, %q, %q", revenue, source, reason)
 			}
@@ -599,7 +600,7 @@ func TestMarketEventsRetainedStressKeepsStrictBoundary(t *testing.T) {
 	in.Metadata["world_events"] = meta
 	equal := moneySpot(t, in, "canvas_sails")
 	if equal.Accepted || !equal.EventPriceStress || equal.Economics.ExpectedNetPence != equal.Economics.PriceUncertaintyStressPence ||
-		!strings.Contains(equal.Reason, "retained quay book") {
+		!strings.Contains(equal.Reason, "stressed destination contribution") {
 		t.Fatalf("event flag admitted retained pricing at zero stressed net: %+v", equal)
 	}
 	in.Markets["amsterdam"].Books[0].Depth.Asks[0].PricePence = 748
@@ -607,7 +608,7 @@ func TestMarketEventsRetainedStressKeepsStrictBoundary(t *testing.T) {
 	if !positive.Accepted || !positive.EventPriceStress || positive.Economics.ExpectedNetPence-positive.Economics.PriceUncertaintyStressPence != 1 {
 		t.Fatalf("one-penny positive retained stressed net should remain admissible: %+v", positive)
 	}
-	if funded := addFundingFees(positive, 1); funded.Accepted || !strings.Contains(funded.Reason, "retained quay book") {
+	if funded := addFundingFees(positive, 1); funded.Accepted || !strings.Contains(funded.Reason, "stressed destination contribution") {
 		t.Fatalf("funding admitted a retained lot exactly at its stress boundary: %+v", funded)
 	}
 }

@@ -912,7 +912,7 @@ func (r *Runner) expansionFundingRequired(input PlanningInput, required map[stri
 		}
 		required[candidate] = max(required[candidate], min(protected, input.Balances[candidate]))
 	}
-	required[region] = growthCashTotal(max(required[region], r.opts.ReservePence), fees)
+	required[region] = growthCashTotal(max(required[region], r.protectedReservePence()), fees)
 	return required
 }
 

@@ -176,8 +176,8 @@ func TestGrowthWaitsForStagedFuturesControlAction(t *testing.T) {
 	h := newRecoveryHarness(t)
 	h.seedLaneProofs()
 	runner := growthWindowRunner(t, h)
-	h.putMission("__futures", uuid.NewString(), "futures_lease", missionData{
-		Action: &durableAction{ID: uuid.NewString(), Stage: "futures-lease"},
+	h.putMission("__futures", uuid.NewString(), "committed", missionData{
+		Action: &durableAction{ID: uuid.NewString(), Stage: "futures-resize-lease"},
 	})
 	if changed, err := runner.considerGrowth(h.ctx); err != nil || changed {
 		t.Fatalf("staged futures spend permitted growth: changed=%t err=%v", changed, err)
@@ -209,7 +209,7 @@ func TestLoanPrepayPreservesDominantRegionalFloor(t *testing.T) {
 				BuyDone: true,
 			})
 			// The mission's 3 × 100,000p berth floor dominates debt reserves; two 10,000p cash lots remain protected.
-			protected := runner.opts.ReservePence + 300_000 + 20_000
+			protected := runner.protectedReservePence() + 300_000 + 20_000
 			for i := range runner.stateCache.Vaults {
 				vault := &runner.stateCache.Vaults[i]
 				if vault.BankingRegion == "north_sea" {

@@ -253,8 +253,8 @@ func TestOverseasCapacityEstimateRequiresUnownedRegionAndFreshNetWorth(t *testin
 				if err := json.Unmarshal(row.Details, &payload); err != nil {
 					t.Fatal(err)
 				}
-				if payload.Accepted || strings.HasPrefix(payload.HazardSource, "zone estimate") || decision.Reason == hazardUnavailable {
-					t.Fatalf("owned region gained an estimate or lost its ordinary headline: %+v %s", decision, row.Details)
+				if payload.Accepted || strings.HasPrefix(payload.HazardSource, "zone estimate") || decision.Reason != hazardUnavailable {
+					t.Fatalf("owned region must wait for measured hazard evidence, not gain an estimate: %+v %s", decision, row.Details)
 				}
 				hazardRejected := false
 				for reason, count := range payload.PlanRejections {

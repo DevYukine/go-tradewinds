@@ -753,7 +753,7 @@ func TestGrowthReturnRepricesNeverSentItineraryButKeepsPaidReturnSunk(t *testing
 		// Keep the next lot above MM while leaving less than the paid 17p
 		// return charge as headroom: charging that sunk return again would
 		// wrongly reject an otherwise admissible operating lot.
-		const nextBuyPrice = 945
+		const nextBuyPrice = 946
 		w.h.api.mu.Lock()
 		w.source = []Level{{OrderID: "small-positive-owned-lot", PricePence: nextBuyPrice, RemainingQuantity: 4}}
 		firstMission := w.firstMission

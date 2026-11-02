@@ -311,7 +311,7 @@ func TestReplayPassRetainsCalibrationAndActiveMarquePlanningInputs(t *testing.T)
 	t.Cleanup(func() { r.stopReplay(context.Background()) })
 	at := time.Now().UTC()
 	replayRecorderSeed(t, h, r, at)
-	r.snapshot["_revenue_calibration"] = encode(map[string]int64{"depth": 9500})
+	r.snapshot["_revenue_calibration"] = encode(revenueCalibrationFixture(9500, 9500))
 	r.snapshot["_marque_active"] = encode(map[string]letterOfMarque{"observed-marque": {
 		ID: "55555555-5555-4555-8555-000000000001", SeaZoneID: "retained-danger",
 		SponsorCompanyID: h.account.CompanyID, AddedPiracyBPS: 500, CostPence: 1000,
@@ -332,7 +332,7 @@ func TestReplayPassRetainsCalibrationAndActiveMarquePlanningInputs(t *testing.T)
 	replayed := PlanningInputFor(at, ShipState{}, r.stateCache, snapshot, PlanningSources{
 		Metadata: r.meta, Generation: r.generation,
 	})
-	if replayed.RevenueCalibration["depth"] != 9500 || !replayed.MarqueZones["retained-danger"] {
+	if replayed.RevenueCalibration.Factor("canvas_sails", "depth", 1).MedianBPS != 9500 || !replayed.MarqueZones["retained-danger"] {
 		t.Fatalf("recorded pass changed live calibration or marque route exclusions: %+v, %+v",
 			replayed.RevenueCalibration, replayed.MarqueZones)
 	}

@@ -217,8 +217,8 @@ func TestAmericaFlagshipRequestKrakenApprovalBostonBuildOnceAcrossRestart(t *tes
 	}
 	cash := runner.planningInput(ShipState{}).Balances["america"]
 	reserves, err := runner.treasuryReserves(h.ctx)
-	if err != nil || reserves["america"] != cash || cash != 22_700_500 {
-		t.Fatalf("flagship cash is spendable by growth or treasury: cash=%d reserves=%v err=%v", cash, reserves, err)
+	if err != nil || reserves["america"] < 100_500 || reserves["america"] >= cash || cash != 22_700_500 {
+		t.Fatalf("flagship reserve did not preserve initial cash while releasing later funding: cash=%d reserves=%v err=%v", cash, reserves, err)
 	}
 	americaFlagshipTick(t, h, runner)
 	if h.api.mutationCount("/v1/loan/approve") != 1 {
@@ -424,5 +424,61 @@ func TestAmericaFlagshipChoosesCheapestAcceptableQuote(t *testing.T) {
 				t.Fatalf("unacceptable quote selected: %+v", chosen)
 			}
 		})
+	}
+}
+
+func TestAmericaFlagshipFreezesReservationAcrossFundingAndRestart(t *testing.T) {
+	h, runner, _ := americaFlagshipFixture(t)
+	loanCapacityRefresh(t, h, runner)
+	if changed, err := runner.driveAmericaFlagship(h.ctx, nil, &missionData{}); !changed || err != nil {
+		t.Fatalf("flagship did not start: %v %v", changed, err)
+	}
+	state := decode[americaFlagshipState](runner.snapshot, "_america_flagship")
+	if !state.Pending || state.HeldPence == nil || *state.HeldPence != 100_500 {
+		t.Fatalf("flagship did not freeze starting America cash: %+v", state)
+	}
+	for _, balance := range []int64{100_500, 200_500, 300_500, 50_000} {
+		h.api.setVaultBalance("america", balance)
+		runner = h.runner(primaryTestKey)
+		loanCapacityRefresh(t, h, runner)
+		required := map[string]int64{}
+		reserveAmericaFlagship(required, runner.stateCache, runner.snapshot)
+		if required["america"] != min(balance, int64(100_500)) {
+			t.Fatalf("remittance increased held cash or reserve exceeded current cash: balance=%d reserved=%d", balance, required["america"])
+		}
+		state = decode[americaFlagshipState](runner.snapshot, "_america_flagship")
+		if err := runner.saveAmericaFlagship(h.ctx, state); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestAmericaFlagshipLegacyReservationUsesLastOwnPrincipal(t *testing.T) {
+	now := time.Now().UTC()
+	request := gameapi.LoanRequestView{BorrowerCompanyID: recoveryCompanyID, BankingRegion: "america",
+		CollateralKind: "unsecured", Repayment: "amortised", TermGameDays: 360, PrincipalPence: 120_000, CreatedAt: now}
+	older, foreign := request, request
+	older.CreatedAt, older.PrincipalPence = now.Add(-time.Hour), 999_000
+	foreign.BorrowerCompanyID, foreign.CreatedAt, foreign.PrincipalPence = "another-company", now.Add(time.Hour), 999_000
+	state := AccountState{LoanRequests: []gameapi.LoanRequestView{foreign, older, request},
+		Vaults: []Vault{{BankingRegion: "america", AccountType: "vault", BalancePence: 200_000}}}
+	snapshot := map[string]json.RawMessage{
+		"_america_flagship": encode(americaFlagshipState{Pending: true}),
+		"profile":           encode(map[string]any{"company": map[string]string{"id": recoveryCompanyID}}),
+	}
+	for _, balance := range []int64{200_000, 400_000, 80_000} {
+		state.Vaults[0].BalancePence = balance
+		required := map[string]int64{}
+		reserveAmericaFlagship(required, state, snapshot)
+		if required["america"] != min(balance, request.PrincipalPence) {
+			t.Fatalf("legacy reserve chased remittances or selected another request: %+v", required)
+		}
+	}
+	// A recorded zero is a fixed hold, not a missing pre-deploy field.
+	snapshot["_america_flagship"] = encode(americaFlagshipState{Pending: true, HeldPence: new(int64(0))})
+	required := map[string]int64{}
+	reserveAmericaFlagship(required, state, snapshot)
+	if required["america"] != 0 {
+		t.Fatal("zero initial cash fell back to the legacy principal")
 	}
 }

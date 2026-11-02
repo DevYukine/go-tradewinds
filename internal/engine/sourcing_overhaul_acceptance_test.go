@@ -47,8 +47,8 @@ func TestPlanningInputSkipsUnusedZeroBalanceRegionFunding(t *testing.T) {
 	if input.ReserveByRegion["far"] != 0 {
 		t.Fatalf("unused zero-balance unrelated region far requires %dp of funding in the planning input although no ship, mission, warehouse or plan can ever reach it: %v", input.ReserveByRegion["far"], input.ReserveByRegion)
 	}
-	if want := runner.opts.ReservePence + 3*DailyUpkeep(state.Ships, state.Catalog, 0); input.ReserveByRegion["north"] != want {
-		t.Fatalf("home region reserve changed: got %d, want %d", input.ReserveByRegion["north"], want)
+	if want := ProtectedReservePence(state) + 3*DailyUpkeep(state.Ships, state.Catalog, len(state.Factors)); input.ReserveByRegion["north"] != want {
+		t.Fatalf("home region floor and upkeep not protected: got %d, want %d", input.ReserveByRegion["north"], want)
 	}
 	if input.Balances["north"] != 1_000_000 || input.Balances["far"] != 0 {
 		t.Fatalf("planning input lost observed balances: %v", input.Balances)

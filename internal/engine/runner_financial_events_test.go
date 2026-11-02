@@ -29,7 +29,7 @@ func testCaptureInvalidatingEvents(t *testing.T, eventTypes []string) {
 		t.Run(eventType, func(t *testing.T) {
 			h := newRecoveryHarness(t)
 			h.api.setVaultBalance("north", 500_000)
-			h.api.setVaultBalance("south", 100_000)
+			h.api.setVaultBalance("south", 150_000)
 			h.seedLaneProofs()
 			runner := h.runner(primaryTestKey)
 			runner.generation = uuid.NewString()
@@ -207,13 +207,13 @@ func testCaptureInvalidatingEvents(t *testing.T, eventTypes []string) {
 				if eventType == "passengers_boarded" && runner.stateCache.Ships[0].PassengerHoldTons != 1 {
 					t.Fatal("boarding fence permitted work without a post-event ships capture")
 				}
-				if len(calls) != 1 || calls[0].Status != http.StatusOK || north != wantNorth || south != 100_000 {
+				if len(calls) != 1 || calls[0].Status != http.StatusOK || north != wantNorth || south != 150_000 {
 					t.Fatalf("post-event capture did not permit one funded build or broke cash identity: calls %+v north %d south %d", calls, north, south)
 				}
 				return
 			}
 			h.missingMission("__growth")
-			wantSouth := int64(100_000)
+			wantSouth := int64(150_000)
 			if eventType == "auto_remittance" {
 				wantSouth += 425_000 - 4_250
 			}

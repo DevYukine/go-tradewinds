@@ -166,8 +166,8 @@ func TestOfflinePlanningInputForMatchesRunner(t *testing.T) {
 	ship := runner.stateCache.Ships[0]
 	live := runner.planningInput(ship)
 	sources := PlanningSources{
-		CompanyID: runner.account.CompanyID, ReservePence: runner.opts.ReservePence,
-		Metadata: runner.meta, Generation: runner.generation,
+		CompanyID: runner.account.CompanyID,
+		Metadata:  runner.meta, Generation: runner.generation,
 		CharterProceedsPence: runner.charterProceedsPence, Competition: runner.competition,
 	}
 	state := StateFromSnapshot(live.Now, runner.snapshot, sources)
@@ -672,8 +672,8 @@ func TestOfflineStoredDecisionFrameReproducesRecordedPlan(t *testing.T) {
 		snapshot[key] = encode(values)
 	}
 	sources := PlanningSources{
-		CompanyID: runner.account.CompanyID, ReservePence: runner.opts.ReservePence,
-		Metadata: metadata, Generation: frame.Generation,
+		CompanyID: runner.account.CompanyID,
+		Metadata:  metadata, Generation: frame.Generation,
 		CharterProceedsPence: decode[int64](snapshot, "_charter_proceeds"),
 		Competition:          decode[*store.CompetitionSummary](snapshot, "_competition"),
 	}

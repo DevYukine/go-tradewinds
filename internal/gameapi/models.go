@@ -318,7 +318,6 @@ type Contract struct {
 	RemainingQuantity int32           `json:"remaining_quantity"`
 	Stale             bool            `json:"stale"`
 	RewardPerTonPence *int64          `json:"reward_per_ton_pence"`
-	FundedBy          *string         `json:"funded_by"`
 	Title             *string         `json:"title"`
 	Gossip            *CharterGossip  `json:"gossip"`
 }
@@ -576,6 +575,37 @@ func (result *SettleFuturesResult) UnmarshalJSON(body []byte) error {
 	*result = SettleFuturesResult(capture.plain)
 	result.SettledTons, result.PenaltyPaidPence, result.ClaimPence = *capture.SettledTons, *capture.PenaltyPaidPence, *capture.ClaimPence
 	return nil
+}
+
+// Successful stream receipts omit default-only liability fields. Defaults must
+// still prove both fields, even when the published value is zero.
+type FuturesSettlementEvent struct {
+	FuturesID        string  `json:"futures_id"`
+	Status           string  `json:"status"`
+	SettledTons      *int32  `json:"settled_tons"`
+	NotionalPence    *int64  `json:"notional_pence"`
+	PenaltyPaidPence *int64  `json:"penalty_paid_pence"`
+	ClaimPence       *int64  `json:"claim_pence"`
+	PortID           string  `json:"port_id"`
+	CommodityID      string  `json:"commodity_id"`
+	SellerCompanyID  *string `json:"seller_company_id"`
+	BuyerCompanyID   *string `json:"buyer_company_id"`
+}
+
+func (event FuturesSettlementEvent) Receipt() (SettleFuturesResult, bool) {
+	if event.FuturesID == "" || event.SettledTons == nil ||
+		(event.Status != "settled" && event.Status != "defaulted") ||
+		event.Status == "defaulted" && (event.PenaltyPaidPence == nil || event.ClaimPence == nil) {
+		return SettleFuturesResult{}, false
+	}
+	result := SettleFuturesResult{FuturesID: event.FuturesID, Status: event.Status, SettledTons: *event.SettledTons}
+	if event.PenaltyPaidPence != nil {
+		result.PenaltyPaidPence = *event.PenaltyPaidPence
+	}
+	if event.ClaimPence != nil {
+		result.ClaimPence = *event.ClaimPence
+	}
+	return result, true
 }
 
 type WantsResult struct {

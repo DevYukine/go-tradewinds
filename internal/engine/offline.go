@@ -13,7 +13,6 @@ import (
 // The experiment knobs deliberately remain zero-valued on live inputs.
 type PlanningSources struct {
 	CompanyID            string
-	ReservePence         int64
 	Metadata             map[string]DatasetMeta
 	Generation           string
 	CharterProceedsPence int64
@@ -47,6 +46,7 @@ func PlanningInputFor(now time.Time, ship ShipState, state AccountState, snapsho
 	shocks, eventsValid := decodeMarketShocks(snapshot)
 	_, eventsTracked := sources.Metadata["world_events"]
 	_, eventsRecorded := snapshot["world_events"]
+	reserve := ProtectedReservePence(state)
 	return PlanningInput{
 		Now:                   now,
 		CompanyID:             sources.CompanyID,
@@ -62,14 +62,14 @@ func PlanningInputFor(now time.Time, ship ShipState, state AccountState, snapsho
 		BookObservedAt:        decode[map[string]time.Time](snapshot, "_book_observed"),
 		QuayBookMemory:        decode[map[string]RetainedQuayBook](snapshot, "_quay_book_memory"),
 		BookDrift:             decode[[]BookDriftSample](snapshot, "_book_drift"),
-		RevenueCalibration:    decode[map[string]int64](snapshot, "_revenue_calibration"),
+		RevenueCalibration:    decode[store.RevenueCalibrationModel](snapshot, "_revenue_calibration"),
 		MarketShocks:          shocks,
 		marketEventsInvalid:   !eventsValid && (eventsTracked || eventsRecorded),
 		Routes:                state.Routes,
 		Contracts:             taperedContracts(state.Contracts, state.Catalog, sources.CharterProceedsPence, ship.EffectiveHoldCapacityTons),
 		Balances:              balances,
-		ReserveByRegion:       obligationReserves(state, snapshot, sources.ReservePence),
-		ReservePence:          sources.ReservePence,
+		ReserveByRegion:       obligationReserves(state, snapshot, reserve),
+		ReservePence:          reserve,
 		Metadata:              sources.Metadata,
 		Generation:            sources.Generation,
 		FleetDailyUpkeepPence: DailyUpkeep(state.Ships, state.Catalog, len(state.Factors)),

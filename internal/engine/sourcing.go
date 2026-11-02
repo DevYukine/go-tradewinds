@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -695,10 +696,16 @@ func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipStat
 
 func (r *Runner) committedPlanningInputExceptLoan(ctx context.Context, ship ShipState, excludedMission, excludedLoan string) (PlanningInput, error) {
 	input := r.planningInput(ship)
+	snapshot := r.snapshot
+	if excludedMission == americaFlagshipMission {
+		snapshot = maps.Clone(snapshot)
+		delete(snapshot, "_america_flagship")
+		input.ReserveByRegion = obligationReserves(r.stateCache, snapshot, r.protectedReservePence())
+	}
 	if loan, exists := r.loanByID(excludedLoan); exists {
 		input.ReserveByRegion[loan.BankingRegion] = max(0, input.ReserveByRegion[loan.BankingRegion]-loanReserve(loan))
 	}
-	required, err := r.treasuryReservesExceptLoan(ctx, excludedLoan)
+	required, err := r.treasuryReservesFor(ctx, excludedLoan, snapshot)
 	if err != nil {
 		return input, err
 	}
@@ -707,14 +714,14 @@ func (r *Runner) committedPlanningInputExceptLoan(ctx context.Context, ship Ship
 	}
 	reservations := growthEvidence{}
 	reservedFreight := make(map[string]bool)
-	ids := make([]string, 0, len(r.stateCache.Ships)+1)
+	ids := make([]string, 0, len(r.stateCache.Ships)+2)
 	for _, incumbent := range r.stateCache.Ships {
 		ids = append(ids, incumbent.Ship.ID)
 		if incumbent.Ship.ID == ship.Ship.ID && len(ids) > 1 {
 			ids[0], ids[len(ids)-1] = ids[len(ids)-1], ids[0]
 		}
 	}
-	ids = append(ids, "__growth")
+	ids = append(ids, "__growth", commissionMission)
 	maintenance := false
 	input.ReservedRetainedBidTons = make(map[string]map[string]int64)
 	for _, id := range ids {
@@ -1068,19 +1075,6 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 	if err := r.saveMission(ctx, mission, &data); err != nil {
 		return false, "", err
 	}
-	if isBookRefresh(plan) {
-		previous := decode[bookRefreshState](r.snapshot, "_book_refresh")
-		r.snapshot["_book_refresh"] = encode(bookRefreshState{
-			StartedGameHour:         input.Clock.Calendar.TotalGameHours,
-			StartedAt:               input.Now,
-			Generation:              mission.Generation,
-			PreviousStartedAt:       previous.StartedAt,
-			PreviousStartedGameHour: previous.StartedGameHour,
-		})
-		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
-			return true, "", err
-		}
-	}
 	return true, "", nil
 }
 
@@ -1227,7 +1221,7 @@ func (r *Runner) relocationSpendingReadyAtPrice(ctx context.Context, ship ShipSt
 	}
 	atOrigin := ship.Ship.CurrentPortID == data.Plan.Origin && ship.Voyage == nil
 	if atOrigin {
-		if data.Relocation.IdlePilot && !r.shipIdleEligible(input) {
+		if (data.Relocation.IdlePilot || data.Relocation.Scout) && !r.shipIdleEligible(input) {
 			return scoutTransientError(data, errors.New("unstarted idle inspection waits for a coherent six-observed-game-hour idle baseline"))
 		}
 		if data.Relocation.Scout && !isBookRefresh(data.Plan) && !r.shipIdleFor(input, scoutIdleGameHours) {
@@ -1369,6 +1363,11 @@ func (r *Runner) stageSourcingFunding(ctx context.Context, ship ShipState, missi
 func (r *Runner) relocationDepartureReady(ctx context.Context, ship ShipState, data *missionData) error {
 	if data.Relocation == nil || !emptyCargo(ship) || len(freightStops(data.Freight)) != 0 || len(r.activeFreight(ship.Ship.ID)) != 0 {
 		return errors.New("relocation departure requires empty cargo and no sealed obligations")
+	}
+	if voyageLegInsured(data, ship.Ship.CurrentPortID, data.Plan.Destination) {
+		// The paid policy commits this exact leg. Generic departure preparation
+		// and preflight still enforce its route, stores and policy binding.
+		return nil
 	}
 	if ship.Stores.ProvisionsTons+1e-9 < data.Plan.TargetStoresTons {
 		return errors.New("relocation departure requires both-way safe stores and existing safety margins")
@@ -1608,23 +1607,6 @@ func (r *Runner) abortRelocation(ctx context.Context, ship ShipState, mission *s
 	}
 	if ship.Voyage != nil || ship.Ship.Status == "sailing" {
 		return false, nil
-	}
-	if isBookRefresh(data.Plan) && ship.Ship.CurrentPortID == data.Plan.Origin {
-		current := r.snapshot["_book_refresh"]
-		cooldown := decode[bookRefreshState](r.snapshot, "_book_refresh")
-		if cooldown.Generation == mission.Generation {
-			if cooldown.PreviousStartedAt.IsZero() {
-				delete(r.snapshot, "_book_refresh")
-			} else {
-				r.snapshot["_book_refresh"] = encode(bookRefreshState{
-					StartedAt: cooldown.PreviousStartedAt, StartedGameHour: cooldown.PreviousStartedGameHour,
-				})
-			}
-			if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
-				r.snapshot["_book_refresh"] = current
-				return false, err
-			}
-		}
 	}
 	data.SourcingHandoff = nil
 	data.Plan.Destination = ship.Ship.CurrentPortID

@@ -157,7 +157,8 @@ func TestIdleUnderarmedShipRefitsBeforeEconomicPlanAndPurchase(t *testing.T) {
 	idle["route_legs"] = []any{}
 	idle["voyage"] = nil
 	h.api.setFleet([]map[string]any{idle, sailingShipRow(recoveryShipCharizard, "Charizard", recoveryFarPort, recoveryHomePort)})
-	h.api.setVaultBalance("north", 200_000)
+	const openingCash int64 = 300_000
+	h.api.setVaultBalance("north", openingCash)
 	downstream := h.api.server.Config.Handler
 	h.api.server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost || request.URL.Path != "/v1/shipyard/modify-ship" {
@@ -202,12 +203,12 @@ func TestIdleUnderarmedShipRefitsBeforeEconomicPlanAndPurchase(t *testing.T) {
 	h.api.mu.Lock()
 	afterRefit := h.api.vaultBalance["north"]
 	h.api.mu.Unlock()
-	if afterRefit != 200_000-4*15_000 || h.api.mutationCount("/v1/market/place-order") != 0 {
+	if afterRefit != openingCash-4*15_000 || h.api.mutationCount("/v1/market/place-order") != 0 {
 		t.Fatalf("refit did not precede cargo spending: cash %d mutations %+v", afterRefit, h.api.mutationsFor("/v1/market/place-order"))
 	}
 	// Once a voyage is committed, legitimate spare-work growth may run before
 	// its purchase. Isolate procurement here, after the unguarded refit checks.
-	runner.opts.CapacityPaybackDays = 0.000001
+	runner.snapshot["_capacity_growth_paused_until"] = encode(time.Now().Add(time.Hour))
 	for range 8 {
 		if _, err := h.tick(runner); err != nil {
 			t.Fatalf("plan and purchase after refit: %v", err)
@@ -229,7 +230,7 @@ func TestIdleUnderarmedShipRefitsBeforeEconomicPlanAndPurchase(t *testing.T) {
 	h.api.mu.Unlock()
 	purchase := data.BoughtQuantity * 100
 	customs := (purchase*200 + 9_999) / 10_000
-	if afterPurchase != afterRefit-purchase-customs || afterPurchase < runner.opts.ReservePence {
+	if afterPurchase != afterRefit-purchase-customs || afterPurchase < runner.protectedReservePence() {
 		t.Fatalf("post-refit purchase failed cash/reserve identity: refit cash %d purchase %d customs %d remaining %d", afterRefit, purchase, customs, afterPurchase)
 	}
 }
@@ -243,7 +244,7 @@ func TestTreasuryCombinesPartialDonorsWithoutSpendingTheirReserves(t *testing.T)
 		{FromRegion: "south", ToRegion: "yard", FeeBPS: 100},
 	}
 	h.api.setRates(rates...)
-	required := map[string]int64{"north": 100_000, "south": 100_000, "yard": 150_000}
+	required := map[string]int64{"north": 110_000, "south": 110_000, "yard": 150_000}
 	h.api.setVaultBalance("north", 200_000)
 	h.api.setVaultBalance("south", 200_000)
 	h.api.setVaultBalance("yard", 0)
@@ -258,6 +259,13 @@ func TestTreasuryCombinesPartialDonorsWithoutSpendingTheirReserves(t *testing.T)
 		runner.generation = uuid.NewString()
 		if err := runner.refresh(h.ctx); err != nil {
 			t.Fatalf("refresh observed funding rates and balances: %v", err)
+		}
+		observedReserves, err := runner.treasuryReserves(h.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for region, reserve := range observedReserves {
+			required[region] = max(required[region], reserve)
 		}
 		before := balances()
 		if changed, err := runner.fundTreasury(h.ctx, before, required); err != nil || !changed {

@@ -146,7 +146,7 @@ func TestCapacitySavingsTotalInterestRefusalRecordsTargetDecision(t *testing.T) 
 	principal, installment := estimatedCapacityPrincipal(save.CashShortfallPence, int64(len(runner.stateCache.Ships)))
 	depth := save
 	depth.IncrementalNetPencePerGameDay = save.DepthNetPencePerGameDay
-	if loan := evaluateCapacityLoan(depth, save.CashShortfallPence, goldsmithsMaximumPence, principal, installment, 3_000, 420); !loan.Borrow {
+	if loan := evaluateCapacityLoan(depth, save.CashShortfallPence, goldsmithsMaximumPence, principal, installment, 3_000); !loan.Borrow {
 		t.Fatalf("B must be financing-eligible before the total-interest comparison: %+v", loan)
 	}
 	interest := 36*float64(installment) - float64(principal)

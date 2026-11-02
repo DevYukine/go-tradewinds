@@ -25,7 +25,7 @@ import (
 const (
 	maxBodyBytes   = 8 << 20
 	maxAttempts    = 4
-	requestTimeout = 45 * time.Second
+	RequestTimeout = 45 * time.Second
 )
 
 var errBodyTooLarge = errors.New("game API response exceeds 8 MiB")
@@ -326,7 +326,7 @@ type requestResult struct {
 }
 
 func (c *Client) send(ctx context.Context, method, requestURL, path string, payload []byte, idempotencyKey string, bucket bucketID, out any) requestResult {
-	attemptCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	attemptCtx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
 
 	request, err := http.NewRequestWithContext(attemptCtx, method, requestURL, bytes.NewReader(payload))

@@ -1040,7 +1040,7 @@ func TestCapacityGrowthInsufficientSurplusDoesNotHireExpansionAgent(t *testing.T
 	newExpansionFactorAPI(h)
 	refreshExpansionFactor(t, h, runner)
 	for i := range runner.stateCache.Vaults {
-		runner.stateCache.Vaults[i].BalancePence = runner.opts.ReservePence + 40_000
+		runner.stateCache.Vaults[i].BalancePence = runner.protectedReservePence() + 40_000
 	}
 	if _, err := runner.considerGrowth(h.ctx); err != nil {
 		t.Fatal(err)
@@ -1081,7 +1081,10 @@ func TestCapacityGrowthRejectedPaybackBuysEvidenceWithoutAdmittingHull(t *testin
 	h, runner := capacityExecutionFixture(t, false)
 	newMeasuredExpansionFactorAPI(h)
 	refreshExpansionFactor(t, h, runner)
-	runner.opts.CapacityPaybackDays = 0.000001
+	for key, quote := range runner.stateCache.Quotes {
+		quote.TotalCostPence = new(int64(1_000_000_000))
+		runner.stateCache.Quotes[key] = quote
+	}
 	evidence := growthEvidence{workingByRegion: make(map[string]int64)}
 	if reason, err := runner.growthCashFunding(h.ctx, &evidence); err != nil || reason != "" {
 		t.Fatalf("capacity funding: %s, %v", reason, err)
@@ -1169,7 +1172,10 @@ func TestCapacityGrowthUnavailableHullProbesOnlyAfterCompleteQuoteAuthority(t *t
 			h, runner := capacityExecutionFixture(t, false)
 			newMeasuredExpansionFactorAPI(h)
 			refreshExpansionFactor(t, h, runner)
-			runner.opts.CapacityPaybackDays = 0.000001
+			for key, quote := range runner.stateCache.Quotes {
+				quote.TotalCostPence = new(int64(1_000_000_000))
+				runner.stateCache.Quotes[key] = quote
+			}
 			hull := runner.stateCache.Catalog.ShipClasses[0]
 			hull.ID = "collier"
 			runner.stateCache.Catalog.ShipClasses = append(runner.stateCache.Catalog.ShipClasses, hull)

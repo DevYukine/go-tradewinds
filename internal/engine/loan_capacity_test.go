@@ -36,7 +36,7 @@ func TestLoanCapacityOnlyCashRejectionCanBorrow(t *testing.T) {
 			input := capacityGrowthAcceptanceInput()
 			test.change(&input)
 			decision := EvaluateCapacityGrowth(input)
-			result := evaluateCapacityLoan(decision, 100_000, 750_000, 110_000, 5_000, 3_000, 420)
+			result := evaluateCapacityLoan(decision, 100_000, 750_000, 110_000, 5_000, 3_000)
 			if result.Borrow != test.want || result.Reason == "" {
 				t.Fatalf("financing repaired a non-cash rejection: decision %+v, loan %+v", decision, result)
 			}
@@ -47,15 +47,15 @@ func TestLoanCapacityOnlyCashRejectionCanBorrow(t *testing.T) {
 func TestLoanCapacityHalfNetCoverageBoundary(t *testing.T) {
 	t.Parallel()
 	decision := GrowthDecision{EconomicallyViable: true, IncrementalNetPencePerGameDay: 2_000}
-	result := evaluateCapacityLoan(decision, 100_000, 750_000, 116_000, 8_000, 3_000, 420)
+	result := evaluateCapacityLoan(decision, 100_000, 750_000, 116_000, 8_000, 3_000)
 	if !result.Borrow || result.Coverage == nil || *result.Coverage != 1.25 || result.DebtReservePence != 16_000 || result.NetAfterInterestPence <= 0 {
 		t.Fatalf("exact 1.25x coverage was rejected or misreported: %+v", result)
 	}
 	decision.IncrementalNetPencePerGameDay = 1_999.99
-	if result := evaluateCapacityLoan(decision, 100_000, 750_000, 116_000, 8_000, 3_000, 420); result.Borrow {
+	if result := evaluateCapacityLoan(decision, 100_000, 750_000, 116_000, 8_000, 3_000); result.Borrow {
 		t.Fatalf("below-boundary half-net coverage admitted: %+v", result)
 	}
-	if result := evaluateCapacityLoan(decision, 100_000, 115_999, 116_000, 8_000, 3_000, 420); result.Borrow {
+	if result := evaluateCapacityLoan(decision, 100_000, 115_999, 116_000, 8_000, 3_000); result.Borrow {
 		t.Fatalf("principal above available liens admitted: %+v", result)
 	}
 }
@@ -86,7 +86,7 @@ func TestLoanCapacityEstimateRespectsLiensAndMinimum(t *testing.T) {
 	}
 	principal, installment = estimatedCapacityPrincipal(1_000, 1)
 	decision := GrowthDecision{EconomicallyViable: true, IncrementalNetPencePerGameDay: 10_000}
-	if principal >= goldsmithsMinimumPence || evaluateCapacityLoan(decision, 1_000, 750_000, principal, installment, 3_000, 420).Borrow {
+	if principal >= goldsmithsMinimumPence || evaluateCapacityLoan(decision, 1_000, 750_000, principal, installment, 3_000).Borrow {
 		t.Fatal("small shortfall silently rounded up into minimum debt")
 	}
 }
@@ -529,7 +529,6 @@ func TestLoanCapacityRejectsImpossiblePackagesBeforeQuoting(t *testing.T) {
 			case "weak coverage":
 				decision.DepthNetPencePerGameDay = 1
 				decision.DepthForecastRatePencePerGameDay = 1 + float64(decision.IncrementalUpkeepPence)
-				runner.opts.CapacityPaybackDays = 1e9
 			case "gossip only":
 				decision.DepthNetPencePerGameDay = 0
 				decision.DepthForecastRatePencePerGameDay = 0

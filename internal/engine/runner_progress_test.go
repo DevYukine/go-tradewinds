@@ -507,7 +507,7 @@ func TestRunQueuedGapAndClosureRequireAuthoritativeResyncBeforeDispatch(t *testi
 	h.api.mu.Lock()
 	enabled, reserve := h.api.autoRemit, h.api.minReserve
 	h.api.mu.Unlock()
-	if !enabled || reserve < runner.opts.ReservePence {
+	if !enabled || reserve < runner.protectedReservePence() {
 		t.Fatalf("resynchronized dispatch did not update actual company bill settings: enabled %t reserve %d", enabled, reserve)
 	}
 	running.cancel()

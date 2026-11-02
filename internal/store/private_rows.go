@@ -152,19 +152,20 @@ type settlementRow struct {
 func (settlementRow) TableName() string { return "settlements" }
 
 type settlementContext struct {
-	ShipID       string
-	Lane         string
-	Kind         string
-	EventID      string
-	Origin       string
-	Destination  string
-	Commodity    string
-	ProbeOutcome string
+	ShipID           string
+	Lane             string
+	Kind             string
+	EventID          string
+	Origin           string
+	Destination      string
+	Commodity        string
+	ProbeOutcome     string
+	AdmissionRevenue *RevenueForecast
 }
 
 func settlementClassification(kind string) string {
 	switch kind {
-	case "spot", "charter", "freight", "spot+freight", "charter+freight", "recovery", "passage", "relocation", "aborted", "maintenance":
+	case "spot", "charter", "freight", "spot+freight", "charter+freight", "recovery", "passage", "commission", "relocation", "aborted", "maintenance":
 		return kind
 	default:
 		return "unknown"
@@ -195,6 +196,7 @@ func (s *Store) encodeSettlement(value Settlement) (settlementRow, error) {
 	context := settlementContext{
 		ShipID: value.ShipID, Lane: value.Lane, Kind: value.Kind, EventID: value.EventID, Origin: value.Origin,
 		Destination: value.Destination, Commodity: value.Commodity, ProbeOutcome: value.ProbeOutcome,
+		AdmissionRevenue: value.AdmissionRevenue,
 	}
 	var err error
 	row.ContextCipher, err = s.encryptPrivate(context, "settlements", "context", row.AccountID, row.ID)
@@ -221,7 +223,8 @@ func (s *Store) decodeSettlement(row settlementRow) (Settlement, error) {
 		ID: row.ID, AccountID: row.AccountID, ShipID: context.ShipID, MissionID: row.MissionID,
 		Lane: context.Lane, ActionID: actionID, EventID: eventID, Kind: context.Kind, Origin: context.Origin,
 		Destination: context.Destination, Commodity: context.Commodity, ProbeOutcome: context.ProbeOutcome,
-		QuantityTons: row.QuantityTons, GameSeconds: row.GameSeconds, CostsKnown: row.CostsKnown,
+		AdmissionRevenue: context.AdmissionRevenue,
+		QuantityTons:     row.QuantityTons, GameSeconds: row.GameSeconds, CostsKnown: row.CostsKnown,
 		AcquisitionPence: row.AcquisitionPence, ProceedsPence: row.ProceedsPence,
 		ProceedsUnknown: row.ProceedsUnknown,
 		FeesPence:       row.FeesPence, ProvisionsPence: row.ProvisionsPence, ExpensesPence: row.ExpensesPence,

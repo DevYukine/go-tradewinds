@@ -101,7 +101,9 @@ func TestExpansionHireCashVetoDefersOnlyTreasuryWhileFleetTrades(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.api.setVaultBalance("caribbean", required["caribbean"])
-	h.api.setVaultBalance("south", required["south"])
+	// Keep a commercial batch donor available. A sub-5,000p operating
+	// transfer now waits rather than manufacturing a tiny fee-only remit.
+	h.api.setVaultBalance("south", required["south"]+10_000)
 	h.api.setVaultBalance("north", required["north"]+50_000)
 	berthed := sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)
 	berthed["ship"].(map[string]any)["status"] = "anchored_roadstead"

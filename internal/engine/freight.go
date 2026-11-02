@@ -51,6 +51,10 @@ func (r *Runner) validateFreightDeparture(ship ShipState, destination string, da
 	if !ok || r.stateCache.Clock.Calendar.TimeScale <= 0 {
 		return fmt.Errorf("sealed freight delivery_deadline requires current server clock authority")
 	}
+	return r.freightDepartureAt(ship, destination, hull, stops, upper)
+}
+
+func (r *Runner) freightDepartureAt(ship ShipState, destination string, hull Hull, stops []freightObligation, upper time.Time) error {
 	// The existing mission's next stop is immutable during an unresolved
 	// departure. Check it first, then every other outstanding seal.
 	foundDestination := false

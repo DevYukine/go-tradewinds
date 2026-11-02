@@ -255,10 +255,13 @@ func TestMarqueQuoteRefreshRetainsLastGoodAndUsesRealTimeTTL(t *testing.T) {
 func TestMarqueOutcomesMergeSurvivesOmittedHistory(t *testing.T) {
 	t.Parallel()
 	now := time.Now().UTC()
-	outcomes := map[string]marqueOutcome{"old": {ID: "old", CostPence: 10_000, PrizePence: 7_000}}
+	outcomes := map[string]marqueOutcome{
+		"old": {ID: "old", SeaZoneID: "old-zone", ExpiredAt: now.Add(-time.Hour), CostPence: 10_000, PrizePence: 7_000},
+		"new": {ID: "new", CostPence: 20_000, PrizePence: 17_000},
+	}
 	marques := []letterOfMarque{
-		{ID: "new", CostPence: 20_000, PrizeEarnedPence: 18_000, ExpiresAt: now},
-		{ID: "active", CostPence: 30_000, PrizeEarnedPence: 5_000, ExpiresAt: now.Add(time.Hour)},
+		{ID: "new", SeaZoneID: "new-zone", CostPence: 20_000, PrizeEarnedPence: 18_000, ExpiresAt: now},
+		{ID: "active", SeaZoneID: "active-zone", CostPence: 30_000, PrizeEarnedPence: 5_000, ExpiresAt: now.Add(time.Hour)},
 	}
 	mergeMarqueOutcomes(outcomes, marques, now)
 	var restored map[string]marqueOutcome
@@ -267,7 +270,8 @@ func TestMarqueOutcomesMergeSurvivesOmittedHistory(t *testing.T) {
 	}
 	marques[0].PrizeEarnedPence = 19_000
 	mergeMarqueOutcomes(restored, marques[:1], now.Add(8*24*time.Hour))
-	if len(restored) != 2 || restored["old"].PrizePence != 7_000 || restored["new"].PrizePence != 19_000 {
+	if len(restored) != 2 || restored["old"] != outcomes["old"] || restored["new"].PrizePence != 19_000 ||
+		restored["new"].SeaZoneID != "new-zone" || !restored["new"].ExpiredAt.Equal(now) {
 		t.Fatalf("expired outcomes were duplicated, lost or not updated: %+v", restored)
 	}
 }
@@ -279,7 +283,7 @@ func TestMarquePendingProtectsOnlyItsHomeFundsAndZone(t *testing.T) {
 		HomePortID: "home", Catalog: Catalog{Ports: []Port{{ID: "home", BankingRegion: "north"}}},
 	}
 	state.Clock.RealUTC = now
-	runner := New(nil, nil, store.Account{}, zap.NewNop(), Options{ReservePence: 75_000})
+	runner := New(nil, nil, store.Account{}, zap.NewNop(), Options{})
 	runner.generation = "current"
 	runner.meta["clock"] = DatasetMeta{UpdatedAt: now, AttemptedAt: now, Complete: true, Generation: runner.generation}
 	runner.snapshot["marques"] = encode([]letterOfMarque{
@@ -290,7 +294,7 @@ func TestMarquePendingProtectsOnlyItsHomeFundsAndZone(t *testing.T) {
 	})
 	runner.snapshot["_marque_pending"] = encode(marquePending{SeaZoneID: "pending", BankingRegion: "north", CostPence: 10_000})
 	input := runner.planningInputFrom(ShipState{}, state)
-	if input.ReserveByRegion["north"] != 85_000 || input.ReserveByRegion["south"] != 0 {
+	if input.ReserveByRegion["north"] != 110_000 || input.ReserveByRegion["south"] != 0 {
 		t.Fatalf("pending marque reserved the wrong funds: %v", input.ReserveByRegion)
 	}
 	if !reflect.DeepEqual(input.MarqueZones, map[string]bool{"active": true, "pending": true}) {
@@ -298,7 +302,7 @@ func TestMarquePendingProtectsOnlyItsHomeFundsAndZone(t *testing.T) {
 	}
 	runner.snapshot["_marque_pending"] = encode(marquePending{SeaZoneID: "unlisted-issued", IssuedID: "issued", ExpiresAt: now.Add(time.Hour)})
 	input = runner.planningInputFrom(ShipState{}, state)
-	if !input.MarqueZones["unlisted-issued"] || input.ReserveByRegion["north"] != 75_000 {
+	if !input.MarqueZones["unlisted-issued"] || input.ReserveByRegion["north"] != 100_000 {
 		t.Fatal("an issued but unlisted marque lost its zone guard or reserved its paid cost twice")
 	}
 	runner.snapshot["_marque_pending"] = encode(marquePending{SeaZoneID: "unlisted-issued", IssuedID: "issued", ExpiresAt: now.Add(-time.Hour)})
@@ -350,7 +354,7 @@ func TestMarqueDecodeRejectsMissingPricingAndPrizeEvidence(t *testing.T) {
 	}
 }
 
-func TestMarqueActiveCountAndPermanentStopOverrideProfitableQuote(t *testing.T) {
+func TestMarqueActiveCountAndManualStopOverrideProfitableQuote(t *testing.T) {
 	t.Parallel()
 	base := MarqueInput{Quote: MarqueQuote{CostPence: 10_000, ExpectedNetPrizePence: 15_000,
 		AddedPiracyBPS: 500, LadenPassagesPerDay: 2}, LiquidPence: 1_000_000}
@@ -359,16 +363,16 @@ func TestMarqueActiveCountAndPermanentStopOverrideProfitableQuote(t *testing.T) 
 		change func(*MarqueInput)
 	}{
 		{"zero-cost active marque", func(in *MarqueInput) { in.InForceCount = 1 }},
-		{"stopped despite corrected profit", func(in *MarqueInput) {
+		{"manual owner stop despite profit", func(in *MarqueInput) {
 			in.Stopped = true
-			in.LosingCount, in.ExpiredCostPence, in.ExpiredPrizePence = 0, 30_000, 30_001
+			in.ExpiredCostPence, in.ExpiredPrizePence = 30_000, 30_001
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := base
 			tc.change(&input)
 			if decision := EvaluateMarque(input); decision.Accepted || decision.Reason == "" {
-				t.Fatalf("pilot limit did not reject a profitable quote: %+v", decision)
+				t.Fatalf("active exposure or manual stop did not reject a profitable quote: %+v", decision)
 			}
 		})
 	}

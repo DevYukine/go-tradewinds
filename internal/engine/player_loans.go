@@ -661,7 +661,7 @@ func (r *Runner) playerRequestReady(ctx context.Context, data *missionData) erro
 		return capacityGate("debt_capacity", false, "player request needs the highest estimated-rebuild free priced ship to cover principal")
 	}
 	installment := int64(math.Ceil(float64(intent.PrincipalPence) * capacityAnnuityFactor(3_000)))
-	result := evaluateCapacityLoan(decision, decision.CashShortfallPence, intent.PrincipalPence, intent.PrincipalPence, installment, 3_000, r.capacityPaybackLimit())
+	result := evaluateCapacityLoan(decision, decision.CashShortfallPence, intent.PrincipalPence, intent.PrincipalPence, installment, 3_000)
 	_, _, _, funded := capacityLoanFunding(decision, evidence, intent.BankingRegion, intent.PrincipalPence, result.DebtReservePence, r.stateCache.Rates)
 	if !result.Borrow {
 		return capacityGate(result.Verdict, false, result.Reason)
@@ -702,7 +702,7 @@ func (r *Runner) playerApprovalReady(ctx context.Context, data *missionData, quo
 	// Funding includes all current own surplus: posting-time headroom need not
 	// be borrowed again when ordinary cash can absorb a small deficit.
 	shortfall := min(decision.CashShortfallPence, max(1, quote.PrincipalPence-reserve))
-	result = evaluateCapacityLoan(decision, shortfall, quote.PrincipalPence, quote.PrincipalPence, *quote.InstallmentPence, quote.AnnualRateBPS, r.capacityPaybackLimit())
+	result = evaluateCapacityLoan(decision, shortfall, quote.PrincipalPence, quote.PrincipalPence, *quote.InstallmentPence, quote.AnnualRateBPS)
 	if !result.Borrow {
 		return result, capacityGate(result.Verdict, false, result.Reason)
 	}

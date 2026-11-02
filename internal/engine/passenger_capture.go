@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"sort"
 	"strings"
@@ -18,12 +19,27 @@ const passengerFareIntervalGameHours = 10.0
 // most the documented 200-row page per lane and an eighth of
 // store.MaxSnapshotBytes of raw rows across every retained lane.
 const (
-	passengerFareLaneMaxRows = 200
-	passengerFareBudgetBytes = store.MaxSnapshotBytes / 8
+	passengerFareLaneMaxRows     = 200
+	passengerFareBudgetBytes     = store.MaxSnapshotBytes / 8
+	passengerFareSummaryMaxBands = 32
+	passengerFareSummaryMaxBytes = 32 << 10
 )
 
 func validatePassengerCapture(key string, raw json.RawMessage) error {
 	switch {
+	case key == "passenger_fare_summary":
+		var summary gameapi.PassengerFareSummary
+		if len(raw) > passengerFareSummaryMaxBytes || json.Unmarshal(raw, &summary) != nil ||
+			summary.Bands == nil || len(summary.Bands) > passengerFareSummaryMaxBands {
+			return errors.New("passenger fare summary is invalid or exceeds its retained bounds")
+		}
+		for _, band := range summary.Bands {
+			if band.MinNM < 0 || band.MaxNM != nil && *band.MaxNM <= band.MinNM || band.Fares < 0 ||
+				band.MedianFarePerHeadPence != nil && (*band.MedianFarePerHeadPence < 0 || *band.MedianFarePerHeadPence > maximumPence) {
+				return errors.New("passenger fare summary has invalid band bounds or median")
+			}
+		}
+		return nil
 	case key == "passenger_offers":
 		var offers []gameapi.PassengerOffer
 		return json.Unmarshal(raw, &offers)
@@ -208,6 +224,27 @@ func (r *Runner) refreshPassengers(ctx context.Context) error {
 	if _, completedHour, valid := passengerCaptureGameHours(time.Now(), state.Clock, rawClock, r.meta["clock"], r.generation); valid {
 		for _, lane := range requestedFares {
 			fareHours[lane] = completedHour
+		}
+	}
+	if len(requestedFares) > 0 && clockValid {
+		lastAttempt := decode[*float64](r.snapshot, "_passenger_fare_summary_hour")
+		if lastAttempt == nil || lowerHour-*lastAttempt >= passengerFareIntervalGameHours {
+			r.snapshot["_passenger_fare_summary_hour"] = encode(upperHour)
+			result := fetchResult{attemptedAt: time.Now()}
+			var summary gameapi.PassengerFareSummary
+			result.err = r.api.PassengerFaresSummary(ctx, &summary)
+			if result.err == nil {
+				result.data = encode(summary)
+				result.err = validatePassengerCapture("passenger_fare_summary", result.data)
+			}
+			result.completedAt = time.Now()
+			r.applyCapture(ctx, "passenger_fare_summary", result)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if _, completedHour, valid := passengerCaptureGameHours(result.completedAt, state.Clock, rawClock, r.meta["clock"], r.generation); valid {
+				r.snapshot["_passenger_fare_summary_hour"] = encode(completedHour)
+			}
 		}
 	}
 	// Passengers still ours keep their mission lane's evidence current even

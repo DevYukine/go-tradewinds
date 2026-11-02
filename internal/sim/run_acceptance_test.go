@@ -22,10 +22,11 @@ func simAcceptanceRunTape(t *testing.T) (*Tape, time.Time, time.Time) {
 		"vaults":    `{"vaults":[{"account_id":"vault-north","account_type":"vault","banking_region":"north","balance_pence":10000000}]}`,
 		"zones":     `[{"sea_zone_id":"coast","net_piracy_bps":0}]`,
 		"contracts": `[]`, "factors": `[]`, "rates": `[]`, "fills": `[]`, "orders": `[]`,
-		"ports/a": `{"id":"a","effective_berths":4,"berth_dues_per_day_pence":0}`,
-		"ports/b": `{"id":"b","effective_berths":4,"berth_dues_per_day_pence":0}`,
-		"books/a": `{"port_id":"a","visibility":"quay","customs_bps":0,"books":[{"commodity_id":"cloth","depth":{"asks":[{"order_id":"cloth-ask","price_pence":40000,"remaining_quantity":30,"is_npc":true}]}},{"commodity_id":"provisions","depth":{"asks":[{"order_id":"stores-a","price_pence":100,"remaining_quantity":100,"is_npc":true}]}}]}`,
-		"books/b": `{"port_id":"b","visibility":"quay","customs_bps":0,"books":[{"commodity_id":"cloth","depth":{"bids":[{"order_id":"bid-top","price_pence":44726,"remaining_quantity":66,"is_npc":true},{"order_id":"bid-middle","price_pence":33943,"remaining_quantity":101,"is_npc":true},{"order_id":"bid-low","price_pence":27505,"remaining_quantity":101,"is_npc":true}]}},{"commodity_id":"provisions","depth":{"asks":[{"order_id":"stores-b","price_pence":100,"remaining_quantity":100,"is_npc":true}]}}]}`,
+		"_revenue_calibration": `{"cells":{"global":{"samples":30,"median_bps":10000,"adverse_bps":10000}}}`,
+		"ports/a":              `{"id":"a","effective_berths":4,"berth_dues_per_day_pence":0}`,
+		"ports/b":              `{"id":"b","effective_berths":4,"berth_dues_per_day_pence":0}`,
+		"books/a":              `{"port_id":"a","visibility":"quay","customs_bps":0,"books":[{"commodity_id":"cloth","depth":{"asks":[{"order_id":"cloth-ask","price_pence":40000,"remaining_quantity":30,"is_npc":true}]}},{"commodity_id":"provisions","depth":{"asks":[{"order_id":"stores-a","price_pence":100,"remaining_quantity":100,"is_npc":true}]}}]}`,
+		"books/b":              `{"port_id":"b","visibility":"quay","customs_bps":0,"books":[{"commodity_id":"cloth","depth":{"bids":[{"order_id":"bid-top","price_pence":44726,"remaining_quantity":66,"is_npc":true},{"order_id":"bid-middle","price_pence":33943,"remaining_quantity":101,"is_npc":true},{"order_id":"bid-low","price_pence":27505,"remaining_quantity":101,"is_npc":true}]}},{"commodity_id":"provisions","depth":{"asks":[{"order_id":"stores-b","price_pence":100,"remaining_quantity":100,"is_npc":true}]}}]}`,
 	}
 	for _, pair := range [][2]string{{"a", "b"}, {"b", "a"}} {
 		key := "routes/" + pair[0] + "|" + pair[1] + "|hoy"
@@ -72,7 +73,7 @@ func simAcceptanceRecordedHazards(t *testing.T, at time.Time, datasets map[strin
 
 func TestRunAcceptanceIncidentVariantsHaveHandComputedCashDifference(t *testing.T) {
 	tape, from, to := simAcceptanceRunTape(t)
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "i4", NextRungReceiptStress: true}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "i4", NextRungReceiptStress: true}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +101,7 @@ func TestRunAcceptanceIncidentVariantsHaveHandComputedCashDifference(t *testing.
 
 func TestRunAcceptanceIdenticalTapeProducesByteIdenticalJSON(t *testing.T) {
 	tape, from, to := simAcceptanceRunTape(t)
-	options := RunOptions{From: from, To: to, Regen: 0.5, ReservePence: 75_000, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "i4", NextRungReceiptStress: true}, {Name: "probe0", SourcingCashBPS: new(int64(0))}}}
+	options := RunOptions{From: from, To: to, Regen: 0.5, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "i4", NextRungReceiptStress: true}, {Name: "probe0", SourcingCashBPS: new(int64(0))}}}
 	before, err := json.Marshal(tape)
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +146,7 @@ func TestRunAcceptanceFreightIsNeverExecuted(t *testing.T) {
 		contracts.Data = []byte(`[{"id":"tempting-freight","contract_type":"freight","status":"open","origin_port_id":"a","dest_port_id":"b","commodity_id":"cloth","issuer_company_id":"competitor","quantity_required":30,"remaining_quantity":30,"reward_pence":99999999,"collateral_pence":100}]`)
 		frame.Datasets["contracts"] = contracts
 	}
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "i4", NextRungReceiptStress: true}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "i4", NextRungReceiptStress: true}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +206,7 @@ func simAcceptanceSourcingTape(t *testing.T, darkSource bool, minutes int) (*Tap
 
 func TestRunAcceptanceCashKnobControlsCharterSourcingEndToEnd(t *testing.T) {
 	tape, from, to := simAcceptanceSourcingTape(t, false, 30)
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours", Variants: []Variant{{Name: "probe0", SourcingCashBPS: new(int64(0))}, {Name: "baseline", SourcingCashBPS: new(int64(200))}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "probe0", SourcingCashBPS: new(int64(0))}, {Name: "baseline", SourcingCashBPS: new(int64(200))}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +232,7 @@ func TestRunAcceptanceDarkArrivalSettlesFailedProbeWithCosts(t *testing.T) {
 	// game hours and the 24-minute reinspection cooldown: a re-probe of the
 	// dark source must never launch.
 	tape, from, to := simAcceptanceSourcingTape(t, true, 75)
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +276,7 @@ func TestRunAcceptanceRegionalFundingChargesFeeNotPrincipal(t *testing.T) {
 		rates.Data = []byte(`[{"from_region":"donor","to_region":"north","fee_bps":100}]`)
 		tape.Frames[i].Datasets["rates"] = rates
 	}
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +289,7 @@ func TestRunAcceptanceRegionalFundingChargesFeeNotPrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	world, err := newVariantWorld(tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours"}, Variant{Name: "baseline"}, view)
+	world, err := newVariantWorld(tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours"}, Variant{Name: "baseline"}, view)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +338,7 @@ func TestRunAcceptanceFixedFleetAndUpkeepAtEachGameDayBoundary(t *testing.T) {
 	ships.Data = data
 	future.Datasets["ships"] = ships
 	tape.Frames = []store.ReplayFrame{tape.Frames[0], future}
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: from.Add(time.Hour), Regen: 0, ReservePence: 75_000, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: from.Add(time.Hour), Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +364,7 @@ func TestRunAcceptanceInitialVoyageCargoArrivesIdenticallyForEveryVariant(t *tes
 		book.Data = []byte(`{"port_id":"a","visibility":"quay","books":[]}`)
 		tape.Frames[i].Datasets["books/a"] = book
 	}
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "i4", NextRungReceiptStress: true}, {Name: "probe0", SourcingCashBPS: new(int64(0))}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "i4", NextRungReceiptStress: true}, {Name: "probe0", SourcingCashBPS: new(int64(0))}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +390,7 @@ func TestRunAcceptanceLaterDestinationObservationChargesCurrentBerthDues(t *test
 	finalPort.Data = []byte(datasets["ports/b"])
 	tape.Frames[1].Datasets["ports/b"] = finalPort
 	tape.Frames = []store.ReplayFrame{tape.Frames[0], updated, tape.Frames[1]}
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +410,7 @@ func TestRunAcceptanceDeliveryPaysHighestNominalCharter(t *testing.T) {
 		row.Data = []byte(contracts)
 		tape.Frames[i].Datasets["contracts"] = row
 	}
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +447,7 @@ func TestRunAcceptanceDeliveryPrefersHigherBidOverPlannedCharter(t *testing.T) {
 	finalBook.Data = []byte(datasets["books/b"])
 	tape.Frames[1].Datasets["books/b"] = finalBook
 	tape.Frames = []store.ReplayFrame{tape.Frames[0], updated, tape.Frames[1]}
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -474,7 +475,7 @@ func TestRunAcceptanceCharterTaperUsesActualDeliveryAmount(t *testing.T) {
 		tape.Frames[i].Datasets["contracts"] = contracts
 	}
 	tape.Settlements = []store.Settlement{{ID: "seed", Kind: "charter", ProceedsPence: 4_990_000, CompletedAt: from}}
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +509,7 @@ func TestRunAcceptanceCharterTaperUsesOnlySettledCharterHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			world, err := newVariantWorld(tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours"}, Variant{Name: "baseline"}, view)
+			world, err := newVariantWorld(tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours"}, Variant{Name: "baseline"}, view)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -634,7 +635,7 @@ func TestRunAcceptanceRollingPrefixAugmentsWindowHistoryOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	world, err := newVariantWorld(tape, RunOptions{From: from, To: to, Regen: 0, ReservePence: 75_000, CompanyID: "ours"}, Variant{Name: "baseline"}, view)
+	world, err := newVariantWorld(tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours"}, Variant{Name: "baseline"}, view)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -720,7 +721,7 @@ func TestRunReloadsRollingPrefixWhenClockSlowsWithoutDoubleCounting(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	world, err := newVariantWorld(tape, RunOptions{From: from, To: to, ReservePence: 75_000, CompanyID: "ours"}, Variant{Name: "baseline"}, view)
+	world, err := newVariantWorld(tape, RunOptions{From: from, To: to, CompanyID: "ours"}, Variant{Name: "baseline"}, view)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -763,8 +764,7 @@ func TestRunMarksUnquotedSimulatedLaneUntrustedWithoutFailingSupply(t *testing.T
 	if err != nil || !recordedHazardAvailable(view) {
 		t.Fatalf("fixture must retain recorded quotes on other lanes: %v", err)
 	}
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, ReservePence: 75_000,
-		CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}}})
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("run unquoted source lane: %+v err=%v", rows, err)
 	}
@@ -836,8 +836,7 @@ func TestLoadTapeHoldoutKeepsPreTapeProbeForInWindowConversion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	world, err := newVariantWorld(tape, RunOptions{From: cutover, To: to, ReservePence: 75_000,
-		CompanyID: "company-backfill"}, Variant{Name: "baseline"}, view)
+	world, err := newVariantWorld(tape, RunOptions{From: cutover, To: to, CompanyID: "company-backfill"}, Variant{Name: "baseline"}, view)
 	if err != nil {
 		t.Fatal(err)
 	}

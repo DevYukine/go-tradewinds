@@ -814,8 +814,6 @@ type recoveryHarness struct {
 	api     *fakeGameAPI
 	dsn     string
 	schema  string
-	// marques enables MARQUES_ENABLED for runners built by this harness.
-	marques bool
 }
 
 func newRecoveryHarness(t *testing.T) *recoveryHarness {
@@ -843,7 +841,8 @@ func newRecoveryHarness(t *testing.T) *recoveryHarness {
 func (h *recoveryHarness) runner(apiKey string) *Runner {
 	h.t.Helper()
 	client := gameapi.New(h.api.server.URL, apiKey, zap.NewNop())
-	instance := New(client, h.db, h.account, zap.NewNop(), Options{Execute: true, MarquesEnabled: h.marques})
+	instance := New(client, h.db, h.account, zap.NewNop(), Options{Execute: true})
+	h.t.Cleanup(func() { instance.stopReplay(context.Background()) })
 	snapshot, err := h.db.Snapshot(h.ctx, h.account.ID)
 	if err != nil {
 		h.t.Fatalf("load persisted snapshot: %v", err)

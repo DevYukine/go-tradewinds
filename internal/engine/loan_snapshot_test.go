@@ -417,7 +417,7 @@ func TestLoanFinancialEventsFencePreEventFirstSend(t *testing.T) {
 		t.Run(eventType, func(t *testing.T) {
 			h := newRecoveryHarness(t)
 			h.api.setVaultBalance("north", 500_000)
-			h.api.setVaultBalance("south", 100_000)
+			h.api.setVaultBalance("south", 150_000)
 			h.seedLaneProofs()
 			runner := h.runner(primaryTestKey)
 			stream := interceptEventStream(t, h.api, nil, 2)

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func installExcludedHullCatalog(h *recoveryHarness, category string) {
@@ -52,7 +53,7 @@ func TestExcludedOwnedHullStillProtectsUpkeepBeforeRefit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if required["north"] < runner.opts.ReservePence+3*want {
+	if required["north"] < max(int64(100_000), 3*want) {
 		t.Fatalf("protected home bills omitted the excluded hull: %+v upkeep=%d", required, want)
 	}
 	ship := harnessShip(t, runner, recoveryShipBlastoise)
@@ -164,7 +165,7 @@ func TestExcludedRegionalAndUnknownHullBillsDoNotFreezeTrading(t *testing.T) {
 				})
 				runner := h.runner(primaryTestKey)
 				// Isolate existing trading from independently priced new hulls.
-				runner.opts.CapacityPaybackDays = 0
+				runner.snapshot["_capacity_growth_paused_until"] = encode(time.Now().Add(time.Hour))
 				loanCapacityRefresh(t, h, runner)
 				tons := hold
 				if tons == 0 {
@@ -187,7 +188,7 @@ func TestExcludedRegionalAndUnknownHullBillsDoNotFreezeTrading(t *testing.T) {
 					t.Fatalf("missing class facts did not produce a finite conservative bill: got=%d want-at-least=%d", upkeep, expected)
 				}
 				required, err := runner.treasuryReserves(h.ctx)
-				if err != nil || required["north"] < runner.opts.ReservePence+3*upkeep {
+				if err != nil || required["north"] < max(int64(100_000), 3*upkeep) {
 					t.Fatalf("conservative bill was not reserved: reserves=%v err=%v", required, err)
 				}
 				h.api.setVaultBalance("north", required["north"]+200_000)

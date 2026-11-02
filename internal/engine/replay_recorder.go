@@ -21,13 +21,16 @@ const (
 )
 
 var replayPassRunnerKeys = []string{
-	"_ship_idle", "_book_observed", "_book_refresh", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_marque_active", "_underwriting_pending", "_competition", "_revenue_calibration", "_charter_proceeds", "_route_phase", "_game_version",
+	"_ship_idle", "_book_observed", "_quay_book_memory", "_book_drift", "_hazard_quotes", "_marque_pending", "_marque_active", "_underwriting_pending", "_competition", "_revenue_calibration", "_charter_proceeds", "_route_phase", "_game_version",
 }
 
 var replaySweepRunnerKeys = []string{
 	"_capacity_savings_target", "_capacity_savings_expired", "_capacity_growth_port", "_expansion_agents",
 	"_sourcing_probe_history", "_growth_build_backoffs", "_capacity_financing_backoffs", "_capacity_growth_paused_until", "_ship_losses",
+	"_growth_hazard_backoffs",
+	"_passenger_fare_summary_hour",
 	"_player_loan_backoffs", "_player_loan_fallback", "_mortgage_retry_at",
+	"_america_flagship", "_commission_refusals",
 }
 
 var (
@@ -82,7 +85,7 @@ type replayRecorder struct {
 }
 
 func (r *Runner) startReplay(ctx context.Context) *replayRecorder {
-	if r.opts.ReplayRetentionDays == 0 || r.db == nil {
+	if r.db == nil {
 		return nil
 	}
 	if r.replay != nil {
@@ -472,10 +475,6 @@ func (r *Runner) flushReplay(ctx context.Context, at time.Time) {
 			case "_underwriting_pending":
 				if len(data) == 0 {
 					data = encode(underwritingPending{})
-				}
-			case "_book_refresh":
-				if len(data) == 0 {
-					data = encode(bookRefreshState{})
 				}
 			}
 			if len(data) != 0 || key == "_competition" {

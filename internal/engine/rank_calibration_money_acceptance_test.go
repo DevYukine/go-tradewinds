@@ -28,7 +28,7 @@ func TestMoneyCalibrationAppliesToRevenueNotCostsAndRecordsBasis(t *testing.T) {
 			in := moneyInput(t, moneyTime("2026-10-28T11:00:00Z"), "canvas_sails", 6000, 10_000, 1, 30)
 			in = moneySnapshotInput(in, map[string]json.RawMessage{
 				"world_events":         json.RawMessage(`[]`),
-				"_revenue_calibration": encode(map[string]int64{"depth": bps, "retained": 9000, "contract": 10000}),
+				"_revenue_calibration": encode(revenueCalibrationFixture(bps, bps)),
 			})
 			plan := moneySpot(t, in, "canvas_sails")
 			if !plan.Accepted || plan.Economics.RevenuePence != bps || plan.Economics.PurchasePence != 6000 || plan.Economics.CustomsPence != 1 || plan.Economics.ExpectedNetPence != bps-6001 {
@@ -41,16 +41,17 @@ func TestMoneyCalibrationAppliesToRevenueNotCostsAndRecordsBasis(t *testing.T) {
 	}
 }
 
-func TestMoneyCalibrationDefaultsToTodayAndDoesNotCrossRevenueBases(t *testing.T) {
+func TestMoneyCalibrationSparsePriorAndFixedContractSeparation(t *testing.T) {
 	in := moneyInput(t, moneyTime("2026-10-28T11:00:00Z"), "canvas_sails", 6000, 10_000, 1, 30)
+	in.RevenueCalibration.Cells = nil
 	plan := moneySpot(t, moneySnapshotInput(in, map[string]json.RawMessage{"world_events": json.RawMessage(`[]`)}), "canvas_sails")
-	if !plan.Accepted || plan.Economics.RevenuePence != 10_000 || plan.Economics.ExpectedNetPence != 3999 || moneyCalibrationBPS(t, plan.Economics) != 10000 {
-		t.Fatalf("today's uncalibrated non-event data must remain at 10000 bps: %+v", plan)
+	if !plan.Accepted || plan.Economics.RevenuePence != 10000 || plan.Economics.ExpectedNetPence != 3999 || moneyCalibrationBPS(t, plan.Economics) != 10000 {
+		t.Fatalf("unmeasured market receipts must stay neutral until measured evidence exists: %+v", plan)
 	}
 	in.Contracts = []Contract{sourcingFixture[Contract](t, `{"id":"money-calibration-charter","contract_type":"charter","origin_port_id":"hamburg","commodity_id":"canvas_sails","remaining_quantity":1,"quantity_required":1,"reward_per_ton_pence":10000,"status":"open","is_public":true}`)}
 	in = moneySnapshotInput(in, map[string]json.RawMessage{
 		"world_events":         json.RawMessage(`[]`),
-		"_revenue_calibration": encode(map[string]int64{"depth": 9000, "retained": 9100, "contract": 10000}),
+		"_revenue_calibration": encode(struct{}{}),
 	})
 	for _, candidate := range PlanVoyages(in) {
 		if candidate.Kind == "charter" {
@@ -202,6 +203,7 @@ func TestMoneyRankDecisionsPersistContinuationExplanation(t *testing.T) {
 	}
 	runner.snapshot["zones"], runner.snapshot["world_events"] = encode(in.Zones), json.RawMessage(`[]`)
 	runner.snapshot["_quay_book_memory"] = encode(in.QuayBookMemory)
+	runner.snapshot["_revenue_calibration"] = encode(in.RevenueCalibration)
 	runner.stateCache = AccountState{
 		Catalog: in.Catalog, Clock: in.Clock, Ships: in.Fleet, Markets: in.Markets, Ports: in.Ports,
 		Routes: in.Routes, Contracts: in.Contracts, HazardQuotes: in.HazardQuotes, HomePortID: "amsterdam",

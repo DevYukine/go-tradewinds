@@ -69,23 +69,8 @@ func addFundingFees(plan Plan, fees int64) Plan {
 	plan.Economics.NetPencePerGameDay = float64(plan.Economics.ExpectedNetPence) / plan.Economics.GameDays
 	refreshPlanRank(&plan)
 	remainingNet := plan.Economics.ExpectedNetPence + plan.sunkFundingFeesPence
-	if remainingNet < 0 || remainingNet == 0 && plan.sunkFundingFeesPence == 0 {
-		return reject(plan, "non-positive destination contribution after measured funding fees")
-	}
-	if plan.playerBidStress && remainingNet-plan.Economics.PriceUncertaintyStressPence <= 0 {
-		return reject(plan, "player bid lot is not net-positive at the stressed gossip NPC bid after funding fees")
-	}
-	if plan.EventPriceStress && remainingNet-plan.Economics.PriceUncertaintyStressPence < 0 {
-		return reject(plan, "market event price does not cover the 25% revenue stress after funding fees")
-	}
-	if plan.Economics.RevenueBasis == "retained" && remainingNet-plan.Economics.PriceUncertaintyStressPence <= 0 {
-		return reject(plan, "retained quay book lot is not net-positive after price uncertainty stress and funding fees")
-	}
-	if reason := minimumMarginRejection(plan); reason != "" {
+	if reason := admissionRejection(plan, remainingNet); reason != "" {
 		return reject(plan, reason)
-	}
-	if plan.nextRungReceiptStress && remainingNet-plan.Economics.PriceUncertaintyStressPence <= 0 {
-		return reject(plan, "spot lot is not net-positive at the next NPC bid rung after funding fees")
 	}
 	return plan
 }
@@ -272,8 +257,7 @@ func (r *Runner) incomeProcurementQuote(ctx context.Context, ship ShipState, dat
 	}
 	// FeesPence contains actual funding receipts, not transferred principal
 	// or a modeled estimate. Repricing records them without charging them again.
-	quote := quoteIncomePlan(input, data.Plan, data.FeesPence)
-	return quote, nil
+	return quoteIncomePlan(input, data.Plan, data.FeesPence), nil
 }
 
 func (r *Runner) refreshIncomeProcurement(ctx context.Context, ship ShipState, mission *store.Mission, data *missionData) (bool, bool, error) {
@@ -397,16 +381,15 @@ func (r *Runner) incomeActionReady(ctx context.Context, ship ShipState, data *mi
 		}
 		needed, err := GrossRemittance(required[request.To]-recipient, rate.FeeBPS)
 		if err != nil || request.Gross > needed {
-			return errors.New("new income remittance exceeds the current opportunity's funding deficit")
+			return errors.New("new income remittance exceeds the current opportunity")
 		}
 		fee := request.Gross/10_000*rate.FeeBPS + request.Gross%10_000*rate.FeeBPS/10_000
 		net := request.Gross - fee
 		if recipient > math.MaxInt64-net {
 			return errors.New("new income remittance exceeds checked recipient cash bounds")
 		}
-		// A staged request may remain a useful partial transfer as berth dues
-		// accrue. Price its actual fee first, then fund the remaining deficits;
-		// a differently split transfer must not inherit the old fee estimate.
+		// Crown rates conservatively price this unsent transfer. Bank-draft
+		// savings become actual paid fees only from the validated receipt.
 		projected := clonePence(input.Balances)
 		projected[request.From] -= request.Gross
 		projected[request.To] += net

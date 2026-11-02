@@ -16,7 +16,7 @@ import (
 const failedCatalogueProbeCooldown = 24 * time.Hour
 const sourcingConversionWindow = 7 * 24 * time.Hour
 const sourcingBudgetGameDays = 60
-const sourcingProbeHistoryVersion = 3
+const sourcingProbeHistoryVersion = 4
 const sourcingConversionLedgerLimit = 200
 
 // SourcingBudgetWindow is the live exploration accounting horizon in real time.
@@ -62,25 +62,27 @@ type probeShipHistory struct {
 
 type scoutPortHistory struct {
 	CompletedAt     time.Time `json:"completed_at"`
+	ConvertedAt     time.Time `json:"converted_at,omitempty"`
 	LastDepartureAt time.Time `json:"last_departure_at"`
 }
 
 // Persist bounded outcomes and rolling money evidence. A version change rebuilds
 // from accounting and retained departures, never an old policy allowance.
 type sourcingProbeHistory struct {
-	Version            int                           `json:"version"`
-	Cursor             store.ProbeHistoryCursor      `json:"cursor"`
-	Sources            map[string]probeSourceHistory `json:"sources"`
-	Ships              map[string]probeShipHistory   `json:"ships"`
-	ScoutFailures      int                           `json:"scout_failures,omitempty"`
-	ScoutResetAt       time.Time                     `json:"scout_reset_at,omitempty"`
-	ScoutPorts         map[string]scoutPortHistory   `json:"scout_ports,omitempty"`
-	BudgetAsOf         time.Time                     `json:"budget_as_of"`
-	BudgetWindowStart  time.Time                     `json:"budget_window_start"`
-	ConversionNetPence int64                         `json:"conversion_net_pence"`
-	ProbeExpensePence  int64                         `json:"probe_expense_pence"`
-	ProbeCostsUnknown  bool                          `json:"probe_costs_unknown"`
-	Conversions        []probeConversion             `json:"conversions,omitempty"`
+	Version                 int                           `json:"version"`
+	Cursor                  store.ProbeHistoryCursor      `json:"cursor"`
+	Sources                 map[string]probeSourceHistory `json:"sources"`
+	Ships                   map[string]probeShipHistory   `json:"ships"`
+	ScoutPorts              map[string]scoutPortHistory   `json:"scout_ports,omitempty"`
+	BudgetAsOf              time.Time                     `json:"budget_as_of"`
+	BudgetWindowStart       time.Time                     `json:"budget_window_start"`
+	ConversionNetPence      int64                         `json:"conversion_net_pence"`
+	ProbeExpensePence       int64                         `json:"probe_expense_pence"`
+	ProbeCostsUnknown       bool                          `json:"probe_costs_unknown"`
+	ScoutExpensePence       int64                         `json:"scout_expense_pence"`
+	ScoutCostsUnknown       bool                          `json:"scout_costs_unknown"`
+	ScoutConversionNetPence int64                         `json:"scout_conversion_net_pence"`
+	Conversions             []probeConversion             `json:"conversions,omitempty"`
 }
 
 type sourcingHistoryCache struct {
@@ -163,11 +165,6 @@ func (h *sourcingProbeHistory) settlement(row store.Settlement, idle map[string]
 			port.CompletedAt = probe.At
 		}
 		h.ScoutPorts[probe.Source] = port
-		// A completed scout is unconverted until an actual laden departure
-		// from a scouted port. Idle time cannot replenish this fleet cap.
-		if probe.At.After(h.ScoutResetAt) {
-			h.ScoutFailures = min(2, h.ScoutFailures+1)
-		}
 	}
 	if row.ProbeOutcome == store.ProbeOutcomeFailed {
 		h.failedProbe(&ship, probe, idle[row.ShipID])
@@ -203,9 +200,8 @@ func (h *sourcingProbeHistory) departure(shipID, source string, at time.Time, la
 			h.ScoutPorts = make(map[string]scoutPortHistory)
 		}
 		port := h.ScoutPorts[source]
-		if laden && port.CompletedAt.After(h.ScoutResetAt) && at.After(port.CompletedAt) {
-			h.ScoutFailures = 0
-			h.ScoutResetAt = at
+		if laden && at.After(port.CompletedAt) {
+			port.ConvertedAt = at
 		}
 		if at.After(port.LastDepartureAt) {
 			port.LastDepartureAt = at
@@ -238,6 +234,7 @@ func (r *Runner) readProbeOutcomes(ctx context.Context, input PlanningInput) (so
 		}
 	}
 	if history.Version != sourcingProbeHistoryVersion {
+		delete(r.snapshot, "_book_refresh")
 		history = sourcingProbeHistory{Version: sourcingProbeHistoryVersion}
 	}
 	if history.Sources == nil {
@@ -354,19 +351,31 @@ func (h *sourcingProbeHistory) rollingBudget(rows []store.Settlement, now time.T
 	h.ConversionNetPence, h.ProbeExpensePence = 0, 0
 	h.ProbeCostsUnknown = false
 	h.Conversions = nil
-	probes := make(map[string][]time.Time)
+	h.ScoutExpensePence, h.ScoutCostsUnknown, h.ScoutConversionNetPence = 0, false, 0
+	type budgetProbe struct {
+		at     time.Time
+		shipID string
+		scout  bool
+	}
+	probes := make(map[string][]budgetProbe)
 	for _, row := range rows {
 		if row.Kind != "relocation" || row.CompletedAt.IsZero() || row.CompletedAt.After(now) {
 			continue
 		}
+		scout := strings.HasSuffix(row.Lane, "|scout")
 		if row.Origin != row.Destination && row.Destination != "" {
-			probes[row.Destination] = append(probes[row.Destination], row.CompletedAt)
+			probes[row.Destination] = append(probes[row.Destination], budgetProbe{at: row.CompletedAt, shipID: row.ShipID, scout: scout})
 		}
-		if strings.HasSuffix(row.Lane, "|scout") || row.CompletedAt.Before(h.BudgetWindowStart) {
+		if scout && !row.CompletedAt.After(now.Add(-24*time.Hour)) ||
+			!scout && row.CompletedAt.Before(h.BudgetWindowStart) {
 			continue
 		}
 		if !row.CostsKnown {
-			h.ProbeCostsUnknown = true
+			if scout {
+				h.ScoutCostsUnknown = true
+			} else {
+				h.ProbeCostsUnknown = true
+			}
 			continue
 		}
 		expense := int64(0)
@@ -380,10 +389,20 @@ func (h *sourcingProbeHistory) rollingBudget(rows []store.Settlement, now time.T
 				expense += cost
 			}
 		}
-		if expense < 0 || expense > math.MaxInt64-h.ProbeExpensePence {
+		if expense < 0 {
 			return fmt.Errorf("rolling exploration expense exceeds integer-pence bounds")
 		}
-		h.ProbeExpensePence += expense
+		if scout {
+			if expense > math.MaxInt64-h.ScoutExpensePence {
+				return fmt.Errorf("daily scout expense exceeds integer-pence bounds")
+			}
+			h.ScoutExpensePence += expense
+		} else {
+			if expense > math.MaxInt64-h.ProbeExpensePence {
+				return fmt.Errorf("rolling exploration expense exceeds integer-pence bounds")
+			}
+			h.ProbeExpensePence += expense
+		}
 	}
 	for _, row := range rows {
 		switch row.Kind {
@@ -392,13 +411,19 @@ func (h *sourcingProbeHistory) rollingBudget(rows []store.Settlement, now time.T
 			continue
 		}
 		if !row.CostsKnown || row.QuantityTons <= 0 || row.StartedAt.IsZero() || row.CompletedAt.IsZero() ||
-			row.CompletedAt.Before(row.StartedAt) || row.CompletedAt.Before(h.BudgetWindowStart) || row.CompletedAt.After(now) {
+			row.CompletedAt.Before(row.StartedAt) || row.CompletedAt.Before(h.BudgetWindowStart) && !row.CompletedAt.After(now.Add(-24*time.Hour)) || row.CompletedAt.After(now) {
 			continue
 		}
 		var probeAt time.Time
-		for _, at := range probes[row.Origin] {
+		var scoutProbe budgetProbe
+		for _, candidate := range probes[row.Origin] {
+			at := candidate.at
 			if !at.After(row.StartedAt) && row.StartedAt.Sub(at) <= sourcingConversionWindow && at.After(probeAt) {
 				probeAt = at
+			}
+			if candidate.shipID != "" && candidate.shipID == row.ShipID && !at.After(row.StartedAt) &&
+				row.StartedAt.Sub(at) <= sourcingConversionWindow && at.After(scoutProbe.at) {
+				scoutProbe = candidate
 			}
 		}
 		if probeAt.IsZero() {
@@ -411,12 +436,20 @@ func (h *sourcingProbeHistory) rollingBudget(rows []store.Settlement, now time.T
 			}
 			net -= cost
 		}
-		if net > 0 && h.ConversionNetPence > math.MaxInt64-net || net < 0 && h.ConversionNetPence < math.MinInt64-net {
-			return fmt.Errorf("rolling conversion net exceeds integer-pence bounds")
+		if !row.CompletedAt.Before(h.BudgetWindowStart) {
+			if net > 0 && h.ConversionNetPence > math.MaxInt64-net || net < 0 && h.ConversionNetPence < math.MinInt64-net {
+				return fmt.Errorf("rolling conversion net exceeds integer-pence bounds")
+			}
+			h.ConversionNetPence += net
+			h.Conversions = append(h.Conversions, probeConversion{SettlementID: row.ID, Source: row.Origin, Commodity: row.Commodity,
+				ProbeAt: probeAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, NetPence: net})
 		}
-		h.ConversionNetPence += net
-		h.Conversions = append(h.Conversions, probeConversion{SettlementID: row.ID, Source: row.Origin, Commodity: row.Commodity,
-			ProbeAt: probeAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, NetPence: net})
+		if scoutProbe.scout && row.CompletedAt.After(now.Add(-24*time.Hour)) {
+			if net > 0 && h.ScoutConversionNetPence > math.MaxInt64-net || net < 0 && h.ScoutConversionNetPence < math.MinInt64-net {
+				return fmt.Errorf("daily scout conversion net exceeds integer-pence bounds")
+			}
+			h.ScoutConversionNetPence += net
+		}
 	}
 	sort.Slice(h.Conversions, func(i, j int) bool {
 		if h.Conversions[i].CompletedAt.Equal(h.Conversions[j].CompletedAt) {
@@ -457,7 +490,7 @@ func (r *Runner) loadRollingSourcingBudget(ctx context.Context, input *PlanningI
 	if input.Now.IsZero() || input.Clock.Calendar.TimeScale <= 0 {
 		return fmt.Errorf("rolling exploration budget requires a current positive game clock")
 	}
-	window := SourcingBudgetWindow(input.Clock.Calendar.TimeScale)
+	window := max(SourcingBudgetWindow(input.Clock.Calendar.TimeScale), 24*time.Hour)
 	rows, err := r.db.SourcingBudgetSettlements(ctx, r.account.ID, input.Now.Add(-window), input.Now)
 	if err != nil {
 		return err

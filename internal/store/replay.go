@@ -1166,22 +1166,119 @@ func (s *Store) ReplayPlans(ctx context.Context, accountID string) ([]ReplayPlan
 	}
 	plans := make([]ReplayPlan, 0, len(rows))
 	for _, row := range rows {
-		plain, err := s.decrypt(row.PlanCipher, privateAAD("replay_plans", "plan", row.AccountID, replayPlanIdentity(row)))
+		plan, err := s.decodeReplayPlan(row)
 		if err != nil {
 			return nil, err
 		}
-		if len(plain) > MaxReplayPlaintextBytes {
-			return nil, ErrResponseTooLarge
-		}
-		var private replayPlanPrivate
-		if err := json.Unmarshal(plain, &private); err != nil {
-			return nil, err
-		}
-		plans = append(plans, ReplayPlan{ID: row.ID, AccountID: accountID, MissionID: row.MissionID,
-			Generation: row.Generation, Sequence: row.Sequence, ObservedAt: row.ObservedAt,
-			ShipID: private.ShipID, Phase: private.Phase, Plan: private.Plan, Policy: private.Policy, Revision: private.Revision})
+		plans = append(plans, plan)
 	}
 	return plans, nil
+}
+
+func (s *Store) decodeReplayPlan(row replayPlanRow) (ReplayPlan, error) {
+	plain, err := s.decrypt(row.PlanCipher, privateAAD("replay_plans", "plan", row.AccountID, replayPlanIdentity(row)))
+	if err != nil {
+		return ReplayPlan{}, err
+	}
+	if len(plain) > MaxReplayPlaintextBytes {
+		return ReplayPlan{}, ErrResponseTooLarge
+	}
+	var private replayPlanPrivate
+	if err := json.Unmarshal(plain, &private); err != nil {
+		return ReplayPlan{}, err
+	}
+	return ReplayPlan{ID: row.ID, AccountID: row.AccountID, MissionID: row.MissionID,
+		Generation: row.Generation, Sequence: row.Sequence, ObservedAt: row.ObservedAt,
+		ShipID: private.ShipID, Phase: private.Phase, Plan: private.Plan, Policy: private.Policy, Revision: private.Revision}, nil
+}
+
+const replayPlanMetadataBytesSQL = `octet_length(account_id)::bigint + octet_length(mission_id) +
+	COALESCE(octet_length(generation), 0) + COALESCE(octet_length(digest), 0)`
+
+// Plans retain full economics and policy for each reprice. Keep their bounded
+// cohort larger than action history so one retained week remains measurable.
+const maxReplayPlanEvidenceRetainedBytes int64 = 32 << 20
+
+// ReplayPlansForMissions retains only the selected settlement missions, in
+// observation/ID order. Evidence limits reject the whole result, not a prefix.
+func (s *Store) ReplayPlansForMissions(ctx context.Context, accountID string, missionIDs []string) ([]ReplayPlan, error) {
+	if !validID(accountID) {
+		return nil, fmt.Errorf("replay plan account: %w", ErrInvalidInput)
+	}
+	var budget replayEvidenceBudget
+	var retainedBytes int64
+	if len(missionIDs) > MaxReplayEvidenceRows {
+		return nil, fmt.Errorf("replay plan mission count: %w", ErrReplayEvidenceBudget)
+	}
+	for _, mission := range missionIDs {
+		if !validID(mission) {
+			return nil, fmt.Errorf("replay plan mission: %w", ErrInvalidInput)
+		}
+	}
+	plans := make([]ReplayPlan, 0)
+	if len(missionIDs) == 0 {
+		return plans, nil
+	}
+	type planMeta struct {
+		ID              int64
+		MissionID       string
+		At              time.Time
+		CiphertextBytes int64
+		MetadataBytes   int64
+	}
+	page := make([]planMeta, 0, replayEvidencePageSize)
+	var cursor planMeta
+	maxCiphertext := MaxReplayPlaintextBytes + s.aead.NonceSize() + s.aead.Overhead()
+	for {
+		db, cancel := s.query(ctx)
+		query := db.Model(&replayPlanRow{}).
+			Select("id, observed_at AS at, CASE WHEN ("+replayPlanMetadataBytesSQL+") <= ? THEN mission_id ELSE '' END AS mission_id, "+
+				"octet_length(plan_cipher)::bigint AS ciphertext_bytes, "+replayPlanMetadataBytesSQL+" AS metadata_bytes", MaxReplayEvidenceMetadataBytes).
+			Where("account_id = ? AND mission_id IN ?", accountID, missionIDs)
+		if cursor.ID != 0 {
+			query = query.Where("(observed_at, id) > (?, ?)", cursor.At, cursor.ID)
+		}
+		page = page[:0]
+		err := query.Order("observed_at, id").Limit(replayEvidencePageSize).Find(&page).Error
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("read replay plan metadata: %w", databaseError{cause: err})
+		}
+		if err := budget.addRows(len(page), "replay plans"); err != nil {
+			return nil, err
+		}
+		for _, meta := range page {
+			if meta.CiphertextBytes > int64(maxCiphertext) || meta.MetadataBytes > MaxReplayEvidenceMetadataBytes {
+				return nil, fmt.Errorf("replay plan row exceeds the guarded read budget: %w", ErrReplayEvidenceBudget)
+			}
+			rowBytes := meta.CiphertextBytes + meta.MetadataBytes + replayEvidenceRowOverhead
+			if rowBytes > maxReplayPlanEvidenceRetainedBytes-retainedBytes {
+				return nil, fmt.Errorf("replay plans exceed the %d-byte retained evidence budget: %w", maxReplayPlanEvidenceRetainedBytes, ErrReplayEvidenceBudget)
+			}
+			retainedBytes += rowBytes
+			db, cancel := s.query(ctx)
+			var row replayPlanRow
+			err := db.Where("account_id = ? AND mission_id = ? AND id = ?", accountID, meta.MissionID, meta.ID).
+				Where("octet_length(plan_cipher) <= ? AND ("+replayPlanMetadataBytesSQL+") <= ?", maxCiphertext, MaxReplayEvidenceMetadataBytes).
+				Take(&row).Error
+			cancel()
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, fmt.Errorf("replay plan row changed or exceeds the guarded read budget: %w", ErrReplayEvidenceBudget)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("read replay plan: %w", databaseError{cause: err})
+			}
+			plan, err := s.decodeReplayPlan(row)
+			if err != nil {
+				return nil, err
+			}
+			plans = append(plans, plan)
+		}
+		if len(page) < replayEvidencePageSize {
+			return plans, nil
+		}
+		cursor = page[len(page)-1]
+	}
 }
 
 func (s *Store) LinkReplayAction(ctx context.Context, link ReplayActionLink) error {
@@ -1269,7 +1366,7 @@ func (s *Store) ReplayActionLinks(ctx context.Context, accountID string, from, t
 
 func (s *Store) PruneReplay(ctx context.Context, retention time.Duration, capBytes int64) (time.Time, error) {
 	if retention <= 0 {
-		return time.Time{}, nil
+		return time.Time{}, errors.New("replay retention must be positive")
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()

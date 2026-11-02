@@ -17,7 +17,7 @@ import (
 
 const marqueQuoteInterval = 30 * time.Minute
 
-const marqueUnrecoveredLimitPence int64 = 100_000
+const marqueUnrecoveredLimitPence int64 = 300_000
 
 var errMarqueQuoteIncreased = errors.New("marque cost increased above its admitted quote")
 
@@ -59,16 +59,19 @@ func (quote *MarqueQuote) UnmarshalJSON(data []byte) error {
 }
 
 type MarqueInput struct {
-	Quote            MarqueQuote
-	Exposed          bool
-	InForceCount     int
-	InForceCostPence int64
-	LiquidPence      int64
-	// LosingCount counts expired marques whose prize was below their own cost.
-	LosingCount       int
+	Quote             MarqueQuote
+	Exposed           bool
+	InForceCount      int
+	InForceCostPence  int64
+	LiquidPence       int64
 	ExpiredPrizePence int64
 	ExpiredCostPence  int64
 	Stopped           bool
+	Now               time.Time
+	Backoffs          map[string]time.Time
+	BackoffBasis      map[string]marqueBackoffBasis
+	ZoneReturns       map[string]marqueReturns
+	GlobalReturns     marqueReturns
 }
 
 type MarqueDecision struct {
@@ -77,13 +80,19 @@ type MarqueDecision struct {
 }
 
 func EvaluateMarque(in MarqueInput) MarqueDecision {
+	zone := in.ZoneReturns[in.Quote.SeaZoneID]
+	until := in.Backoffs[in.Quote.SeaZoneID]
 	switch {
 	case in.Exposed:
 		return MarqueDecision{Reason: "zone exposes our fleet or an underwritten voyage to our own privateers"}
-	case in.Stopped || in.LosingCount >= 3:
-		return MarqueDecision{Reason: "the marque pilot stopped permanently after three expired marques each returned less than their cost"}
+	case in.Stopped:
+		return MarqueDecision{Reason: "marque issuance is stopped by the manual owner kill-switch"}
 	case in.InForceCount > 0 || in.InForceCostPence > 0:
-		return MarqueDecision{Reason: "one marque is already active; the pilot cannot add another"}
+		return MarqueDecision{Reason: "one marque is already active; another issue must await its final prize"}
+	case in.Now.Before(until):
+		return MarqueDecision{Reason: "the zone remains in its seven-game-day marque backoff"}
+	case zone.Count >= 3 && zone.PrizePence < zone.CostPence && !sameMarqueReturns(in.BackoffBasis[in.Quote.SeaZoneID].Returns, zone):
+		return MarqueDecision{Reason: "the zone's rolling prize is below cost and requires a seven-game-day backoff before one probe"}
 	case in.Quote.FloorApplied:
 		return MarqueDecision{Reason: "the price floor, not measured traffic, sets this quote"}
 	case in.Quote.LadenPassagesPerDay < 1:
@@ -92,12 +101,15 @@ func EvaluateMarque(in MarqueInput) MarqueDecision {
 		return MarqueDecision{Reason: "the new marque would exceed the zone's 5,000 bps cap"}
 	case in.Quote.ExpectedNetPrizePence*2 < in.Quote.CostPence*3:
 		return MarqueDecision{Reason: "expected prize after the Admiral's tenth is below 1.5 times cost"}
+	case in.GlobalReturns.Count > 0 && in.GlobalReturns.PrizePence*100 < in.GlobalReturns.CostPence*105 &&
+		in.Quote.ExpectedNetPrizePence < in.Quote.CostPence*2:
+		return MarqueDecision{Reason: "global rolling prize is below 1.05 times cost; re-entry requires a fresh quote at least twice cost"}
 	case in.ExpiredCostPence-in.ExpiredPrizePence+in.Quote.CostPence > marqueUnrecoveredLimitPence:
-		return MarqueDecision{Reason: "lifetime unrecovered marque spending including this issue would exceed 100,000 pence"}
+		return MarqueDecision{Reason: "lifetime unrecovered marque spending including this issue would exceed 300,000 pence"}
 	case in.Quote.CostPence*20 > in.LiquidPence:
 		return MarqueDecision{Reason: "one marque would spend more than five percent of liquid funds"}
 	default:
-		return MarqueDecision{Accepted: true, Reason: "unexposed measured traffic supports the expected prize within liquidity and realized-return limits"}
+		return MarqueDecision{Accepted: true, Reason: "unexposed measured traffic supports the expected prize within liquidity and rolling-return limits"}
 	}
 }
 
@@ -138,9 +150,69 @@ func (marque *letterOfMarque) UnmarshalJSON(data []byte) error {
 }
 
 type marqueOutcome struct {
-	ID         string `json:"id"`
-	CostPence  int64  `json:"cost_pence"`
-	PrizePence int64  `json:"prize_pence"`
+	ID         string    `json:"id"`
+	SeaZoneID  string    `json:"sea_zone_id"`
+	ExpiredAt  time.Time `json:"expired_at"`
+	CostPence  int64     `json:"cost_pence"`
+	PrizePence int64     `json:"prize_pence"`
+}
+
+type marqueReturns struct {
+	Count        int
+	CostPence    int64
+	PrizePence   int64
+	LatestExpiry time.Time
+}
+
+type marqueBackoffBasis struct {
+	Returns marqueReturns `json:"returns"`
+	Until   time.Time     `json:"until"`
+}
+
+func sameMarqueReturns(a, b marqueReturns) bool {
+	return a.Count == b.Count && a.CostPence == b.CostPence &&
+		a.PrizePence == b.PrizePence && a.LatestExpiry.Equal(b.LatestExpiry)
+}
+
+func rollingMarqueReturns(outcomes map[string]marqueOutcome, now time.Time, scale int64) (map[string]marqueReturns, marqueReturns) {
+	zones := make(map[string]marqueReturns)
+	var global marqueReturns
+	if now.IsZero() || scale <= 0 {
+		return zones, global
+	}
+	zoneStart, globalStart := now.Add(-gameDuration(30, scale)), now.Add(-gameDuration(60, scale))
+	recent := make([]marqueOutcome, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		// Legacy outcomes retain their lifetime accounting until REST supplies
+		// the expiry and zone needed to place them in a rolling window.
+		if !outcome.ExpiredAt.IsZero() && !outcome.ExpiredAt.Before(globalStart) && !outcome.ExpiredAt.After(now) {
+			recent = append(recent, outcome)
+		}
+	}
+	slices.SortFunc(recent, func(a, b marqueOutcome) int {
+		if order := b.ExpiredAt.Compare(a.ExpiredAt); order != 0 {
+			return order
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	for _, outcome := range recent {
+		if global.Count < 10 {
+			global.Count++
+			global.CostPence += outcome.CostPence
+			global.PrizePence += outcome.PrizePence
+			global.LatestExpiry = maxTime(global.LatestExpiry, outcome.ExpiredAt)
+		}
+		zone := zones[outcome.SeaZoneID]
+		if outcome.SeaZoneID == "" || outcome.ExpiredAt.Before(zoneStart) || zone.Count >= 6 {
+			continue
+		}
+		zone.Count++
+		zone.CostPence += outcome.CostPence
+		zone.PrizePence += outcome.PrizePence
+		zone.LatestExpiry = maxTime(zone.LatestExpiry, outcome.ExpiredAt)
+		zones[outcome.SeaZoneID] = zone
+	}
+	return zones, global
 }
 
 type marqueIntent struct {
@@ -344,7 +416,10 @@ func marqueExposure(state AccountState, plans map[string][]Plan, positions []sto
 func mergeMarqueOutcomes(outcomes map[string]marqueOutcome, marques []letterOfMarque, now time.Time) {
 	for _, marque := range marques {
 		if !now.Before(marque.ExpiresAt) {
-			outcomes[marque.ID] = marqueOutcome{ID: marque.ID, CostPence: marque.CostPence, PrizePence: marque.PrizeEarnedPence}
+			outcomes[marque.ID] = marqueOutcome{
+				ID: marque.ID, SeaZoneID: marque.SeaZoneID, ExpiredAt: marque.ExpiresAt,
+				CostPence: marque.CostPence, PrizePence: marque.PrizeEarnedPence,
+			}
 		}
 	}
 }
@@ -365,11 +440,15 @@ func (r *Runner) recordMarques(ctx context.Context) error {
 		}
 	}
 	now, _, validClock := r.serverBounds()
+	scale := r.stateCache.Clock.Calendar.TimeScale
+	observedAt := r.stateCache.Clock.RealUTC.Add(r.meta["marques"].AttemptedAt.Sub(r.meta["clock"].UpdatedAt))
 	marques := decode[[]letterOfMarque](r.snapshot, "marques")
 	if validClock && r.fresh("marques") {
-		mergeMarqueOutcomes(outcomes, marques, now)
+		// A pre-expiry list cannot prove the final prize, even if processing
+		// finishes later. Translate its request start into server time.
+		mergeMarqueOutcomes(outcomes, marques, observedAt)
 		for _, marque := range marques {
-			if now.Before(marque.ExpiresAt) {
+			if observedAt.Before(marque.ExpiresAt) {
 				active[marque.ID] = marque
 			} else {
 				delete(active, marque.ID)
@@ -377,7 +456,6 @@ func (r *Runner) recordMarques(ctx context.Context) error {
 		}
 	}
 	var expiredCost, expiredPrize int64
-	losing := 0
 	for id, outcome := range outcomes {
 		if outcome.ID != id || outcome.CostPence < 0 || outcome.CostPence > maximumPence ||
 			outcome.PrizePence < 0 || outcome.PrizePence > maximumPence {
@@ -385,9 +463,6 @@ func (r *Runner) recordMarques(ctx context.Context) error {
 		}
 		expiredCost = growthCashTotal(expiredCost, outcome.CostPence)
 		expiredPrize = growthCashTotal(expiredPrize, outcome.PrizePence)
-		if outcome.PrizePence < outcome.CostPence {
-			losing++
-		}
 	}
 	for id, marque := range active {
 		if marque.ID != id || !validMarque(marque) {
@@ -397,10 +472,41 @@ func (r *Runner) recordMarques(ctx context.Context) error {
 	if expiredCost > maximumPence || expiredPrize > maximumPence {
 		return errors.New("marque history exceeds the supported money range")
 	}
-	// Owner rule: three individually losing marques over the lifetime end the
-	// pilot. The stop is permanent even if later list corrections change prizes.
-	if losing >= 3 {
-		r.snapshot["_marque_stopped"] = encode(true)
+	if validClock && scale > 0 {
+		zones, _ := rollingMarqueReturns(outcomes, now, scale)
+		backoffs := decode[map[string]time.Time](r.snapshot, "_marque_backoffs")
+		basis := decode[map[string]marqueBackoffBasis](r.snapshot, "_marque_backoff_basis")
+		for zone, previous := range basis {
+			result := zones[zone]
+			if result.Count >= 3 && result.PrizePence < result.CostPence {
+				continue
+			}
+			if backoffs[zone].Equal(previous.Until) {
+				delete(backoffs, zone)
+			}
+			delete(basis, zone)
+		}
+		for zone, result := range zones {
+			if result.Count < 3 || result.PrizePence >= result.CostPence ||
+				sameMarqueReturns(basis[zone].Returns, result) {
+				continue
+			}
+			if backoffs == nil {
+				backoffs = make(map[string]time.Time)
+			}
+			if basis == nil {
+				basis = make(map[string]marqueBackoffBasis)
+			}
+			until := now.Add(gameDuration(7, scale))
+			backoffs[zone] = maxTime(backoffs[zone], until)
+			basis[zone] = marqueBackoffBasis{Returns: result, Until: until}
+		}
+		if backoffs != nil {
+			r.snapshot["_marque_backoffs"] = encode(backoffs)
+		}
+		if basis != nil {
+			r.snapshot["_marque_backoff_basis"] = encode(basis)
+		}
 	}
 	r.snapshot["_marque_outcomes"] = encode(outcomes)
 	r.snapshot["_marque_active"] = encode(active)
@@ -481,8 +587,8 @@ func (r *Runner) marqueEvidence(ctx context.Context) (MarqueInput, map[string]bo
 		}
 	}
 	now, _, valid := r.serverBounds()
-	if !valid {
-		return input, nil, errors.New("marque evaluation requires authoritative server time")
+	if !valid || r.stateCache.Clock.Calendar.TimeScale <= 0 {
+		return input, nil, errors.New("marque evaluation requires authoritative server time and game-time scale")
 	}
 	active := decode[map[string]letterOfMarque](r.snapshot, "_marque_active")
 	marques := decode[[]letterOfMarque](r.snapshot, "marques")
@@ -504,13 +610,11 @@ func (r *Runner) marqueEvidence(ctx context.Context) (MarqueInput, map[string]bo
 		input.InForceCount++
 		input.InForceCostPence = growthCashTotal(input.InForceCostPence, marque.CostPence)
 	}
-	for id, outcome := range decode[map[string]marqueOutcome](r.snapshot, "_marque_outcomes") {
+	outcomes := decode[map[string]marqueOutcome](r.snapshot, "_marque_outcomes")
+	for id, outcome := range outcomes {
 		if outcome.ID != id || outcome.CostPence < 0 || outcome.CostPence > maximumPence ||
 			outcome.PrizePence < 0 || outcome.PrizePence > maximumPence {
 			return input, nil, errors.New("permanent marque outcomes contain invalid cost or prize evidence")
-		}
-		if outcome.PrizePence < outcome.CostPence {
-			input.LosingCount++
 		}
 		input.ExpiredCostPence = growthCashTotal(input.ExpiredCostPence, outcome.CostPence)
 		input.ExpiredPrizePence = growthCashTotal(input.ExpiredPrizePence, outcome.PrizePence)
@@ -519,6 +623,10 @@ func (r *Runner) marqueEvidence(ctx context.Context) (MarqueInput, map[string]bo
 	if input.InForceCostPence > maximumPence || input.ExpiredCostPence > maximumPence || input.ExpiredPrizePence > maximumPence {
 		return input, nil, errors.New("marque history exceeds the supported money range")
 	}
+	input.Now = now
+	input.Backoffs = decode[map[string]time.Time](r.snapshot, "_marque_backoffs")
+	input.BackoffBasis = decode[map[string]marqueBackoffBasis](r.snapshot, "_marque_backoff_basis")
+	input.ZoneReturns, input.GlobalReturns = rollingMarqueReturns(outcomes, now, r.stateCache.Clock.Calendar.TimeScale)
 	return input, exposed, nil
 }
 
@@ -559,9 +667,6 @@ func (r *Runner) marqueHomeFunds(ctx context.Context, self bool) (string, int64,
 }
 
 func (r *Runner) considerMarque(ctx context.Context) (bool, error) {
-	if !r.opts.MarquesEnabled {
-		return false, nil
-	}
 	target, err := r.liveCapacitySavingsTarget(ctx)
 	if err != nil {
 		return false, err
@@ -586,10 +691,9 @@ func (r *Runner) considerMarque(ctx context.Context) (bool, error) {
 	}
 	quotes := decode[map[string]MarqueQuote](r.snapshot, "marque_quotes")
 	var best *marqueIntent
-	backoffs := decode[map[string]time.Time](r.snapshot, "_marque_backoffs")
 	for _, zone := range r.stateCache.Catalog.SeaZones {
-		if until := backoffs[zone.ID]; time.Now().Before(until) {
-			r.wakeBy(until)
+		if until := input.Backoffs[zone.ID]; input.Now.Before(until) {
+			r.wakeAtServer(until, true)
 			continue
 		}
 		quote := quotes[zone.ID]
@@ -659,10 +763,6 @@ func (r *Runner) marquePreflight(ctx context.Context, data *missionData, request
 	if target.PortID != "" {
 		return errors.New(capacitySavingsReason)
 	}
-	// A persisted intent may predate the switch being turned off; never spend on it.
-	if !r.opts.MarquesEnabled {
-		return errors.New("marque issuance is disabled (MARQUES_ENABLED=false)")
-	}
 	if data.Marque == nil {
 		return errors.New("marque has no frozen admitted quote")
 	}
@@ -705,9 +805,6 @@ func (r *Runner) marquePreflight(ctx context.Context, data *missionData, request
 	if quote.CostPence > intent.Quote.CostPence {
 		return errMarqueQuoteIncreased
 	}
-	if until := decode[map[string]time.Time](r.snapshot, "_marque_backoffs")[quote.SeaZoneID]; time.Now().Before(until) {
-		return errors.New("marque zone remains in its six-real-hour refusal backoff")
-	}
 	input.Quote, input.Exposed = quote, exposed[quote.SeaZoneID]
 	if decision := EvaluateMarque(input); !decision.Accepted {
 		return fmt.Errorf("marque admission changed: %s", decision.Reason)
@@ -733,14 +830,13 @@ func (r *Runner) recordMarqueRefusal(ctx context.Context, data *missionData) err
 	if backoffs == nil {
 		backoffs = make(map[string]time.Time)
 	}
-	now := time.Now().UTC()
-	for zone, until := range backoffs {
-		if !now.Before(until) {
-			delete(backoffs, zone)
-		}
+	now, _, valid := r.serverBounds()
+	scale := r.stateCache.Clock.Calendar.TimeScale
+	if !valid || scale <= 0 {
+		return errors.New("marque refusal backoff requires authoritative server time and game-time scale")
 	}
 	zone := data.Marque.Quote.SeaZoneID
-	backoffs[zone] = maxTime(backoffs[zone], now.Add(6*time.Hour))
+	backoffs[zone] = maxTime(backoffs[zone], now.Add(gameDuration(7, scale)))
 	r.snapshot["_marque_backoffs"] = encode(backoffs)
 	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
 }

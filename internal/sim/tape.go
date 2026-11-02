@@ -31,6 +31,8 @@ type Tape struct {
 	Frames             []store.ReplayFrame
 	Actions            []store.Action
 	Settlements        []store.Settlement
+	Plans              []store.ReplayPlan
+	RevenueCalibration store.RevenueCalibrationModel
 	Links              []store.ReplayActionLink
 	AccountingSnapshot map[string]json.RawMessage
 	openFrames         func() *store.ReplayFrameReader
@@ -57,8 +59,21 @@ type probePrefixKey struct {
 }
 
 func LoadTape(ctx context.Context, db *store.Store, account string, from, to time.Time) (*Tape, error) {
+	return loadTape(ctx, db, account, from, to, false)
+}
+
+// LoadAccuracyTape loads only frame bounds, settlements and their captured plans.
+// Run and validation do not depend on replay-plan evidence or its budgets.
+func LoadAccuracyTape(ctx context.Context, db *store.Store, account string, from, to time.Time) (*Tape, error) {
+	return loadTape(ctx, db, account, from, to, true)
+}
+
+func loadTape(ctx context.Context, db *store.Store, account string, from, to time.Time, accuracy bool) (*Tape, error) {
 	if account == "" || !to.After(from) {
 		return nil, errors.New("invalid replay window")
+	}
+	if db == nil {
+		return &Tape{}, nil
 	}
 	first, last, err := db.ReplayFrameBounds(ctx, account, to)
 	if err != nil {
@@ -66,15 +81,6 @@ func LoadTape(ctx context.Context, db *store.Store, account string, from, to tim
 	}
 	tape := &Tape{first: first, last: last,
 		openFrames: func() *store.ReplayFrameReader { return db.NewReplayFrameReader(ctx, account, to) },
-		readCharterPrefix: func(since, before time.Time) (int64, error) {
-			return db.ReplayCharterProceedsBefore(ctx, account, since, before)
-		},
-		readProbePrefix: func(lanes []string, before time.Time) (map[string]time.Time, error) {
-			return db.ReplayProbeCompletionsBefore(ctx, account, lanes, before)
-		},
-		readSourcingPrefix: func(since, asOf time.Time) ([]store.Settlement, error) {
-			return db.ReplaySourcingBudgetBefore(ctx, account, since, from, asOf)
-		},
 	}
 	tape.Settlements, err = db.SettlementsBetween(ctx, account, from, to)
 	if err != nil {
@@ -87,6 +93,26 @@ func LoadTape(ctx context.Context, db *store.Store, account string, from, to tim
 			seenMissions[settlement.MissionID] = true
 			missions = append(missions, settlement.MissionID)
 		}
+	}
+	if accuracy {
+		tape.RevenueCalibration, err = db.RevenueCalibrationRegime(ctx, account)
+		if err != nil {
+			return nil, err
+		}
+		tape.Plans, err = db.ReplayPlansForMissions(ctx, account, missions)
+		if err != nil {
+			return nil, err
+		}
+		return tape, nil
+	}
+	tape.readCharterPrefix = func(since, before time.Time) (int64, error) {
+		return db.ReplayCharterProceedsBefore(ctx, account, since, before)
+	}
+	tape.readProbePrefix = func(lanes []string, before time.Time) (map[string]time.Time, error) {
+		return db.ReplayProbeCompletionsBefore(ctx, account, lanes, before)
+	}
+	tape.readSourcingPrefix = func(since, asOf time.Time) ([]store.Settlement, error) {
+		return db.ReplaySourcingBudgetBefore(ctx, account, since, from, asOf)
 	}
 	tape.Links, err = db.ReplayActionLinks(ctx, account, from, to, missions)
 	if err != nil {

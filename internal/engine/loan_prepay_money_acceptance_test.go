@@ -231,7 +231,7 @@ func moneyPrepayFixture(t *testing.T, owed []int64, surplus int64, mortgage bool
 	runner := h.runner(primaryTestKey)
 	loanCapacityRefresh(t, h, runner)
 	runner.stateCache.Clock.Calendar.TimeScale = 60
-	runner.opts.CapacityPaybackDays = 0 // No accepted capacity use of this test's cash.
+	runner.snapshot["_capacity_growth_paused_until"] = encode(time.Now().Add(time.Hour)) // No accepted capacity use of this test's cash.
 	protected, err := runner.treasuryReserves(h.ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +316,7 @@ func TestMoneyLoanPrepayBothGoldsmithsBalancesOnceAcrossRestart(t *testing.T) {
 	restarted := h.runner(primaryTestKey)
 	loanCapacityRefresh(t, h, restarted)
 	restarted.stateCache.Clock.Calendar.TimeScale = 60
-	restarted.opts.CapacityPaybackDays = 0
+	restarted.snapshot["_capacity_growth_paused_until"] = encode(time.Now().Add(time.Hour))
 	moneyLoanWork(t, h, restarted, 4)
 	api.mu.Lock()
 	defer api.mu.Unlock()
@@ -351,7 +351,7 @@ func TestMoneyLoanPrepayNeverPrepaysMortgage(t *testing.T) {
 
 func TestMoneyLoanPrepayYieldsToAcceptedCapacityCandidate(t *testing.T) {
 	h, runner, _, _ := moneyPrepayFixture(t, []int64{563_785}, 2_000_000, false)
-	runner.opts.CapacityPaybackDays = 420
+	delete(runner.snapshot, "_capacity_growth_paused_until")
 	if changed, err := runner.considerGrowth(h.ctx); err != nil || !changed {
 		t.Fatalf("accepted capacity candidate control: changed=%t err=%v holds=%v", changed, err, runner.holding)
 	}
@@ -367,7 +367,7 @@ func TestMoneyLoanPrepayYieldsToAcceptedCapacityCandidate(t *testing.T) {
 
 func TestMoneyLoanPrepayYieldsToLiveCheapHullSavingsTarget(t *testing.T) {
 	h, runner, _, _ := moneyPrepayFixture(t, []int64{563_785}, 563_785, false)
-	runner.opts.CapacityPaybackDays = 420
+	delete(runner.snapshot, "_capacity_growth_paused_until")
 	key := recoveryHomePort + "|hoy"
 	quote := runner.stateCache.Quotes[key]
 	quote.TotalCostPence = new(int64(2_000_000))

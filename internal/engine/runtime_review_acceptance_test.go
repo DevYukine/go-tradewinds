@@ -253,7 +253,7 @@ func berthedLaprasRow() map[string]any {
 func stageFundedGrowthBuild(t *testing.T, h *recoveryHarness) *Runner {
 	t.Helper()
 	h.api.setVaultBalance("north", 500_000)
-	h.api.setVaultBalance("south", 100_000)
+	h.api.setVaultBalance("south", 150_000)
 	h.seedLaneProofs()
 	runner := h.runner(primaryTestKey)
 	if _, err := h.tick(runner); err != nil {

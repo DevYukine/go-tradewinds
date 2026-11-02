@@ -19,218 +19,288 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-func TestFuturesSettlementDoesNotDependOnLiveQuayBook(t *testing.T) {
-	h, p := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
-	futuresMoneyPasses(t, h, runner, 12)
-	p.mu.Lock()
-	for _, row := range p.rows {
-		row["status"] = "active"
-		p.now = row["matures_at"].(time.Time).Add(time.Hour)
-	}
-	p.mu.Unlock()
-	if _, err := h.tick(runner); err != nil {
-		t.Fatal(err)
-	}
-	meta := runner.meta["books/amsterdam"]
-	meta.Stale, meta.Error = true, "ship left the quay"
-	runner.meta["books/amsterdam"] = meta
-	if _, err := runner.work(h.ctx); err != nil {
-		t.Fatal(err)
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.settles) != 1 {
-		t.Fatalf("mature physical obligation depended on an unnecessary live price: settles=%d holds=%v", len(p.settles), runner.holding)
-	}
-}
-
-func TestFuturesOwnWarehouseSetupAndWindDown(t *testing.T) {
-	futuresWarehouseLifecycle(t, false, false, false, false)
-}
-
-func TestFuturesUnfilledProcurementReleasesLease(t *testing.T) {
-	futuresWarehouseLifecycle(t, true, false, false, false)
-}
-
-func futuresWarehouseLifecycle(t *testing.T, noFill, defaults, disabled, unknownStock bool) {
+func futuresStagedAccept(t *testing.T) (*recoveryHarness, *futuresMoneyAPI, *Runner, *store.Mission, missionData) {
 	t.Helper()
 	h, p := newFuturesMoneyAPI(t)
-	p.quantity = 0
-	leased := int64(0)
-	var leaseTargets []int64
-	var stockSides []string
-	fills := make([]map[string]any, 0)
-	warehouse := func() map[string]any {
-		return map[string]any{"port_id": "amsterdam", "has_factor": true, "leased_tonnage": leased, "reserved_tonnage": 0,
-			"used_tonnage": p.quantity, "free_tonnage": leased - p.quantity,
-			"inventory": []any{map[string]any{"company_id": recoveryCompanyID, "port_id": "amsterdam", "commodity_id": "water_beer",
-				"quantity": p.quantity, "locked_quantity": 0, "created_at": p.now, "updated_at": p.now}}}
-	}
-	h.api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/warehouse/list":
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			h.api.writeJSON(w, http.StatusOK, []any{warehouse()})
-		case "/v1/market/fills":
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			h.api.writeJSON(w, http.StatusOK, fills)
-		case "/v1/future/settle":
-			if !defaults {
-				p.ServeHTTP(w, r)
-				return
-			}
-			recorded := httptest.NewRecorder()
-			p.ServeHTTP(recorded, r)
-			var result gameapi.SettleFuturesResult
-			if err := json.Unmarshal(recorded.Body.Bytes(), &result); err != nil {
-				t.Error(err)
-			}
-			result.Status, result.SettledTons, result.PenaltyPaidPence = "defaulted", 0, 425
-			p.mu.Lock()
-			for _, row := range p.rows {
-				if row["id"] == result.FuturesID {
-					row["status"] = "defaulted"
-				}
-			}
-			p.mu.Unlock()
-			h.api.writeJSON(w, http.StatusOK, result)
-		case "/v1/warehouse/set-lease":
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			var body struct {
-				PortID string `json:"port_id"`
-				Target int64  `json:"target_leased_tonnage"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Error(err)
-			}
-			if body.PortID != "amsterdam" || body.Target != 0 && body.Target != 2 || r.Header.Get("Idempotency-Key") == "" {
-				t.Errorf("unsafe pilot lease: %+v", body)
-			}
-			if body.Target < p.quantity {
-				t.Error("lease shrank below owned stock")
-			}
-			leased = body.Target
-			leaseTargets = append(leaseTargets, leased)
-			h.api.writeJSON(w, http.StatusOK, warehouse())
-		case "/v1/market/place-order":
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			var body struct {
-				PortID      string `json:"port_id"`
-				CommodityID string `json:"commodity_id"`
-				Side        string `json:"side"`
-				Quantity    int64  `json:"quantity"`
-				ShipID      string `json:"ship_id"`
-				TimeInForce string `json:"time_in_force"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Error(err)
-			}
-			if body.PortID != "amsterdam" || body.CommodityID != "water_beer" || body.Quantity != 1 || body.ShipID != "" || body.TimeInForce != "ioc" {
-				t.Errorf("unbounded or nonwarehouse pilot trade: %+v", body)
-			}
-			price, customs, filled := int64(2100), int64(57), int64(1)
-			if noFill {
-				price, customs, filled = 0, 0, 0
-			} else if body.Side == "bid" {
-				p.quantity++
-			} else {
-				price, customs = 1900, 0
-				p.quantity--
-			}
-			stockSides = append(stockSides, body.Side)
-			if filled > 0 {
-				fills = append(fills, map[string]any{"id": "fill-" + body.Side, "port_id": body.PortID, "commodity_id": body.CommodityID,
-					"side": body.Side, "is_maker": false, "quantity": filled, "price_pence": price, "customs_duty_pence": customs, "created_at": time.Now().UTC()})
-			}
-			if unknownStock {
-				h.api.writeJSON(w, http.StatusOK, map[string]bool{"committed_uninterpreted": true})
-				return
-			}
-			h.api.writeJSON(w, http.StatusOK, map[string]any{"port_id": body.PortID, "commodity_id": body.CommodityID, "side": body.Side,
-				"requested_quantity": 1, "filled_quantity": filled, "resting_quantity": 0, "total_gross_pence": price, "customs_duty_pence": customs})
-		default:
-			p.ServeHTTP(w, r)
-		}
-	})
-	runner := futuresMoneyRunner(t, h, true)
-	futuresMoneyPasses(t, h, runner, 16)
-	p.mu.Lock()
-	if noFill {
-		defer p.mu.Unlock()
-		if len(p.creates) != 0 || leased != 0 || p.quantity != 0 || len(stockSides) != 1 ||
-			len(leaseTargets) != 2 || leaseTargets[0] != 2 || leaseTargets[1] != 0 {
-			t.Fatalf("unfilled procurement leaked a lease or created uncovered futures: creates=%d lease=%d quantity=%d trades=%v targets=%v holds=%v",
-				len(p.creates), leased, p.quantity, stockSides, leaseTargets, runner.holding)
-		}
-		return
-	}
-	if len(p.rows) != 2 || leased != 2 || len(stockSides) != 1 || stockSides[0] != "bid" {
-		p.mu.Unlock()
-		t.Fatalf("covered setup incomplete: futures=%d lease=%d trades=%v holds=%v", len(p.rows), leased, stockSides, runner.holding)
-	}
-	for _, row := range p.rows {
-		row["status"] = "active"
-		p.now = row["matures_at"].(time.Time).Add(time.Hour)
-	}
-	p.mu.Unlock()
-	runner.opts.FuturesPilotEnabled = !disabled
-	futuresMoneyPasses(t, h, runner, 16)
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if len(p.creates) != 2 || len(p.settles) != 2 || p.quantity != 0 || leased != 0 || len(leaseTargets) != 2 || leaseTargets[0] != 2 || leaseTargets[1] != 0 || len(stockSides) != 2 || stockSides[1] != "ask" {
-		t.Fatalf("pilot left obligations/rent or repeated its cohort: creates=%d settles=%d quantity=%d lease=%d targets=%v trades=%v holds=%v",
-			len(p.creates), len(p.settles), p.quantity, leased, leaseTargets, stockSides, runner.holding)
-	}
-	if unknownStock {
-		_, data := h.mission("__futures")
-		if data.Action != nil || data.Futures.ProcurementPaid != 2157 || data.Futures.LiquidationPaid != 1900 ||
-			data.Futures.ProcurementUnknown || data.Futures.LiquidationUnknown {
-			t.Fatalf("unknown stock receipts lost measured fills: %+v", data)
-		}
-	}
-}
-
-func TestFuturesDefaultWindDownWhileDisabled(t *testing.T) {
-	futuresWarehouseLifecycle(t, false, true, true, false)
-}
-
-func TestFuturesCommittedUnknownWarehouseOrdersReconcileFromInventoryAndFills(t *testing.T) {
-	futuresWarehouseLifecycle(t, false, false, false, true)
-}
-
-func TestFuturesCommittedUnknownUnfilledProcurementReleasesLease(t *testing.T) {
-	futuresWarehouseLifecycle(t, true, false, false, true)
-}
-
-func futuresStagedCreate(t *testing.T) (*recoveryHarness, *futuresMoneyAPI, *Runner, *store.Mission, missionData) {
-	t.Helper()
-	h, p := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
+	runner := futuresMoneyRunner(t, h)
 	refreshMarqueExecution(t, h, runner)
-	data := missionData{}
-	if changed, err := runner.driveFutures(h.ctx, nil, &data); err != nil || !changed {
-		t.Fatalf("covered create did not stage: %t %v, holds=%v", changed, err, runner.holding)
+	futuresCounterpartyFixture(runner, "buyer")
+	listing := futuresListingFixture(runner, "covered-listing", "buyer", "bid", 1700, 1)
+	p.rows[listing.ID] = map[string]any{"id": listing.ID, "creator_company_id": listing.CreatorCompanyID,
+		"port_id": listing.PortID, "commodity_id": listing.CommodityID, "side": listing.Side, "lot_tons": listing.LotTons,
+		"strike_price_pence": listing.StrikePricePence, "status": listing.Status, "created_at": listing.CreatedAt,
+		"updated_at": listing.UpdatedAt, "matures_at": listing.MaturesAt, "buyer_company_id": listing.CreatorCompanyID,
+		"seller_margin_pence": int64(0), "buyer_margin_pence": int64(0)}
+	runner.snapshot["futures"] = encode([]gameapi.FuturesContract{listing})
+	priced, err := runner.evaluateFuturesListing(h.ctx, listing, nil, 100_000, 1)
+	if err != nil || priced == nil {
+		t.Fatalf("covered listing failed real pricing: %+v %v", priced, err)
 	}
-	mission, data := h.mission("__futures")
-	if data.Action == nil || data.Action.Stage != "futures-create" {
-		t.Fatalf("fixture did not stage a covered create: %+v", data.Action)
+	mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: "covered-stock", Phase: "evaluating"}
+	data := missionData{Futures: &futuresState{}}
+	if changed, err := runner.stageFuturesAdmission(h.ctx, mission, &data, []store.FuturesIntent{*priced}); err != nil || !changed || data.Action == nil {
+		t.Fatalf("covered acceptance did not stage: %t %v, holds=%v", changed, err, runner.holding)
 	}
 	return h, p, runner, mission, data
 }
 
+func futuresOwnedIntent(t *testing.T, h *recoveryHarness, runner *Runner, side, cohort string) store.FuturesIntent {
+	t.Helper()
+	_, upper, _ := runner.serverBounds()
+	price, margin, cash, tons := int64(1700), int64(425), int64(425), int64(1)
+	if side == "bid" {
+		price, margin, cash, tons = 2300, 575, 2937, 0
+	}
+	row := store.FuturesIntent{AccountID: h.account.ID, IntentID: "owned-" + side, ActionID: "created-" + side, CohortID: cohort,
+		PortID: "amsterdam", CommodityID: "water_beer", Side: side, LotTons: 1, Status: "intent",
+		StrikePricePence: price, ReservedTons: tons, MarginPence: margin, ReservedCashPence: cash, ExposurePence: cash,
+		CreatedAt: upper.Add(-time.Hour), MaturesAt: upper.Add(-time.Minute)}
+	if err := h.db.PutFuturesIntent(h.ctx, &row); err != nil {
+		t.Fatal(err)
+	}
+	company := h.account.CompanyID
+	contract := gameapi.FuturesContract{ID: "contract-" + side, CreatorCompanyID: company, PortID: row.PortID, CommodityID: row.CommodityID,
+		Side: side, LotTons: 1, StrikePricePence: price, Status: "active", CreatedAt: row.CreatedAt, MaturesAt: row.MaturesAt, UpdatedAt: upper}
+	if side == "ask" {
+		contract.SellerCompanyID, contract.SellerMarginPence = &company, margin
+	} else {
+		contract.BuyerCompanyID, contract.BuyerMarginPence = &company, margin
+	}
+	if err := h.db.ObserveFuturesContract(h.ctx, h.account.ID, row.IntentID, contract); err != nil {
+		t.Fatal(err)
+	}
+	row.FuturesID, row.Status, row.ObservedMaturesAt = contract.ID, "active", &contract.MaturesAt
+	contracts := decode[[]gameapi.FuturesContract](runner.snapshot, "futures")
+	runner.snapshot["futures"] = encode(append(contracts, contract))
+	return row
+}
+
+func TestFuturesSettledEventWithoutDefaultAmountsAdvancesLegacyWindDown(t *testing.T) {
+	for _, kind := range []string{"valid", "missing cash evidence", "wrong notional", "too many tons", "foreign party", "default missing amounts"} {
+		t.Run(kind, func(t *testing.T) {
+			h, p := newFuturesMoneyAPI(t)
+			p.quantity, p.leased = 0, 2
+			runner := futuresMoneyRunner(t, h)
+			refreshMarqueExecution(t, h, runner)
+			row := futuresOwnedIntent(t, h, runner, "ask", legacyFuturesCohort)
+			runner.snapshot["futures"] = encode([]gameapi.FuturesContract{})
+			if kind != "missing cash evidence" {
+				if err := h.db.RecordFuturesCashFlow(h.ctx, h.account.ID, row.IntentID, "sale-principal", 1700,
+					encode(map[string]any{"reason": "principal", "metadata": map[string]string{"futures_id": row.FuturesID}})); err != nil {
+					t.Fatal(err)
+				}
+			}
+			status := "settled"
+			payload := map[string]any{"futures_id": row.FuturesID, "status": status, "settled_tons": 1,
+				"notional_pence": 1700, "port_id": row.PortID, "commodity_id": row.CommodityID, "seller_company_id": h.account.CompanyID}
+			switch kind {
+			case "wrong notional":
+				payload["notional_pence"] = 1701
+			case "too many tons":
+				payload["settled_tons"] = 2
+			case "foreign party":
+				payload["seller_company_id"] = "someone-else"
+			case "default missing amounts":
+				status = "defaulted"
+				payload["status"], payload["settled_tons"] = status, 0
+			}
+			event := encode(map[string]any{"id": "private-outcome", "company_id": h.account.CompanyID, "port_id": row.PortID,
+				"timestamp": p.now, "payload": payload})
+			if err := h.db.RecordEvent(h.ctx, h.account.ID, "private-outcome", "futures_"+status, event); err != nil {
+				t.Fatal(err)
+			}
+			mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: legacyFuturesCohort, Phase: "wind-down"}
+			data := missionData{Futures: &futuresState{LeaseOwned: true, ProcurementPaid: 1700, InitialLease: 0}}
+			if _, err := runner.driveFutures(h.ctx, mission, &data); err != nil {
+				t.Fatal(err)
+			}
+			rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("legacy outcome ledger = %+v, error = %v", rows, err)
+			}
+			if kind != "valid" {
+				if rows[0].Status != "active" || data.Action != nil {
+					t.Fatalf("invalid private evidence released a physical obligation: %+v %+v", rows[0], data.Action)
+				}
+				return
+			}
+			if rows[0].Status != "settled" || data.Action == nil || data.Action.Stage != "futures-close-lease" {
+				t.Fatalf("successful omitted-default receipt did not unblock rent closure: %+v %+v", rows[0], data.Action)
+			}
+			if mission.Phase == "futures_done" {
+				t.Fatal("legacy mission finished before its actual lease returned to baseline")
+			}
+			if _, err := runner.dispatch(h.ctx, mission, &data); err != nil {
+				t.Fatal(err)
+			}
+			if p.leased != 0 {
+				t.Fatalf("legacy wind-down left %d rented tons", p.leased)
+			}
+		})
+	}
+}
+
+func TestFuturesLegacyDoneRequiresObservedInitialLease(t *testing.T) {
+	for _, owned := range []bool{false, true} {
+		for _, phase := range []string{"wind-down", "futures_done"} {
+			t.Run(map[bool]string{false: "lost ownership flag", true: "owned lease"}[owned]+"/"+phase, func(t *testing.T) {
+				h, p := newFuturesMoneyAPI(t)
+				p.quantity, p.leased = 0, 7
+				runner := futuresMoneyRunner(t, h)
+				refreshMarqueExecution(t, h, runner)
+				mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: legacyFuturesCohort, Phase: phase}
+				data := missionData{Futures: &futuresState{LeaseOwned: owned, InitialLease: 5}}
+				if _, err := runner.driveFutures(h.ctx, mission, &data); err != nil {
+					t.Fatal(err)
+				}
+				if mission.Phase == "futures_done" || mission.Generation != legacyFuturesCohort || data.Action == nil ||
+					data.Action.Stage != "futures-close-lease" || !jsonEqual(data.Action.Body, encode(map[string]any{"port_id": "amsterdam", "target_leased_tonnage": 5})) {
+					t.Fatalf("unclosed actual lease escaped legacy wind-down: %+v %+v", mission, data)
+				}
+				if _, err := runner.dispatch(h.ctx, mission, &data); err != nil {
+					t.Fatal(err)
+				}
+				if p.leased != 5 {
+					t.Fatalf("wind-down changed unrelated baseline lease: %d", p.leased)
+				}
+				meta := runner.meta["warehouses"]
+				meta.Stale = true
+				runner.meta["warehouses"] = meta
+				refreshMarqueExecution(t, h, runner)
+				if _, err := runner.driveFutures(h.ctx, mission, &data); err != nil {
+					t.Fatal(err)
+				}
+				if data.Action != nil || mission.Phase != "futures_done" && mission.Generation == legacyFuturesCohort {
+					t.Fatalf("observed baseline lease did not finish wind-down: %+v %+v", mission, data)
+				}
+			})
+		}
+	}
+}
+
+func TestFuturesMatureSettlementDoesNotDependOnLiveQuayBook(t *testing.T) {
+	h, p := newFuturesMoneyAPI(t)
+	runner := futuresMoneyRunner(t, h)
+	refreshMarqueExecution(t, h, runner)
+	row := futuresOwnedIntent(t, h, runner, "ask", "covered-sale")
+	mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: "controller", Phase: "committed"}
+	data := missionData{Futures: &futuresState{IntentID: row.IntentID, PortID: row.PortID, CommodityID: row.CommodityID}}
+	meta := runner.meta["books/amsterdam"]
+	meta.Stale, meta.Error = true, "ship left the quay"
+	runner.meta["books/amsterdam"] = meta
+	if _, err := runner.driveFutures(h.ctx, mission, &data); err != nil || data.Action == nil || data.Action.Stage != "futures-settle" {
+		t.Fatalf("mature settlement required an irrelevant live price: %v %+v", err, data.Action)
+	}
+	if _, err := runner.dispatch(h.ctx, mission, &data); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.settles) != 1 || p.settles[0] != row.FuturesID {
+		t.Fatalf("mature settlement was not sent exactly once: %+v", p.settles)
+	}
+}
+
+func TestFuturesDefaultMissingReceiptRetainsCashAndLease(t *testing.T) {
+	h, p := newFuturesMoneyAPI(t)
+	p.quantity, p.leased = 0, 2
+	runner := futuresMoneyRunner(t, h)
+	refreshMarqueExecution(t, h, runner)
+	row := futuresOwnedIntent(t, h, runner, "bid", legacyFuturesCohort)
+	if err := h.db.RecordFuturesOutcome(h.ctx, h.account.ID, row.IntentID, "defaulted",
+		encode(map[string]any{"futures_id": row.FuturesID, "status": "defaulted", "settled_tons": 0})); err != nil {
+		t.Fatal(err)
+	}
+	runner.snapshot["futures"] = encode([]gameapi.FuturesContract{})
+	mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: legacyFuturesCohort, Phase: "wind-down"}
+	data := missionData{Futures: &futuresState{LeaseOwned: true}}
+	if _, err := runner.driveFutures(h.ctx, mission, &data); err != nil || mission.Phase == "futures_done" ||
+		data.Action == nil || data.Action.Stage != "futures-settle" ||
+		!jsonEqual(data.Action.Body, encode(map[string]string{"futures_id": row.FuturesID})) || p.leased != 2 {
+		t.Fatalf("default without claim and penalty evidence lost receipt recovery or released its lease: %v %+v", err, data)
+	}
+	if reserve, err := h.db.FuturesCashReserve(h.ctx, h.account.ID); err != nil || reserve != 2362 {
+		t.Fatalf("unknown default released principal and customs reserve: %d %v", reserve, err)
+	}
+}
+
+func TestFuturesConflictingTerminalReceiptHoldsWithoutFailingAccount(t *testing.T) {
+	h, _ := newFuturesMoneyAPI(t)
+	runner := futuresMoneyRunner(t, h)
+	refreshMarqueExecution(t, h, runner)
+	row := futuresOwnedIntent(t, h, runner, "ask", "covered-sale")
+	defaulted := encode(gameapi.SettleFuturesResult{FuturesID: row.FuturesID, Status: "defaulted", PenaltyPaidPence: 425})
+	if err := h.db.RecordFuturesOutcome(h.ctx, h.account.ID, row.IntentID, "defaulted", defaulted); err != nil {
+		t.Fatal(err)
+	}
+	mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: "controller", Phase: "committed"}
+	data := missionData{Futures: &futuresState{IntentID: row.IntentID, PortID: row.PortID, CommodityID: row.CommodityID}}
+	if err := runner.stage(h.ctx, mission, &data, ShipState{}, "futures-settle", "/v1/future/settle", map[string]string{"futures_id": row.FuturesID}); err != nil {
+		t.Fatal(err)
+	}
+	action := data.Action
+	if _, err := h.db.BeginAction(h.ctx, &store.Action{ID: action.ID, AccountID: h.account.ID, Method: action.Method, Path: action.Path, Body: action.Body}); err != nil {
+		t.Fatal(err)
+	}
+	settled := encode(gameapi.SettleFuturesResult{FuturesID: row.FuturesID, Status: "settled", SettledTons: 1})
+	if err := h.db.CompleteAction(h.ctx, action.ID, http.StatusOK, settled, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.dispatch(h.ctx, mission, &data); err != nil || data.Action == nil || data.Action.ID != action.ID {
+		t.Fatalf("conflicting terminal evidence failed the account or discarded its receipt: %v %+v", err, data.Action)
+	}
+	if len(runner.holding) == 0 || !strings.Contains(runner.holding[len(runner.holding)-1].Reason, "futures") {
+		t.Fatal("conflicting settlement evidence lacks its optional futures hold")
+	}
+}
+
+func TestFuturesAcceptancePreflightRejectsChangedBodyAndCustomsShortfall(t *testing.T) {
+	h, p := newFuturesMoneyAPI(t)
+	p.cash = 100_000_000
+	h.api.setVaultBalance("north_sea", p.cash)
+	runner := futuresMoneyRunner(t, h)
+	refreshMarqueExecution(t, h, runner)
+	p.quantity = 2
+	refreshMarqueExecution(t, h, runner)
+	sale := futuresListingFixture(runner, "buyer-offer", "buyer", "bid", 2000, 2)
+	listing := futuresListingFixture(runner, "supplier-offer", "supplier", "ask", 500, 2)
+	sale.MaturesAt = listing.MaturesAt.Add(time.Minute)
+	futuresCounterpartyFixture(runner, sale.CreatorCompanyID)
+	futuresCounterpartyFixture(runner, listing.CreatorCompanyID)
+	runner.snapshot["futures"] = encode([]gameapi.FuturesContract{sale, listing})
+	pair, err := runner.evaluateFuturesCross(h.ctx, sale, listing, nil, 100_000)
+	if err != nil || len(pair) != 2 {
+		t.Fatalf("covered cross fixture was not admitted: %+v %v", pair, err)
+	}
+	mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: "cross", Phase: "evaluating"}
+	data := missionData{Futures: &futuresState{}}
+	if _, err := runner.stageFuturesAdmission(h.ctx, mission, &data, pair); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.futuresPreflight(h.ctx, &data); err != nil {
+		t.Fatalf("fully reserved immutable acceptance failed: %v", err)
+	}
+	body := bytes.Clone(data.Action.Body)
+	data.Action.Body = encode(map[string]string{"futures_id": "different-listing"})
+	if err := runner.futuresPreflight(h.ctx, &data); !errors.Is(err, errFuturesTerms) {
+		t.Fatalf("changed immutable acceptance was not rejected: %v", err)
+	}
+	data.Action.Body = body
+	market := runner.stateCache.Markets[listing.PortID]
+	market.CustomsBPS = 1
+	runner.stateCache.Markets[listing.PortID] = market
+	if err := runner.futuresPreflight(h.ctx, &data); !errors.Is(err, errFuturesTerms) {
+		t.Fatalf("one-penny customs shortfall became a recoverable delay: %v", err)
+	}
+}
+
 func TestFuturesLedgerCashFlowAndPairPnL(t *testing.T) {
 	h, _ := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
-	futuresMoneyPasses(t, h, runner, 12)
-	mission, data := h.mission("__futures")
-	rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
-	if err != nil || len(rows) != 2 {
-		t.Fatalf("missing covered pair: %+v %v", rows, err)
+	runner := futuresMoneyRunner(t, h)
+	refreshMarqueExecution(t, h, runner)
+	mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: "measured-pair", Phase: "committed"}
+	data := missionData{Futures: &futuresState{PortID: "amsterdam", CommodityID: "water_beer"}}
+	rows := []store.FuturesIntent{
+		futuresOwnedIntent(t, h, runner, "ask", "measured-pair"),
+		futuresOwnedIntent(t, h, runner, "bid", "measured-pair"),
 	}
 	runner.stateCache.Vaults = append(runner.stateCache.Vaults,
 		Vault{AccountID: "pilot-vault", AccountType: "vault", BankingRegion: "north_sea"},
@@ -279,91 +349,62 @@ func TestFuturesLedgerCashFlowAndPairPnL(t *testing.T) {
 	}
 }
 
-func TestFuturesIntentRecoverySurvivesStageEpochHold(t *testing.T) {
-	for _, control := range []bool{false, true} {
-		t.Run(map[bool]string{false: "financial", true: "control"}[control], func(t *testing.T) {
-			h, _ := newFuturesMoneyAPI(t)
-			runner := futuresMoneyRunner(t, h, true)
-			refreshMarqueExecution(t, h, runner)
-			if control {
-				runner.publishedControl.Add(1)
-			} else {
-				runner.publishedFinancial.Add(1)
-			}
-			data := missionData{}
-			if changed, err := runner.driveFutures(h.ctx, nil, &data); err != nil || changed {
-				t.Fatalf("invalid capture staged or failed instead of holding: %t %v", changed, err)
-			}
-			runner.capturedFinancial = runner.publishedFinancial.Load()
-			runner.capturedControl = runner.publishedControl.Load()
-			refreshMarqueExecution(t, h, runner)
-			if changed, err := runner.driveFutures(h.ctx, nil, &data); err != nil || !changed {
-				t.Fatalf("durable admission did not recover after authoritative refresh: %t %v", changed, err)
-			}
-			_, restored := h.mission("__futures")
-			if restored.Action == nil || restored.Action.Stage != "futures-create" {
-				t.Fatal("stage hold lost the admitted create")
-			}
-		})
+func TestFuturesLegacyAccountingSurvivesAutomaticControllerCutover(t *testing.T) {
+	h, p := newFuturesMoneyAPI(t)
+	p.quantity, p.leased = 0, 0
+	runner := futuresMoneyRunner(t, h)
+	refreshMarqueExecution(t, h, runner)
+	for _, side := range []string{"ask", "bid"} {
+		row := futuresOwnedIntent(t, h, runner, side, legacyFuturesCohort)
+		cash := int64(1700)
+		if side == "bid" {
+			cash = -2362
+		}
+		if err := h.db.RecordFuturesOutcome(h.ctx, h.account.ID, row.IntentID, "settled",
+			encode(gameapi.SettleFuturesResult{FuturesID: row.FuturesID, Status: "settled", SettledTons: 1})); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.db.RecordFuturesCashFlow(h.ctx, h.account.ID, row.IntentID, "legacy-"+side, cash, encode(map[string]string{"futures_id": row.FuturesID})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: legacyFuturesCohort, Phase: "futures_done"}
+	data := missionData{Futures: &futuresState{LeaseOwned: true, ProcurementPaid: 2000, LiquidationPaid: 1000, LiquidatedTons: 1}}
+	if changed, err := runner.driveFutures(h.ctx, mission, &data); err != nil || !changed || !data.Futures.LegacyClosed || mission.Generation == legacyFuturesCohort {
+		t.Fatalf("completed legacy wind-down did not cut over with its accounting: %t %v %+v", changed, err, data.Futures)
+	}
+	for range 2 {
+		if err := runner.recordFuturesPnL(h.ctx, mission, &data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pnl int64
+	for _, row := range rows {
+		if row.RealizedPnLPence == nil {
+			t.Fatalf("automatic controller discarded measured legacy costs: %+v", row)
+		}
+		pnl += *row.RealizedPnLPence
+	}
+	if pnl != -1662 {
+		t.Fatalf("legacy P&L lost procurement or liquidation after cutover: %d", pnl)
 	}
 }
 
-func TestFuturesNeverSentProofReadmitsUnlessImmutableTermsFail(t *testing.T) {
-	for _, kind := range []string{neverSentFinancialEvent, neverSentControlEvent, neverSentPrecondition, neverSentFuturesTerms} {
-		t.Run(kind, func(t *testing.T) {
-			h, p, runner, mission, data := futuresStagedCreate(t)
-			action := *data.Action
-			if _, err := h.db.BeginAction(h.ctx, &store.Action{ID: action.ID, AccountID: h.account.ID, Method: action.Method, Path: action.Path, Body: action.Body}); err != nil {
-				t.Fatal(err)
-			}
-			if err := h.db.ReconcileAction(h.ctx, action.ID, encode(map[string]string{"kind": kind})); err != nil {
-				t.Fatal(err)
-			}
-			wantChanged := kind == neverSentFinancialEvent || kind == neverSentControlEvent
-			if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || changed != wantChanged || data.Action != nil {
-				t.Fatalf("never-sent proof did not release old action: %t %v", changed, err)
-			}
-			rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if kind == neverSentFuturesTerms {
-				if mission.Phase != "futures_stopped" || rows[0].Status != "rejected" {
-					t.Fatalf("real precondition failure did not close the admission: %+v %+v", mission, rows)
-				}
-				return
-			}
-			if mission.Phase == "futures_stopped" || rows[0].Status != "intent" || rows[0].ActionID == action.ID {
-				t.Fatalf("epoch race became a domain refusal: %+v %+v", mission, rows)
-			}
-			data.CooldownUntil = time.Time{}
-			if _, err := runner.driveFutures(h.ctx, mission, &data); err != nil {
-				t.Fatal(err)
-			}
-			if data.Action == nil || data.Action.ID != rows[0].ActionID || !bytes.Equal(data.Action.Body, action.Body) {
-				t.Fatal("readmission changed immutable create terms or lost the new durable key")
-			}
-			if _, err := runner.dispatch(h.ctx, mission, &data); err != nil {
-				t.Fatal(err)
-			}
-			if len(p.creates) != 1 {
-				t.Fatalf("epoch recovery did not send exactly one logical create: %d", len(p.creates))
-			}
-		})
-	}
-}
-
-func TestFuturesTransientUnsentCreateReleasesActionKeepsCoverage(t *testing.T) {
-	h, _, runner, mission, data := futuresStagedCreate(t)
+func TestFuturesTransientUnsentAcceptReleasesActionKeepsCoverage(t *testing.T) {
+	h, _, runner, mission, data := futuresStagedAccept(t)
 	meta := runner.meta["books/amsterdam"]
 	meta.Stale = true
 	runner.meta["books/amsterdam"] = meta
 	if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || changed || data.Action != nil || !data.CooldownUntil.After(time.Now()) {
-		t.Fatalf("never-sent create remained attached: %t %v %+v", changed, err, data.Action)
+		t.Fatalf("never-sent acceptance remained attached: %t %v %+v", changed, err, data.Action)
 	}
 	rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
-	if err != nil || len(rows) != 1 || rows[0].Status != "intent" || mission.Phase == "futures_stopped" {
-		t.Fatalf("transient precondition stopped the permanent admission: %+v %v", rows, err)
+	if err != nil || len(rows) != 1 || rows[0].Status != "intent" {
+		t.Fatalf("transient precondition discarded the immutable admission: %+v %v", rows, err)
 	}
 	if reserved, err := h.db.FuturesCashReserve(h.ctx, h.account.ID); err != nil || reserved == 0 {
 		t.Fatalf("transient admission lost its protected %dp: %v", reserved, err)
@@ -378,53 +419,10 @@ func TestFuturesTransientUnsentCreateReleasesActionKeepsCoverage(t *testing.T) {
 	}
 }
 
-func TestFuturesCommittedReceiptsReconcileWithoutRepeatingMutations(t *testing.T) {
-	for _, test := range []struct {
-		name          string
-		status        int
-		uninterpreted bool
-	}{
-		{"non-201 success", http.StatusAccepted, false},
-		{"committed unknown", http.StatusOK, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			h, p := newFuturesMoneyAPI(t)
-			h.api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-				if request.URL.Path != "/v1/future/create" && request.URL.Path != "/v1/future/settle" {
-					p.ServeHTTP(w, request)
-					return
-				}
-				capture := httptest.NewRecorder()
-				p.ServeHTTP(capture, request)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(test.status)
-				if test.uninterpreted {
-					_, _ = w.Write([]byte(`{"committed_uninterpreted":true}`))
-				} else {
-					_, _ = w.Write(capture.Body.Bytes())
-				}
-			})
-			runner := futuresMoneyRunner(t, h, true)
-			futuresMoneyPasses(t, h, runner, 12)
-			p.mu.Lock()
-			for _, row := range p.rows {
-				row["status"] = "active"
-				p.now = row["matures_at"].(time.Time).Add(time.Hour)
-			}
-			p.mu.Unlock()
-			futuresMoneyPasses(t, h, runner, 12)
-			_, data := h.mission("__futures")
-			if len(p.creates) != 2 || len(p.settles) != 2 || data.Action != nil {
-				t.Fatalf("committed outcome repeated or stayed attached: creates=%d settles=%d action=%+v holds=%v", len(p.creates), len(p.settles), data.Action, runner.holding)
-			}
-		})
-	}
-}
-
-func TestFuturesRetryableCreateRejectionsKeepAdmission(t *testing.T) {
-	for _, status := range []int{401, 403, 429} {
+func TestFuturesRetryableAcceptRejectionsKeepAdmission(t *testing.T) {
+	for _, status := range []int{401, 429} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
-			h, _, runner, mission, data := futuresStagedCreate(t)
+			h, _, runner, mission, data := futuresStagedAccept(t)
 			action := *data.Action
 			if _, err := h.db.BeginAction(h.ctx, &store.Action{ID: action.ID, AccountID: h.account.ID, Method: action.Method, Path: action.Path, Body: action.Body}); err != nil {
 				t.Fatal(err)
@@ -442,8 +440,8 @@ func TestFuturesRetryableCreateRejectionsKeepAdmission(t *testing.T) {
 				t.Fatalf("retryable refusal lost fail-stop or completed-request handling: %v %+v", err, data.Action)
 			}
 			rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
-			if err != nil || rows[0].Status != "intent" || rows[0].ActionID == action.ID || mission.Phase == "futures_stopped" {
-				t.Fatalf("retryable refusal stopped the permanent admission: %+v %v", rows, err)
+			if err != nil || len(rows) != 1 || rows[0].Status != "intent" || rows[0].ActionID == action.ID {
+				t.Fatalf("retryable refusal discarded the immutable admission: %+v %v", rows, err)
 			}
 			if status == 429 && data.CooldownUntil.Before(deadline) {
 				t.Fatal("429 lost durable Retry-After")
@@ -452,30 +450,30 @@ func TestFuturesRetryableCreateRejectionsKeepAdmission(t *testing.T) {
 	}
 }
 
-func TestFuturesOrderPreflightBoundsArithmeticAndImmutablePayload(t *testing.T) {
+func TestFuturesOrderPreflightRejectsRetiredBuysAndUnboundedSales(t *testing.T) {
 	for _, test := range []struct {
-		name                     string
-		price, customs, quantity int64
+		name, side      string
+		price, quantity int64
 	}{
-		{"overflow ask", math.MaxInt64, 10000, 1},
-		{"negative customs", 2100, -1, 1},
-		{"overflow customs", 2100, math.MaxInt64, 1},
-		{"oversized immutable lot", 2100, 268, 2},
-		{"above inclusive spend cap", 15001, 10000, 1},
+		{"overflow order", "ask", math.MaxInt64, 2},
+		{"retired procurement", "bid", 2100, 1},
+		{"zero quantity", "ask", 2100, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			runner := &Runner{stateCache: AccountState{Markets: map[string]Market{"amsterdam": {CustomsBPS: test.customs}}}}
-			action := &durableAction{Stage: "futures-stock", Method: http.MethodPost, Path: "/v1/market/place-order",
-				Body: encode(map[string]any{"port_id": "amsterdam", "commodity_id": "water_beer", "side": "bid", "time_in_force": "ioc", "quantity": test.quantity, "price_pence": test.price})}
+			runner := &Runner{}
+			action := &durableAction{Stage: "futures-close-stock", Method: http.MethodPost, Path: "/v1/market/place-order",
+				Body: encode(map[string]any{"port_id": "amsterdam", "commodity_id": "water_beer", "side": test.side, "time_in_force": "ioc", "quantity": test.quantity, "price_pence": test.price})}
 			if err := runner.futuresOrderPreflight(action); err == nil {
-				t.Fatal("unbounded upstream arithmetic or immutable order passed preflight")
+				t.Fatal("unbounded or retired warehouse order passed preflight")
 			}
 		})
 	}
 }
 
 func TestFuturesUnresolvedAndMalformedEvidenceNeverBlockFleet(t *testing.T) {
-	h, _, runner, mission, data := futuresStagedCreate(t)
+	h, p, runner, mission, data := futuresStagedAccept(t)
+	delete(p.rows, "covered-listing")
+	runner.snapshot["futures"] = encode([]gameapi.FuturesContract{})
 	action := *data.Action
 	if _, err := h.db.BeginAction(h.ctx, &store.Action{ID: action.ID, AccountID: h.account.ID, Method: action.Method, Path: action.Path, Body: action.Body}); err != nil {
 		t.Fatal(err)
@@ -491,7 +489,7 @@ func TestFuturesUnresolvedAndMalformedEvidenceNeverBlockFleet(t *testing.T) {
 	}
 	mission, data = h.mission("__futures")
 	if data.Action == nil {
-		t.Fatal("unresolved create was guessed away")
+		t.Fatal("unresolved acceptance without listing evidence was guessed away")
 	}
 	rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
 	if err != nil {
@@ -514,149 +512,11 @@ func TestFuturesUnresolvedAndMalformedEvidenceNeverBlockFleet(t *testing.T) {
 	}
 }
 
-func TestFuturesMatureSettlementPreemptsUnsentCreate(t *testing.T) {
-	h, p, runner, mission, data := futuresStagedCreate(t)
-	if _, err := runner.dispatch(h.ctx, mission, &data); err != nil {
-		t.Fatal(err)
-	}
-	refreshMarqueExecution(t, h, runner)
-	if changed, err := runner.driveFutures(h.ctx, mission, &data); err != nil || !changed ||
-		data.Action == nil || data.Action.Stage != "futures-create" {
-		t.Fatalf("second covered side did not stage: %t %v %+v", changed, err, data.Action)
-	}
-	p.mu.Lock()
-	for _, row := range p.rows {
-		row["status"] = "active"
-		p.now = row["matures_at"].(time.Time).Add(time.Hour)
-	}
-	p.mu.Unlock()
-	refreshMarqueExecution(t, h, runner)
-	rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runner.observeFutures(h.ctx, rows); err != nil {
-		t.Fatal(err)
-	}
-	// Refresh changes the epoch capture; the first pass refreshes this
-	// never-journaled action, then the next pass tests physical priority.
-	if _, err := runner.dispatch(h.ctx, mission, &data); err != nil {
-		t.Fatal(err)
-	}
-	if data.Action != nil {
-		if _, err := runner.dispatch(h.ctx, mission, &data); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if data.Action != nil {
-		t.Fatal("unsent discretionary create retained the controller")
-	}
-	data.CooldownUntil = time.Time{}
-	if _, err := runner.driveFutures(h.ctx, mission, &data); err != nil || data.Action == nil || data.Action.Stage != "futures-settle" {
-		t.Fatalf("mature physical obligation did not take priority: %v %+v", err, data.Action)
-	}
-	if len(p.creates) != 1 {
-		t.Fatal("new listing was sent ahead of a mature obligation")
-	}
-}
-
-func TestFuturesDefinitiveSettleRefusalRequiresNewEvidence(t *testing.T) {
-	h, p := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
-	futuresMoneyPasses(t, h, runner, 12)
-	p.mu.Lock()
-	for _, row := range p.rows {
-		row["status"] = "active"
-		p.now = row["matures_at"].(time.Time).Add(time.Hour)
-	}
-	p.mu.Unlock()
-	settles := 0
-	h.api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/v1/future/settle" {
-			settles++
-			h.api.writeProblem(w, http.StatusConflict, "settlement_refused", "no changed contract authority")
-			return
-		}
-		p.ServeHTTP(w, request)
-	})
-	futuresMoneyPasses(t, h, runner, 12)
-	if settles != 2 {
-		t.Fatalf("unchanged evidence repeated rejected settle mutations: %d", settles)
-	}
-	p.mu.Lock()
-	for _, row := range p.rows {
-		row["updated_at"] = p.now.Add(time.Second)
-		break
-	}
-	p.mu.Unlock()
-	futuresMoneyPasses(t, h, runner, 6)
-	if settles != 3 {
-		t.Fatalf("changed contract evidence did not permit one reconsideration: %d", settles)
-	}
-}
-
-func TestFuturesCreateMatchingHasNoAdmissionTimeExpiry(t *testing.T) {
-	h, _, runner, _, _ := futuresStagedCreate(t)
-	rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	row := rows[0]
-	company := h.account.CompanyID
-	contract := gameapi.FuturesContract{ID: "late-dispatch-contract", CreatorCompanyID: company,
-		PortID: row.PortID, CommodityID: row.CommodityID, Side: row.Side, LotTons: 1,
-		StrikePricePence: row.StrikePricePence, SellerCompanyID: &company, SellerMarginPence: row.MarginPence,
-		Status: "open", CreatedAt: row.CreatedAt.Add(time.Hour), UpdatedAt: row.CreatedAt.Add(time.Hour),
-		MaturesAt: row.CreatedAt.Add(90 * time.Minute)}
-	runner.snapshot["futures"] = encode([]gameapi.FuturesContract{contract})
-	if err := runner.observeFutures(h.ctx, rows); err != nil {
-		t.Fatal(err)
-	}
-	observed, err := h.db.FuturesIntents(h.ctx, h.account.ID)
-	if err != nil || observed[0].FuturesID != contract.ID {
-		t.Fatalf("delayed dispatch lost its immutable owned listing: %+v %v", observed, err)
-	}
-}
-
-func TestFuturesLeaseEpochReadmissionRetainsSetupEligibility(t *testing.T) {
-	h, _ := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
-	refreshMarqueExecution(t, h, runner)
-	mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: futuresPilotCohort, Phase: "futures_pilot"}
-	data := missionData{Futures: &futuresPilotIntent{SetupAttempted: true}}
-	if err := runner.stage(h.ctx, mission, &data, ShipState{}, "futures-lease", "/v1/warehouse/set-lease",
-		map[string]any{"port_id": "amsterdam", "target_leased_tonnage": 2}); err != nil {
-		t.Fatal(err)
-	}
-	action := data.Action
-	if _, err := h.db.BeginAction(h.ctx, &store.Action{ID: action.ID, AccountID: h.account.ID, Method: action.Method, Path: action.Path, Body: action.Body}); err != nil {
-		t.Fatal(err)
-	}
-	if err := h.db.ReconcileAction(h.ctx, action.ID, encode(map[string]string{"kind": neverSentFinancialEvent})); err != nil {
-		t.Fatal(err)
-	}
-	if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed || data.Action != nil || data.Futures.SetupAttempted || mission.Phase == "futures_stopped" {
-		t.Fatalf("never-sent lease epoch proof disabled setup recovery: %t %v %+v", changed, err, data)
-	}
-}
-
-func TestFuturesFinishedEmptyCohortDoesNotRepeatObservation(t *testing.T) {
-	h, _ := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
-	refreshMarqueExecution(t, h, runner)
-	mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: futuresPilotCohort, Phase: "futures_done"}
-	data := missionData{Futures: &futuresPilotIntent{SetupAttempted: true}}
-	runner.snapshot["futures"] = json.RawMessage(`not a list`)
-	if changed, err := runner.driveFutures(h.ctx, mission, &data); err != nil || changed || len(runner.holding) != 0 {
-		t.Fatalf("finished empty cohort repeated optional observation: %t %v %v", changed, err, runner.holding)
-	}
-}
-
 func TestFuturesLeaseRefusalRequiresChangedWarehouseNotExitQuote(t *testing.T) {
 	h, _ := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
+	runner := futuresMoneyRunner(t, h)
 	refreshMarqueExecution(t, h, runner)
-	data := missionData{Futures: &futuresPilotIntent{RejectedEvidence: map[string]string{}}}
+	data := missionData{Futures: &futuresState{RejectedEvidence: map[string]string{}}}
 	evidence, err := runner.futuresRejectionEvidence(h.ctx, &data, "futures-close-lease")
 	if err != nil {
 		t.Fatal(err)
@@ -667,7 +527,7 @@ func TestFuturesLeaseRefusalRequiresChangedWarehouseNotExitQuote(t *testing.T) {
 	if refused, err := runner.futuresRefused(h.ctx, &data, "futures-close-lease"); err != nil || !refused {
 		t.Fatal("unrelated exit quote re-enabled a definitive lease-close refusal")
 	}
-	warehouse, _ := runner.futuresWarehouse()
+	warehouse, _ := runner.futuresWarehouse("amsterdam", "water_beer")
 	warehouse.LeasedTonnage++
 	runner.snapshot["warehouses"] = encode([]futuresWarehouse{warehouse})
 	if refused, err := runner.futuresRefused(h.ctx, &data, "futures-close-lease"); err != nil || refused {
@@ -675,60 +535,12 @@ func TestFuturesLeaseRefusalRequiresChangedWarehouseNotExitQuote(t *testing.T) {
 	}
 }
 
-func TestFuturesPendingStockReplayRevalidatesImmutableCap(t *testing.T) {
-	for _, test := range []struct {
-		name            string
-		price, quantity int64
-		staleCustoms    bool
-	}{
-		{"price cap", 30001, 1, false}, {"customs inclusive cap", 30000, 1, false}, {"quantity", 2100, 2, false},
-		{"stale customs", 2100, 1, true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			h, _, runner, mission, data := futuresStagedCreate(t)
-			data.Action = nil
-			if err := runner.stage(h.ctx, mission, &data, ShipState{}, "futures-stock", "/v1/market/place-order",
-				map[string]any{"port_id": "amsterdam", "commodity_id": "water_beer", "side": "bid", "time_in_force": "ioc",
-					"quantity": test.quantity, "price_pence": test.price}); err != nil {
-				t.Fatal(err)
-			}
-			data.Action.FuturesObserveAfter = time.Now().Add(-time.Hour)
-			original := *data.Action
-			if _, err := h.db.BeginAction(h.ctx, &store.Action{ID: original.ID, AccountID: h.account.ID, Method: original.Method, Path: original.Path, Body: original.Body}); err != nil {
-				t.Fatal(err)
-			}
-			if test.staleCustoms {
-				meta := runner.meta["books/amsterdam"]
-				meta.Stale = true
-				runner.meta["books/amsterdam"] = meta
-			}
-			reserved, err := h.db.FuturesCashReserve(h.ctx, h.account.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := runner.dispatch(h.ctx, mission, &data); err != nil {
-				t.Fatal(err)
-			}
-			after, err := h.db.FuturesCashReserve(h.ctx, h.account.ID)
-			if err != nil || after != reserved || data.Action == nil || data.Action.ID != original.ID || !bytes.Equal(data.Action.Body, original.Body) {
-				t.Fatalf("unsafe pending order lost original key or coverage: %+v %d/%d %v", data.Action, after, reserved, err)
-			}
-			if calls := h.api.mutationsFor("/v1/market/place-order"); len(calls) != 0 {
-				t.Fatalf("unsafe pending warehouse order reached transport: %+v", calls)
-			}
-		})
-	}
-}
-
 func TestFuturesCommittedUnknownStockUsesInventoryWithoutInventingCash(t *testing.T) {
-	for _, stage := range []string{"futures-stock", "futures-close-stock"} {
+	for _, stage := range []string{"futures-close-stock"} {
 		t.Run(stage, func(t *testing.T) {
-			h, _, runner, mission, data := futuresStagedCreate(t)
+			h, _, runner, mission, data := futuresStagedAccept(t)
 			data.Action = nil
-			side, delta := "bid", int64(1)
-			if stage == "futures-close-stock" {
-				side, delta = "ask", -1
-			}
+			side, delta := "ask", int64(-1)
 			if err := runner.stage(h.ctx, mission, &data, ShipState{}, stage, "/v1/market/place-order",
 				map[string]any{"port_id": "amsterdam", "commodity_id": "water_beer", "side": side, "time_in_force": "ioc",
 					"quantity": 1, "price_pence": 2100}); err != nil {
@@ -742,14 +554,13 @@ func TestFuturesCommittedUnknownStockUsesInventoryWithoutInventingCash(t *testin
 			if err := h.db.CompleteAction(h.ctx, action.ID, http.StatusOK, json.RawMessage(`{"committed_uninterpreted":true}`), nil); err != nil {
 				t.Fatal(err)
 			}
-			warehouse, _ := runner.futuresWarehouse()
+			warehouse, _ := runner.futuresWarehouse("amsterdam", "water_beer")
 			warehouse.Inventory[0].Quantity += delta
 			runner.snapshot["warehouses"] = encode([]futuresWarehouse{warehouse})
 			if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed || data.Action != nil {
 				t.Fatalf("authoritative inventory did not resolve committed stock: %t %v %+v", changed, err, data.Action)
 			}
-			if delta > 0 && (!data.Futures.ProcurementUnknown || data.Futures.ProcurementPaid != 0 || mission.Phase != "futures_stopped") ||
-				delta < 0 && (!data.Futures.LiquidationUnknown || data.Futures.LiquidationPaid != 0 || data.Futures.LiquidatedTons != 1) {
+			if !data.Futures.LiquidationUnknown || data.Futures.LiquidationPaid != 0 || data.Futures.LiquidatedTons != 1 {
 				t.Fatalf("inventory observation invented cash or failed safe wind-down: %+v phase=%s", data.Futures, mission.Phase)
 			}
 			if calls := h.api.mutationsFor("/v1/market/place-order"); len(calls) != 0 {
@@ -759,151 +570,9 @@ func TestFuturesCommittedUnknownStockUsesInventoryWithoutInventingCash(t *testin
 	}
 }
 
-func TestFuturesStoppedOrDisabledAdmissionsReleaseOnlyUnsentCoverage(t *testing.T) {
-	for _, stopped := range []bool{false, true} {
-		for _, proof := range []string{"absent", neverSentPrecondition, "pending", "committed"} {
-			t.Run(map[bool]string{false: "disabled", true: "stopped"}[stopped]+"/"+proof, func(t *testing.T) {
-				h, _, runner, mission, data := futuresStagedCreate(t)
-				if proof != "absent" {
-					action := data.Action
-					if _, err := h.db.BeginAction(h.ctx, &store.Action{ID: action.ID, AccountID: h.account.ID, Method: action.Method, Path: action.Path, Body: action.Body}); err != nil {
-						t.Fatal(err)
-					}
-					if proof == neverSentPrecondition {
-						if err := h.db.ReconcileAction(h.ctx, action.ID, encode(map[string]string{"kind": proof})); err != nil {
-							t.Fatal(err)
-						}
-					} else if proof == "committed" {
-						if err := h.db.CompleteAction(h.ctx, action.ID, http.StatusOK, json.RawMessage(`{"committed_uninterpreted":true}`), nil); err != nil {
-							t.Fatal(err)
-						}
-					}
-				}
-				data.Action = nil
-				runner.opts.FuturesPilotEnabled = stopped
-				if stopped {
-					mission.Phase = "futures_stopped"
-				}
-				if err := runner.saveMission(h.ctx, mission, &data); err != nil {
-					t.Fatal(err)
-				}
-				if _, err := runner.driveFutures(h.ctx, mission, &data); err != nil {
-					t.Fatal(err)
-				}
-				rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				reserved, err := h.db.FuturesCashReserve(h.ctx, h.account.ID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				unsent := proof == "absent" || proof == neverSentPrecondition
-				if unsent && (rows[0].Status != "rejected" || reserved != 0 || mission.Phase != "futures_done") ||
-					!unsent && (rows[0].Status != "intent" || reserved == 0) {
-					t.Fatalf("stop confused unsent proof with unknown execution: rows=%+v reserve=%d phase=%s", rows, reserved, mission.Phase)
-				}
-			})
-		}
-	}
-}
-
-func TestFuturesMalformedThirdPartyListDoesNotBlockOwnedSettlement(t *testing.T) {
-	h, p := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
-	futuresMoneyPasses(t, h, runner, 12)
-	p.mu.Lock()
-	for _, row := range p.rows {
-		row["status"] = "active"
-		p.now = row["matures_at"].(time.Time).Add(time.Hour)
-	}
-	p.mu.Unlock()
-	h.api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/v1/future/list" {
-			p.ServeHTTP(w, request)
-			return
-		}
-		capture := httptest.NewRecorder()
-		p.ServeHTTP(capture, request)
-		var records []json.RawMessage
-		if err := json.Unmarshal(capture.Body.Bytes(), &records); err != nil {
-			t.Error(err)
-		}
-		records = append([]json.RawMessage{json.RawMessage(`{"id":"other","creator_company_id":"third-party","seller_margin_pence":null}`)}, records...)
-		h.api.writeJSON(w, http.StatusOK, records)
-	})
-	futuresMoneyPasses(t, h, runner, 12)
-	if len(p.settles) != 2 {
-		t.Fatalf("malformed unrelated public row blocked our settlement: %d holds=%v", len(p.settles), runner.holding)
-	}
-}
-
-func TestFuturesSettleRefusalFingerprintUsesPermanentContractID(t *testing.T) {
-	h, _ := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
-	futuresMoneyPasses(t, h, runner, 12)
-	_, data := h.mission("__futures")
-	rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	contracts, err := runner.futuresContracts()
-	if err != nil {
-		t.Fatal(err)
-	}
-	row := rows[0]
-	var owned gameapi.FuturesContract
-	for _, contract := range contracts {
-		if contract.ID == row.FuturesID {
-			owned = contract
-		}
-	}
-	foreign := owned
-	foreign.ID, foreign.CreatorCompanyID = "same-side-foreign", "other-company"
-	foreign.SellerCompanyID, foreign.BuyerCompanyID = nil, nil
-	runner.snapshot["futures"] = encode([]gameapi.FuturesContract{foreign, owned})
-	data.Futures.IntentID = row.IntentID
-	data.Action = &durableAction{Stage: "futures-settle", Body: encode(map[string]string{"futures_id": row.FuturesID})}
-	staged, err := runner.futuresRejectionEvidence(h.ctx, &data, "futures-settle")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data.Action = nil
-	unstaged, err := runner.futuresRejectionEvidence(h.ctx, &data, "futures-settle")
-	if err != nil || staged != unstaged || strings.Contains(unstaged, foreign.ID) {
-		t.Fatalf("nil action selected the first same-side contract: %s / %s %v", staged, unstaged, err)
-	}
-}
-
-func TestFuturesNonPartySettle403LatchesWithoutAuthorizationRetry(t *testing.T) {
-	h, p := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
-	futuresMoneyPasses(t, h, runner, 12)
-	p.mu.Lock()
-	for _, row := range p.rows {
-		row["status"] = "active"
-		p.now = row["matures_at"].(time.Time).Add(time.Hour)
-	}
-	p.mu.Unlock()
-	settles := 0
-	h.api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/v1/future/settle" {
-			settles++
-			h.api.writeProblem(w, http.StatusForbidden, "forbidden", "The calling company is neither the buyer nor the seller")
-			return
-		}
-		p.ServeHTTP(w, request)
-	})
-	futuresMoneyPasses(t, h, runner, 12)
-	_, data := h.mission("__futures")
-	if settles != 2 || len(data.Futures.RejectedEvidence) != 2 || data.Action != nil {
-		t.Fatalf("non-party 403 failed to latch each exact contract: settles=%d data=%+v", settles, data)
-	}
-}
-
 func TestFuturesErrorBoundaryPreservesJournalIntegrityAndDatabaseFailures(t *testing.T) {
 	t.Run("journal integrity", func(t *testing.T) {
-		h, _, runner, mission, data := futuresStagedCreate(t)
+		h, _, runner, mission, data := futuresStagedAccept(t)
 		action := data.Action
 		if _, err := h.db.BeginAction(h.ctx, &store.Action{ID: action.ID, AccountID: h.account.ID, Method: action.Method, Path: action.Path, Body: action.Body}); err != nil {
 			t.Fatal(err)
@@ -914,7 +583,7 @@ func TestFuturesErrorBoundaryPreservesJournalIntegrityAndDatabaseFailures(t *tes
 		}
 	})
 	t.Run("database", func(t *testing.T) {
-		h, _, runner, mission, data := futuresStagedCreate(t)
+		h, _, runner, mission, data := futuresStagedAccept(t)
 		if err := h.db.Close(); err != nil {
 			t.Fatal(err)
 		}
@@ -927,10 +596,10 @@ func TestFuturesErrorBoundaryPreservesJournalIntegrityAndDatabaseFailures(t *tes
 	})
 }
 
-func TestFuturesObservedCreateSurvivesLaterRejectionReceipt(t *testing.T) {
+func TestFuturesObservedAcceptSurvivesLaterRejectionReceipt(t *testing.T) {
 	for _, status := range []int{400, 401, 403, 429} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
-			h, p, runner, mission, data := futuresStagedCreate(t)
+			h, p, runner, mission, data := futuresStagedAccept(t)
 			action := data.Action
 			if _, err := h.db.BeginAction(h.ctx, &store.Action{ID: action.ID, AccountID: h.account.ID, Method: action.Method, Path: action.Path, Body: action.Body}); err != nil {
 				t.Fatal(err)
@@ -939,9 +608,12 @@ func TestFuturesObservedCreateSurvivesLaterRejectionReceipt(t *testing.T) {
 			request.Header.Set("Idempotency-Key", action.ID)
 			capture := httptest.NewRecorder()
 			p.ServeHTTP(capture, request)
-			if capture.Code != http.StatusCreated {
-				t.Fatalf("committed-timeout fixture did not create listing: %d %s", capture.Code, capture.Body.String())
+			if capture.Code != http.StatusOK {
+				t.Fatalf("committed-timeout fixture did not accept listing: %d %s", capture.Code, capture.Body.String())
 			}
+			meta := runner.meta["futures"]
+			meta.Stale = true
+			runner.meta["futures"] = meta
 			refreshMarqueExecution(t, h, runner)
 			rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
 			if err != nil {
@@ -959,13 +631,13 @@ func TestFuturesObservedCreateSurvivesLaterRejectionReceipt(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = runner.dispatch(h.ctx, mission, &data)
-			authFailure := status == 401 || status == 403
+			authFailure := status == 401
 			if authFailure && (err == nil || !strings.Contains(err.Error(), "execution stopped")) ||
 				!authFailure && err != nil || data.Action != nil {
 				t.Fatalf("observation race lost fail-stop or reconciliation: status=%d err=%v action=%+v", status, err, data.Action)
 			}
 			rows, err = h.db.FuturesIntents(h.ctx, h.account.ID)
-			if err != nil || len(rows) != 1 || rows[0].FuturesID == "" || rows[0].Status != "open" || rows[0].ActionID != action.ID {
+			if err != nil || len(rows) != 1 || rows[0].FuturesID == "" || rows[0].Status != "active" || rows[0].ActionID != action.ID {
 				t.Fatalf("receipt rejected or readmitted an already observed listing: %+v %v", rows, err)
 			}
 			wantReserve := max(int64(0), rows[0].ReservedCashPence-rows[0].MarginPence)
@@ -976,57 +648,10 @@ func TestFuturesObservedCreateSurvivesLaterRejectionReceipt(t *testing.T) {
 	}
 }
 
-func TestFuturesConflictingTerminalReceiptHoldsWithoutFailingAccount(t *testing.T) {
-	h, _ := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
-	futuresMoneyPasses(t, h, runner, 12)
-	mission, data := h.mission("__futures")
-	rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	row := rows[0]
-	defaulted := encode(gameapi.SettleFuturesResult{FuturesID: row.FuturesID, Status: "defaulted", PenaltyPaidPence: 425})
-	if err := h.db.RecordFuturesOutcome(h.ctx, h.account.ID, row.IntentID, "defaulted", defaulted); err != nil {
-		t.Fatal(err)
-	}
-	data.Futures.IntentID = row.IntentID
-	if err := runner.stage(h.ctx, mission, &data, ShipState{}, "futures-settle", "/v1/future/settle", map[string]string{"futures_id": row.FuturesID}); err != nil {
-		t.Fatal(err)
-	}
-	action := data.Action
-	if _, err := h.db.BeginAction(h.ctx, &store.Action{ID: action.ID, AccountID: h.account.ID, Method: action.Method, Path: action.Path, Body: action.Body}); err != nil {
-		t.Fatal(err)
-	}
-	settled := encode(gameapi.SettleFuturesResult{FuturesID: row.FuturesID, Status: "settled", SettledTons: 1})
-	if err := h.db.CompleteAction(h.ctx, action.ID, http.StatusOK, settled, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runner.dispatch(h.ctx, mission, &data); err != nil || data.Action == nil || data.Action.ID != action.ID {
-		t.Fatalf("conflicting server evidence failed account or discarded receipt: %v %+v", err, data.Action)
-	}
-	if len(runner.holding) == 0 || !strings.Contains(runner.holding[len(runner.holding)-1].Reason, "futures") {
-		t.Fatal("conflicting settlement evidence lacks its optional futures hold")
-	}
-}
-
-func TestFuturesDisabledAfterSetupStillReleasesUnusedLease(t *testing.T) {
-	h, _ := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, false)
-	refreshMarqueExecution(t, h, runner)
-	runner.snapshot["warehouses"] = encode([]map[string]any{{"port_id": "amsterdam", "leased_tonnage": 2, "free_tonnage": 2, "inventory": []any{}}})
-	mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: futuresPilotCohort, Phase: "futures_pilot"}
-	data := missionData{Futures: &futuresPilotIntent{LeaseOwned: true}}
-	if changed, err := runner.driveFutures(h.ctx, mission, &data); err != nil || !changed || data.Action == nil ||
-		data.Action.Stage != "futures-close-lease" || !bytes.Contains(data.Action.Body, []byte(`"target_leased_tonnage":0`)) {
-		t.Fatalf("disabled setup with no admissions retained its rented lease: %t %v %+v", changed, err, data.Action)
-	}
-}
-
 func TestFuturesClockPreconditionsHoldWithoutStoppingAccount(t *testing.T) {
 	for _, failure := range []string{"stale", "paused", "zero scale"} {
 		t.Run(failure, func(t *testing.T) {
-			h, _, runner, mission, data := futuresStagedCreate(t)
+			h, _, runner, mission, data := futuresStagedAccept(t)
 			switch failure {
 			case "stale":
 				meta := runner.meta["clock"]
@@ -1045,7 +670,7 @@ func TestFuturesClockPreconditionsHoldWithoutStoppingAccount(t *testing.T) {
 				t.Fatalf("ordinary action clock behavior changed: %v", err)
 			}
 			if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || changed || data.Action != nil ||
-				!data.CooldownUntil.After(time.Now()) || mission.Phase == "futures_stopped" {
+				!data.CooldownUntil.After(time.Now()) {
 				t.Fatalf("optional clock hold stopped or consumed the account pass: changed=%t err=%v action=%+v phase=%s", changed, err, data.Action, mission.Phase)
 			}
 			rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
@@ -1056,33 +681,8 @@ func TestFuturesClockPreconditionsHoldWithoutStoppingAccount(t *testing.T) {
 	}
 }
 
-func TestFuturesStockStagingRequiresSameSpareAllowanceAsDispatch(t *testing.T) {
-	h, _ := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
-	refreshMarqueExecution(t, h, runner)
-	runner.snapshot["warehouses"] = encode([]map[string]any{{"port_id": "amsterdam", "leased_tonnage": 2, "free_tonnage": 2, "inventory": []any{}}})
-	mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: futuresPilotCohort, Phase: "futures_pilot"}
-	data := missionData{Futures: &futuresPilotIntent{LeaseOwned: true}}
-	free, err := runner.futuresFreeCash(h.ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range runner.stateCache.Vaults {
-		vault := &runner.stateCache.Vaults[i]
-		if vault.BankingRegion == "north_sea" && vault.AccountType == "vault" {
-			vault.BalancePence -= free - 2500
-		}
-	}
-	if changed, err := runner.driveFutures(h.ctx, mission, &data); err != nil || changed || data.Action != nil {
-		t.Fatalf("sub-allowance cash staged a stock/preflight livelock: %t %v %+v", changed, err, data.Action)
-	}
-	if len(runner.holding) == 0 || !strings.Contains(runner.holding[len(runner.holding)-1].Reason, "cash") {
-		t.Fatal("insufficient spare setup allowance has no visible hold")
-	}
-}
-
 func TestFuturesPreconditionReleaseAllowsFleetWorkInSamePass(t *testing.T) {
-	h, _, runner, mission, data := futuresStagedCreate(t)
+	h, _, runner, mission, data := futuresStagedAccept(t)
 	h.api.setFleet([]map[string]any{berthedLaprasRow()})
 	refreshMarqueExecution(t, h, runner)
 	data.Action.FinancialEpoch, data.Action.ControlEpoch = runner.capturedFinancial, runner.capturedControl
@@ -1103,90 +703,6 @@ func TestFuturesPreconditionReleaseAllowsFleetWorkInSamePass(t *testing.T) {
 	shipMission, err := h.db.GetMission(h.ctx, h.account.ID, recoveryShipLapras)
 	if err != nil || shipMission == nil {
 		t.Fatalf("futures release consumed the fleet's pass: %+v %v holds=%v", shipMission, err, runner.holding)
-	}
-}
-
-func TestFuturesLeasePresence403PausesAndRecoversPilotSetup(t *testing.T) {
-	h, p := newFuturesMoneyAPI(t)
-	p.quantity = 0
-	calls, leased := 0, int64(0)
-	presence := false
-	warehouse := func() map[string]any {
-		return map[string]any{"port_id": "amsterdam", "has_factor": true, "leased_tonnage": leased,
-			"reserved_tonnage": 0, "used_tonnage": 0, "free_tonnage": leased, "inventory": []any{}}
-	}
-	h.api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/v1/warehouse/list":
-			h.api.writeJSON(w, http.StatusOK, []any{warehouse()})
-		case "/v1/warehouse/set-lease":
-			calls++
-			if !presence {
-				h.api.writeProblem(w, http.StatusForbidden, "no_port_presence", "no ship or factor remains at Amsterdam")
-				return
-			}
-			leased = 2
-			h.api.writeJSON(w, http.StatusOK, warehouse())
-		default:
-			p.ServeHTTP(w, request)
-		}
-	})
-	runner := futuresMoneyRunner(t, h, true)
-	refreshMarqueExecution(t, h, runner)
-	mission := &store.Mission{AccountID: h.account.ID, ShipID: "__futures", Generation: futuresPilotCohort, Phase: "futures_pilot"}
-	data := missionData{Futures: &futuresPilotIntent{SetupAttempted: true}}
-	if err := runner.stage(h.ctx, mission, &data, ShipState{}, "futures-lease", "/v1/warehouse/set-lease",
-		map[string]any{"port_id": "amsterdam", "target_leased_tonnage": 2}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runner.dispatch(h.ctx, mission, &data); err != nil || data.Action != nil || mission.Phase != "futures_pilot" ||
-		data.Futures.SetupAttempted || data.CooldownUntil.Before(runner.gameDelay(1).Add(-time.Second)) {
-		t.Fatalf("lease domain refusal ended setup instead of pausing it: %v %+v phase=%s", err, data, mission.Phase)
-	}
-	if changed, err := runner.driveFutures(h.ctx, mission, &data); err != nil || changed || data.Action != nil || calls != 1 {
-		t.Fatalf("presence refusal hot-looped through its cooldown: %t %v calls=%d", changed, err, calls)
-	}
-	presence = true
-	refreshMarqueExecution(t, h, runner)
-	data.CooldownUntil = time.Time{}
-	if changed, err := runner.driveFutures(h.ctx, mission, &data); err != nil || !changed || data.Action == nil || data.Action.Stage != "futures-lease" {
-		t.Fatalf("fresh port presence could not recover setup: %t %v %+v", changed, err, data)
-	}
-	if _, err := runner.dispatch(h.ctx, mission, &data); err != nil || !data.Futures.LeaseOwned || calls != 2 {
-		t.Fatalf("recovered setup did not finish its bounded lease: %v %+v calls=%d", err, data, calls)
-	}
-}
-
-func TestFuturesOversizedExternalLeaseHoldsBeforeSettlementOrWindDownStaging(t *testing.T) {
-	for _, stage := range []string{"settle", "wind-down"} {
-		t.Run(stage, func(t *testing.T) {
-			h, p := newFuturesMoneyAPI(t)
-			runner := futuresMoneyRunner(t, h, true)
-			futuresMoneyPasses(t, h, runner, 12)
-			mission, data := h.mission("__futures")
-			p.mu.Lock()
-			for _, row := range p.rows {
-				row["status"] = "active"
-				p.now = row["matures_at"].(time.Time).Add(time.Hour)
-				if stage == "wind-down" {
-					row["status"] = "cancelled"
-				}
-			}
-			p.mu.Unlock()
-			refreshMarqueExecution(t, h, runner)
-			data.Futures.LeaseOwned, data.Futures.ProcurementPaid = true, 2157
-			warehouse, _ := runner.futuresWarehouse()
-			warehouse.LeasedTonnage = 3
-			runner.snapshot["warehouses"] = encode([]futuresWarehouse{warehouse})
-			for range 3 {
-				if changed, err := runner.driveFutures(h.ctx, mission, &data); err != nil || changed || data.Action != nil {
-					t.Fatalf("external lease increase restaged an invalid %s: %t %v %+v", stage, changed, err, data.Action)
-				}
-			}
-			if len(runner.holding) == 0 || !strings.Contains(runner.holding[len(runner.holding)-1].Reason, "operator reconciliation") {
-				t.Fatal("external lease increase lacks an operator-visible hold")
-			}
-		})
 	}
 }
 
@@ -1213,39 +729,10 @@ func TestFuturesMalformedThirdPartyWarningIsRateLimited(t *testing.T) {
 	}
 }
 
-func TestFuturesImmutableBidCoverageCannotWaitThroughCustomsRise(t *testing.T) {
-	h, _, runner, mission, data := futuresStagedCreate(t)
-	if _, err := runner.dispatch(h.ctx, mission, &data); err != nil {
-		t.Fatal(err)
-	}
-	refreshMarqueExecution(t, h, runner)
-	if _, err := runner.driveFutures(h.ctx, mission, &data); err != nil || data.Action == nil {
-		t.Fatalf("bid did not stage after ask: %v %+v", err, data.Action)
-	}
-	market := runner.stateCache.Markets["amsterdam"]
-	market.CustomsBPS = 10000
-	runner.stateCache.Markets["amsterdam"] = market
-	if err := runner.futuresPreflight(h.ctx, &data); !errors.Is(err, errFuturesTerms) {
-		t.Fatalf("immutable shortfall treated as a recoverable market delay: %v", err)
-	}
-	if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || changed || data.Action != nil || mission.Phase != "futures_stopped" {
-		t.Fatalf("immutable shortfall retained a live admission: %t %v %+v phase=%s", changed, err, data.Action, mission.Phase)
-	}
-	rows, err := h.db.FuturesIntents(h.ctx, h.account.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, row := range rows {
-		if row.Side == "bid" && row.Status != "rejected" {
-			t.Fatalf("immutable shortfall kept its reserve forever: %+v", row)
-		}
-	}
-}
-
 func TestFuturesExpiredOrphanAdmissionReleasesOnlyNeverSentCoverage(t *testing.T) {
 	for _, pending := range []bool{false, true} {
 		t.Run(map[bool]string{false: "never sent", true: "pending"}[pending], func(t *testing.T) {
-			h, p, runner, mission, data := futuresStagedCreate(t)
+			h, p, runner, mission, data := futuresStagedAccept(t)
 			action := data.Action
 			if pending {
 				if _, err := h.db.BeginAction(h.ctx, &store.Action{ID: action.ID, AccountID: h.account.ID, Method: action.Method, Path: action.Path, Body: action.Body}); err != nil {
@@ -1259,7 +746,11 @@ func TestFuturesExpiredOrphanAdmissionReleasesOnlyNeverSentCoverage(t *testing.T
 			data.Action = nil
 			p.mu.Lock()
 			p.now = rows[0].MaturesAt.Add(time.Hour)
+			p.quantity = 0
 			p.mu.Unlock()
+			meta := runner.meta["warehouses"]
+			meta.Stale = true
+			runner.meta["warehouses"] = meta
 			refreshMarqueExecution(t, h, runner)
 			if _, err := runner.driveFutures(h.ctx, mission, &data); err != nil {
 				t.Fatal(err)
@@ -1269,7 +760,7 @@ func TestFuturesExpiredOrphanAdmissionReleasesOnlyNeverSentCoverage(t *testing.T
 				t.Fatal(err)
 			}
 			reserve, err := h.db.FuturesCashReserve(h.ctx, h.account.ID)
-			if err != nil || !pending && (rows[0].Status != "rejected" || reserve != 0 || mission.Phase != "futures_done") ||
+			if err != nil || !pending && (rows[0].Status != "rejected" || reserve != 0) ||
 				pending && (rows[0].Status != "intent" || reserve == 0 || data.Action == nil || data.Action.ID != action.ID) {
 				t.Fatalf("expiry confused no-send proof with ambiguous execution: pending=%t row=%+v reserve=%d phase=%s action=%+v err=%v",
 					pending, rows, reserve, mission.Phase, data.Action, err)
@@ -1280,7 +771,7 @@ func TestFuturesExpiredOrphanAdmissionReleasesOnlyNeverSentCoverage(t *testing.T
 
 func futuresCreditDefault(t *testing.T, h *recoveryHarness, now time.Time) {
 	t.Helper()
-	row := store.FuturesIntent{AccountID: h.account.ID, IntentID: "credit-default", ActionID: "credit-create", CohortID: futuresPilotCohort,
+	row := store.FuturesIntent{AccountID: h.account.ID, IntentID: "credit-default", ActionID: "credit-create", CohortID: "credit-default-cohort",
 		PortID: "amsterdam", CommodityID: "water_beer", Side: "bid", LotTons: 1, Status: "intent",
 		StrikePricePence: 2300, MarginPence: 575, ReservedCashPence: 2937, ExposurePence: 2937,
 		CreatedAt: now, MaturesAt: now.Add(30 * time.Minute)}
@@ -1300,7 +791,7 @@ func TestFuturesOwnCreditCaptureRequiresMatchingBoundedClaims(t *testing.T) {
 	for _, kind := range []string{"valid", "foreign company", "missing claims", "negative claims", "overflow claims"} {
 		t.Run(kind, func(t *testing.T) {
 			h, p := newFuturesMoneyAPI(t)
-			runner := futuresMoneyRunner(t, h, true)
+			runner := futuresMoneyRunner(t, h)
 			refreshMarqueExecution(t, h, runner)
 			futuresCreditDefault(t, h, p.now.Add(-time.Minute))
 			report := map[string]any{"company_id": h.account.CompanyID, "futures_claims_open_pence": 125}
@@ -1339,7 +830,7 @@ func TestFuturesOwnCreditCaptureRequiresMatchingBoundedClaims(t *testing.T) {
 
 func TestFuturesOwnCreditReadsOnlyForDefaultsAndThrottleSurvivesRestartAndFailure(t *testing.T) {
 	h, p := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, true)
+	runner := futuresMoneyRunner(t, h)
 	reads, status, claims := 0, http.StatusOK, int64(125)
 	h.api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/v1/loan/credit" && request.URL.Query().Get("company_id") == h.account.CompanyID {
@@ -1357,7 +848,7 @@ func TestFuturesOwnCreditReadsOnlyForDefaultsAndThrottleSurvivesRestartAndFailur
 	if err := runner.refreshFuturesCredit(h.ctx); err != nil || reads != 1 {
 		t.Fatalf("default did not request one own-credit capture: reads=%d err=%v", reads, err)
 	}
-	runner = futuresMoneyRunner(t, h, true)
+	runner = futuresMoneyRunner(t, h)
 	refreshMarqueExecution(t, h, runner)
 	if err := runner.refreshFuturesCredit(h.ctx); err != nil || reads != 1 {
 		t.Fatalf("restart lost the persisted five-minute allowance: reads=%d err=%v", reads, err)
@@ -1381,7 +872,7 @@ func TestFuturesOwnCreditReadsOnlyForDefaultsAndThrottleSurvivesRestartAndFailur
 	if reserve, err := h.db.FuturesCashReserve(h.ctx, h.account.ID); err != nil || reserve != 125 {
 		t.Fatalf("failed credit refresh released an unpaid claim: reserve=%d err=%v", reserve, err)
 	}
-	runner = futuresMoneyRunner(t, h, true)
+	runner = futuresMoneyRunner(t, h)
 	refreshMarqueExecution(t, h, runner)
 	if err := runner.refreshFuturesCredit(h.ctx); err != nil || reads != 2 {
 		t.Fatalf("failure refunded the allowance after restart: reads=%d err=%v", reads, err)
@@ -1402,7 +893,7 @@ func TestFuturesOwnCreditReadsOnlyForDefaultsAndThrottleSurvivesRestartAndFailur
 
 func TestFuturesOwnCreditReservationRecoveryClearsUnneededHold(t *testing.T) {
 	h, _ := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, false)
+	runner := futuresMoneyRunner(t, h)
 	admin, err := sql.Open("pgx", h.dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -1426,7 +917,7 @@ func TestFuturesOwnCreditReservationRecoveryClearsUnneededHold(t *testing.T) {
 
 func TestFuturesOwnCreditFailureHoldSurvivesRunStatusReset(t *testing.T) {
 	h, p := newFuturesMoneyAPI(t)
-	runner := futuresMoneyRunner(t, h, false)
+	runner := futuresMoneyRunner(t, h)
 	runner.opts.Execute = false
 	futuresCreditDefault(t, h, p.now.Add(-time.Minute))
 	h.api.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

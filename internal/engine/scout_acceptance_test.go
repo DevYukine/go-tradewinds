@@ -191,6 +191,7 @@ func TestScoutHamburgExactHintUpsidesBoundExposure(t *testing.T) {
 			for _, gap := range []int64{1, 0} {
 				in := scoutAcceptanceInput(t)
 				in.Balances["north"] = 100_000_000
+				in.SourcingProbeHistory.ScoutConversionNetPence = 360_000
 				plan := scoutAcceptancePlan(t, scoutCandidates(in, nil), tc.port)
 				if !plan.Accepted {
 					t.Fatalf("baseline scout rejected: %+v", plan)
@@ -305,7 +306,7 @@ func TestScoutPlannerSafetyBudgetStreakAndCooldownGates(t *testing.T) {
 				in.SourcingProbeHistory.Ships[in.Ship.Ship.ID] = probeShipHistory{Failures: 2}
 				wantReason = failedProbeStreakReason
 			case "cooldown early", "cooldown exact":
-				age := 24 * time.Minute
+				age := scoutNoConversionWindow
 				if gate == "cooldown early" {
 					age -= time.Second
 				} else {
@@ -447,7 +448,7 @@ func TestScoutAdmissionCreatesOneMissionOnSmallestHoldThenLowestID(t *testing.T)
 	input.ReserveByRegion = sourcingReserves(input, source)
 	if mission.Phase != "sourcing_fund" || data.Relocation == nil || !data.Relocation.Scout || !data.Relocation.IdlePilot ||
 		data.Relocation.TargetDestination != "hamburg" || data.Relocation.TargetCommodity != data.Plan.Commodity ||
-		data.Relocation.ExpenseCapPence != 148_241 || data.Relocation.ExpenseCapPence != scoutAllowance(input) ||
+		data.Relocation.ExpenseCapPence != scoutDailySeedPence || data.Relocation.ExpenseCapPence != scoutAllowance(input) ||
 		data.Relocation.ModeledExpensePence != -data.Plan.Economics.ExpectedNetPence || data.Relocation.StoreBasis == nil ||
 		data.ProvenLane != scoutLaneKey(data.Plan.Destination, "hamburg", data.Plan.Commodity) {
 		t.Fatalf("admission did not persist the bounded scout intent: mission=%+v data=%+v", mission, data)
@@ -506,8 +507,12 @@ func TestScoutAdmissionElevenHoursObserveModeAndRejectedHeadline(t *testing.T) {
 					idle[id] = state
 				}
 				runner.snapshot["_ship_idle"] = encode(idle)
-				// A lone ship still requires twelve hours for hinted scouting;
-				// co-located refresh has its own six-hour acceptance coverage.
+				runner.snapshot["_quay_book_memory"] = encode(map[string]RetainedQuayBook{
+					"amsterdam":  {ObservedAt: runner.stateCache.Clock.RealUTC, Bids: map[string][]RetainedBid{"copper_sheathing": {{PricePence: 1, RemainingQuantity: 1}}}},
+					"flushing":   {ObservedAt: runner.stateCache.Clock.RealUTC, Bids: map[string][]RetainedBid{"salted_meat": {{PricePence: 1, RemainingQuantity: 1}}}},
+					"portsmouth": {ObservedAt: runner.stateCache.Clock.RealUTC, Bids: map[string][]RetainedBid{"ironwork_tools": {{PricePence: 1, RemainingQuantity: 1}}}},
+					"calais":     {ObservedAt: runner.stateCache.Clock.RealUTC, Bids: map[string][]RetainedBid{"provisions": {{PricePence: 1, RemainingQuantity: 1}}}},
+				})
 				runner.stateCache.Ships = runner.stateCache.Ships[2:]
 			case "observe":
 				runner.opts.Execute = false
@@ -532,12 +537,12 @@ func TestScoutAdmissionElevenHoursObserveModeAndRejectedHeadline(t *testing.T) {
 				}
 				found := false
 				for _, row := range rows.([]store.Decision) {
-					if row.Kind == "scouting" && row.Reason == "scouting waits for twelve coherent idle game hours at this port" {
+					if row.Kind == "scouting" && strings.Contains(row.Reason, "book refresh needs a missing quay book") {
 						found = true
 					}
 				}
 				if !found {
-					t.Fatal("eleven-hour pass omitted the exact scouting threshold decision")
+					t.Fatal("eleven-hour pass omitted the independent stale-book refresh rejection")
 				}
 				return
 			}
@@ -877,6 +882,7 @@ func scoutDrainedPilotInput(t *testing.T) PlanningInput {
 	zero := int64(0)
 	in.SourcingAllowancePence = &zero
 	in.SourcingProbeExpensePence = 329_844
+	in.SourcingProbeHistory.ScoutConversionNetPence = 360_000
 	in.Balances["north"] = 6_570_867
 	in.ReserveByRegion["north"] = 316_458
 	// These deterministic routes and harbour costs reproduce the two cost
@@ -916,15 +922,14 @@ func TestScoutAdmitsAfterSourcingDrainedPilotWithImportOnlyProvisions(t *testing
 	}
 }
 
-func TestScoutDrainedPilotPreservesFleetUnknownCostAndShipGuards(t *testing.T) {
-	for _, guard := range []string{"fleet failures", "unknown costs", "ship failures", "target cooldown"} {
+func TestScoutDrainedPilotPreservesPortUnknownCostAndShipGuards(t *testing.T) {
+	for _, guard := range []string{"port failures", "unknown costs", "ship failures", "target cooldown"} {
 		t.Run(guard, func(t *testing.T) {
 			in := scoutDrainedPilotInput(t)
 			wantReason := ""
 			switch guard {
-			case "fleet failures":
-				in.SourcingProbeHistory.ScoutFailures = 2
-				wantReason = failedFleetScoutReason
+			case "port failures":
+				in.SourcingProbeHistory.ScoutPorts = map[string]scoutPortHistory{"amsterdam": {CompletedAt: in.Now.Add(-time.Hour)}}
 			case "unknown costs":
 				in.SourcingProbeCostsUnknown = true
 				if got := scoutAllowance(in); got != 0 {

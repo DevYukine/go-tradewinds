@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -528,6 +529,29 @@ func TestFuturesOwnCreditWithoutUnresolvedDefaultsDoesNotLockAccount(t *testing.
 			}
 			if err := db.db.Model(&futuresCreditEvidence{}).Count(&count).Error; err != nil || count != want {
 				t.Fatalf("optional no-op created a reservation row: %d %v", count, err)
+			}
+		})
+	}
+}
+
+func TestFuturesReadmissionRequiresRetryableRejection(t *testing.T) {
+	for _, status := range []int{400, 401, 403, 429} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			db, _, _ := integrationStore(t)
+			saveTestAccount(t, db, "pilot")
+			ctx := context.Background()
+			row := futuresLedgerFixture(t, db, "ask")
+			action := &Action{ID: row.ActionID, AccountID: row.AccountID, Method: "POST", Path: "/v1/future/accept", Body: json.RawMessage(`{"futures_id":"listing"}`)}
+			if _, err := db.BeginAction(ctx, action); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.CompleteAction(ctx, action.ID, status, json.RawMessage(`{"code":"refused"}`), nil); err != nil {
+				t.Fatal(err)
+			}
+			err := db.ReadmitFuturesIntent(ctx, row.AccountID, row.IntentID, "retry-"+row.ActionID)
+			retryable := status == 401 || status == 429
+			if retryable && err != nil || !retryable && !errors.Is(err, ErrActionConflict) {
+				t.Fatalf("status %d readmission: %v", status, err)
 			}
 		})
 	}

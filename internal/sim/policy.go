@@ -224,8 +224,8 @@ func (world *variantWorld) planningInput(view FrameView, ship engine.ShipState) 
 		return engine.PlanningInput{}, err
 	}
 	input := engine.PlanningInputFor(view.At, ship, state, snapshot, engine.PlanningSources{
-		CompanyID: world.options.CompanyID, ReservePence: world.options.ReservePence,
-		Metadata: meta, Generation: generation, CharterProceedsPence: proceeds, Competition: competition,
+		CompanyID: world.options.CompanyID,
+		Metadata:  meta, Generation: generation, CharterProceedsPence: proceeds, Competition: competition,
 	})
 	input.NextRungReceiptStress = world.variant.NextRungReceiptStress
 	input.SourcingCashBPS = world.variant.SourcingCashBPS

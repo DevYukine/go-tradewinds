@@ -47,16 +47,17 @@ type Settlement struct {
 	PlannedNetPence         *int64 `json:"planned_net_pence,omitempty"`
 	// The uncalibrated quote is absent when the purchased lot differs from
 	// the forecast quantity; such receipts cannot calibrate a full-lot price.
-	PlannedRevenuePence *int64    `json:"planned_revenue_pence,omitempty"`
-	RevenueBasis        *string   `json:"revenue_basis,omitempty"`
-	RevenueAgeGameHours *float64  `json:"revenue_age_game_hours,omitempty"`
-	HazardBPS           *int64    `json:"hazard_bps,omitempty"`
-	HazardSource        *string   `json:"hazard_source,omitempty"`
-	CargoShortfallPence *int64    `json:"cargo_shortfall_pence,omitempty"`
-	DepartedCargoPence  *int64    `json:"departed_cargo_pence,omitempty"`
-	StartedAt           time.Time `json:"started_at"`
-	CompletedAt         time.Time `json:"completed_at"`
-	CreatedAt           time.Time `json:"created_at"`
+	PlannedRevenuePence *int64           `json:"planned_revenue_pence,omitempty"`
+	RevenueBasis        *string          `json:"revenue_basis,omitempty"`
+	RevenueAgeGameHours *float64         `json:"revenue_age_game_hours,omitempty"`
+	AdmissionRevenue    *RevenueForecast `json:"admission_revenue,omitempty" gorm:"-"`
+	HazardBPS           *int64           `json:"hazard_bps,omitempty"`
+	HazardSource        *string          `json:"hazard_source,omitempty"`
+	CargoShortfallPence *int64           `json:"cargo_shortfall_pence,omitempty"`
+	DepartedCargoPence  *int64           `json:"departed_cargo_pence,omitempty"`
+	StartedAt           time.Time        `json:"started_at"`
+	CompletedAt         time.Time        `json:"completed_at"`
+	CreatedAt           time.Time        `json:"created_at"`
 }
 
 func (Settlement) TableName() string { return "settlements" }
@@ -78,6 +79,7 @@ func sameSettlement(a, b Settlement) bool {
 		sameOptional(a.PlannedRevenuePence, b.PlannedRevenuePence) &&
 		sameOptional(a.RevenueBasis, b.RevenueBasis) &&
 		sameOptional(a.RevenueAgeGameHours, b.RevenueAgeGameHours) &&
+		sameOptional(a.AdmissionRevenue, b.AdmissionRevenue) &&
 		sameOptional(a.HazardBPS, b.HazardBPS) &&
 		sameOptional(a.HazardSource, b.HazardSource) &&
 		sameOptional(a.CargoShortfallPence, b.CargoShortfallPence) &&
@@ -107,6 +109,9 @@ func validateSettlement(settlement *Settlement) (int64, error) {
 		settlement.QuantityTons < 0 || settlement.GameSeconds < 0 || settlement.AcquisitionPence < 0 ||
 		settlement.ProceedsPence < 0 || settlement.FeesPence < 0 || settlement.ProvisionsPence < 0 || settlement.ExpensesPence < 0 ||
 		settlement.ExplorationExpensePence != nil && *settlement.ExplorationExpensePence < 0 ||
+		settlement.AdmissionRevenue != nil && (settlement.AdmissionRevenue.RevenuePence < 0 ||
+			settlement.AdmissionRevenue.QuantityTons < 0 || settlement.AdmissionRevenue.HorizonGameDays < 0 ||
+			math.IsNaN(settlement.AdmissionRevenue.HorizonGameDays) || math.IsInf(settlement.AdmissionRevenue.HorizonGameDays, 0)) ||
 		settlement.PlannedRevenuePence != nil && *settlement.PlannedRevenuePence < 0 ||
 		settlement.RevenueAgeGameHours != nil && (*settlement.RevenueAgeGameHours < 0 || math.IsNaN(*settlement.RevenueAgeGameHours) || math.IsInf(*settlement.RevenueAgeGameHours, 0)) ||
 		settlement.HazardBPS != nil && (*settlement.HazardBPS < 0 || *settlement.HazardBPS > 10_000) ||
@@ -462,49 +467,59 @@ func (s *Store) CapacityDeliveryHistory(ctx context.Context, accountID string, a
 	return deliveries, nil
 }
 
-// RevenueCalibration separates pricing regimes and revenue sources. Mixed
-// freight/cargo receipts and dirty rows are excluded before taking each basis's
-// latest twenty actual-to-uncalibrated revenue ratios.
-func (s *Store) RevenueCalibration(ctx context.Context, accountID string, since, asOf time.Time) (map[string]int64, error) {
+// RevenueCalibration fits a bounded rolling receipt cohort within the current
+// pricing regime. Mixed receipts cannot identify cargo-price misses.
+func (s *Store) RevenueCalibration(ctx context.Context, accountID string, since, retainedSince, asOf time.Time) (RevenueCalibrationModel, error) {
 	if !validID(accountID) || since.IsZero() || asOf.IsZero() || asOf.Before(since) {
-		return nil, fmt.Errorf("revenue calibration window: %w", ErrInvalidInput)
+		return RevenueCalibrationModel{}, fmt.Errorf("revenue calibration window: %w", ErrInvalidInput)
+	}
+	from := asOf.Add(-revenueCalibrationWindow)
+	if since.After(from) {
+		from = since
 	}
 	db, cancel := s.query(ctx)
 	defer cancel()
-	var rows []struct {
-		Basis string
-		BPS   int64
+	var rows []settlementRow
+	if err := db.Where(`account_id = ? AND started_at >= ? AND completed_at >= ? AND completed_at < ?
+		AND kind IN ('spot', 'charter', 'freight')`, accountID, since, from, asOf).
+		Order("completed_at DESC, id").Limit(revenueCalibrationMaxSamples).Find(&rows).Error; err != nil {
+		return RevenueCalibrationModel{}, fmt.Errorf("revenue calibration: %w", err)
 	}
-	err := db.Raw(`
-		WITH eligible AS (
-			SELECT revenue_basis AS basis,
-				proceeds_pence::numeric * 10000 / planned_revenue_pence AS ratio_bps,
-				ROW_NUMBER() OVER (PARTITION BY revenue_basis ORDER BY completed_at DESC, id) AS recent
-			FROM settlements
-			WHERE account_id = ? AND started_at >= ? AND completed_at >= ? AND completed_at <= ?
-				AND costs_known AND NOT proceeds_unknown AND planned_revenue_pence > 0
-				AND revenue_basis IS NOT NULL AND BTRIM(revenue_basis) <> ''
-				AND COALESCE(cargo_shortfall_pence, 0) = 0
-				AND kind IN ('spot', 'charter', 'freight', 'recovery')
-		), ordered AS (
-			SELECT basis, ratio_bps,
-				ROW_NUMBER() OVER (PARTITION BY basis ORDER BY ratio_bps) AS position,
-				COUNT(*) OVER (PARTITION BY basis) AS samples
-			FROM eligible WHERE recent <= 20
-		)
-		SELECT basis, CASE WHEN MAX(samples) < 10 THEN 10000 ELSE
-			LEAST(10000, GREATEST(9000, TRUNC(AVG(ratio_bps)
-				FILTER (WHERE position IN ((samples + 1) / 2, (samples + 2) / 2)))))
-			END::bigint AS bps
-		FROM ordered GROUP BY basis`, accountID, since, since, asOf).Scan(&rows).Error
-	if err != nil {
-		return nil, fmt.Errorf("revenue calibration: %w", err)
-	}
-	result := make(map[string]int64, len(rows))
+	settlements := make([]Settlement, 0, len(rows))
 	for _, row := range rows {
-		result[row.Basis] = row.BPS
+		settlement, err := s.decodeSettlement(row)
+		if err != nil {
+			return RevenueCalibrationModel{}, err
+		}
+		settlements = append(settlements, settlement)
 	}
-	return result, nil
+	return FitRevenueCalibrationWindow(settlements, nil, since, retainedSince, asOf)
+}
+
+func (s *Store) RevenueCalibrationRegime(ctx context.Context, accountID string) (RevenueCalibrationModel, error) {
+	if !validID(accountID) {
+		return RevenueCalibrationModel{}, ErrInvalidInput
+	}
+	db, cancel := s.query(ctx)
+	defer cancel()
+	var row struct {
+		Data json.RawMessage
+	}
+	err := db.Table("snapshots").Select(`jsonb_build_object(
+		'since', CASE WHEN octet_length((data -> '_revenue_calibration_since')::text) <= 64 THEN data -> '_revenue_calibration_since' END,
+		'retained_since', CASE WHEN octet_length((data -> '_revenue_calibration_v2_since')::text) <= 64 THEN data -> '_revenue_calibration_v2_since' END
+		) AS data`).Where("account_id = ?", accountID).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return RevenueCalibrationModel{}, nil
+	}
+	if err != nil {
+		return RevenueCalibrationModel{}, err
+	}
+	var regime RevenueCalibrationModel
+	if err := json.Unmarshal(row.Data, &regime); err != nil {
+		return RevenueCalibrationModel{}, errors.New("invalid revenue calibration boundaries")
+	}
+	return regime, nil
 }
 
 // RelocationProbes looks up only the caller's bounded evidence shortlist.
@@ -615,6 +630,12 @@ func (s *Store) replaySettlementsWhere(ctx context.Context, accountID, predicate
 			size := replayEvidenceRowOverhead + len(value.ID) + len(value.AccountID) +
 				len(value.MissionID) + len(value.ActionID) + len(value.EventID) + len(value.ShipID) + len(value.Lane) +
 				len(value.Kind) + len(value.Origin) + len(value.Destination) + len(value.Commodity) + len(value.ProbeOutcome)
+			if value.RevenueBasis != nil {
+				size += len(*value.RevenueBasis)
+			}
+			if value.HazardSource != nil {
+				size += len(*value.HazardSource)
+			}
 			if err := budget.retain(int64(size), "settlement history"); err != nil {
 				return nil, err
 			}
@@ -632,7 +653,9 @@ func (s *Store) replaySettlementEvidence(ctx context.Context, accountID, id stri
 	defer cancel()
 	var row settlementRow
 	err := db.Select("id, account_id, mission_id, action_id, event_id, lane_lookup, context_cipher, kind, quantity_tons, game_seconds, costs_known, "+
-		"acquisition_pence, proceeds_pence, proceeds_unknown, fees_pence, provisions_pence, expenses_pence, exploration_expense_pence, started_at, completed_at, created_at").
+		"acquisition_pence, proceeds_pence, proceeds_unknown, fees_pence, provisions_pence, expenses_pence, exploration_expense_pence, "+
+		"planned_net_pence, planned_revenue_pence, revenue_basis, revenue_age_game_hours, hazard_bps, hazard_source, "+
+		"cargo_shortfall_pence, departed_cargo_pence, started_at, completed_at, created_at").
 		Where("account_id = ? AND id = ?", accountID, id).
 		Where("("+replaySettlementCiphertextBytesSQL+") <= ? AND ("+replaySettlementMetadataBytesSQL+") <= ?",
 			MaxReplayEvidenceCiphertextBytes, MaxReplayEvidenceMetadataBytes).

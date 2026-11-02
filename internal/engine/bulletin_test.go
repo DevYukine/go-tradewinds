@@ -53,7 +53,6 @@ func newBulletinFixture(t *testing.T) (*recoveryHarness, *bulletinTestAPI, *Runn
 	proxy := &bulletinTestAPI{h: h, downstream: h.api.server.Config.Handler, threads: []bulletinThread{}, details: make(map[string]bulletinDetail), posted: make(map[string]bulletinPost), bodies: make(map[string][]byte)}
 	h.api.server.Config.Handler = proxy
 	runner := h.runner(primaryTestKey)
-	runner.opts.BulletinEnabled = true
 	refreshBulletinRunner(t, h, runner)
 	return h, proxy, runner
 }
@@ -364,7 +363,6 @@ func TestBulletinCooldownResultsSurviveRestart(t *testing.T) {
 				t.Fatalf("refusal cooldown or unposted pool changed: %+v error=%v", state, err)
 			}
 			restarted := h.runner(primaryTestKey)
-			restarted.opts.BulletinEnabled = true
 			refreshBulletinRunner(t, h, restarted)
 			reads := proxy.boardReads
 			if changed, err := restarted.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed || proxy.postCalls != 1 || proxy.boardReads != reads {
@@ -400,7 +398,6 @@ func TestBulletinRestartPreservesStagedRequest(t *testing.T) {
 	_, data := stageBulletinFixture(t, h, runner)
 	key, payload := data.Action.ID, slices.Clone(data.Action.Body)
 	restarted := h.runner(primaryTestKey)
-	restarted.opts.BulletinEnabled = true
 	refreshBulletinRunner(t, h, restarted)
 	mission, data := h.mission("__bulletin")
 	if changed, err := restarted.driveBulletin(h.ctx, mission, &data); err != nil || !changed {
@@ -431,7 +428,6 @@ func TestBulletinAmbiguousCommitReconcilesBeforeNewPost(t *testing.T) {
 		t.Fatalf("ambiguous attempt made extra writes or board reads: posts=%d reads=%d", proxy.postCalls, proxy.boardReads)
 	}
 	restarted := h.runner(primaryTestKey)
-	restarted.opts.BulletinEnabled = true
 	refreshBulletinRunner(t, h, restarted)
 	mission, data = h.mission("__bulletin")
 	if data.Action.ID != key {
@@ -473,7 +469,6 @@ func TestBulletinPendingTransportCommitReconcilesWithoutResend(t *testing.T) {
 	}
 	proxy.dropReceipt = false
 	restarted := h.runner(primaryTestKey)
-	restarted.opts.BulletinEnabled = true
 	refreshBulletinRunner(t, h, restarted)
 	mission, data = h.mission("__bulletin")
 	if data.Action == nil || data.Action.ID != key || !bytes.Equal(data.Action.Body, payload) {
@@ -515,7 +510,6 @@ func TestBulletinReconciledJournalSurvivesMissionWriteRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	restarted := h.runner(primaryTestKey)
-	restarted.opts.BulletinEnabled = true
 	refreshBulletinRunner(t, h, restarted)
 	mission, data = h.mission("__bulletin")
 	sendBulletinFixture(t, h, restarted, mission, &data)
@@ -578,20 +572,6 @@ func TestOptionalControlPendingFilterKeepsMoneyActions(t *testing.T) {
 	actions = append(actions, store.Action{Path: "/v1/treasury/remit"})
 	if !tradingActionsPending(actions) {
 		t.Fatal("optional-control exemption discarded a genuine unresolved money action")
-	}
-}
-
-func TestBulletinDisabledDoesNotReadOrSend(t *testing.T) {
-	h, proxy, runner := newBulletinFixture(t)
-	runner.opts.BulletinEnabled = false
-	if changed, err := runner.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed || proxy.boardReads != 0 || proxy.postCalls != 0 {
-		t.Fatalf("disabled activity read or posted: %t %v", changed, err)
-	}
-	runner.opts.BulletinEnabled = true
-	mission, data := stageBulletinFixture(t, h, runner)
-	runner.opts.BulletinEnabled = false
-	if _, err := runner.driveBulletin(h.ctx, mission, &data); err != nil || proxy.postCalls != 0 {
-		t.Fatalf("disabled staged activity posted: %v", err)
 	}
 }
 
@@ -751,7 +731,6 @@ func TestBulletinReplySearchUsesArchiveBoundaryAndDefersOnlyActivePages(t *testi
 func resumeBulletinFixture(t *testing.T, h *recoveryHarness) (*Runner, *store.Mission, missionData) {
 	t.Helper()
 	runner := h.runner(primaryTestKey)
-	runner.opts.BulletinEnabled = true
 	refreshBulletinRunner(t, h, runner)
 	state, err := runner.bulletinState()
 	if err != nil {

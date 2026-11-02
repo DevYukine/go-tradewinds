@@ -51,35 +51,38 @@ func futuresMoneyIntent(account, id, action, side string, exposure int64) json.R
 	return raw
 }
 
-func TestFuturesMoneyLedgerExposureCapIncludesOutstandingIntents(t *testing.T) {
-	for _, extra := range []int64{20_000, 20_001} {
-		t.Run(map[int64]string{20_000: "30000_pence_allowed", 20_001: "30001_pence_refused"}[extra], func(t *testing.T) {
+func TestFuturesMoneyLedgerExposureCapIsPerIntent(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		exposure int64
+		allowed  bool
+	}{
+		{name: "inclusive sanity boundary", exposure: 2_000_000, allowed: true},
+		{name: "above sanity boundary", exposure: 2_000_001},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			db, _, _ := integrationStore(t)
 			saveTestAccount(t, db, "pilot")
-			saveTestAccount(t, db, "other")
-			if err := futuresMoneyPut(t, db, futuresMoneyIntent("pilot", "first", "first-action", "ask", 10_000)); err != nil {
+			if err := futuresMoneyPut(t, db, futuresMoneyIntent("pilot", "first", "first-action", "ask", 2_000_000)); err != nil {
 				t.Fatal(err)
 			}
-			if err := futuresMoneyPut(t, db, futuresMoneyIntent("other", "other", "other-action", "ask", 30_000)); err != nil {
+			err := futuresMoneyPut(t, db, futuresMoneyIntent("pilot", "second", "second-action", "bid", test.exposure))
+			if test.allowed && err != nil {
+				t.Fatalf("individually bounded intent rejected because of aggregate exposure: %v", err)
+			}
+			if !test.allowed && !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("intent above the sanity boundary returned %v, want invalid input", err)
+			}
+			rows, err := db.FuturesIntents(context.Background(), "pilot")
+			if err != nil {
 				t.Fatal(err)
 			}
-			err := futuresMoneyPut(t, db, futuresMoneyIntent("pilot", "second", "second-action", "bid", extra))
-			if extra == 20_000 && err != nil {
-				t.Fatalf("30,000p inclusive cap refused: %v", err)
-			}
-			if extra == 20_001 && err == nil {
-				t.Fatal("30,001p combined exposure admitted; pending intents must count before send")
-			}
-			var count int64
-			if err := db.db.Table("futures_intents").Where("account_id = ?", "pilot").Count(&count).Error; err != nil {
-				t.Fatal(err)
-			}
-			want := int64(1)
-			if extra == 20_000 {
+			want := 1
+			if test.allowed {
 				want = 2
 			}
-			if count != want {
-				t.Fatalf("failed admission left a partial intent: count=%d want=%d", count, want)
+			if len(rows) != want {
+				t.Fatalf("admission persisted %d intents, want %d", len(rows), want)
 			}
 		})
 	}
