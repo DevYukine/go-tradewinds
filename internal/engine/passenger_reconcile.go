@@ -60,7 +60,7 @@ func (r *Runner) reconcilePassengerCompletion(ctx context.Context, ship ShipStat
 			if waiting {
 				delete(waits, mission.Generation)
 				r.snapshot[passengerCompletionWaitKey] = encode(waits)
-				return true, r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+				return true, r.saveSnapshot(ctx)
 			}
 			return false, nil
 		}
@@ -69,7 +69,7 @@ func (r *Runner) reconcilePassengerCompletion(ctx context.Context, ship ShipStat
 				ObservedAt: upper, TimeScale: r.stateCache.Clock.Calendar.TimeScale}
 			waits[mission.Generation] = wait
 			r.snapshot[passengerCompletionWaitKey] = encode(waits)
-			return true, r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+			return true, r.saveSnapshot(ctx)
 		}
 		if lowerHour-wait.GameHour < 2 {
 			return false, nil
@@ -195,7 +195,7 @@ func (r *Runner) releasePassengerReceiptMission(ctx context.Context, receipt sto
 	}
 	if changed {
 		r.snapshot["_expense_allocations"] = encode(r.expenseOwners)
-		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+		if err := r.saveSnapshot(ctx); err != nil {
 			return false, err
 		}
 	}
@@ -395,7 +395,7 @@ func (r *Runner) reconcilePassengerReceiptsAt(ctx context.Context, now time.Time
 	}
 	if waitsChanged {
 		r.snapshot[passengerCompletionWaitKey] = encode(waits)
-		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+		if err := r.saveSnapshot(ctx); err != nil {
 			failures = append(failures, err)
 		} else {
 			changed = true

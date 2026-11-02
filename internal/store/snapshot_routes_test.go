@@ -170,14 +170,14 @@ func TestPostgresSnapshotRoutesRollbackInvalidatesCache(t *testing.T) {
 func TestSnapshotRoutesIndependentBounds(t *testing.T) {
 	t.Run("raw limit", func(t *testing.T) {
 		raw := json.RawMessage(`{"lane":"` + strings.Repeat("x", MaxSnapshotRoutesBytes) + `"}`)
-		if _, err := encodeSnapshotRoutes(raw, nil); !errors.Is(err, ErrResponseTooLarge) {
-			t.Fatalf("route cache exceeded its independent raw budget: %v", err)
+		if _, err := encodeSnapshotRoutes(raw, nil); !errors.Is(err, ErrResponseTooLarge) || errors.Is(err, ErrSnapshotRowTooLarge) {
+			t.Fatalf("route raw overflow must not report a snapshot row overflow: %v", err)
 		}
 	})
 	t.Run("redacted limit", func(t *testing.T) {
 		raw := json.RawMessage(`{"lane":"` + strings.Repeat("x", MaxSnapshotRoutesBytes/8) + `"}`)
-		if _, err := encodeSnapshotRoutes(raw, []string{"x"}); !errors.Is(err, ErrResponseTooLarge) {
-			t.Fatalf("route cache exceeded its independent redacted budget: %v", err)
+		if _, err := encodeSnapshotRoutes(raw, []string{"x"}); !errors.Is(err, ErrResponseTooLarge) || errors.Is(err, ErrSnapshotRowTooLarge) {
+			t.Fatalf("route redacted overflow must not report a snapshot row overflow: %v", err)
 		}
 	})
 	for _, raw := range []json.RawMessage{json.RawMessage(`[]`), json.RawMessage(`{"lane":`)} {
@@ -195,12 +195,30 @@ func TestPostgresSnapshotRoutesKeepSnapshotRowBound(t *testing.T) {
 		"routes": json.RawMessage(`{"lane":{"distance":10}}`),
 		"other":  json.RawMessage(`"` + strings.Repeat("x", MaxSnapshotBytes) + `"`),
 	}
-	if err := db.SaveSnapshot(ctx, "row-bound", snapshot); !errors.Is(err, ErrResponseTooLarge) {
-		t.Fatalf("ordinary snapshot row escaped its existing cap: %v", err)
+	if err := db.SaveSnapshot(ctx, "row-bound", snapshot); !errors.Is(err, ErrSnapshotRowTooLarge) || !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("ordinary row overflow must wrap both row-specific and generic size errors: %v", err)
 	}
 	loaded, err := db.Snapshot(ctx, "row-bound")
 	if err != nil || len(loaded) != 0 {
 		t.Fatalf("oversized snapshot wrote partial state: keys=%d error=%v", len(loaded), err)
+	}
+}
+
+func TestPostgresSnapshotEncodedRowOverflowIsDistinctFromRoutes(t *testing.T) {
+	db, _, _ := integrationStore(t)
+	ctx := context.Background()
+	saveTestAccount(t, db, "encoded-row-bound")
+	raw := json.RawMessage(`"` + strings.Repeat("<", MaxSnapshotBytes/5) + `"`)
+	if len("escaped")+len(raw) > MaxSnapshotBytes {
+		t.Fatal("fixture must fit the raw key/value budget before HTML escaping")
+	}
+	err := db.SaveSnapshot(ctx, "encoded-row-bound", map[string]json.RawMessage{"escaped": raw})
+	if !errors.Is(err, ErrSnapshotRowTooLarge) || !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("encoded row overflow must wrap both row-specific and generic size errors: %v", err)
+	}
+	loaded, err := db.Snapshot(ctx, "encoded-row-bound")
+	if err != nil || len(loaded) != 0 {
+		t.Fatalf("encoded row overflow wrote partial state: keys=%d error=%v", len(loaded), err)
 	}
 }
 

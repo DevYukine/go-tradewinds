@@ -70,7 +70,7 @@ func (r *Runner) archiveQuarantinedPassage(ctx context.Context, mission *store.M
 		r.expenseOwners[id] = mission.Generation
 	}
 	r.snapshot["_expense_allocations"] = encode(r.expenseOwners)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 func (r *Runner) ensurePassengerBoardingHint(ctx context.Context, shipID string) error {
@@ -84,7 +84,7 @@ func (r *Runner) ensurePassengerBoardingHint(ctx context.Context, shipID string)
 	previous, existed := r.snapshot["_passenger_boarding_ships"]
 	hints[shipID] = true
 	r.snapshot["_passenger_boarding_ships"] = encode(hints)
-	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+	if err := r.saveSnapshot(ctx); err != nil {
 		if existed {
 			r.snapshot["_passenger_boarding_ships"] = previous
 		} else {
@@ -194,7 +194,7 @@ func (r *Runner) releaseQuarantinedPassage(ctx context.Context, ship ShipState, 
 	hints := decode[map[string]bool](r.snapshot, "_passenger_boarding_ships")
 	delete(hints, ship.Ship.ID)
 	r.snapshot["_passenger_boarding_ships"] = encode(hints)
-	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+	if err := r.saveSnapshot(ctx); err != nil {
 		return false, err
 	}
 	if err := r.db.ReleaseQuarantinedPassengerHull(ctx, r.account.ID, ship.Ship.ID); err != nil {

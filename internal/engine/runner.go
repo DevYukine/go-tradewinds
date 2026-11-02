@@ -46,6 +46,7 @@ type Runner struct {
 	log              *zap.Logger
 	opts             Options
 	snapshot         map[string]json.RawMessage
+	snapshotShed     string
 	meta             map[string]DatasetMeta
 	stateCache       AccountState
 	generation       string
@@ -472,7 +473,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 		r.flushReplay(ctx, observedAt)
 		r.snapshot["_meta"] = encode(r.meta)
-		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+		if err := r.saveSnapshot(ctx); err != nil {
 			return err
 		}
 		r.logStatus(ctx, observedAt)

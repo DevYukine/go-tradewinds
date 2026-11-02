@@ -17,7 +17,7 @@ import (
 )
 
 func TestRouteRetentionReviewBoundsMultiOriginHistory(t *testing.T) {
-	for _, padding := range []int{0, 32 * 1024} {
+	for _, padding := range []int{0, 64 * 1024} {
 		t.Run(fmt.Sprintf("padding-%d", padding), func(t *testing.T) {
 			w := newIdleFallbackWorld(t)
 			w.h.api.setFleet([]map[string]any{sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort)})

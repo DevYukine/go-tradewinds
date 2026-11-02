@@ -71,7 +71,7 @@ func watchWarnings(ctx context.Context, log *zap.Logger, source func(context.Con
 					if !exists {
 						log.Warn("engine warning", warningLogFields(account.AccountID, account.Label, warning)...)
 						previous.raisedAt, previous.lastLogged = at, at
-					} else if at.Sub(previous.lastLogged) >= warningPersistEvery {
+					} else if previous.warning.Severity != warning.Severity || at.Sub(previous.lastLogged) >= warningPersistEvery {
 						log.Warn("engine warning persists", warningLogFields(account.AccountID, account.Label, warning)...)
 						previous.lastLogged = at
 					}

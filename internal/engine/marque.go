@@ -838,7 +838,7 @@ func (r *Runner) recordMarqueRefusal(ctx context.Context, data *missionData) err
 	zone := data.Marque.Quote.SeaZoneID
 	backoffs[zone] = maxTime(backoffs[zone], now.Add(gameDuration(7, scale)))
 	r.snapshot["_marque_backoffs"] = encode(backoffs)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 func (r *Runner) reconcileMarque(ctx context.Context, mission *store.Mission, data *missionData, action *store.Action) (bool, error) {

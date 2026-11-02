@@ -613,7 +613,7 @@ func TestReplayAccountingSnapshotProjectsScopedExactEvidenceAndRejectsOversizedS
 		source[key] = value
 	}
 	source["profile"] = json.RawMessage(`{"company":{"id":"must-not-be-loaded"}}`)
-	source["diagnostic"] = json.RawMessage(fmt.Sprintf("%q", strings.Repeat("private-diagnostic-", 8192)))
+	source["diagnostic"] = json.RawMessage(fmt.Sprintf("%q", strings.Repeat("private-diagnostic-", MaxSnapshotBytes/len("private-diagnostic-")+1)))
 	raw, err := json.Marshal(source)
 	if err != nil {
 		t.Fatal(err)
@@ -676,7 +676,7 @@ func TestReplayAccountingSnapshotProjectsScopedExactEvidenceAndRejectsOversizedS
 	if err := db.db.Exec(`UPDATE snapshots SET data = jsonb_build_object(
 		'ledger', data -> 'ledger',
 		'diagnostic', repeat('sensitive-accounting-', ?)
-	) WHERE account_id = ?`, MaxSnapshotBytes/len("sensitive-accounting-")+1, account).Error; err != nil {
+	) WHERE account_id = ?`, 2*MaxSnapshotBytes/len("sensitive-accounting-")+1, account).Error; err != nil {
 		t.Fatal(err)
 	}
 	var before string

@@ -454,7 +454,7 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 	if mortgageRefusal {
 		r.snapshot["_mortgage_refused_at"] = encode(time.Now().UTC())
 		r.snapshot["_mortgage_retry_at"] = encode(maxTime(r.gameDelay(1), time.Now().UTC().Add(30*time.Second)))
-		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+		if err := r.saveSnapshot(ctx); err != nil {
 			return false, err
 		}
 	} else if stage == "build" && domainRefusal {

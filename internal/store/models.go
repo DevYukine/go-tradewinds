@@ -32,6 +32,9 @@ const (
 	MaxSnapshotBytes = 16 * 1024 * 1024
 	// MaxSnapshotRoutesBytes independently bounds the encoded route cache.
 	MaxSnapshotRoutesBytes = 64 * 1024 * 1024
+	// SnapshotShedError marks a refetchable dataset the runner left out of a
+	// save that would otherwise exceed MaxSnapshotBytes.
+	SnapshotShedError = "not persisted: snapshot row over its size cap"
 
 	maxDiagnosticBytes        = 32 * 1024
 	maxDashboardSnapshotBytes = 32 * 1024 * 1024

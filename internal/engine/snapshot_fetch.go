@@ -33,6 +33,7 @@ type fetchResult struct {
 	err         error
 	attemptedAt time.Time
 	completedAt time.Time
+	retention   *snapshotRetention
 }
 
 // A worker owns its result slot through pagination and the client's existing
@@ -185,6 +186,8 @@ func readBorrowerLoans(ctx context.Context, api *gameapi.Client) (json.RawMessag
 	return json.Marshal(combined)
 }
 
+// The newest-first contract cursor does not promise updated_at order. An old
+// contract can settle recently, so apply retention only after the full capture.
 func readContracts(ctx context.Context, api *gameapi.Client) (json.RawMessage, error) {
 	byID := make(map[string]json.RawMessage)
 	var order []string

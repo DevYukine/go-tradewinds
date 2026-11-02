@@ -1,11 +1,15 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/DevYukine/go-tradewinds/internal/store"
+	"go.uber.org/zap"
 )
 
 func TestMarketEventsDecodeHistoricalAndStructural(t *testing.T) {
@@ -28,6 +32,41 @@ func TestMarketEventsDecodeHistoricalAndStructural(t *testing.T) {
 		if !input.marketEventUnavailable() {
 			t.Fatalf("malformed event feed silently became healthy: %s", raw)
 		}
+	}
+}
+
+func TestWorldEventRetentionDropsOnlyLongExpiredEvents(t *testing.T) {
+	t.Parallel()
+	now := moneyTime("2026-11-02T20:00:00Z")
+	raw := json.RawMessage(`[
+		{"id":"old","title":"Long gone","expires_at":"2026-10-30T19:59:59Z"},
+		{"id":"edge","expires_at":"2026-10-30T20:00:00Z"},
+		{"id":"recent","expires_at":"2026-11-02T10:00:00Z"},
+		{"id":"active","is_active":true,"expires_at":"2026-11-03T10:00:00Z"},
+		{"id":"unreadable","expires_at":"soon"}
+	]`)
+	runner := New(nil, nil, store.Account{}, zap.NewNop(), Options{})
+	if !runner.applyCapture(context.Background(), "world_events", fetchResult{data: raw, attemptedAt: now, completedAt: now}) {
+		t.Fatalf("world event capture failed: %+v", runner.meta["world_events"])
+	}
+	var events []map[string]any
+	if err := json.Unmarshal(runner.snapshot["world_events"], &events); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, event := range events {
+		ids = append(ids, event["id"].(string))
+	}
+	if strings.Join(ids, ",") != "edge,recent,active,unreadable" {
+		t.Fatalf("retained events = %v; want only the event expired before the 72 hour horizon dropped", ids)
+	}
+	if events[2]["is_active"] != true {
+		t.Fatalf("retained event lost fields the dashboard shows: %+v", events[2])
+	}
+	if got, _ := retainRecentRows(json.RawMessage(`{"events":[]}`), now.Add(-worldEventRetention), func(row json.RawMessage) time.Time {
+		return snapshotRowTimestamp("world_events", row)
+	}); string(got) != `{"events":[]}` {
+		t.Fatalf("malformed feed was rewritten instead of left for validation: %s", got)
 	}
 }
 

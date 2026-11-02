@@ -241,7 +241,7 @@ func (r *Runner) playerLoanBackoff(ctx context.Context, portID, hullID string, f
 		delete(fallbacks, key)
 	}
 	r.snapshot["_player_loan_fallback"] = encode(fallbacks)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 func (r *Runner) stagePlayerLoan(ctx context.Context, port Port, hull Hull, decision GrowthDecision, principal, installment int64, evidence *growthEvidence) (bool, error) {

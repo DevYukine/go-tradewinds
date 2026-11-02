@@ -10,17 +10,16 @@ import (
 	"time"
 
 	"github.com/DevYukine/go-tradewinds/internal/gameapi"
-	"github.com/DevYukine/go-tradewinds/internal/store"
 )
 
 const passengerFareIntervalGameHours = 10.0
 
 // Retained fare evidence stays well inside the account snapshot budget: at
-// most the documented 200-row page per lane and an eighth of
-// store.MaxSnapshotBytes of raw rows across every retained lane.
+// most the documented 200-row page per lane and 1 MiB of raw rows across every
+// retained lane. The budget is fixed so a larger snapshot cap stays headroom.
 const (
 	passengerFareLaneMaxRows     = 200
-	passengerFareBudgetBytes     = store.MaxSnapshotBytes / 8
+	passengerFareBudgetBytes     = 1 << 20
 	passengerFareSummaryMaxBands = 32
 	passengerFareSummaryMaxBytes = 32 << 10
 )

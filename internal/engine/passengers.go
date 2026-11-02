@@ -703,7 +703,7 @@ func (r *Runner) drivePassage(ctx context.Context, ship ShipState, mission *stor
 			r.expenseOwners[ledgerID] = mission.Generation
 		}
 		r.snapshot["_expense_allocations"] = encode(r.expenseOwners)
-		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+		if err := r.saveSnapshot(ctx); err != nil {
 			return false, err
 		}
 		return true, r.db.DeleteMission(ctx, r.account.ID, ship.Ship.ID)
@@ -1094,7 +1094,7 @@ func (r *Runner) rejectPassengerAction(ctx context.Context, mission *store.Missi
 		}
 		refusals[mission.ShipID+"|"+data.Plan.Origin+"|"+data.Plan.Destination] = r.passengerLaneGroupIDs(data.Plan.Origin, data.Plan.Destination)
 		r.snapshot["_passenger_refusals"] = encode(refusals)
-		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+		if err := r.saveSnapshot(ctx); err != nil {
 			return false, err
 		}
 		data.Passage.Abandon = true

@@ -176,9 +176,9 @@ func TestHistoricalBloatPrunesBelowStoreSnapshotBudget(t *testing.T) {
 	t.Parallel()
 	runner := New(nil, nil, store.Account{ID: "acc-retention"}, zap.NewNop(), Options{})
 	runner.generation = "gen-a"
-	// Ten abandoned origins each carrying a stale megabyte-scale book push the
-	// persisted snapshot past what the store accepts for an account.
-	blob := strings.Repeat("x", 1024*1024)
+	// Ten abandoned origins each carrying a stale book of an eighth of the
+	// budget push the persisted snapshot past what the store accepts.
+	blob := strings.Repeat("x", storeSnapshotBudgetBytes/8)
 	historical := make(map[string]json.RawMessage)
 	historical["le_havre"] = json.RawMessage(`{"visibility":"quay"}`)
 	for _, origin := range []string{"london", "bristol", "dover", "hull", "york", "kent", "wales", "essex", "kolkata", "bombay"} {

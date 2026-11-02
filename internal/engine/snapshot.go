@@ -23,6 +23,7 @@ const (
 	// SourcingRouteRetentionScanLimit bounds newest-first optional history scanning.
 	SourcingRouteRetentionScanLimit = 4 * SourcingRouteRetentionLimit
 	outageWarningInterval           = 10 * time.Minute
+	snapshotHistoryRetention        = 7 * 24 * time.Hour
 )
 
 func gameVersionLogText(version string) string {
@@ -128,6 +129,23 @@ func (r *Runner) applyCapture(ctx context.Context, key string, result fetchResul
 			result.err = store.ValidateSnapshotRouteNumbers(result.data)
 		}
 	}
+	if result.err == nil && (key == "fills" || key == "world_events" || snapshotNeedsRetentionState(key)) {
+		if snapshotNeedsRetentionState(key) && result.retention == nil {
+			result.retention = r.snapshotRetention(ctx, result.completedAt)
+		}
+		keep := snapshotNeedsRetentionState(key) && result.retention != nil && (result.retention.keepAll ||
+			key == "contracts" && result.retention.keepContracts ||
+			(key == "insurance" || key == "insurance_owned") && result.retention.keepInsurance)
+		if !keep {
+			horizon := snapshotHistoryRetention
+			if key == "world_events" {
+				horizon = worldEventRetention
+			}
+			result.data, result.err = retainRecentRows(result.data, result.completedAt.Add(-horizon), func(row json.RawMessage) time.Time {
+				return snapshotRowTimestamp(key, row)
+			})
+		}
+	}
 	meta := r.meta[key]
 	failedBefore := meta.Stale || meta.Error != ""
 	meta.AttemptedAt = result.attemptedAt
@@ -220,10 +238,18 @@ func (r *Runner) captureWave(ctx context.Context, tasks []fetchTask, groups map[
 	if err != nil {
 		return err
 	}
+	var retention *snapshotRetention
+	for _, task := range tasks {
+		if snapshotNeedsRetentionState(task.key) {
+			retention = r.snapshotRetention(ctx, time.Now().UTC())
+			break
+		}
+	}
 	for index, task := range tasks {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		results[index].retention = retention
 		captured := r.applyCapture(ctx, task.key, results[index])
 		group, key, child := strings.Cut(task.key, "/")
 		if values, exists := groups[group]; child && exists {
@@ -1079,7 +1105,7 @@ func (r *Runner) refresh(ctx context.Context) error {
 		return err
 	}
 	r.snapshot["_meta"] = encode(r.meta)
-	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+	if err := r.saveSnapshot(ctx); err != nil {
 		return err
 	}
 	r.stateCache = r.state()

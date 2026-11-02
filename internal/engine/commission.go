@@ -443,7 +443,7 @@ func (r *Runner) consumeCommissionResult(ctx context.Context, mission *store.Mis
 				refused[data.Commission.Contract.ID] = upper.Add(15 * time.Minute / time.Duration(max(int64(1), r.stateCache.Clock.Calendar.TimeScale)))
 			}
 			r.snapshot["_commission_refusals"] = encode(refused)
-			if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+			if err := r.saveSnapshot(ctx); err != nil {
 				return false, err
 			}
 			return r.retireCommission(ctx, mission, data)

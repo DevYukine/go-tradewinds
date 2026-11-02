@@ -499,7 +499,7 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 		return false, err
 	}
 	r.clearPlayerFallback(port.ID, hull.ID)
-	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+	if err := r.saveSnapshot(ctx); err != nil {
 		return false, err
 	}
 	return r.startCapacityGrowth(ctx, port, hull, decision, &capacityFinancing{Quotes: quotes, Decision: decision, ProtectedByRegion: protected, DonorByRegion: donors})
@@ -891,7 +891,7 @@ func (r *Runner) repayCapacityFinancing(ctx context.Context, mission *store.Miss
 		return r.stageLoanRepayment(ctx, mission, data, loan, 0)
 	}
 	r.clearPlayerFallback(data.BuildPort, data.BuildClass)
-	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+	if err := r.saveSnapshot(ctx); err != nil {
 		return false, err
 	}
 	return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)

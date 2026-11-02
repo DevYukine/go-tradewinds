@@ -138,10 +138,18 @@ func (r *Runner) recordUnderwriting(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	r.snapshot["underwriting_positions"] = encode(positions)
+	completedAt := time.Now().UTC()
+	cutoff := completedAt.Add(-snapshotHistoryRetention)
+	recent := positions[:0]
+	for _, position := range positions {
+		if position.ClosedAt == nil || position.ClosedAt.IsZero() || !position.ClosedAt.Before(cutoff) {
+			recent = append(recent, position)
+		}
+	}
+	r.snapshot["underwriting_positions"] = encode(recent)
 	r.snapshot["underwriting_risk"] = encode(risk)
 	for _, key := range []string{"underwriting_positions", "underwriting_risk"} {
-		r.meta[key] = DatasetMeta{UpdatedAt: time.Now().UTC(), Generation: r.generation, Complete: true}
+		r.meta[key] = DatasetMeta{UpdatedAt: completedAt, Generation: r.generation, Complete: true}
 	}
 	delete(r.snapshot, "_underwriting_pending")
 	mission, data, err := r.loadMission(ctx, "__underwriting")

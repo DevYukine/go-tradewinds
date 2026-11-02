@@ -63,7 +63,7 @@ func (s *Store) ReplayAccountingSnapshot(ctx context.Context, accountID string) 
 			'ledger', data -> 'ledger',
 			'vaults', data -> 'vaults',
 			'contracts', data -> 'contracts'
-		) END AS data`, MaxSnapshotBytes).
+		) END AS data`, 2*MaxSnapshotBytes).
 		Where("account_id = ?", accountID).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return make(map[string]json.RawMessage), nil
@@ -71,8 +71,8 @@ func (s *Store) ReplayAccountingSnapshot(ctx context.Context, accountID string) 
 	if err != nil {
 		return nil, err
 	}
-	if row.SizeBytes > MaxSnapshotBytes {
-		return nil, fmt.Errorf("replay accounting snapshot exceeds the %d-byte read budget: %w", MaxSnapshotBytes, ErrReplayEvidenceBudget)
+	if row.SizeBytes > 2*MaxSnapshotBytes {
+		return nil, fmt.Errorf("replay accounting snapshot exceeds the %d-byte read budget: %w", 2*MaxSnapshotBytes, ErrReplayEvidenceBudget)
 	}
 	data := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(row.Data, &data); err != nil {

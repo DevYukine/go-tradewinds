@@ -39,7 +39,7 @@ func (r *Runner) recordShipRenameRefusal(ctx context.Context, data *missionData)
 	}
 	refusals[data.Rename.ShipID] = shipRenameRefusal{Name: ship.Ship.Name, Status: ship.Ship.Status}
 	r.snapshot["_ship_rename_refusals"] = encode(refusals)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 func (r *Runner) occupiedShipNames(ctx context.Context) ([]string, error) {
@@ -98,7 +98,7 @@ func (r *Runner) reserveShipName(ctx context.Context, subjectID string) (string,
 	}
 	name := names.Next(used)
 	r.snapshot["_used_ship_names"] = encode(append(used, name))
-	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+	if err := r.saveSnapshot(ctx); err != nil {
 		return "", false, err
 	}
 	return name, true, nil
@@ -144,7 +144,7 @@ func (r *Runner) driveShipRename(ctx context.Context, mission *store.Mission, da
 		}
 		if changed {
 			r.snapshot["_ship_rename_refusals"] = encode(refusals)
-			if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+			if err := r.saveSnapshot(ctx); err != nil {
 				return false, err
 			}
 		}

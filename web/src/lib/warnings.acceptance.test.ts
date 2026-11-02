@@ -77,6 +77,30 @@ const cases: [string, EngineWarning, string][] = [
     },
     "Last 3 settlements lost 4,210.55 Cr since 11:20.",
   ],
+  [
+    "snapshot approaching its persistence limit",
+    {
+      code: "snapshot_near_limit",
+      severity: "warning",
+      since,
+      facts: { bytes: 8 * 1024 * 1024, limit_bytes: 16 * 1024 * 1024 },
+      names: {},
+      reason: "",
+    },
+    "Saved state is 8.0 MiB as text; its save limit is 16.0 MiB. Check the largest saved datasets.",
+  ],
+  [
+    "snapshot datasets left out of saved state",
+    {
+      code: "snapshot_near_limit",
+      severity: "critical",
+      since,
+      facts: { bytes: 1024 * 1024, limit_bytes: 16 * 1024 * 1024 },
+      names: { datasets: "books, ports" },
+      reason: "",
+    },
+    "Saved state is 1.0 MiB as text; its save limit is 16.0 MiB. Left out of the last save and refetched on restart: books, ports. Check the largest saved datasets.",
+  ],
 ];
 
 describe("warningText acceptance", () => {

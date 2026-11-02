@@ -125,6 +125,47 @@ func TestWatchWarningsAcceptanceRaisePersistChangedFactsClear(t *testing.T) {
 	}
 }
 
+func TestWatchWarningsAcceptanceSeverityChangesLogImmediately(t *testing.T) {
+	at := time.Date(2026, 10, 27, 2, 14, 0, 0, time.UTC)
+	account := func(severity string) []store.AccountWarnings {
+		return []store.AccountWarnings{{
+			AccountID: "one", Label: "Yukine", Available: true,
+			Warnings: []store.Warning{{
+				Code: "snapshot_near_limit", Severity: severity, Since: at,
+				Facts: map[string]int64{"bytes": 1024, "limit_bytes": store.MaxSnapshotBytes},
+			}},
+		}}
+	}
+	entries := warningsAcceptanceRun(t, []warningsAcceptanceStep{
+		{at: at, accounts: account("warning")},
+		{at: at.Add(time.Minute), accounts: account("critical")},
+		{at: at.Add(2 * time.Minute), accounts: account("critical")},
+		{at: at.Add(3 * time.Minute), accounts: account("warning")},
+		{at: at.Add(30 * time.Minute), accounts: account("warning")},
+		{at: at.Add(33 * time.Minute), accounts: account("warning")},
+		{at: at.Add(34 * time.Minute), accounts: warningsAcceptanceClear()},
+	})
+	wantSeverity := []string{"warning", "critical", "warning", "warning", "warning"}
+	if len(entries) != len(wantSeverity) {
+		t.Fatalf("severity changes must log immediately without duplicate unchanged logs: %+v", entries)
+	}
+	for i, entry := range entries {
+		message := "engine warning persists"
+		if i == 0 {
+			message = "engine warning"
+		} else if i == len(entries)-1 {
+			message = "engine warning cleared"
+		}
+		fields := entry.ContextMap()
+		if entry.Message != message || fields["code"] != "snapshot_near_limit" || fields["severity"] != wantSeverity[i] {
+			t.Fatalf("severity transition %d: %+v", i, entry)
+		}
+	}
+	if got := entries[len(entries)-1].ContextMap()["active_for"]; got != 34*time.Minute {
+		t.Fatalf("severity changes must preserve original raised time: active_for=%v", got)
+	}
+}
+
 func TestWatchWarningsAcceptanceUnavailableOncePerStreak(t *testing.T) {
 	at := time.Date(2026, 10, 27, 2, 14, 0, 0, time.UTC)
 	active := warningsAcceptanceActive(at, 14)

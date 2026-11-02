@@ -39,6 +39,10 @@ export type EngineWarning = {
   | { code: "controller_stalled"; facts: { minutes: number } }
   | { code: "refresh_failing"; facts: { minutes: number } }
   | {
+      code: "snapshot_near_limit";
+      facts: { bytes: number; limit_bytes: number };
+    }
+  | {
       code: "fleet_idle";
       facts: { idle: number; total: number; unknown: number; minutes: number };
     }

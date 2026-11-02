@@ -9,6 +9,11 @@ import (
 const MarketEventStressBPS int64 = 2_500
 const marketEventRecentWindow = 30 * time.Minute
 
+// worldEventRetention keeps expired events long enough to cover every retained
+// book observation and the dashboard's recent history. The game returns every
+// event since launch, and storing all of them filled the 8 MiB snapshot row.
+const worldEventRetention = 72 * time.Hour
+
 // MarketShock identifies a temporary price regime, not a published magnitude.
 // Structural news expires too, but its economic change does not end with it.
 type MarketShock struct {

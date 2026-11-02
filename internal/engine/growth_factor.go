@@ -460,7 +460,7 @@ func (r *Runner) expansionObservations(ctx context.Context, yard, partner Port, 
 		}
 	}
 	r.snapshot["routes"], r.snapshot["ports"], r.snapshot["_meta"] = encode(routes), encode(ports), encode(r.meta)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 type expansionRegionalEarnings struct {
@@ -1111,7 +1111,7 @@ func (r *Runner) clearExpansionLossAfterBuild(ctx context.Context, portID string
 	}
 	delete(outcomes, port.BankingRegion)
 	r.snapshot["_expansion_agent_outcomes"] = encode(outcomes)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 func (r *Runner) considerExpansionAgent(ctx context.Context) (bool, error) {
@@ -1175,7 +1175,7 @@ func (r *Runner) stageExpansionAgent(ctx context.Context, admission expansionAdm
 	outcome.AttemptAt, outcome.Reason = now, ""
 	outcomes[yard.BankingRegion] = outcome
 	r.snapshot["_expansion_agent_outcomes"] = encode(outcomes)
-	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+	if err := r.saveSnapshot(ctx); err != nil {
 		return false, err
 	}
 	if changed, err := r.fundTreasury(ctx, admission.input.Balances, admission.required); changed || err != nil {
@@ -1234,7 +1234,7 @@ func (r *Runner) expireAwaitingExpansion(ctx context.Context, now time.Time) err
 		}
 	}
 	r.snapshot["_expansion_agents"] = encode(retained)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 func expansionMate(agents []expansionAgent, agent expansionAgent) (expansionAgent, bool) {
@@ -1479,7 +1479,7 @@ func (r *Runner) clearPhaseOneGrowthTargets(ctx context.Context) error {
 	if !changed {
 		return nil
 	}
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 // Retire obsolete local financing only before the first accepted loan and on
@@ -1699,7 +1699,7 @@ func (r *Runner) manageExpansionAgents(ctx context.Context) (bool, error) {
 			} else {
 				r.markExpansionLoss(agent, "expansion pair has no active profitable plan or saved build")
 			}
-			if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+			if err := r.saveSnapshot(ctx); err != nil {
 				return false, err
 			}
 		}
@@ -1739,14 +1739,14 @@ func (r *Runner) recordExpansionAgent(ctx context.Context, data *missionData) er
 				decode[time.Time](r.snapshot, "_expansion_last_started_at"), agents[i].HiredAt))
 		}
 		r.snapshot["_expansion_agents"] = encode(agents)
-		return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+		return r.saveSnapshot(ctx)
 	}
 	agents = append(agents, expansionAgent{PortID: port.ID, Region: port.BankingRegion,
 		CreatedAt: data.Action.CreatedAt, HiredAt: time.Now().UTC()})
 	r.snapshot["_expansion_last_started_at"] = encode(maxTime(
 		decode[time.Time](r.snapshot, "_expansion_last_started_at"), agents[len(agents)-1].HiredAt))
 	r.snapshot["_expansion_agents"] = encode(agents)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 // A proven never-sent hire can wait without quarantining ships or charging
@@ -1774,7 +1774,7 @@ func (r *Runner) deferExpansionHire(ctx context.Context, body []byte, now time.T
 		}
 		r.snapshot["_expansion_agents"] = encode(agents)
 		r.wakeBy(until)
-		return until, r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+		return until, r.saveSnapshot(ctx)
 	}
 	return until, nil
 }
@@ -1830,7 +1830,7 @@ func (r *Runner) clearAwaitingExpansion(ctx context.Context, body []byte, record
 	}
 	r.snapshot["_expansion_agents"] = encode(retained)
 	r.snapshot["_expansion_agent_retries"] = encode(retries)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 func (r *Runner) expansionHireReady(ctx context.Context, body []byte) error {

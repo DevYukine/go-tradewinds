@@ -42,7 +42,7 @@ func (r *Runner) saveAmericaFlagship(ctx context.Context, state americaFlagshipS
 		state.HeldPence = &held
 	}
 	r.snapshot["_america_flagship"] = encode(state)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 // The flagship spends its own fixed reservation. Later remittances must remain

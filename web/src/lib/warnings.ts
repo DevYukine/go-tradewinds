@@ -33,6 +33,13 @@ export function warningText(
       message +=
         " Check the log, fix the refresh failure, then run scripts/restart-bot.ps1.";
       break;
+    case "snapshot_near_limit":
+      message = `Saved state is ${(warning.facts.bytes / (1024 * 1024)).toFixed(1)} MiB as text; its save limit is ${(warning.facts.limit_bytes / (1024 * 1024)).toFixed(1)} MiB.`;
+      if (warning.names.datasets) {
+        message += ` Left out of the last save and refetched on restart: ${warning.names.datasets}.`;
+      }
+      message += " Check the largest saved datasets.";
+      break;
     case "fleet_idle":
       message = `${count(warning.facts.idle)} of ${count(warning.facts.total)} ships idle in port 30+ min; longest ${warning.names.ship}, ${duration(warning.facts.minutes)}${warning.names.since_source === "arrival_event" ? " since recorded arrival" : ""} at ${warning.names.port}.`;
       if (warning.facts.unknown > 0) {

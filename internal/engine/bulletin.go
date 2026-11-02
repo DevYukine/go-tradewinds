@@ -356,7 +356,7 @@ func (r *Runner) bulletinState() (bulletinState, error) {
 
 func (r *Runner) saveBulletinState(ctx context.Context, state bulletinState) error {
 	r.snapshot["_bulletin"] = encode(state)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 func (r *Runner) driveBulletin(ctx context.Context, mission *store.Mission, data *missionData) (changed bool, err error) {

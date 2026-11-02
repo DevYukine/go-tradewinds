@@ -204,7 +204,7 @@ func (r *Runner) refreshRevenueCalibration(ctx context.Context) error {
 		boundaryChanged = true
 	}
 	if boundaryChanged {
-		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+		if err := r.saveSnapshot(ctx); err != nil {
 			return err
 		}
 	}

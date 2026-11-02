@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -96,24 +97,47 @@ type WarningShipEvents struct {
 // WarningInput contains only recorded observations. AssessWarnings never reads
 // the database, contacts the game, or changes controller state.
 type WarningInput struct {
-	Engine       *WarningEngine
-	Metadata     map[string]WarningDataset
-	Ships        []gameapi.ShipDetail
-	ShipDetails  map[string]gameapi.ShipDetail
-	ShipEvents   map[string]WarningShipEvents
-	Clock        gameapi.Clock
-	Catalog      gameapi.Catalog
-	Settlements  []Settlement
-	Growth       GrowthWindow
-	Secrets      []string
-	Rising       gameapi.RisingBoard
-	RisingAt     *time.Time
-	OwnCompanies []string
+	SnapshotBytes int64
+	Engine        *WarningEngine
+	Metadata      map[string]WarningDataset
+	Ships         []gameapi.ShipDetail
+	ShipDetails   map[string]gameapi.ShipDetail
+	ShipEvents    map[string]WarningShipEvents
+	Clock         gameapi.Clock
+	Catalog       gameapi.Catalog
+	Settlements   []Settlement
+	Growth        GrowthWindow
+	Secrets       []string
+	Rising        gameapi.RisingBoard
+	RisingAt      *time.Time
+	OwnCompanies  []string
 }
 
 func AssessWarnings(input WarningInput, at time.Time) WarningAssessment {
 	assessment := WarningAssessment{Warnings: make([]Warning, 0), Suppressed: make([]string, 0)}
 	result := assessment.Warnings
+	var shedDatasets []string
+	for key, meta := range input.Metadata {
+		if meta.Error == SnapshotShedError {
+			dataset, _, _ := strings.Cut(key, "/")
+			shedDatasets = append(shedDatasets, dataset)
+		}
+	}
+	if input.SnapshotBytes >= MaxSnapshotBytes/2 || len(shedDatasets) > 0 {
+		warning := Warning{
+			Code: "snapshot_near_limit", Severity: "warning", Since: at,
+			Facts: map[string]int64{"bytes": input.SnapshotBytes, "limit_bytes": MaxSnapshotBytes},
+		}
+		if input.SnapshotBytes*5 >= MaxSnapshotBytes*4 || len(shedDatasets) > 0 {
+			warning.Severity = "critical"
+		}
+		if len(shedDatasets) > 0 {
+			sort.Strings(shedDatasets)
+			shedDatasets = slices.Compact(shedDatasets)
+			warning.Names = map[string]string{"datasets": strings.Join(shedDatasets, ", ")}
+		}
+		result = append(result, warning)
+	}
 	controllerCurrent := input.Engine != nil && !input.Engine.ObservedAt.IsZero() && !input.Engine.ObservedAt.After(at)
 	if controllerCurrent && at.Sub(input.Engine.ObservedAt) >= ControllerStalledAfter {
 		result = append(result, Warning{
@@ -596,6 +620,7 @@ func warningInput(tx *gorm.DB, accountID string, at time.Time) (WarningInput, st
 	if err := tx.Table("snapshots").Select("COALESCE(octet_length(data::text), 0)").Where("account_id = ?", accountID).Scan(&size).Error; err != nil {
 		return input, "", err
 	}
+	input.SnapshotBytes = size
 	if size > 2*MaxSnapshotBytes {
 		return input, WarningSnapshotTooLarge, nil
 	}

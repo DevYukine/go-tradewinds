@@ -51,6 +51,57 @@ func warningsAcceptanceRequire(t *testing.T, input WarningInput, code string, wa
 	return warning
 }
 
+func TestAssessWarningsAcceptanceSnapshotSizeBoundaries(t *testing.T) {
+	criticalBytes := (MaxSnapshotBytes*4 + 4) / 5
+	for _, test := range []struct {
+		name     string
+		bytes    int64
+		severity string
+	}{
+		{name: "below half", bytes: MaxSnapshotBytes/2 - 1},
+		{name: "half", bytes: MaxSnapshotBytes / 2, severity: "warning"},
+		{name: "below critical", bytes: int64(criticalBytes - 1), severity: "warning"},
+		{name: "critical", bytes: int64(criticalBytes), severity: "critical"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := WarningInput{SnapshotBytes: test.bytes}
+			assessment := AssessWarnings(input, warningsAcceptanceAt)
+			warning := warningsAcceptanceFind(assessment.Warnings, "snapshot_near_limit")
+			if (warning != nil) != (test.severity != "") {
+				t.Fatalf("snapshot warning presence: %+v", assessment)
+			}
+			if warning != nil {
+				if warning.Severity != test.severity || warning.Facts["bytes"] != test.bytes || warning.Facts["limit_bytes"] != MaxSnapshotBytes {
+					t.Fatalf("snapshot threshold facts: %+v", warning)
+				}
+				if _, exists := warning.Names["datasets"]; exists {
+					t.Fatalf("size-only warning names shed datasets: %+v", warning)
+				}
+			}
+			if warningsAcceptanceContains(assessment.Suppressed, "snapshot_near_limit") {
+				t.Fatalf("persistence warning suppressed by missing fleet: %+v", assessment)
+			}
+		})
+	}
+}
+
+func TestAssessWarningsAcceptanceSnapshotShedDatasets(t *testing.T) {
+	input := WarningInput{
+		SnapshotBytes: 1024,
+		Metadata: map[string]WarningDataset{
+			"ports/hamburg": {Error: SnapshotShedError, Stale: true},
+			"books":         {Error: SnapshotShedError, Stale: true},
+			"books/hamburg": {Error: SnapshotShedError, Stale: true},
+			"ports":         {Error: SnapshotShedError, Stale: true},
+			"ships":         {Error: "request failed"},
+		},
+	}
+	warning := warningsAcceptanceRequire(t, input, "snapshot_near_limit", true)
+	if warning.Severity != "critical" || warning.Facts["bytes"] != 1024 || warning.Facts["limit_bytes"] != MaxSnapshotBytes || warning.Names["datasets"] != "books, ports" {
+		t.Fatalf("shed datasets must remain visible below size threshold: %+v", warning)
+	}
+}
+
 func TestAssessWarningsAcceptanceControllerAndRefreshBoundaries(t *testing.T) {
 	for _, age := range []time.Duration{9*time.Minute + 59*time.Second, 10 * time.Minute} {
 		t.Run("controller/"+age.String(), func(t *testing.T) {
@@ -339,6 +390,45 @@ func TestAssessWarningsAcceptanceFallingBehindAndOrdering(t *testing.T) {
 	}
 	if want := []string{"refresh_failing", "falling_behind", "fleet_idle", "hold_stuck", "loss_streak"}; !reflect.DeepEqual(codes, want) {
 		t.Fatalf("critical first then code order: %v, want %v", codes, want)
+	}
+}
+
+func TestWarningsAcceptanceSnapshotSizeFromStoredRow(t *testing.T) {
+	database, _, _ := integrationStore(t)
+	ctx := context.Background()
+	const accountID = "snapshot-size"
+	saveTestAccount(t, database, accountID)
+	if err := database.SaveSnapshot(ctx, accountID, map[string]json.RawMessage{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		padding  int
+		severity string
+	}{
+		{name: "half", padding: MaxSnapshotBytes / 2, severity: "warning"},
+		{name: "critical", padding: (MaxSnapshotBytes*4 + 4) / 5, severity: "critical"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := database.db.Exec("UPDATE snapshots SET data = jsonb_build_object('padding', repeat('x', ?)) WHERE account_id = ?", test.padding, accountID).Error; err != nil {
+				t.Fatal(err)
+			}
+			var storedBytes int64
+			if err := database.db.Table("snapshots").Select("octet_length(data::text)").Where("account_id = ?", accountID).Scan(&storedBytes).Error; err != nil {
+				t.Fatal(err)
+			}
+			report, err := database.WarningReport(ctx, warningsAcceptanceAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Accounts) != 1 || report.Accounts[0].AccountID != accountID || !report.Accounts[0].Available {
+				t.Fatalf("stored snapshot warning account unavailable: %+v", report)
+			}
+			warning := warningsAcceptanceFind(report.Accounts[0].Warnings, "snapshot_near_limit")
+			if warning == nil || warning.Severity != test.severity || warning.Facts["bytes"] != storedBytes || warning.Facts["limit_bytes"] != MaxSnapshotBytes {
+				t.Fatalf("stored row size did not reach warning report: bytes=%d warning=%+v", storedBytes, warning)
+			}
+		})
 	}
 }
 

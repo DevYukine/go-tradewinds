@@ -66,7 +66,7 @@ func (r *Runner) recordCapacityHazardRejection(ctx context.Context, portID, hull
 	until := now.Add(gameDuration(0.25, max(1, r.stateCache.Clock.Calendar.TimeScale)))
 	backoffs[portID+"|"+hullID] = capacityHazardRejection{RetryAt: until, Decision: decision}
 	r.snapshot["_growth_hazard_backoffs"] = encode(backoffs)
-	if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+	if err := r.saveSnapshot(ctx); err != nil {
 		return err
 	}
 	r.wakeBy(until)
@@ -365,7 +365,7 @@ func (r *Runner) setCapacitySavingsTarget(ctx context.Context, target capacitySa
 		r.wakeBy(target.ExpiresAt)
 	}
 	if previous.PortID != target.PortID || previous.HullID != target.HullID {
-		return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+		return r.saveSnapshot(ctx)
 	}
 	return nil
 }
@@ -378,7 +378,7 @@ func (r *Runner) clearCapacitySavingsAfterBuild(ctx context.Context) error {
 	}
 	delete(r.snapshot, "_capacity_savings_target")
 	delete(r.snapshot, "_capacity_savings_expired")
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 func (r *Runner) liveCapacitySavingsTarget(ctx context.Context) (capacitySavingsTarget, error) {
@@ -596,7 +596,7 @@ func (r *Runner) capacityLosses(ctx context.Context, asOf time.Time) (string, er
 	}
 	if changed {
 		r.snapshot["_ship_losses"] = encode(losses)
-		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+		if err := r.saveSnapshot(ctx); err != nil {
 			return "", err
 		}
 	}
@@ -1025,7 +1025,7 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 			agents[i].EvaluatedAt = time.Now().UTC()
 			r.snapshot["_expansion_agents"] = encode(agents)
 			r.resetExpansionUnevaluated(port.BankingRegion)
-			if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+			if err := r.saveSnapshot(ctx); err != nil {
 				return GrowthDecision{}, nil, err
 			}
 			break
@@ -1151,7 +1151,7 @@ func (r *Runner) recordOverseasCapacityOutcomes(ctx context.Context, candidates 
 		return nil
 	}
 	r.snapshot["_expansion_agent_outcomes"] = encode(outcomes)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }
 
 func (r *Runner) capacityQuayRouteMeasured(port Port, hull Hull) bool {
@@ -1505,7 +1505,7 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 	}
 	if decode[string](r.snapshot, "_capacity_growth_port") != target {
 		r.snapshot["_capacity_growth_port"] = encode(target)
-		if err := r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot); err != nil {
+		if err := r.saveSnapshot(ctx); err != nil {
 			return false, err
 		}
 	}
@@ -1911,5 +1911,5 @@ func (r *Runner) recordGrowthBackoff(ctx context.Context, snapshotKey string, da
 	key := data.BuildPort + "|" + data.BuildClass
 	backoffs[key] = maxTime(backoffs[key], now.Add(6*time.Hour))
 	r.snapshot[snapshotKey] = encode(backoffs)
-	return r.db.SaveSnapshot(ctx, r.account.ID, r.snapshot)
+	return r.saveSnapshot(ctx)
 }

@@ -35,6 +35,10 @@ var migrationMu sync.Mutex
 
 const queryTimeout = 10 * time.Second
 
+// ErrSnapshotRowTooLarge identifies row overflow separately from the route cache
+// so the runner does not discard row datasets to recover an oversized route.
+var ErrSnapshotRowTooLarge = fmt.Errorf("snapshot row exceeds its %d-byte size limit: %w", MaxSnapshotBytes, ErrResponseTooLarge)
+
 type Store struct {
 	db             *gorm.DB
 	sqlDB          *sql.DB
@@ -419,7 +423,7 @@ func (s *Store) SaveSnapshot(ctx context.Context, accountID string, data map[str
 			continue
 		}
 		if len(key) > remaining || len(raw) > remaining-len(key) {
-			return ErrResponseTooLarge
+			return ErrSnapshotRowTooLarge
 		}
 		remaining -= len(key) + len(raw)
 		snapshotData[key] = raw
@@ -429,7 +433,7 @@ func (s *Store) SaveSnapshot(ctx context.Context, accountID string, data map[str
 		return err
 	}
 	if len(encoded) > MaxSnapshotBytes {
-		return ErrResponseTooLarge
+		return ErrSnapshotRowTooLarge
 	}
 	rawRoutes := data["routes"]
 	fingerprintHash := sha256.New()
