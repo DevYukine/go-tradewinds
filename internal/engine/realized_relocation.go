@@ -67,10 +67,13 @@ func recentRealizedSourcingLanes(rows []store.Settlement, now time.Time) ([]real
 			lanes[row.Lane] = lane
 		}
 	}
-	result := make([]realizedSourcingLane, 0, len(lanes))
+	var result []realizedSourcingLane
 	for _, lane := range lanes {
 		if lane.NetPence <= 0 {
 			continue
+		}
+		if result == nil {
+			result = make([]realizedSourcingLane, 0, len(lanes))
 		}
 		lane.NetPence /= lane.Samples
 		lane.QuantityTons = ceilRatio(lane.QuantityTons, 1, lane.Samples)

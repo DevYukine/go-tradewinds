@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -86,6 +87,43 @@ func TestRealizedRelocationUsesNetOfEveryKnownSpotReceipt(t *testing.T) {
 	base.AcquisitionPence, base.ProceedsPence, base.FeesPence = math.MaxInt64, math.MinInt64, 0
 	if _, err := recentRealizedSourcingLanes([]store.Settlement{base}, in.Now); err == nil {
 		t.Fatal("overflowing measured net authorized relocation")
+	}
+}
+
+func TestRealizedRelocationHistorySurvivesSnapshotReload(t *testing.T) {
+	now := time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC)
+	base := store.Settlement{Kind: "spot", CostsKnown: true, Origin: "amsterdam", Destination: "portsmouth", Commodity: "sawn_planks",
+		QuantityTons: 10, GameSeconds: 21_600, ProceedsPence: 20_000, AcquisitionPence: 10_000,
+		StartedAt: now.Add(-3 * time.Hour), CompletedAt: now.Add(-2 * time.Hour)}
+	loss := base
+	loss.ProceedsPence = 0
+	finite := base
+	finite.Kind = "charter"
+	for _, candidate := range []struct {
+		name string
+		rows []store.Settlement
+		want int
+	}{
+		{name: "no receipts"},
+		{name: "finite demand only", rows: []store.Settlement{finite}},
+		{name: "losing lane", rows: []store.Settlement{loss}},
+		{name: "offsetting receipts", rows: []store.Settlement{base, loss}},
+		{name: "profitable lane", rows: []store.Settlement{base}, want: 1},
+	} {
+		t.Run(candidate.name, func(t *testing.T) {
+			lanes, err := recentRealizedSourcingLanes(candidate.rows, now)
+			if err != nil || len(lanes) != candidate.want {
+				t.Fatalf("realized lanes=%+v error=%v", lanes, err)
+			}
+			history := sourcingProbeHistory{RealizedLanes: lanes}
+			var reloaded sourcingProbeHistory
+			if err := json.Unmarshal(encode(history), &reloaded); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(history, reloaded) {
+				t.Fatalf("snapshot reload changed realized evidence: before=%#v after=%#v", history.RealizedLanes, reloaded.RealizedLanes)
+			}
+		})
 	}
 }
 
