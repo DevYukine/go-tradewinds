@@ -30,7 +30,7 @@ var replaySweepRunnerKeys = []string{
 	"_growth_hazard_backoffs",
 	"_passenger_fare_summary_hour",
 	"_player_loan_backoffs", "_player_loan_fallback", "_mortgage_retry_at",
-	"_america_flagship", "_commission_refusals", "_loan_refinance", "_loan_refinance_backoffs",
+	"_america_flagship", "_commission_refusals", "_loan_refinance", "_loan_refinance_backoffs", "_loan_refinance_retry_at", "_loan_refinance_due_dates",
 }
 
 var (

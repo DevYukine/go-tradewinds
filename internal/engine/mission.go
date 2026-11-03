@@ -206,6 +206,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	}
 	unresolved := false
 	renameChanged := false
+	deferredRefinanceRequest := false
 	for _, id := range ids {
 		data := dataByShip[id]
 		if id == "__growth" {
@@ -218,7 +219,19 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 				continue
 			}
 		}
-		if id != "__bulletin" && data.Action != nil && (data.Passage == nil || data.Passage.QuarantineReason == "") &&
+		// A never-journaled request waits for recovery and delivery at the
+		// pass tail. Approvals advance early so recovery cannot starve an
+		// expiring quote; already-journaled requests reconcile here too.
+		refinanceRequestDeferred := id == loanRefinanceMission && data.Action != nil && data.Action.Stage == "loan-request"
+		if refinanceRequestDeferred {
+			sent, err := r.db.HasAction(ctx, r.account.ID, data.Action.ID)
+			if err != nil {
+				return false, err
+			}
+			refinanceRequestDeferred = !sent
+			deferredRefinanceRequest = deferredRefinanceRequest || refinanceRequestDeferred
+		}
+		if id != "__bulletin" && data.Action != nil && !refinanceRequestDeferred && (data.Passage == nil || data.Passage.QuarantineReason == "") &&
 			(id != "__futures" || !unresolved || data.Action.Stage == "futures-settle" ||
 				data.Action.Stage == "futures-close-stock" || data.Action.Stage == "futures-close-lease") {
 			r.assessShip(id)
@@ -247,7 +260,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			}
 		}
 		dataByShip[id] = data
-		if data.Action != nil {
+		if data.Action != nil && !refinanceRequestDeferred {
 			unresolved = unresolved || id != "__underwriting" && id != "__marque" && id != "__futures" && id != "__bulletin" && id != shipRenameMission && !passengerStage(data.Action.Stage)
 		}
 	}
@@ -273,7 +286,10 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			return changed, err
 		}
 	}
-	if !unresolved {
+	// In-flight refinance, including approval and disbursed payoff, advances
+	// early. Only new-request staging and first send wait for the tail.
+	refinanceState := decode[loanRefinanceState](r.snapshot, "_loan_refinance")
+	if !unresolved && !deferredRefinanceRequest && (refinanceState.RequestID != "" || refinanceState.NewLoanID != "") {
 		data := dataByShip[loanRefinanceMission]
 		if changed, err := r.driveLoanRefinance(ctx, missions[loanRefinanceMission], &data); changed || err != nil {
 			return changed, err
@@ -509,6 +525,24 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 			changed, err := r.startMaintenance(ctx, ship, "offshore", "/v1/fleet/offshore", map[string]any{"ship_id": ship.Ship.ID})
 			return changed || renameChanged, err
 		}
+	}
+	// Refinance is a pass tail evaluation: it sees this pass's treasury
+	// remits and every ship loop turn, including sailing recovery and new
+	// voyage work, ahead of the discretionary end drivers. A staged request
+	// that waited out the ship loop first-sends under fresh facts;
+	// otherwise the tail stages a brand new request.
+	if deferredRefinanceRequest {
+		if !r.fresh("rates") || !r.fresh("vaults") || !r.fresh("loans") || !r.fresh("clock") {
+			return false, r.hold(ctx, loanRefinanceMission, "deferred loan request first send waits for fresh rates, cash and debt facts")
+		}
+		data := dataByShip[loanRefinanceMission]
+		if changed, err := r.dispatch(ctx, missions[loanRefinanceMission], &data); changed || err != nil {
+			return changed, err
+		}
+	}
+	data := dataByShip[loanRefinanceMission]
+	if changed, err := r.driveLoanRefinance(ctx, missions[loanRefinanceMission], &data); changed || err != nil {
+		return changed, err
 	}
 	if missions[commissionMission] == nil {
 		if changed, err := r.driveCommissions(ctx); changed || err != nil {

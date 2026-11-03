@@ -26,7 +26,7 @@ func loanRefinanceFixture(t *testing.T) (*recoveryHarness, *Runner) {
 	old.CollateralShipID = nil
 	old.PrincipalPence, old.OutstandingPrincipalPence, old.OwedPence = 1_000_000, 1_000_000, 1_000_000
 	old.InstallmentPence, old.NextPaymentPence = new(int64(100_000)), new(int64(100_000))
-	old.MaturesAt, old.NextPaymentDueAt = new(now.Add(96*time.Hour)), new(now.Add(4*time.Hour))
+	old.MaturesAt, old.NextPaymentDueAt = new(now.Add(96*time.Hour)), new(now.Add(time.Hour))
 	old.CreatedAt, old.UpdatedAt = now.Add(-48*time.Hour), now
 	h.api.playerLoans = []gameapi.Loan{old}
 	base := h.api.server.Config.Handler
@@ -63,12 +63,8 @@ func loanRefinanceFixture(t *testing.T) (*recoveryHarness, *Runner) {
 	})
 	runner := h.runner(primaryTestKey)
 	loanCapacityRefresh(t, h, runner)
-	required, err := runner.treasuryReservesExceptLoan(h.ctx, old.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.api.setVaultBalance("north", required["north_sea"]+100_000)
-	h.api.setVaultBalance("south", required["channel"])
+	h.api.setVaultBalance("north", 99_999)
+	h.api.setVaultBalance("south", 0)
 	loanCapacityRefresh(t, h, runner)
 	return h, runner
 }
@@ -177,8 +173,9 @@ func TestLoanRefinanceRequestCashAndAnnuityBoundaries(t *testing.T) {
 		remaining int
 		want      bool
 	}{
-		{name: "one penny below three installments", free: 299_999, remaining: 24, want: true},
-		{name: "three installments", free: 300_000, remaining: 24},
+		{name: "one penny below next installment", free: 99_999, remaining: 24, want: true},
+		{name: "exact next installment", free: 100_000, remaining: 24},
+		{name: "ordinary dip below three installments", free: 299_999, remaining: 24},
 		{name: "fully affordable payoff", free: 2_000_000, remaining: 24},
 		{name: "annuity above ninety percent", free: 0, remaining: 32},
 		{name: "fresh thirty-six-payment loan", free: 0, remaining: 36},
@@ -186,12 +183,7 @@ func TestLoanRefinanceRequestCashAndAnnuityBoundaries(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h, runner := loanRefinanceFixture(t)
-			old := runner.stateCache.Loans[0]
-			required, err := runner.treasuryReservesExceptLoan(h.ctx, old.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			h.api.setVaultBalance("north", required[old.BankingRegion]+test.free)
+			h.api.setVaultBalance("north", test.free)
 			h.api.mu.Lock()
 			h.api.playerLoans[0].MaturesAt = new(time.Now().UTC().Add(time.Duration(test.remaining)*4*time.Hour - time.Minute))
 			h.api.mu.Unlock()
@@ -354,7 +346,7 @@ func TestLoanRefinanceEarmarkFullPayoffExactlyOnceAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestLoanRefinanceLapseAndRefusalBackOffTenGameDays(t *testing.T) {
+func TestLoanRefinanceLapseAndRefusalCooldownSurvivesRestart(t *testing.T) {
 	for _, kind := range []string{"lapse", "request refusal"} {
 		t.Run(kind, func(t *testing.T) {
 			h, runner := loanRefinanceFixture(t)
@@ -374,10 +366,10 @@ func TestLoanRefinanceLapseAndRefusalBackOffTenGameDays(t *testing.T) {
 				loanRefinanceDrive(t, h, runner)
 			}
 			state := decode[loanRefinanceState](runner.snapshot, "_loan_refinance")
-			// Ten game days at the observed scale 60 is four real hours.
-			if state.State != "backoff" || state.RetryAt.Before(before.Add(4*time.Hour-time.Second)) || state.RetryAt.After(time.Now().UTC().Add(4*time.Hour)) {
-				t.Fatalf("%s retry is not clock-derived ten game days: %+v", kind, state)
+			if state.State != "backoff" || state.RetryAt.Before(before.Add(24*time.Hour-time.Second)) || state.RetryAt.After(time.Now().UTC().Add(24*time.Hour)) {
+				t.Fatalf("%s retry is not 24 real hours: %+v", kind, state)
 			}
+			loanRefinanceNextDue(t, h, runner)
 			runner = h.runner(primaryTestKey)
 			loanCapacityRefresh(t, h, runner)
 			if loanRefinanceDrive(t, h, runner) {
@@ -386,23 +378,23 @@ func TestLoanRefinanceLapseAndRefusalBackOffTenGameDays(t *testing.T) {
 			if h.api.mutationCount("/v1/loan/request") != 1 || h.api.mutationCount("/v1/loan/approve") > 1 {
 				t.Fatal("backoff duplicated a refused or lapsed request")
 			}
-			state.RetryAt = time.Now().UTC().Add(-time.Second)
-			if err := runner.saveLoanRefinance(h.ctx, state); err != nil {
+			until := decode[time.Time](runner.snapshot, "_loan_refinance_retry_at")
+			if !until.Equal(state.RetryAt) {
+				t.Fatalf("restart lost the account refinance cooldown: %v, want %v", until, state.RetryAt)
+			}
+			runner.snapshot["_loan_refinance_retry_at"] = encode(time.Now().UTC().Add(-time.Second))
+			if err := runner.saveSnapshot(h.ctx); err != nil {
 				t.Fatal(err)
 			}
 			h.api.mu.Lock()
-			h.api.loanRequestMode, h.api.loanApproveMode = "ok", "ok"
-			for index := range h.api.loanRequests {
-				h.api.loanRequests[index].Status = "lapsed"
-			}
+			h.api.loanRequestMode = "ok"
 			h.api.mu.Unlock()
-			loanCapacityRefresh(t, h, runner)
 			if !loanRefinanceDrive(t, h, runner) {
-				t.Fatal("elapsed ten-game-day backoff did not reopen refinancing")
+				t.Fatal("elapsed cooldown and a new installment due date did not reopen refinancing")
 			}
 			loanRefinanceDispatch(t, h, runner)
 			if h.api.mutationCount("/v1/loan/request") != 2 {
-				t.Fatal("elapsed backoff did not post exactly one replacement request")
+				t.Fatal("elapsed cooldown did not post exactly one replacement request")
 			}
 		})
 	}
@@ -414,7 +406,22 @@ func TestLoanRefinanceWaitingDoesNotBlockPriorityArrearsCure(t *testing.T) {
 	waiting := encode(data)
 	h.api.mu.Lock()
 	h.api.playerLoans[0].ArrearsPence = 20_000
+	h.api.playerLoans[0].NextPaymentPence = new(int64(20_000))
 	h.api.mu.Unlock()
+	loanCapacityRefresh(t, h, runner)
+	h.api.setVaultBalance("north", 19_999)
+	loanCapacityRefresh(t, h, runner)
+	if needed, reason := runner.loanRefinanceNeeded(runner.stateCache.Loans[0]); !needed {
+		t.Fatalf("waiting refinance with uncured arrears is not needed: %s", reason)
+	}
+	if changed, err := runner.serviceLoans(h.ctx); changed || err != nil {
+		t.Fatalf("unfunded arrears cure should wait without advancing refinance: %v, %v", changed, err)
+	}
+	required, err := runner.loanServiceReserves(h.ctx, "refinance-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.api.setVaultBalance("north", required["north_sea"]+20_000)
 	loanCapacityRefresh(t, h, runner)
 	if changed, err := runner.work(h.ctx); !changed || err != nil {
 		t.Fatalf("arrears cure did not run while the refinance waited: %v, %v", changed, err)
@@ -480,27 +487,24 @@ func TestLoanRefinanceNeverOpensSecondBorrowerRequest(t *testing.T) {
 	}
 }
 
-func TestLoanRefinancePayoffCapsCashTrigger(t *testing.T) {
+func TestLoanRefinanceSmallFinalPaymentCashTrigger(t *testing.T) {
 	for _, short := range []bool{false, true} {
 		t.Run(map[bool]string{false: "payoff available", true: "one penny below payoff"}[short], func(t *testing.T) {
 			h, runner := loanRefinanceFixture(t)
 			h.api.mu.Lock()
-			h.api.playerLoans[0].OwedPence, h.api.playerLoans[0].OutstandingPrincipalPence = 200_000, 200_000
+			h.api.playerLoans[0].OwedPence, h.api.playerLoans[0].OutstandingPrincipalPence = 50_000, 50_000
+			h.api.playerLoans[0].NextPaymentPence = new(int64(50_000))
 			h.api.mu.Unlock()
 			loanCapacityRefresh(t, h, runner)
 			old := runner.stateCache.Loans[0]
-			required, err := runner.treasuryReservesExceptLoan(h.ctx, old.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			balance := required[old.BankingRegion] + loanFullPayment(old)
+			balance := *old.NextPaymentPence
 			if short {
 				balance--
 			}
 			h.api.setVaultBalance("north", balance)
 			loanCapacityRefresh(t, h, runner)
 			if changed := loanRefinanceDrive(t, h, runner); changed != short {
-				t.Fatalf("refinance staged=%v, want %v at the min(3I,payoff) boundary", changed, short)
+				t.Fatalf("refinance staged=%v, want %v at the actual next payment boundary", changed, short)
 			}
 		})
 	}
@@ -983,10 +987,16 @@ func TestLoanRefinanceSuccessfulReceiptDoesNotConsumeRetryAllowance(t *testing.T
 		t.Fatalf("successful repayment consumed the failed-attempt allowance: %+v", state)
 	}
 	loanRefinanceExpireRetry(t, h, runner)
+	before := time.Now().UTC()
 	if !loanRefinanceDrive(t, h, runner) {
 		t.Fatal("successful repayment did not retire after fresh proof")
 	}
 	h.missingMission(loanRefinanceMission)
+	runner = h.runner(primaryTestKey)
+	until := decode[time.Time](runner.snapshot, "_loan_refinance_retry_at")
+	if until.Before(before.Add(24*time.Hour)) || until.After(time.Now().UTC().Add(24*time.Hour)) {
+		t.Fatalf("successful refinance lost its durable 24-real-hour account cooldown: %v", until)
+	}
 }
 
 func TestLoanRefinanceCaptureFailureWaitsWithoutRestartingWork(t *testing.T) {
@@ -1008,7 +1018,8 @@ func TestLoanRefinanceCaptureFailureWaitsWithoutRestartingWork(t *testing.T) {
 				}
 				base.ServeHTTP(w, req)
 			})
-			if _, err := runner.work(h.ctx); err != nil {
+			mission, data := h.mission(loanRefinanceMission)
+			if _, err := runner.driveLoanRefinance(h.ctx, mission, &data); err != nil {
 				t.Fatalf("transient %s capture failure restarted the account: %v", dataset, err)
 			}
 			h.mission(loanRefinanceMission)
@@ -1043,8 +1054,8 @@ func TestLoanRefinanceMultipleOwnUnsecuredLoansPreventRequest(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			h, runner := loanRefinanceFixture(t)
 			old := runner.stateCache.Loans[0]
-			if needed, reason, err := runner.loanRefinanceNeeded(h.ctx, old); !needed || err != nil {
-				t.Fatalf("single old loan does not otherwise need refinancing: %v, %s, %v", needed, reason, err)
+			if needed, reason := runner.loanRefinanceNeeded(old); !needed {
+				t.Fatalf("single old loan does not otherwise need refinancing: %v, %s", needed, reason)
 			}
 			second := old
 			second.ID, second.Status = "second-unsecured-loan", status
@@ -1052,8 +1063,8 @@ func TestLoanRefinanceMultipleOwnUnsecuredLoansPreventRequest(t *testing.T) {
 			h.api.playerLoans = append(h.api.playerLoans, second)
 			h.api.mu.Unlock()
 			loanCapacityRefresh(t, h, runner)
-			if needed, reason, err := runner.loanRefinanceNeeded(h.ctx, old); needed || err != nil {
-				t.Fatalf("multiple own unsecured loans remain eligible: %v, %s, %v", needed, reason, err)
+			if needed, reason := runner.loanRefinanceNeeded(old); needed {
+				t.Fatalf("multiple own unsecured loans remain eligible: %v, %s", needed, reason)
 			}
 			if loanRefinanceDrive(t, h, runner) {
 				t.Fatal("multiple own unsecured loans started another refinance")
@@ -1100,9 +1111,17 @@ func TestLoanRefinanceTerminalReplacementLoanRetiresController(t *testing.T) {
 				t.Fatal("terminal replacement changed the unpaid old loan")
 			}
 			wantNeeded := status != "defaulted"
-			if needed, reason, err := runner.loanRefinanceNeeded(h.ctx, old); needed != wantNeeded || err != nil {
-				t.Fatalf("replacement status does not follow the active/defaulted count: %v, %s, %v", needed, reason, err)
+			if needed, reason := runner.loanRefinanceNeeded(old); needed != wantNeeded {
+				t.Fatalf("replacement status does not follow the active/defaulted count: %v, %s", needed, reason)
 			}
+			if loanRefinanceDrive(t, h, runner) {
+				t.Fatal("terminal replacement bypassed the posted-request cooldown")
+			}
+			runner.snapshot["_loan_refinance_retry_at"] = encode(time.Now().UTC().Add(-time.Second))
+			if err := runner.saveSnapshot(h.ctx); err != nil {
+				t.Fatal(err)
+			}
+			loanRefinanceNextDue(t, h, runner)
 			if changed := loanRefinanceDrive(t, h, runner); changed != wantNeeded {
 				t.Fatalf("replacement status handled refinancing incorrectly after restart: changed=%v", changed)
 			}
@@ -1161,8 +1180,8 @@ func TestLoanRefinanceRetirementBackoffSurvivesRestart(t *testing.T) {
 				runner = h.runner(primaryTestKey)
 				loanCapacityRefresh(t, h, runner)
 				old, _ := runner.loanByID(state.OldLoanID)
-				if needed, reason, err := runner.loanRefinanceNeeded(h.ctx, old); needed || err != nil {
-					t.Fatalf("multiple own unsecured loans remain eligible after retirement: %v, %s, %v", needed, reason, err)
+				if needed, reason := runner.loanRefinanceNeeded(old); needed {
+					t.Fatalf("multiple own unsecured loans remain eligible after retirement: %v, %s", needed, reason)
 				}
 				if loanRefinanceDrive(t, h, runner) {
 					t.Fatal("restart re-entered the retired old loan during its backoff")
@@ -1203,8 +1222,8 @@ func TestLoanRefinanceRetirementBackoffSurvivesRestart(t *testing.T) {
 			runner = h.runner(primaryTestKey)
 			loanCapacityRefresh(t, h, runner)
 			old, _ := runner.loanByID(state.OldLoanID)
-			if needed, reason, err := runner.loanRefinanceNeeded(h.ctx, old); !needed || err != nil {
-				t.Fatalf("repaid replacement still blocks the old loan: %v, %s, %v", needed, reason, err)
+			if needed, reason := runner.loanRefinanceNeeded(old); !needed {
+				t.Fatalf("repaid replacement still blocks the old loan: %v, %s", needed, reason)
 			}
 			runner = h.runner(primaryTestKey)
 			loanCapacityRefresh(t, h, runner)
@@ -1218,6 +1237,14 @@ func TestLoanRefinanceRetirementBackoffSurvivesRestart(t *testing.T) {
 			}
 			runner = h.runner(primaryTestKey)
 			loanCapacityRefresh(t, h, runner)
+			if loanRefinanceDrive(t, h, runner) {
+				t.Fatal("elapsed quarantine backoff bypassed the 24-real-hour posted-request cooldown")
+			}
+			runner.snapshot["_loan_refinance_retry_at"] = encode(time.Now().UTC().Add(-time.Second))
+			if err := runner.saveSnapshot(h.ctx); err != nil {
+				t.Fatal(err)
+			}
+			loanRefinanceNextDue(t, h, runner)
 			if !loanRefinanceDrive(t, h, runner) {
 				t.Fatal("repaid replacement and elapsed backoff did not reopen refinancing")
 			}
@@ -1295,10 +1322,12 @@ func TestLoanRefinancePreflightUsesCurrentCaptureWithoutNetworkIO(t *testing.T) 
 		reason string
 	}{
 		{"request arrears", "loan-request", "arrears", "arrears"},
+		{"approval other arrears", "loan-accept", "other arrears", "arrears"},
+		{"request due date", "loan-request", "due", "three-game-day"},
 		{"request payoff", "loan-request", "payoff", "exact payoff"},
-		{"approval arrears", "loan-accept", "arrears", "arrears"},
+		{"approval covered payment", "loan-accept", "next", "cash covers"},
 		{"approval installment", "loan-accept", "installment", "cheapest quote"},
-		{"repayment arrears", "loan-repay", "arrears", "arrears"},
+		{"repayment other arrears", "loan-repay", "other arrears", "arrears"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h, runner := loanRefinanceFixture(t)
@@ -1341,6 +1370,15 @@ func TestLoanRefinancePreflightUsesCurrentCaptureWithoutNetworkIO(t *testing.T) 
 				switch test.change {
 				case "arrears":
 					loan.ArrearsPence = 1
+				case "other arrears":
+					other := *loan
+					other.ID, other.IsMortgage, other.CollateralKind = "other-arrears", true, "ship_lien"
+					other.CollateralShipID, other.ArrearsPence = new(recoveryShipLapras), 1
+					h.api.playerLoans = append(h.api.playerLoans, other)
+				case "due":
+					loan.NextPaymentDueAt = new(time.Now().UTC().Add(4 * time.Hour))
+				case "next":
+					loan.NextPaymentPence = new(int64(1))
 				case "payoff":
 					loan.OwedPence += 100_000
 				case "installment":
@@ -1363,6 +1401,120 @@ func TestLoanRefinancePreflightUsesCurrentCaptureWithoutNetworkIO(t *testing.T) 
 			if h.api.mutationCount("/v1/loan/request") != requests || h.api.mutationCount("/v1/loan/approve") != approvals ||
 				h.api.mutationCount("/v1/loan/repay") != repayments {
 				t.Fatal("changed old debt reached a refinance mutation after its final preflight")
+			}
+		})
+	}
+}
+
+func TestLoanRefinanceInstallmentEmergencyWindow(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		due     time.Duration
+		cash    int64
+		next    int64
+		arrears int64
+		want    bool
+	}{
+		{name: "inside window one penny short", due: 72*time.Minute - time.Minute, cash: 99_999, next: 100_000, want: true},
+		{name: "outside window", due: 72*time.Minute + time.Minute, cash: 0, next: 100_000},
+		{name: "ordinary dip after collection", due: 4*time.Hour - time.Minute, cash: 0, next: 100_000},
+		{name: "exact installment cash", due: time.Hour, cash: 100_000, next: 100_000},
+		{name: "actual next payment below installment", due: time.Hour, cash: 80_000, next: 80_000},
+		{name: "exact arrears cash", due: 4 * time.Hour, cash: 20_000, next: 20_000, arrears: 20_000},
+		{name: "arrears outside the window", due: 4 * time.Hour, cash: 19_999, next: 20_000, arrears: 20_000},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h, runner := loanRefinanceFixture(t)
+			h.api.setVaultBalance("north", test.cash)
+			h.api.mu.Lock()
+			h.api.playerLoans[0].NextPaymentDueAt = new(time.Now().UTC().Add(test.due))
+			h.api.playerLoans[0].NextPaymentPence = new(test.next)
+			h.api.playerLoans[0].ArrearsPence = test.arrears
+			h.api.mu.Unlock()
+			loanCapacityRefresh(t, h, runner)
+			needed, reason := runner.loanRefinanceNeeded(runner.stateCache.Loans[0])
+			if needed != test.want {
+				t.Fatalf("emergency = %v, want %v, reason=%s", needed, test.want, reason)
+			}
+		})
+	}
+}
+
+func TestLoanRefinanceStoppedCooldownPersistsWithoutMission(t *testing.T) {
+	h, runner := loanRefinancePosted(t)
+	h.api.setVaultBalance("north", 100_000)
+	h.api.mu.Lock()
+	h.api.loanRequests[0].Status = "withdrawn"
+	h.api.mu.Unlock()
+	loanCapacityRefresh(t, h, runner)
+	before := time.Now().UTC()
+	if !loanRefinanceDrive(t, h, runner) {
+		t.Fatal("withdrawn recovered request did not stop")
+	}
+	h.missingMission(loanRefinanceMission)
+	runner = h.runner(primaryTestKey)
+	loanCapacityRefresh(t, h, runner)
+	until := decode[time.Time](runner.snapshot, "_loan_refinance_retry_at")
+	if until.Before(before.Add(24*time.Hour)) || until.After(time.Now().UTC().Add(24*time.Hour)) {
+		t.Fatalf("stopped-request cooldown was not durably kept for 24 real hours: %v", until)
+	}
+	if loanRefinanceDrive(t, h, runner) {
+		t.Fatal("cash-covered installment reopened a stopped request")
+	}
+	h.api.setVaultBalance("north", 99_999)
+	loanCapacityRefresh(t, h, runner)
+	loanRefinanceNextDue(t, h, runner)
+	if loanRefinanceDrive(t, h, runner) {
+		t.Fatal("ordinary installment shortfall bypassed the stopped-request cooldown")
+	}
+	runner.snapshot["_loan_refinance_retry_at"] = encode(time.Now().UTC().Add(-time.Second))
+	if err := runner.saveSnapshot(h.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !loanRefinanceDrive(t, h, runner) {
+		t.Fatal("new due date and expired cooldown did not allow a new request")
+	}
+	loanRefinanceDispatch(t, h, runner)
+	if h.api.mutationCount("/v1/loan/request") != 2 {
+		t.Fatal("new due date did not post exactly one new request")
+	}
+}
+
+func loanRefinanceNextDue(t *testing.T, h *recoveryHarness, runner *Runner) {
+	t.Helper()
+	h.api.mu.Lock()
+	h.api.playerLoans[0].NextPaymentDueAt = new(time.Now().UTC().Add(30 * time.Minute))
+	h.api.mu.Unlock()
+	loanCapacityRefresh(t, h, runner)
+}
+
+func TestLoanRefinanceInFlightIgnoresOldLoanArrears(t *testing.T) {
+	for _, stage := range []string{"loan-accept", "loan-repay"} {
+		t.Run(stage, func(t *testing.T) {
+			h, runner := loanRefinancePosted(t)
+			if stage == "loan-accept" {
+				loanRefinancePublishQuote(t, h, runner)
+			} else {
+				loanRefinanceApprove(t, h, runner)
+			}
+			h.api.mu.Lock()
+			h.api.playerLoans[0].ArrearsPence = 1
+			h.api.playerLoans[0].NextPaymentPence = new(int64(1))
+			h.api.playerLoans[0].NextPaymentDueAt = new(time.Now().UTC().Add(20 * time.Minute))
+			h.api.mu.Unlock()
+			if stage == "loan-accept" {
+				h.api.setVaultBalance("north", 0)
+			}
+			loanCapacityRefresh(t, h, runner)
+			if !loanRefinanceDrive(t, h, runner) {
+				t.Fatal("old loan arrears blocked its already-public refinance")
+			}
+			mission, data := h.mission(loanRefinanceMission)
+			if data.Action == nil || data.Action.Stage != stage {
+				t.Fatalf("in-flight refinance did not stage %s: %+v", stage, data.Action)
+			}
+			if err := runner.newActionPreflight(h.ctx, mission, &data); err != nil {
+				t.Fatalf("old loan arrears blocked first send of %s: %v", stage, err)
 			}
 		})
 	}

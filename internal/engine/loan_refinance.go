@@ -29,6 +29,7 @@ type loanRefinanceState struct {
 	PayoffAtPosting int64              `json:"payoff_at_posting,omitempty"`
 	ApprovedQuote   *gameapi.LoanQuote `json:"approved_quote,omitempty"`
 	RepayAttempts   int                `json:"repay_attempts,omitempty"`
+	RequestDueKey   string             `json:"request_due_key,omitempty"`
 }
 
 func (r *Runner) saveLoanRefinance(ctx context.Context, state loanRefinanceState) error {
@@ -53,13 +54,13 @@ func reserveLoanRefinance(required map[string]int64, state AccountState, snapsho
 	}
 }
 
-func (r *Runner) loanRefinanceNeeded(ctx context.Context, loan gameapi.Loan) (bool, string, error) {
+func (r *Runner) loanRefinanceNeeded(loan gameapi.Loan) (bool, string) {
 	lower, _, ok := r.serverBounds()
 	if !ok || !debtServiceHoldLoan(loan, r.account.CompanyID) || loan.Repayment != "amortised" ||
 		loan.InstallmentPence == nil || *loan.InstallmentPence <= 0 || loan.RateBasis != "annual" ||
-		loan.AnnualRateBPS == nil || *loan.AnnualRateBPS < 0 || loan.MaturesAt == nil ||
+		loan.AnnualRateBPS == nil || *loan.AnnualRateBPS < 0 || loan.MaturesAt == nil || loan.NextPaymentDueAt == nil ||
 		r.stateCache.Clock.Paused || r.stateCache.Clock.Calendar.TimeScale <= 0 {
-		return false, "refinance requires an active amortised unsecured loan and a running authoritative clock", nil
+		return false, "refinance requires an active amortised unsecured loan and a running authoritative clock"
 	}
 	unsecured := 0
 	for _, debt := range r.stateCache.Loans {
@@ -67,7 +68,7 @@ func (r *Runner) loanRefinanceNeeded(ctx context.Context, loan gameapi.Loan) (bo
 			debt.CollateralKind == "unsecured" && !debt.IsMortgage {
 			unsecured++
 			if unsecured > 1 {
-				return false, "refinance blocked by multiple own active or defaulted unsecured loans", nil
+				return false, "refinance blocked by multiple own active or defaulted unsecured loans"
 			}
 		}
 	}
@@ -75,7 +76,7 @@ func (r *Runner) loanRefinanceNeeded(ctx context.Context, loan gameapi.Loan) (bo
 	// The present-value annuity ratio is the payment reduction at an equal rate.
 	remaining := math.Ceil(loan.MaturesAt.Sub(lower).Hours() * float64(r.stateCache.Clock.Calendar.TimeScale) / 240)
 	if remaining < 1 || remaining > 36 {
-		return false, "refinance no longer meets the remaining-payment schedule gate", nil
+		return false, "refinance no longer meets the remaining-payment schedule gate"
 	}
 	periodic := float64(*loan.AnnualRateBPS) / 10_000 / 36
 	ratio := remaining / 36
@@ -83,19 +84,16 @@ func (r *Runner) loanRefinanceNeeded(ctx context.Context, loan gameapi.Loan) (bo
 		ratio = math.Expm1(-remaining*math.Log1p(periodic)) / math.Expm1(-36*math.Log1p(periodic))
 	}
 	if ratio > 0.9 {
-		return false, "refinance no longer meets the ten-percent annuity gate", nil
+		return false, "refinance no longer meets the ten-percent annuity gate"
 	}
-	snapshot := maps.Clone(r.snapshot)
-	delete(snapshot, "_loan_refinance")
-	required, err := r.treasuryReservesFor(ctx, snapshot, loan.ID)
-	if err != nil {
-		return false, "", err
+	window := time.Duration(float64(72*time.Hour) / float64(r.stateCache.Clock.Calendar.TimeScale))
+	if loan.NextPaymentDueAt.After(lower.Add(window)) {
+		return false, "next installment is outside the three-game-day emergency window"
 	}
-	free := growthFreeCash(r.planningInput(ShipState{}).Balances, required)
-	if free >= min(growthCashTotal(*loan.InstallmentPence, *loan.InstallmentPence, *loan.InstallmentPence), loanFullPayment(loan)) {
-		return false, "cash runway recovered", nil
+	if r.loanRefinanceCash(loan) >= loanRefinancePayment(loan) {
+		return false, "all-vault cash covers this installment after earlier or simultaneous loan payments; hold cash instead of refinancing"
 	}
-	return true, "", nil
+	return true, ""
 }
 
 func loanRefinancePrincipal(loan gameapi.Loan) int64 {
@@ -108,6 +106,9 @@ func loanRefinancePrincipal(loan gameapi.Loan) int64 {
 }
 
 func (r *Runner) finishLoanRefinance(ctx context.Context, state loanRefinanceState, kind, reason string) (bool, error) {
+	if state.RequestID != "" {
+		r.snapshot["_loan_refinance_retry_at"] = encode(time.Now().UTC().Add(24 * time.Hour))
+	}
 	if kind == "loan_refinance_quarantined" || kind == "loan_refinance_repay_exhausted" {
 		backoffs := decode[map[string]time.Time](r.snapshot, "_loan_refinance_backoffs")
 		if backoffs == nil {
@@ -238,15 +239,16 @@ func (r *Runner) driveLoanRefinance(ctx context.Context, mission *store.Mission,
 		backoffs := decode[map[string]time.Time](r.snapshot, "_loan_refinance_backoffs")
 		now := time.Now()
 		for _, loan := range r.stateCache.Loans {
+			if !debtServiceHoldLoan(loan, r.account.CompanyID) {
+				continue
+			}
 			if until := backoffs[loan.ID]; now.Before(until) {
 				r.wakeBy(until)
 				continue
 			}
-			needed, _, err := r.loanRefinanceNeeded(ctx, loan)
-			if err != nil {
-				return false, err
-			}
-			if needed {
+			needed, _ := r.loanRefinanceNeeded(loan)
+			allowed, _ := r.loanRefinanceMayRequest(loan)
+			if needed && allowed {
 				state.OldLoanID, state.State = loan.ID, "request"
 				break
 			}
@@ -330,7 +332,7 @@ func (r *Runner) driveLoanRefinance(ctx context.Context, mission *store.Mission,
 			return true, r.saveLoanRefinance(ctx, state)
 		}
 		for _, loan := range r.stateCache.Loans {
-			if loan.Status == "active" && loan.ArrearsPence > 0 {
+			if loan.ID != old.ID && loan.Status == "active" && loan.ArrearsPence > 0 {
 				return false, nil
 			}
 		}
@@ -342,18 +344,16 @@ func (r *Runner) driveLoanRefinance(ctx context.Context, mission *store.Mission,
 		}
 		return r.repayLoanRefinance(ctx, mission, data, state, old)
 	}
-	if time.Now().Before(state.RetryAt) {
-		r.wakeBy(state.RetryAt)
-		return false, nil
+	if state.State == "backoff" {
+		if allowed, _ := r.loanRefinanceMayRequest(old); !allowed {
+			return false, nil
+		}
 	}
 	if state.State == "backoff" {
-		state.State, state.RequestID, state.RetryAt = "request", "", time.Time{}
+		state.State, state.RequestID, state.RequestDueKey, state.RetryAt = "request", "", "", time.Time{}
 		data.PlayerLoan, data.Capacity = nil, nil
 	}
-	needed, reason, err := r.loanRefinanceNeeded(ctx, old)
-	if err != nil {
-		return false, err
-	}
+	needed, reason := r.loanRefinanceNeeded(old)
 	if state.RequestID == "" && !needed {
 		return r.finishLoanRefinance(ctx, state, "loan_refinance_stopped", reason+"; no refinance request or replacement was acquired, so surplus prepayment may resume")
 	}
@@ -383,10 +383,14 @@ func (r *Runner) driveLoanRefinance(ctx context.Context, mission *store.Mission,
 			if request.Status == "open" && playerRequestMatches(request, &candidate, r.account.CompanyID) {
 				intent.PostedAt, intent.RequestID, intent.ExpiresAt = request.CreatedAt, request.ID, request.ExpiresAt
 				state.RequestID, state.State = request.ID, "wait"
+				r.recordLoanRefinanceDue(old, state.RequestDueKey)
 				break
 			}
 		}
 		if intent.RequestID == "" {
+			if allowed, _ := r.loanRefinanceMayRequest(old); !allowed {
+				return false, nil
+			}
 			if r.openOwnLoanRequest() {
 				return false, nil
 			}
@@ -399,6 +403,7 @@ func (r *Runner) driveLoanRefinance(ctx context.Context, mission *store.Mission,
 			if intent.PrincipalPence <= 0 || intent.PrincipalPence > maximumPence {
 				return false, errors.New("refinance payoff exceeds the supported principal")
 			}
+			state.RequestDueKey = loanRefinanceDueKey(old)
 			state.State, state.PayoffAtPosting = "request", loanFullPayment(old)
 			if err := r.saveLoanRefinance(ctx, state); err != nil {
 				return false, err
@@ -427,7 +432,7 @@ func (r *Runner) driveLoanRefinance(ctx context.Context, mission *store.Mission,
 		}
 		state.RequestID = ""
 		data.PlayerLoan = nil
-		return r.deferLoanRefinance(ctx, mission, data, state, "loan_refinance_wait", "refinance request lapsed without funding; wait ten game days before retrying")
+		return r.deferLoanRefinance(ctx, mission, data, state, "loan_refinance_wait", "refinance request lapsed without funding; wait at least 24 real hours and never repost for this installment due date")
 	}
 	state.State = "wait"
 	if err := r.saveLoanRefinance(ctx, state); err != nil {
@@ -441,7 +446,7 @@ func (r *Runner) driveLoanRefinance(ctx context.Context, mission *store.Mission,
 		return false, r.decision(ctx, loanRefinanceMission, "loan_refinance_wait", reason+"; let the unfunded refinance request lapse without approving more debt", state)
 	}
 	for _, loan := range r.stateCache.Loans {
-		if loan.Status == "active" && loan.ArrearsPence > 0 {
+		if loan.ID != old.ID && loan.Status == "active" && loan.ArrearsPence > 0 {
 			return false, nil
 		}
 	}
@@ -557,7 +562,7 @@ func (r *Runner) loanRefinancePreflight(ctx context.Context, data *missionData) 
 		return errors.New("refinance requires fresh loans, cash and its owned active unsecured old loan")
 	}
 	for _, loan := range r.stateCache.Loans {
-		if loan.Status == "active" && loan.ArrearsPence > 0 {
+		if loan.Status == "active" && loan.ArrearsPence > 0 && (data.Action.Stage == "loan-request" || loan.ID != old.ID) {
 			return errors.New("refinance waits for priority loan arrears cure")
 		}
 	}
@@ -591,19 +596,16 @@ func (r *Runner) loanRefinancePreflight(ctx context.Context, data *missionData) 
 			intent.PrincipalPence != loanRefinancePrincipal(old) || r.openOwnLoanRequest() {
 			return errors.New("refinance request waits for its exact payoff and the free borrower request slot")
 		}
-		needed, reason, err := r.loanRefinanceNeeded(ctx, old)
-		if err != nil {
-			return err
+		needed, reason := r.loanRefinanceNeeded(old)
+		if allowed, why := r.loanRefinanceMayRequest(old); !allowed {
+			return errors.New("refinance request: " + why)
 		}
 		if !needed {
 			return errors.New("refinance request: " + reason)
 		}
 		return nil
 	case "loan-accept":
-		needed, reason, err := r.loanRefinanceNeeded(ctx, old)
-		if err != nil {
-			return err
-		}
+		needed, reason := r.loanRefinanceNeeded(old)
 		if !needed {
 			return errors.New("refinance approval: " + reason)
 		}
@@ -629,6 +631,9 @@ func (r *Runner) loanRefinanceResult(ctx context.Context, mission *store.Mission
 	switch data.Action.Stage {
 	case "loan-request":
 		state.RequestID, state.State = data.PlayerLoan.RequestID, "wait"
+		if old, exists := r.loanByID(state.OldLoanID); exists {
+			r.recordLoanRefinanceDue(old, state.RequestDueKey)
+		}
 		mission.Phase = "loan_refinance_request"
 	case "loan-accept":
 		loan := data.Capacity.Financing.Loans[0]
@@ -655,7 +660,8 @@ func (r *Runner) loanRefinanceResult(ctx context.Context, mission *store.Mission
 }
 
 func (r *Runner) deferLoanRefinance(ctx context.Context, mission *store.Mission, data *missionData, state loanRefinanceState, kind, reason string) (bool, error) {
-	state.State, state.RetryAt = "backoff", r.gameDelay(10*24)
+	state.State, state.RetryAt = "backoff", time.Now().UTC().Add(24*time.Hour)
+	r.snapshot["_loan_refinance_retry_at"] = encode(state.RetryAt)
 	data.Capacity = nil
 	mission.Phase = "loan_refinance_request"
 	if err := r.decision(ctx, loanRefinanceMission, kind, reason, state); err != nil {
@@ -710,7 +716,10 @@ func (r *Runner) rejectLoanRefinance(ctx context.Context, mission *store.Mission
 		}
 		return true, r.saveMission(ctx, mission, data)
 	}
+	if old, exists := r.loanByID(state.OldLoanID); exists {
+		r.recordLoanRefinanceDue(old, state.RequestDueKey)
+	}
 	state.RequestID = ""
 	data.PlayerLoan = nil
-	return r.deferLoanRefinance(ctx, mission, data, state, "loan_refinance_wait", "borrower request was refused; keep trading and wait ten game days before retrying")
+	return r.deferLoanRefinance(ctx, mission, data, state, "loan_refinance_wait", "borrower request was refused; never resend for this installment due date and wait at least 24 real hours")
 }
