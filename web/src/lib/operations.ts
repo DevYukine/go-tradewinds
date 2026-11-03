@@ -26,10 +26,17 @@ export interface DatasetObservation {
   current: boolean;
 }
 
+export interface ShipCargoItem {
+  id: string;
+  name: string;
+  tons: number;
+}
+
 export interface ShipOperation {
   observation: DatasetObservation;
   activity: string;
   route: string;
+  cargoItems: ShipCargoItem[] | undefined;
   cargo: string;
   starving: boolean;
   holds: EngineHold[];
@@ -52,6 +59,7 @@ export function datasetObservation(
     name === "_engine" ||
     name === "ships" ||
     name.startsWith("ship_details/") ||
+    name.startsWith("passenger_aboard/") ||
     name === "clock" ||
     name === "vaults";
   let state: ObservationState;
@@ -203,6 +211,16 @@ export function shipStatusLabel(status: string, fate?: string | null): string {
   }
 }
 
+export function shipLossNeedsAttention(
+  status: string,
+  fate?: string | null,
+): boolean {
+  return (
+    shipIsLoss(status, fate) ||
+    (status === "sunk" && Boolean(fate?.startsWith("seized_")))
+  );
+}
+
 export function catalogPlaceName(
   catalog: Catalog | undefined,
   id: string | null | undefined,
@@ -231,28 +249,69 @@ export function shipLastLocation(
     ? `Game-reported last port: ${catalogPlaceName(catalog, detail.ship.current_port_id)}`
     : "Last afloat location not recorded";
 }
-
 export function cargoEntries(
   manifest: ShipDetail["cargo_manifest"] | undefined,
 ): [string, number][] | undefined {
-  return manifest
-    ? Object.entries(manifest).filter(
-        ([, quantity]) => Number.isFinite(quantity) && quantity > 0,
-      )
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    return undefined;
+  }
+  const entries = Object.entries(manifest);
+  return entries.every(
+    ([, tons]) =>
+      typeof tons === "number" && Number.isFinite(tons) && tons >= 0,
+  )
+    ? entries.filter(([, tons]) => tons > 0)
     : undefined;
+}
+
+export function shipCargo(
+  detail: ShipDetail,
+  catalog?: Catalog,
+): { items: ShipCargoItem[] | undefined; text: string } {
+  const gone = detail.ship.status === "sunk";
+  const manifest = gone ? detail.loss?.cargo_manifest : detail.cargo_manifest;
+  const items = cargoEntries(manifest)
+    ?.sort(
+      ([leftID, left], [rightID, right]) =>
+        right - left || leftID.localeCompare(rightID),
+    )
+    .map(([id, tons]) => ({
+      id,
+      name:
+        catalog?.commodities.find((commodity) => commodity.id === id)?.name ??
+        humanize(id),
+      tons,
+    }));
+  if (items === undefined) {
+    return {
+      items,
+      text: gone ? "Last afloat cargo not recorded" : "Cargo not recorded",
+    };
+  }
+  const compact = items
+    .slice(0, 2)
+    .map(({ name, tons }) => `${count(tons)} t ${name}`)
+    .join(", ");
+  const remaining = items.length - 2;
+  const load = `${compact || "No trade cargo recorded"}${remaining > 0 ? ` +${remaining} ${remaining === 1 ? "good" : "goods"}` : ""}`;
+  return {
+    items,
+    text: gone ? `Last afloat: ${load}` : items.length ? `Cargo ${load}` : load,
+  };
 }
 
 export function shipOperation(
   account: Account,
   detail: ShipDetail,
   now: number,
+  fallbackCatalog?: Catalog,
 ): ShipOperation {
   const source = shipSource(account, detail.ship.id);
   const observation = datasetObservation(account, source, now);
   const shipGeneration = metadata(account, source).generation;
   const controllerGeneration = metadata(account, "_engine").generation;
   const controller = controllerStatus(account, now);
-  const catalog = dataset<Catalog>(account, "catalog");
+  const catalog = dataset<Catalog>(account, "catalog") ?? fallbackCatalog;
   const portName = (id: string) => catalogPlaceName(catalog, id);
   const sailing = detail.ship.status === "sailing";
   const gone = detail.ship.status === "sunk";
@@ -269,32 +328,21 @@ export function shipOperation(
       : detail.ship.current_port_id
         ? portName(detail.ship.current_port_id)
         : "Port not recorded";
-  const manifest = gone ? detail.loss?.cargo_manifest : detail.cargo_manifest;
-  const entries = cargoEntries(manifest);
-  const cargo = entries
-    ? entries
-        .map(
-          ([commodity, quantity]) =>
-            `${count(quantity)} t ${catalog?.commodities.find((item) => item.id === commodity)?.name ?? humanize(commodity)}`,
-        )
-        .join(", ") || "No trade cargo recorded"
-    : "Cargo not recorded";
+  const cargo = shipCargo(detail, catalog);
   return {
     observation,
     activity: shipStatusLabel(detail.ship.status, detail.ship.fate),
     route,
-    cargo: gone
-      ? manifest
-        ? `Last afloat: ${cargo}`
-        : "Last afloat cargo not recorded"
-      : cargo,
+    cargoItems: cargo.items,
+    cargo: cargo.text,
     starving:
       !gone && Boolean(detail.voyage?.legs?.some((leg) => leg.starving)),
     holds: controller.holds.filter((hold) => hold.ship_id === detail.ship.id),
     holdsCurrent:
       !gone &&
-      observation.current &&
-      controller.observation.current &&
+      (observation.current || observation.state === "delayed") &&
+      (controller.observation.current ||
+        controller.observation.state === "delayed") &&
       controller.holdsValid &&
       controller.assessedShipIDs?.includes(detail.ship.id) === true &&
       Boolean(shipGeneration) &&

@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  cargoEntries,
   companyMoney,
   controllerStatus,
+  shipCargo,
   shipOperation,
   shipStatusLabel,
 } from "./operations";
 import type {
   Account,
+  Catalog,
   DashboardData,
   Settlement,
   ShipDetail,
@@ -169,9 +172,19 @@ describe("retained loss operational descriptions", () => {
       expect(operation.route).toBe(location);
       if (lastPort === null) expect(operation.route).not.toContain("London");
       expect(operation.cargo).toBe("Last afloat: 12 t Grain");
+      expect(operation.cargoItems).toEqual([
+        { id: "grain", name: "Grain", tons: 12 },
+      ]);
       expect(operation.cargo).not.toContain("Timber");
       expect(operation.holdsCurrent).toBe(false);
       expect(operation.starving).toBe(false);
+      const empty = shipOperation(
+        value,
+        { ...lost, loss: { ...loss, cargo_manifest: {} } },
+        now,
+      );
+      expect(empty.cargo).toBe("Last afloat: No trade cargo recorded");
+      expect(empty.cargoItems).toEqual([]);
       const unavailable = shipOperation(
         account(),
         {
@@ -187,11 +200,138 @@ describe("retained loss operational descriptions", () => {
       );
       expect(unavailable.route).toBe("Last afloat location not recorded");
       expect(unavailable.cargo).toBe("Last afloat cargo not recorded");
+      expect(unavailable.cargoItems).toBeUndefined();
     },
   );
 });
 
+describe("shared ship cargo", () => {
+  it("names and orders the full manifest but limits compact copy to two goods", () => {
+    const catalog: Catalog = {
+      ports: [],
+      sea_zones: [],
+      ship_classes: [],
+      commodities: [
+        {
+          id: "grain",
+          name: "Bread grain",
+          category: "raw",
+          base_price_pence: 100,
+        },
+        {
+          id: "provisions",
+          name: "Ship stores",
+          category: "stores",
+          base_price_pence: 100,
+        },
+      ],
+    };
+    const loaded = {
+      ...ship,
+      cargo_manifest: {
+        wool: 2,
+        timber: 12,
+        provisions: 30,
+        grain: 12,
+        zero: 0,
+      },
+    };
+    const expected = {
+      items: [
+        { id: "provisions", name: "Ship stores", tons: 30 },
+        { id: "grain", name: "Bread grain", tons: 12 },
+        { id: "timber", name: "Timber", tons: 12 },
+        { id: "wool", name: "Wool", tons: 2 },
+      ],
+      text: "Cargo 30 t Ship stores, 12 t Bread grain +2 goods",
+    };
+    expect(shipCargo(loaded, catalog)).toEqual(expected);
+    const value = account();
+    value.snapshot.catalog = catalog;
+    const operation = shipOperation(value, loaded, now);
+    expect(operation.cargo).toBe(expected.text);
+    expect(operation.cargoItems).toEqual(expected.items);
+  });
+
+  it("distinguishes a known empty manifest from missing cargo", () => {
+    const manifests: Record<string, number>[] = [{}, { grain: 0 }];
+    for (const manifest of manifests) {
+      const empty = { ...ship, cargo_manifest: manifest };
+      expect(shipCargo(empty)).toEqual({
+        items: [],
+        text: "No trade cargo recorded",
+      });
+      expect(shipOperation(account(), empty, now).cargoItems).toEqual([]);
+    }
+    expect(shipCargo({ ...ship, cargo_manifest: null })).toEqual({
+      items: undefined,
+      text: "Cargo not recorded",
+    });
+  });
+
+  it.each([
+    { raw: [] },
+    { raw: [12] },
+    { raw: "grain" },
+    { raw: { grain: "12" } },
+    { raw: { grain: 12, timber: -1 } },
+    { raw: { grain: 12, timber: Number.NaN } },
+    { raw: { grain: 12, timber: Number.POSITIVE_INFINITY } },
+    { raw: { grain: 12, timber: null } },
+  ])(
+    "keeps a malformed manifest unknown rather than partly empty (%j)",
+    ({ raw }) => {
+      const manifest = raw as unknown as ShipDetail["cargo_manifest"];
+      const malformed = { ...ship, cargo_manifest: manifest };
+      expect(cargoEntries(manifest)).toBeUndefined();
+      expect(shipCargo(malformed)).toEqual({
+        items: undefined,
+        text: "Cargo not recorded",
+      });
+      const operation = shipOperation(account(), malformed, now);
+      expect(operation.cargo).toBe("Cargo not recorded");
+      expect(operation.cargoItems).toBeUndefined();
+    },
+  );
+
+  it("keeps a valid fractional stack and the singular extra-good count", () => {
+    expect(
+      shipCargo({
+        ...ship,
+        cargo_manifest: { grain: 2.5, timber: 2, wool: 1 },
+      }),
+    ).toEqual({
+      items: [
+        { id: "grain", name: "Grain", tons: 2.5 },
+        { id: "timber", name: "Timber", tons: 2 },
+        { id: "wool", name: "Wool", tons: 1 },
+      ],
+      text: "Cargo 2.5 t Grain, 2 t Timber +1 good",
+    });
+  });
+});
+
 describe("operational evidence boundaries", () => {
+  it.each([30_000, 119_999])(
+    "keeps a delayed but coherent hold assessment usable at %i ms",
+    (age) => {
+      const value = account();
+      const delayedNow = Date.parse(observedAt) + age;
+      const operation = shipOperation(value, ship, delayedNow);
+      expect(operation.observation.state).toBe("delayed");
+      expect(operation.holdsCurrent).toBe(true);
+      const meta = value.snapshot._meta as Record<
+        string,
+        Record<string, unknown>
+      >;
+      meta.ships.generation = "another-capture";
+      expect(shipOperation(value, ship, delayedNow).holdsCurrent).toBe(false);
+      expect(
+        shipOperation(account(), ship, Date.parse(observedAt) + 120_000)
+          .holdsCurrent,
+      ).toBe(false);
+    },
+  );
   it("does not attach an old completed controller assessment to a newer ship capture", () => {
     const value = account();
     expect(shipOperation(value, ship, now).holdsCurrent).toBe(true);

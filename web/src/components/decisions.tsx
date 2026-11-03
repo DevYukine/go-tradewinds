@@ -253,7 +253,7 @@ export function DecisionPanel({
                       Not priced: {decision.reason || "No reason recorded"}
                     </p>
                   ) : (
-                    <Economics view={decision.view} />
+                    <DecisionEconomics view={decision.view} />
                   )}
                 </details>
               ),
@@ -269,7 +269,7 @@ export function DecisionPanel({
   );
 }
 
-function Economics({ view }: { view: DecisionView }) {
+export function DecisionEconomics({ view }: { view: DecisionView }) {
   const separateFunding = view.basis === "destination";
   const fundingRows = separateFunding
     ? view.cashRows.filter(

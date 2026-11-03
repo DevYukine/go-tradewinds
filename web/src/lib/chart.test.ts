@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   chartBlockingHolds,
   chartCurrentPlan,
+  chartHoldLabel,
   chartLossPort,
   chartPortActivity,
   chartShipWarnings,
@@ -23,7 +24,7 @@ import {
   type ChartPosition,
 } from "./geography";
 import { fleet } from "./data";
-import { shipOperation } from "./operations";
+import { shipOperation, type ShipOperation } from "./operations";
 import type {
   Account,
   Catalog,
@@ -859,6 +860,7 @@ describe("chart plan and ship-only attention", () => {
     ).toMatchObject({
       source: "mission",
       kind: "charter",
+      phase: "sailing",
       destination: "hamburg",
       expectedNetPence: 0,
       updatedAt: iso(DEPART),
@@ -971,6 +973,110 @@ describe("chart plan and ship-only attention", () => {
     expect(chartBlockingHolds(holds, "berthed")).toEqual(holds);
   });
 
+  it.each([
+    [
+      "actual fleet confirms voyage in flight; waiting for authoritative arrival",
+      "Waiting for arrival",
+    ],
+    ["Authoritative voyage still in flight", "Waiting for arrival"],
+    ["waiting for authoritative arrival", "Waiting for arrival"],
+    [
+      "sourcing relocation waits for authoritative source arrival",
+      "Repositioning to inspect a market",
+    ],
+    [
+      "passenger passage in flight; waiting for fare receipts",
+      "Carrying passengers to their destination",
+    ],
+  ])("shares the benign sailing wait vocabulary for %s", (reason, label) => {
+    const wait = { ship_id: "ship-lapras", reason };
+    expect(chartHoldLabel(reason)).toBe(label);
+    expect(chartBlockingHolds([wait], "sailing")).toEqual([]);
+    expect(chartBlockingHolds([wait], "berthed")).toEqual([wait]);
+    const blocker = {
+      ...wait,
+      reason: `${reason}; destination and fleet disagree`,
+    };
+    expect(chartBlockingHolds([blocker], "sailing")).toEqual([blocker]);
+  });
+
+  it.each([
+    [
+      "no profitable executable voyage from calais; rejected alternative needs provisions and repair",
+      "No profitable route found",
+    ],
+    [
+      "no executable purchase-and-voyage alternative from calais",
+      "No executable route found",
+    ],
+    [
+      "berth-only operation waits for authoritative docking; already queued or unavailable",
+      "Waiting for a berth",
+    ],
+    [
+      "observe mode: durable mission retained without mutation",
+      "Observation only; no actions are being sent",
+    ],
+    ["passenger loading waits for turnaround unlock", "Waiting for turnaround"],
+    [
+      "passenger repricing waits for twelve game hours at the current fare",
+      "Waiting for passenger demand",
+    ],
+    [
+      "passenger ladder retains each price for twelve game hours",
+      "Waiting for passenger demand",
+    ],
+    [
+      "passenger promise permits a bounded wait for one whole group",
+      "Waiting for another passenger group",
+    ],
+  ])(
+    "keeps routine activity neutral without hiding blockers: %s",
+    (reason, label) => {
+      const routine = { ship_id: "ship-lapras", reason };
+      const blockers = [
+        {
+          ship_id: "ship-lapras",
+          reason: "Insufficient provisions for departure",
+        },
+        {
+          ship_id: "ship-lapras",
+          reason: "Not enough cash to replenish stores",
+        },
+        { ship_id: "ship-lapras", reason: "Repairs required before departure" },
+        { ship_id: "ship-lapras", reason: "Ship observation is stale" },
+      ];
+      expect(chartHoldLabel(reason)).toBe(label);
+      for (const status of ["berthed", "anchored_roadstead", "sailing"]) {
+        expect(chartBlockingHolds([routine], status)).toEqual([]);
+        expect(chartBlockingHolds([routine, ...blockers], status)).toEqual(
+          blockers,
+        );
+        expect(chartBlockingHolds([...blockers, routine], status)).toEqual(
+          blockers,
+        );
+      }
+    },
+  );
+
+  it.each([
+    [
+      "mission destination and actual fleet disagree; awaiting reconciliation",
+      "Plan and ship records disagree",
+    ],
+    [
+      "cannot replenish stores without spending protected regional bills reserve",
+      "Funding needed",
+    ],
+    ["Insufficient provisions for departure", "Provisions needed"],
+    ["Repairs required before departure", "Repairs needed"],
+    ["constructor", "Action blocked"],
+  ])("uses one concise current hold label for %s", (reason, label) => {
+    expect(chartHoldLabel(reason)).toBe(label);
+    const hold = { ship_id: "ship-lapras", reason };
+    expect(chartBlockingHolds([hold], "sailing")).toEqual([hold]);
+  });
+
   it("excludes account growth warnings and warnings for another ship", () => {
     const upkeep: EngineWarning = {
       code: "upkeep_seizure",
@@ -1017,7 +1123,12 @@ describe("chart roster", () => {
       account: { label: "Yukine" },
       company: "Pokemon Pirates",
       detail,
-      operation: { route: "London to Calais", activity: status, cargo: "Salt" },
+      operation: {
+        route: "London to Calais",
+        activity: status,
+        cargo: "Salt",
+        cargoItems: undefined as ShipOperation["cargoItems"],
+      },
     };
   }
 
@@ -1037,6 +1148,58 @@ describe("chart roster", () => {
       );
     }
     expect(chartRoster([lapras], "timber", "", "name")).toEqual([]);
+  });
+
+  it("searches every named cargo item beyond the compact two-goods summary", () => {
+    const row = vessel("Lapras");
+    row.detail.cargo_manifest = { grain: 40, salt: 30, timber: 20, wool: 10 };
+    const catalog: Catalog = {
+      ports: [],
+      ship_classes: [],
+      sea_zones: [],
+      commodities: [
+        ["grain", "Milled grain"],
+        ["salt", "Rock salt"],
+        ["timber", "Oak timber"],
+        ["wool", "Merino wool"],
+      ].map(([id, name]) => ({
+        id,
+        name,
+        category: "goods",
+        base_price_pence: 100,
+      })),
+    };
+    const account = makeAccount([row.detail]);
+    account.snapshot.catalog = catalog;
+    row.operation = shipOperation(account, row.detail, NOW);
+    expect(row.operation.cargo).toBe(
+      "Cargo 40 t Milled grain, 30 t Rock salt +2 goods",
+    );
+    for (const term of [
+      "MILLED GRAIN",
+      "rock salt",
+      "oak TIMBER",
+      " merino wool ",
+    ]) {
+      expect(chartRoster([row], term, "sailing", "name", catalog)).toEqual([
+        row,
+      ]);
+    }
+    expect(chartRoster([row], "cotton", "", "name", catalog)).toEqual([]);
+    expect(
+      chartRoster([row], "merino wool", "berthed", "name", catalog),
+    ).toEqual([]);
+    const unknown = {
+      ...row,
+      operation: {
+        ...row.operation,
+        cargoItems: undefined,
+        cargo: "Cargo not recorded",
+      },
+    };
+    expect(chartRoster([unknown], "merino wool", "", "name", catalog)).toEqual(
+      [],
+    );
   });
 
   it("retains omitted loss rows and filters and searches their displayed fates", () => {

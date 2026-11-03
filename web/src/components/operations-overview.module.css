@@ -142,18 +142,123 @@
 
 .shipRow {
   display: grid;
-  grid-template-columns: minmax(120px, 0.75fr) minmax(150px, 1fr) minmax(
-      0,
-      1.6fr
-    );
-  gap: 10px 20px;
-  padding: 12px 0;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 0 10px;
   border-bottom: 1px solid var(--border);
   align-items: start;
 }
 
+.shipRow > :global(.sprite-image) {
+  margin-top: 2px;
+}
+
+.shipSummary {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  font-size: 15px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .shipIdentity,
-.activity,
+.people,
+.reasonLine {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+  min-width: 0;
+}
+
+.shipButton,
+.detailsButton {
+  min-height: 28px;
+  max-width: 100%;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.shipButton strong {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.shipButton:hover strong,
+.shipButton[aria-expanded="true"] strong,
+.detailsButton {
+  color: var(--route);
+}
+
+.detailsButton {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 13px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.shipButton:focus-visible,
+.detailsButton:focus-visible {
+  outline: 2px solid var(--route);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+.action,
+.arrival,
+.people,
+.reason {
+  color: var(--muted);
+}
+
+.action[data-attention="true"],
+.warning {
+  color: var(--attention);
+}
+
+.arrival {
+  margin-left: auto;
+  font-size: 13px;
+}
+
+.cargo,
+.people,
+.reason,
+.warning {
+  margin: 0;
+}
+
+.cargo {
+  font-weight: 500;
+}
+
+.people {
+  font-size: 14px;
+}
+
+.reasonLine {
+  flex-wrap: nowrap;
+  font-size: 13px;
+}
+
+.reason,
+.warning {
+  flex: 1 1 0;
+  max-width: 80ch;
+  min-width: 0;
+}
+
+.reason > span,
+.warning > span {
+  color: var(--muted);
+}
+
 .hold {
   display: grid;
   gap: 4px;
@@ -161,57 +266,10 @@
   overflow-wrap: anywhere;
 }
 
-.shipButton {
-  display: inline-flex;
-  justify-self: start;
-  align-items: center;
-  gap: 6px;
-  min-height: 36px;
-  max-width: 100%;
-  padding: 0;
-  background: none;
-  border: 0;
-  color: var(--ink);
-  text-align: left;
-}
-
-.shipButton strong {
-  font-size: 16px;
-  min-width: 0;
-}
-
-.shipButton:hover strong,
-.shipButton[aria-pressed="true"] strong {
-  color: var(--route);
-}
-
-.activity > :first-child {
-  justify-self: start;
-}
-
-.activity :global(.badge) {
-  white-space: normal;
-  max-width: 100%;
-}
-
-.cargo,
-.hold > span {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.warning {
-  color: var(--warning);
-  font-size: 12px;
-}
-
 @media (max-width: 1000px) {
-  .shipRow {
-    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr);
-  }
-
-  .hold {
-    grid-column: 1 / -1;
+  .stores,
+  .arrival {
+    display: none;
   }
 }
 
@@ -234,18 +292,16 @@
   }
 
   .shipRow {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: 32px minmax(0, 1fr);
     gap: 8px;
   }
 
   .shipIdentity {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
     gap: 4px 12px;
   }
 
-  .shipButton {
+  .shipButton,
+  .detailsButton {
     min-height: 44px;
   }
 

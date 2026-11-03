@@ -742,6 +742,19 @@ export interface RouteLeg {
   is_sound_toll: boolean;
 }
 
+export interface PassengerAboardGroup {
+  id: string;
+  kind: string;
+  size: number;
+  origin_port_id: string;
+  dest_port_id: string;
+  fare_per_head_pence: number;
+  full_fare_pence: number;
+  hold_tons: number;
+  boarded_at?: string | null;
+  promised_arrival_at?: string | null;
+}
+
 export interface ShipDetail {
   ship: {
     id: string;
@@ -754,6 +767,7 @@ export interface ShipDetail {
     current_leg_idx: number | null;
     cannons_count: number | null;
     stores_provisions_units: number | null;
+    passenger_hold_tons?: number | null;
     turnaround_unlocks_at?: string | null;
     dock_queued_at?: string | null;
     leg_departs_at?: string | null;
@@ -768,6 +782,7 @@ export interface ShipDetail {
   hold_capacity_tons: number | null;
   effective_hold_capacity_tons: number | null;
   cargo_used_tons: number | null;
+  passenger_hold_tons?: number | null;
   cargo_manifest: Record<string, number> | null;
   stores: { provisions_tons: number; sea_days_remaining: number } | null;
   route_legs: RouteLeg[];

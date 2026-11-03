@@ -50,7 +50,6 @@ import { EngineWarnings } from "./engine-warnings";
 import { FleetPanel } from "./fleet";
 import { Journal } from "./journal";
 import { LoansView } from "./loans";
-import { OperationsOverview } from "./operations-overview";
 import { Performance } from "./performance";
 import { ShipyardView } from "./shipyard";
 import { StandingsView } from "./standings";
@@ -141,7 +140,7 @@ export function Dashboard() {
     navigationGroups.find((group) =>
       group.items.some((item) => item.id === view),
     ) ?? navigationGroups[0];
-  const now = useNow();
+  const now = Math.max(useNow(), query.dataUpdatedAt);
   const observations = scoped.map((account) =>
     datasetObservation(account, "ships", now),
   );
@@ -376,15 +375,13 @@ export function Dashboard() {
           />
         ) : (
           <>
-            {view === "chart" && (
-              <OperationsOverview accounts={scoped} dashboard={query.data} />
-            )}
             {(view === "chart" || view === "fleet") && (
               <FleetPanel
                 accounts={scoped}
                 catalog={catalog}
                 dashboard={query.data}
                 compact={view === "chart"}
+                receivedAt={query.dataUpdatedAt}
               />
             )}
             {scoped.map((account) => (

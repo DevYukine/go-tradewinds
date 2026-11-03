@@ -1,6 +1,8 @@
 "use client";
 
+import { useMemo } from "react";
 import { useNow } from "@/app/providers";
+import { chartHoldLabel } from "@/lib/chart";
 import { dataset, fleet, metadata } from "@/lib/data";
 import { age, count, dateTime, money } from "@/lib/format";
 import {
@@ -8,43 +10,73 @@ import {
   controllerStatus,
   datasetObservation,
   observationLabel,
-  shipOperation,
-  shipRecordKind,
   type ShipOperation,
 } from "@/lib/operations";
+import { shipSummary } from "@/lib/ship-summary";
 import type {
   Account,
+  Catalog,
   Clock,
   CompanyProfile,
   DashboardData,
 } from "@/lib/types";
 import { useUI } from "@/lib/ui-store";
 import { ShipLossHistoryNotice } from "./ship-loss-details";
-import { Badge, EmptyState, SpriteImage, StatusBadge } from "./ui";
+import { Badge, EmptyState, SpriteImage } from "./ui";
 import styles from "./operations-overview.module.css";
 
 export function OperationsOverview({
   accounts,
   dashboard,
+  receivedAt = 0,
+  catalog,
+  inspectorOpen = false,
+  onInspect,
 }: {
   accounts: Account[];
   dashboard: DashboardData;
+  receivedAt?: number;
+  catalog?: Catalog;
+  inspectorOpen?: boolean;
+  onInspect?: (trigger: HTMLButtonElement) => void;
 }) {
-  const now = useNow();
+  const now = Math.max(useNow(), receivedAt);
   const selectShip = useUI((state) => state.selectShip);
   const selectedShipID = useUI((state) => state.selectedShipID);
   const selectedShipAccountID = useUI((state) => state.selectedShipAccountID);
+  const shipRows = useMemo(
+    () =>
+      new Map(
+        accounts.map((account) => [
+          account.id,
+          fleet(account).map((detail) => ({
+            detail,
+            summary: shipSummary(
+              account,
+              detail,
+              dashboard.decisions,
+              now,
+              catalog,
+            ),
+          })),
+        ]),
+      ),
+    [accounts, dashboard.decisions, now, catalog],
+  );
 
   return (
     <div className={styles.overview}>
       {accounts.map((account) => {
         const profile = dataset<CompanyProfile>(account, "profile");
-        const ships = fleet(account);
+        const ships = shipRows.get(account.id) ?? [];
         const unobservedHolds = controllerStatus(account, now).holds.filter(
           (hold) =>
             hold.ship_id &&
-            !ships.some((detail) => detail.ship.id === hold.ship_id),
+            !ships.some(({ detail }) => detail.ship.id === hold.ship_id),
         );
+        const unobservedShipCount = new Set(
+          unobservedHolds.map((hold) => hold.ship_id),
+        ).size;
         const moneyView = companyMoney(account, dashboard);
         const cashObservation = datasetObservation(account, "vaults", now);
         const fleetObservation = datasetObservation(account, "ships", now);
@@ -63,7 +95,7 @@ export function OperationsOverview({
               <h2>{profile?.company.name ?? "Company not recorded"}</h2>
               <span>{account.label}</span>
             </header>
-            <ControllerSummary account={account} />
+            <ControllerSummary account={account} receivedAt={receivedAt} />
             <dl
               className={styles.moneyStrip}
               aria-label={`${account.label} money`}
@@ -139,64 +171,96 @@ export function OperationsOverview({
             />
             {ships.length ? (
               <ul className={styles.ships}>
-                {ships.map((detail) => {
-                  const operation = shipOperation(account, detail, now);
+                {ships.map(({ detail, summary }) => {
+                  const selected =
+                    inspectorOpen &&
+                    detail.ship.id === selectedShipID &&
+                    account.id === selectedShipAccountID;
                   return (
                     <li className={styles.shipRow} key={detail.ship.id}>
-                      <div className={styles.shipIdentity}>
-                        <button
-                          type="button"
-                          className={styles.shipButton}
-                          aria-pressed={
-                            detail.ship.id === selectedShipID &&
-                            account.id === selectedShipAccountID
-                          }
-                          aria-label={`Inspect ${detail.ship.name}, ${account.label}`}
-                          onClick={() => selectShip(detail.ship.id, account.id)}
-                        >
-                          <SpriteImage name={detail.ship.name} />
-                          <strong>{detail.ship.name}</strong>
-                        </button>
-                        {detail.ship.status === "sunk" && detail.loss ? (
-                          <span className={styles.observation}>
-                            Retained{" "}
-                            {shipRecordKind(
-                              detail.ship.status,
-                              detail.ship.fate,
-                            )}{" "}
-                            record
+                      <SpriteImage name={detail.ship.name} decorative />
+                      <div className={styles.shipSummary}>
+                        <div className={styles.shipIdentity}>
+                          <button
+                            type="button"
+                            className={styles.shipButton}
+                            aria-expanded={selected}
+                            aria-controls={
+                              selected ? "ship-inspector" : undefined
+                            }
+                            aria-label={`Inspect ${detail.ship.name}, ${account.label}`}
+                            aria-haspopup="dialog"
+                            onClick={(event) => {
+                              selectShip(detail.ship.id, account.id);
+                              onInspect?.(event.currentTarget);
+                            }}
+                          >
+                            <strong>{detail.ship.name}</strong>
+                          </button>
+                          <span
+                            className={styles.action}
+                            data-attention={
+                              summary.gone && summary.why.attention
+                            }
+                          >
+                            {summary.action}
                           </span>
-                        ) : operation.observation.state !==
-                          fleetObservation.state ? (
-                          <span className={styles.observation}>
-                            {observationLabel(operation.observation.state)}
-                            {operation.observation.timestamp &&
-                              `, ${age(operation.observation.timestamp, now)}`}
-                            .
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className={styles.activity}>
-                        {detail.ship.status === "sunk" ||
-                        operation.observation.current ? (
-                          <StatusBadge
-                            status={detail.ship.status}
-                            fate={detail.ship.fate}
-                          />
-                        ) : (
-                          <Badge>Last recorded: {operation.activity}</Badge>
+                          {summary.eta && (
+                            <span className={styles.arrival}>
+                              {summary.eta}
+                            </span>
+                          )}
+                        </div>
+                        <p className={styles.cargo}>{summary.cargo}</p>
+                        {!summary.gone && (
+                          <div className={styles.people}>
+                            <span>
+                              {summary.crew === undefined
+                                ? "Crew requirement not recorded"
+                                : `Crew required ${count(summary.crew)}`}
+                            </span>
+                            <span>{summary.passengers.text}</span>
+                            <span className={styles.stores}>
+                              {summary.stores}
+                            </span>
+                          </div>
                         )}
-                        <span>{operation.route}</span>
-                        <span className={styles.cargo}>{operation.cargo}</span>
-                        {operation.starving && (
-                          <span className={styles.warning}>
-                            Starvation in recorded voyage estimate.
-                          </span>
+                        {summary.gone && (
+                          <p className={styles.people}>
+                            {summary.operation.route}
+                          </p>
                         )}
+                        <div className={styles.reasonLine}>
+                          {summary.why.text && (
+                            <p
+                              className={
+                                summary.why.attention
+                                  ? styles.warning
+                                  : styles.reason
+                              }
+                            >
+                              <span>{summary.why.label}: </span>
+                              {summary.why.text}
+                            </p>
+                          )}
+                          <button
+                            type="button"
+                            className={styles.detailsButton}
+                            aria-label={`More details about ${detail.ship.name}`}
+                            aria-expanded={selected}
+                            aria-controls={
+                              selected ? "ship-inspector" : undefined
+                            }
+                            aria-haspopup="dialog"
+                            onClick={(event) => {
+                              selectShip(detail.ship.id, account.id);
+                              onInspect?.(event.currentTarget);
+                            }}
+                          >
+                            More details
+                          </button>
+                        </div>
                       </div>
-                      {detail.ship.status !== "sunk" && (
-                        <ShipCurrentHold operation={operation} />
-                      )}
                     </li>
                   );
                 })}
@@ -218,14 +282,19 @@ export function OperationsOverview({
             {unobservedHolds.length > 0 && (
               <div className={styles.companyNotices}>
                 <strong>Ship observations unavailable</strong>
-                <ul>
-                  {unobservedHolds.map((hold, index) => (
-                    <li key={`${hold.ship_id}:${index}`}>
-                      Ship {hold.ship_id}, last recorded hold (not current):{" "}
-                      {hold.reason}
-                    </li>
-                  ))}
-                </ul>
+                <p>
+                  Last recorded holds for {count(unobservedShipCount)}{" "}
+                  unobserved {unobservedShipCount === 1 ? "ship" : "ships"}, not
+                  current:{" "}
+                  {[
+                    ...new Set(
+                      unobservedHolds.map((hold) =>
+                        chartHoldLabel(hold.reason),
+                      ),
+                    ),
+                  ].join(", ")}
+                  .
+                </p>
               </div>
             )}
           </section>
@@ -235,8 +304,14 @@ export function OperationsOverview({
   );
 }
 
-export function ControllerSummary({ account }: { account: Account }) {
-  const now = useNow();
+export function ControllerSummary({
+  account,
+  receivedAt = 0,
+}: {
+  account: Account;
+  receivedAt?: number;
+}) {
+  const now = Math.max(useNow(), receivedAt);
   const controller = controllerStatus(account, now);
   const controllerError = metadata(account, "_engine").error;
   const clock = dataset<Clock>(account, "clock");

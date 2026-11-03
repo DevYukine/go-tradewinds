@@ -24,9 +24,6 @@ import { Badge, DataTable, EmptyState, Section, type Column } from "./ui";
 import operations from "./operations.module.css";
 import styles from "./loans.module.css";
 
-const ledgerDisclosure =
-  "Loan rows show lifetime repayments. The retained operating ledger excludes principal repayments; interest coverage begins with recorded ledger backfill and may not match lifetime totals.";
-
 export function LoansView({
   accountID,
   accounts,
@@ -72,7 +69,7 @@ export function LoansView({
         <EmptyState
           icon={Banknote}
           title="Loan records unavailable"
-          description="The recording service has not returned loan history. No debt or repayment total can be established from this response."
+          description="Debt and repayment totals are unavailable until loan history is recorded."
         />
       </div>
     );
@@ -84,7 +81,7 @@ export function LoansView({
         <EmptyState
           icon={Banknote}
           title="No loan accounts recorded"
-          description="Loan history will appear here when the recording service has a configured borrower account."
+          description="No borrower accounts are recorded in this scope."
         />
       </div>
     );
@@ -226,15 +223,13 @@ export function LoansView({
             Arrears grace is separate from regular scheduled installments.
           </p>
         )}
-        <p className={operations.note}>
-          Borrower loans in the selected account scope. Payments are lifetime
-          amounts from stored loan rows, not just closed loans or the recent
-          ledger. Times are real UTC; installment counts use recorded game
-          terms.
-        </p>
-        <p className={styles.reportTime} aria-busy={query.isFetching}>
-          Report read {dateTime(query.data.updated_at)}.
-          {query.isFetching && <span> Reading stored records…</span>}
+        <p
+          className={`${operations.note} ${styles.reportTime}`}
+          aria-busy={query.isFetching}
+        >
+          Lifetime repayments. Times in real UTC. Report read{" "}
+          {dateTime(query.data.updated_at)}.
+          {query.isFetching && <span> Updating records…</span>}
         </p>
         {query.data.accounts.map((account) => (
           <LoanRecordNotice
@@ -253,10 +248,6 @@ export function LoansView({
       >
         <p className={operations.note}>
           Owed now includes outstanding principal and accrued interest.
-          Installments left are derived from the schedule, never by dividing
-          debt by the installment amount. Defaulted or uncertain arrears
-          schedules are shown as unknown; a grace deadline is not an extra
-          installment.
         </p>
         <LoanTable
           label="Active and defaulted borrower loans"
@@ -276,8 +267,7 @@ export function LoansView({
         }
       >
         <p className={operations.note}>
-          Only loans recorded as repaid appear here. Lifetime paid amounts
-          include principal and interest paid before closure.
+          Lifetime repayments include principal and interest.
         </p>
         <LoanTable
           label="Fully repaid borrower loans"
@@ -296,9 +286,8 @@ export function LoansView({
           actions={<Badge>{count(summary.otherClosed.length)} recorded</Badge>}
         >
           <p className={operations.note}>
-            Recovered and written-off loans are not counted as fully repaid.
-            Collateral credit, extinguished debt and write-offs are separate
-            from principal and interest paid back.
+            Recovered and written-off loans are separate from fully repaid
+            loans.
           </p>
           <LoanTable
             label="Other closed borrower loans"
@@ -312,11 +301,8 @@ export function LoansView({
 
       <details className={styles.coverage}>
         <summary>Record coverage and payment cross-check</summary>
-        <p className={operations.note}>{ledgerDisclosure}</p>
         <p className={operations.note}>
-          Differences are loan-row lifetime payments minus retained ledger
-          payments, in the selected account scope. The two sources are not added
-          together. Matching totals do not establish full historical coverage.
+          Retained ledger coverage may be shorter than lifetime loan payments.
         </p>
         <div className={styles.coverageAccounts}>
           {query.data.accounts.map((account) => (
@@ -462,11 +448,7 @@ function LoanRecordNotice({
         <p>Loan observation coverage: {account.loans_error}</p>
       )}
       {!account.history_complete && (
-        <p>
-          Full history is incomplete. Older loans, lifetime paid totals and the
-          fully repaid count may be missing; displayed values cover recorded
-          loans only.
-        </p>
+        <p>History is incomplete; totals cover recorded loans only.</p>
       )}
       {account.history_error && (
         <p>Full-history coverage: {account.history_error}</p>

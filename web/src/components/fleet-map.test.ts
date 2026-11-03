@@ -526,6 +526,49 @@ describe("retained vessels on the standalone chart", () => {
     expect(panel.textContent).not.toContain("A wreck symbol");
   });
 
+  it.each([
+    "passenger loading waits for turnaround unlock",
+    "passenger repricing waits for twelve game hours at the current fare",
+    "passenger ladder retains each price for twelve game hours",
+    "passenger promise permits a bounded wait for one whole group",
+    "berth-only operation waits for authoritative docking; already queued or unavailable",
+    "observe mode: durable mission retained without mutation",
+    "no profitable executable voyage from hamburg",
+  ])(
+    "keeps routine port activity out of chart attention: %s",
+    async (reason) => {
+      const recorded = account([detail], []);
+      const meta = {
+        updated_at: observedAt,
+        complete: true,
+        generation: "capture",
+      };
+      const engine = {
+        generation: "capture",
+        observed_at: observedAt,
+        assessed_ship_ids: ["lapras"],
+        holds: [{ ship_id: "lapras", reason }],
+      };
+      recorded.snapshot._meta = { ships: meta, _engine: meta };
+      recorded.snapshot._engine = engine;
+      await render(recorded, "lapras");
+      expect(rosterRow("lapras").getAttribute("data-state")).toBe("berthed");
+      expect(inspector().textContent).not.toContain("Needs attention");
+      recorded.snapshot._engine = {
+        ...engine,
+        holds: [
+          ...engine.holds,
+          { ship_id: "lapras", reason: "Not enough cash to replenish stores" },
+        ],
+      };
+      await render(recorded, "lapras");
+      expect(rosterRow("lapras").getAttribute("data-state")).toBe("attention");
+      expect(rosterRow("lapras").textContent).toContain("Funding needed");
+      expect(inspector().textContent).toContain("Needs attention");
+      expect(inspector().textContent).toContain("Funding needed");
+    },
+  );
+
   it("does not draw a cargo fill for unknown measurements", async () => {
     const unknown: ShipDetail = {
       ...detail,

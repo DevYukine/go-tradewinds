@@ -23,6 +23,7 @@ import {
   datasetObservation,
   observationLabel,
   shipIsLoss,
+  shipLossNeedsAttention,
   shipStatusLabel,
 } from "@/lib/operations";
 import type { Account } from "@/lib/types";
@@ -53,7 +54,6 @@ export function StatusBadge({
   status: string;
   fate?: string | null;
 }) {
-  const gone = status === "sunk";
   const loss = shipIsLoss(status, fate);
   const label = shipStatusLabel(status, fate);
   const tone = [
@@ -66,7 +66,7 @@ export function StatusBadge({
     "good",
   ].includes(status)
     ? "good"
-    : (gone && (loss || fate?.startsWith("seized_"))) ||
+    : shipLossNeedsAttention(status, fate) ||
         ["starving", "defaulted", "claimed_loss", "error", "rejected"].includes(
           status,
         )
@@ -168,16 +168,22 @@ export function EmptyState({
 export function DatasetStatus({
   account,
   name,
+  expanded = false,
+  receivedAt = 0,
 }: {
   account?: Account;
   name: string;
+  expanded?: boolean;
+  receivedAt?: number;
 }) {
-  const now = useNow();
+  const now = Math.max(useNow(), receivedAt);
   const meta = metadata(account, name);
   const present = dataset(account, name) !== undefined;
   const observation = datasetObservation(account, name, now);
   const timestamp = observation.timestamp;
   const impaired = !["current", "delayed"].includes(observation.state);
+  const Disclosure = expanded ? "div" : "details";
+  const DisclosureTitle = expanded ? "strong" : "summary";
 
   return (
     <div className={`dataset-status ${meta.error ? "has-error" : ""}`}>
@@ -191,8 +197,8 @@ export function DatasetStatus({
         {timestamp && ` ${age(timestamp, now)}`}
       </span>
       {meta.error && (
-        <details className="dataset-error">
-          <summary>Fetch error</summary>
+        <Disclosure className="dataset-error">
+          <DisclosureTitle>Fetch error</DisclosureTitle>
           <div role="note">
             <p>{meta.error}</p>
             <small>
@@ -202,11 +208,11 @@ export function DatasetStatus({
                 : "No successful data has been recorded."}
             </small>
           </div>
-        </details>
+        </Disclosure>
       )}
       {meta.generation && (
-        <details className="dataset-generation">
-          <summary>Source</summary>
+        <Disclosure className="dataset-generation">
+          <DisclosureTitle>Source</DisclosureTitle>
           <div>
             <span>Generation</span>
             <code>{meta.generation}</code>
@@ -218,7 +224,7 @@ export function DatasetStatus({
               <span>Upstream source: {dateTime(meta.upstream_as_of)}</span>
             )}
           </div>
-        </details>
+        </Disclosure>
       )}
     </div>
   );
@@ -313,11 +319,17 @@ export function Progress({ value, label }: { value: number; label: string }) {
   );
 }
 
-export function SpriteImage({ name }: { name: string }) {
+export function SpriteImage({
+  name,
+  decorative = false,
+}: {
+  name: string;
+  decorative?: boolean;
+}) {
   const source = pokemonSprite(name);
   const [failedSource, setFailedSource] = useState("");
   return (
-    <span className="sprite-image">
+    <span className="sprite-image" aria-hidden={decorative || undefined}>
       {!source || failedSource === source ? (
         <Ship
           size={24}
@@ -332,7 +344,7 @@ export function SpriteImage({ name }: { name: string }) {
           src={source}
           width={40}
           height={40}
-          alt={`${name} sprite`}
+          alt={decorative ? "" : `${name} sprite`}
           loading="lazy"
           onError={() => setFailedSource(source)}
         />

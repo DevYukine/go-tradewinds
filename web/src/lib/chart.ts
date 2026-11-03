@@ -8,7 +8,12 @@ import {
 } from "./geography";
 import { fleet, number, record, text } from "./data";
 import { buildDecisionView } from "./decisions";
-import { shipIsLoss, shipRecordKind, shipStatusLabel } from "./operations";
+import {
+  shipIsLoss,
+  shipRecordKind,
+  shipStatusLabel,
+  type ShipOperation,
+} from "./operations";
 import { humanize } from "./format";
 import type {
   Account,
@@ -71,7 +76,7 @@ interface ChartRosterEntry {
   account: Pick<Account, "label">;
   company: string;
   detail: ShipDetail;
-  operation: { route: string; activity: string; cargo: string };
+  operation: Pick<ShipOperation, "route" | "activity" | "cargo" | "cargoItems">;
 }
 
 export function chartLossPort(
@@ -156,6 +161,7 @@ export function chartRoster<T extends ChartRosterEntry>(
         row.operation.route,
         row.operation.activity,
         row.operation.cargo,
+        ...(row.operation.cargoItems?.map(({ name }) => name) ?? []),
         port?.id,
         port ? humanize(port.id) : "",
         port ? catalog?.ports.find(({ id }) => id === port.id)?.name : "",
@@ -239,11 +245,25 @@ export function latestShipDecisions(
     .slice(0, 3);
 }
 
+export interface ChartPlan {
+  kind: string;
+  phase?: string;
+  origin: string;
+  destination: string;
+  commodity: string;
+  quantity: number | undefined;
+  contract_id?: string;
+  expectedNetPence: number | undefined;
+  updatedAt: string;
+  source: "mission" | "decision";
+  rejected: boolean;
+}
+
 export function chartCurrentPlan(
   account: Account,
   shipID: string,
   decisions: Decision[],
-) {
+): ChartPlan | undefined {
   if (account.missions_unavailable) return undefined;
   const mission = account.missions?.find(
     (item) => item.ship_id === shipID && item.plan.kind,
@@ -254,6 +274,7 @@ export function chartCurrentPlan(
     const view = buildDecisionView({ ...mission.plan, accepted: false });
     return {
       ...mission.plan,
+      phase: mission.phase,
       expectedNetPence: view.notPriced ? undefined : view.expectedNetPence,
       updatedAt: mission.updated_at,
       source: "mission" as const,
@@ -279,23 +300,114 @@ export function chartCurrentPlan(
   };
 }
 
+const sailingWaitLabels: Record<string, string> = {
+  "actual fleet confirms voyage in flight; waiting for authoritative arrival":
+    "Waiting for arrival",
+  "authoritative voyage still in flight": "Waiting for arrival",
+  "waiting for authoritative arrival": "Waiting for arrival",
+  "sourcing relocation waits for authoritative source arrival":
+    "Repositioning to inspect a market",
+  "passenger passage in flight; waiting for fare receipts":
+    "Carrying passengers to their destination",
+};
+
+const holdLabels: [prefix: string, label: string, blocking: boolean][] = [
+  ["no profitable executable voyage from ", "No profitable route found", false],
+  [
+    "no executable purchase-and-voyage alternative from ",
+    "No executable route found",
+    false,
+  ],
+  [
+    "berth-only operation waits for authoritative docking;",
+    "Waiting for a berth",
+    false,
+  ],
+  ["observe mode:", "Observation only; no actions are being sent", false],
+  [
+    "cannot replenish stores without spending protected regional bills reserve",
+    "Funding needed",
+    true,
+  ],
+  [
+    "cargo purchase requires fresh local depth and customs",
+    "Fresh records needed",
+    true,
+  ],
+  [
+    "mission destination and actual fleet disagree;",
+    "Plan and ship records disagree",
+    true,
+  ],
+  [
+    "in-flight ship has no authoritative route;",
+    "Voyage destination is not recorded",
+    true,
+  ],
+  [
+    "passenger hold is occupied but no promises are available",
+    "Passenger group details are unavailable",
+    true,
+  ],
+  [
+    "passengers aboard require authoritative group promises",
+    "Waiting for passenger group records",
+    true,
+  ],
+  [
+    "passenger closure waits for authoritative boarded promises",
+    "Waiting for passenger group records",
+    true,
+  ],
+  [
+    "passenger hold waits for authoritative boarded promises",
+    "Waiting for passenger group records",
+    true,
+  ],
+  [
+    "passenger loading waits for turnaround unlock",
+    "Waiting for turnaround",
+    false,
+  ],
+  [
+    "passenger repricing waits for twelve game hours",
+    "Waiting for passenger demand",
+    false,
+  ],
+  [
+    "passenger ladder retains each price for twelve game hours",
+    "Waiting for passenger demand",
+    false,
+  ],
+  [
+    "passenger promise permits a bounded wait",
+    "Waiting for another passenger group",
+    false,
+  ],
+];
+
 export function chartBlockingHolds(
   holds: EngineHold[],
   status: string,
 ): EngineHold[] {
-  if (status !== "sailing") return holds;
-  return holds.filter(
-    ({ reason }) =>
-      reason !==
-        "actual fleet confirms voyage in flight; waiting for authoritative arrival" &&
-      reason !== "sourcing relocation waits for authoritative source arrival" &&
-      reason !== "passenger passage in flight; waiting for fare receipts" &&
-      reason !== "waiting for authoritative arrival",
-  );
+  return holds.filter(({ reason }) => {
+    const normalized = reason.trim().toLowerCase();
+    if (status === "sailing" && Object.hasOwn(sailingWaitLabels, normalized))
+      return false;
+    return (
+      holdLabels.find(([prefix]) => normalized.startsWith(prefix))?.[2] !==
+      false
+    );
+  });
 }
 
 export function chartHoldLabel(reason: string): string {
-  const normalized = reason.toLowerCase();
+  const normalized = reason.trim().toLowerCase();
+  if (Object.hasOwn(sailingWaitLabels, normalized)) {
+    return sailingWaitLabels[normalized];
+  }
+  const authored = holdLabels.find(([prefix]) => normalized.startsWith(prefix));
+  if (authored) return authored[1];
   if (/provision|starv/.test(normalized)) return "Provisions needed";
   if (/cash|fund|balance|credit/.test(normalized)) return "Funding needed";
   if (/cargo|hold capacity/.test(normalized)) return "Cargo blocked";
