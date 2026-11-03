@@ -146,19 +146,30 @@ func TestActualOverheadIsClaimedOnceAcrossOverlappingMissions(t *testing.T) {
 	runner := &Runner{
 		snapshot: map[string]json.RawMessage{
 			"ledger": json.RawMessage(`[
-				{"id":"old","debit_account_id":"vault","credit_account_id":"crown","amount_pence":999,"reason":"daily_upkeep"},
-				{"id":"upkeep","debit_account_id":"vault","credit_account_id":"crown","amount_pence":100,"reason":"daily_upkeep"},
-				{"id":"berth","debit_account_id":"vault","credit_account_id":"port","amount_pence":50,"reason":"berth_dues"},
-				{"id":"transfer","debit_account_id":"vault","credit_account_id":"other-vault","amount_pence":500,"reason":"remit"}
+				{"id":"old","debit_account_id":"vault","credit_account_id":"crown","amount_pence":999,"reason":"berth_dues","metadata":{"ship_id":"ship"}},
+				{"id":"upkeep","debit_account_id":"vault","credit_account_id":"crown","amount_pence":67081,"reason":"daily_fleet_and_factor_sprawl_upkeep"},
+				{"id":"rent","debit_account_id":"vault","credit_account_id":"crown","amount_pence":2000,"reason":"daily_warehouse_rent","metadata":{}},
+				{"id":"unattributed-berth","debit_account_id":"vault","credit_account_id":"port","amount_pence":900,"reason":"berth_dues"},
+				{"id":"other-ship","debit_account_id":"vault","credit_account_id":"port","amount_pence":800,"reason":"berth_dues","metadata":{"ship_id":"other-ship"}},
+				{"id":"toll","debit_account_id":"vault","credit_account_id":"crown","amount_pence":100,"reason":"toll","metadata":{"ship_id":"ship"}},
+				{"id":"berth","debit_account_id":"vault","credit_account_id":"port","amount_pence":50,"reason":"berth_dues","metadata":{"ship_id":"ship"}},
+				{"id":"transfer","debit_account_id":"vault","credit_account_id":"other-vault","amount_pence":500,"reason":"berth_transfer","metadata":{"ship_id":"ship"}}
 			]`),
 		},
 		stateCache:    AccountState{Vaults: []Vault{{AccountID: "vault"}, {AccountID: "other-vault"}}},
 		expenseOwners: make(map[string]string),
 	}
-	mission := &missionData{InitialLedgerIDs: map[string]bool{"old": true}}
+	if amount, ids := runner.unclaimedBillsSince(&missionData{}); amount != 0 || len(ids) != 0 {
+		t.Fatalf("mission without ship identity claimed bills: %d %v", amount, ids)
+	}
+	mission := &missionData{Plan: Plan{ShipID: "ship"}, InitialLedgerIDs: map[string]bool{"old": true}}
 	first, ids := runner.claimBillsSince(mission, "first-mission")
 	if first != 150 || len(ids) != 2 {
 		t.Fatalf("actual overhead = %d, claims = %v", first, ids)
+	}
+	if runner.expenseOwners["upkeep"] != "" || runner.expenseOwners["rent"] != "" ||
+		runner.expenseOwners["unattributed-berth"] != "" || runner.expenseOwners["other-ship"] != "" {
+		t.Fatal("ship claimed company-wide or another ship's bills")
 	}
 	second, duplicateIDs := runner.claimBillsSince(mission, "overlapping-mission")
 	if second != 0 || len(duplicateIDs) != 0 {
@@ -260,6 +271,7 @@ func TestAcquiredCashMarginUsesActualFillNotStress(t *testing.T) {
 			settled := procurementReviewSettlement(t, data, []map[string]any{{
 				"id": "actual-berth-bill", "debit_account_id": "vault-north",
 				"credit_account_id": "harbour", "amount_pence": 2_664, "reason": "berth_dues",
+				"metadata": map[string]any{"ship_id": recoveryShipBlastoise},
 			}})
 			net := settled.ProceedsPence - settled.AcquisitionPence - settled.FeesPence - settled.ProvisionsPence - settled.ExpensesPence
 			if settled.AcquisitionPence != test.paid || settled.FeesPence != test.customs ||
@@ -294,11 +306,13 @@ func TestProvisionCustomsArePaidOnceAndKnownTollsStillReduceNet(t *testing.T) {
 			ledger := []map[string]any{{
 				"id": "actual-berth-bill", "debit_account_id": "vault-north",
 				"credit_account_id": "harbour", "amount_pence": 1_000, "reason": "berth_dues",
+				"metadata": map[string]any{"ship_id": recoveryShipBlastoise},
 			}}
 			if test.actualToll > 0 {
 				ledger = append(ledger, map[string]any{
 					"id": "actual-toll-bill", "debit_account_id": "vault-north",
 					"credit_account_id": "toll-house", "amount_pence": test.actualToll, "reason": "toll",
+					"metadata": map[string]any{"ship_id": recoveryShipBlastoise},
 				})
 			}
 			settled := procurementReviewSettlement(t, data, ledger)

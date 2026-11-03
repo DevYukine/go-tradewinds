@@ -33,7 +33,7 @@ func TestFleetAppliesArrivalBetweenFramesAndBurnsStoresByState(t *testing.T) {
 		t.Fatalf("state-dependent stores burn: got %g want %g", got, wantStores)
 	}
 	bills := fleet.PendingBills()
-	if len(bills) != 1 || bills[0].Reason != "upkeep" || bills[0].Region != "north" || bills[0].At != at.Add(24*time.Minute) || bills[0].AmountPence != engine.DailyUpkeep(state.Ships, state.Catalog, 0) {
+	if len(bills) != 1 || bills[0].Reason != "upkeep" || bills[0].ShipID != "" || bills[0].Region != "north" || bills[0].At != at.Add(24*time.Minute) || bills[0].AmountPence != engine.DailyUpkeep(state.Ships, state.Catalog, 0) {
 		t.Fatalf("upkeep boundary/home-region bill: %+v", bills)
 	}
 	fleet.Advance(at.Add(45*time.Minute), 45)
@@ -52,7 +52,7 @@ func TestFleetDestinationBerthBillIsClaimableBeforeSettlement(t *testing.T) {
 		t.Fatal(err)
 	}
 	bills := fleet.PendingBills()
-	if len(bills) != 1 || bills[0].AmountPence != 600 || bills[0].Reason != "berth" {
+	if len(bills) != 1 || bills[0].AmountPence != 600 || bills[0].Reason != "berth" || bills[0].ShipID != "one" {
 		t.Fatalf("six-hour berth minimum at closeout: %+v", bills)
 	}
 	if err := fleet.Offshore("one", at.Add(2*time.Minute)); err != nil {
@@ -76,7 +76,7 @@ func TestFleetUsesLaterObservedDuesWithoutReplacingItsShips(t *testing.T) {
 		t.Fatal(err)
 	}
 	bills := fleet.PendingBills()
-	if len(bills) != 1 || bills[0].AmountPence != 1200 || bills[0].Region != "north" || len(fleet.Ships()) != 1 {
+	if len(bills) != 1 || bills[0].AmountPence != 1200 || bills[0].ShipID != "one" || bills[0].Region != "north" || len(fleet.Ships()) != 1 {
 		t.Fatalf("later context lost the observed dues, banking region or fixed fleet: %+v", bills)
 	}
 }

@@ -358,7 +358,7 @@ func (w *growthExecutionWorld) handle(writer http.ResponseWriter, request *http.
 		dues := int64(0)
 		if from == recoveryFarPort {
 			dues = 17
-			w.bill(key+"-return", "south", dues)
+			w.bill(key+"-return", "south", payload.ShipID, dues)
 		}
 		result := map[string]any{"ship_id": payload.ShipID, "dest_port_id": payload.Destination, "berth_dues_pence": dues, "berth_dues_debt_pence": 0}
 		if from == recoveryFarPort && w.lostReturn && !w.lostOnce {
@@ -401,9 +401,9 @@ func (w *growthExecutionWorld) handle(writer http.ResponseWriter, request *http.
 	}
 }
 
-func (w *growthExecutionWorld) bill(id, region string, amount int64) {
+func (w *growthExecutionWorld) bill(id, region, shipID string, amount int64) {
 	w.h.api.vaultBalance[region] -= amount
-	w.ledger = append(w.ledger, map[string]any{"id": id, "debit_account_id": "vault-" + region, "credit_account_id": "harbour", "amount_pence": amount, "reason": "berth dues"})
+	w.ledger = append(w.ledger, map[string]any{"id": id, "debit_account_id": "vault-" + region, "credit_account_id": "harbour", "amount_pence": amount, "reason": "berth dues", "metadata": map[string]any{"ship_id": shipID}})
 }
 
 func (w *growthExecutionWorld) settlementRows() []store.Settlement {

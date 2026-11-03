@@ -252,7 +252,7 @@ func TestGrowthCapitalOnlyHullLossRetainsNewCommissioningBillsOnce(t *testing.T)
 		t.Fatal("fixture must have paid only the actual hull before its new berth bill")
 	}
 	w.h.api.mu.Lock()
-	w.bill("lost-commissioning-berth", "north", 37)
+	w.bill("lost-commissioning-berth", "north", recoveryBuiltShipID, 37)
 	w.builtRow()["ship"].(map[string]any)["status"] = "sunk"
 	w.h.api.mu.Unlock()
 	runner = w.h.runner(primaryTestKey)
@@ -300,7 +300,7 @@ func TestGrowthMissingCommissioningTimeRetainsUnknownSettlement(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.h.api.mu.Lock()
-	w.bill("missing-time-new-berth-bill", "north", 37)
+	w.bill("missing-time-new-berth-bill", "north", recoveryBuiltShipID, 37)
 	w.builtRow()["ship"].(map[string]any)["status"] = "sunk"
 	w.h.api.mu.Unlock()
 	runner = w.h.runner(primaryTestKey)
@@ -362,7 +362,7 @@ func TestGrowthWithdrawnRoadsteadSuccessorWithoutAnchorRetainsUnknownBasis(t *te
 		t.Fatal(err)
 	}
 	w.h.api.mu.Lock()
-	w.bill("withdrawn-before-normalized-boundary", "north", 999)
+	w.bill("withdrawn-before-normalized-boundary", "north", recoveryBuiltShipID, 999)
 	row := w.builtRow()
 	row["ship"].(map[string]any)["status"] = "anchored_roadstead"
 	row["ship"].(map[string]any)["dock_queued_at"] = nil
@@ -391,7 +391,7 @@ func TestGrowthWithdrawnRoadsteadSuccessorWithoutAnchorRetainsUnknownBasis(t *te
 		t.Fatal("withdrawn control never reached its actual hull's durable closing mission")
 	}
 	w.h.api.mu.Lock()
-	w.bill("withdrawn-after-normalized-boundary", "north", 17)
+	w.bill("withdrawn-after-normalized-boundary", "north", recoveryBuiltShipID, 17)
 	w.h.api.mu.Unlock()
 	runner = w.h.runner(primaryTestKey)
 	for range 4 {

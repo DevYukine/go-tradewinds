@@ -189,7 +189,7 @@ func (f *Fleet) Depart(shipID string, route engine.Route, at time.Time, scale in
 	port := member.state.Ship.CurrentPortID
 	dues := BerthDues(f.hour-member.berthHour, f.ports[port].BerthDuesPerDayPence)
 	if dues > 0 && member.state.Ship.Status == "berthed" {
-		f.addBill(at, port, "berth", dues)
+		f.addBill(at, port, shipID, "berth", dues)
 	}
 	member.arrival, member.destination = arrival, route.ToPort
 	member.state.Ship.CurrentPortID = ""
@@ -201,7 +201,7 @@ func (f *Fleet) Depart(shipID string, route engine.Route, at time.Time, scale in
 	return arrival, nil
 }
 
-func (f *Fleet) addBill(at time.Time, port, reason string, amount int64) {
+func (f *Fleet) addBill(at time.Time, port, shipID, reason string, amount int64) {
 	region := f.homeRegion
 	for _, entry := range f.catalog.Ports {
 		if entry.ID == port {
@@ -209,7 +209,7 @@ func (f *Fleet) addBill(at time.Time, port, reason string, amount int64) {
 		}
 	}
 	f.billSequence++
-	f.bills = append(f.bills, Bill{ID: fmt.Sprintf("sim-bill-%d", f.billSequence), Region: region, Reason: reason, At: at, AmountPence: amount})
+	f.bills = append(f.bills, Bill{ID: fmt.Sprintf("sim-bill-%d", f.billSequence), Region: region, ShipID: shipID, Reason: reason, At: at, AmountPence: amount})
 }
 
 func (f *Fleet) Advance(at time.Time, gameHour float64) []Arrival {
@@ -256,7 +256,7 @@ func (f *Fleet) Advance(at time.Time, gameHour float64) []Arrival {
 		if gameHour > f.hour {
 			billAt = f.at.Add(time.Duration(float64(duration) * (float64(day)*24 - f.hour) / (gameHour - f.hour)))
 		}
-		f.addBill(billAt, "", "upkeep", engine.DailyUpkeep(f.Ships(), f.catalog, f.factors))
+		f.addBill(billAt, "", "", "upkeep", engine.DailyUpkeep(f.Ships(), f.catalog, f.factors))
 	}
 	f.at, f.hour = at, gameHour
 	sort.Slice(arrivals, func(i, j int) bool {
@@ -290,7 +290,7 @@ func (f *Fleet) Offshore(shipID string, at time.Time) error {
 		port := member.state.Ship.CurrentPortID
 		dues := BerthDues(f.hour-member.berthHour, f.ports[port].BerthDuesPerDayPence)
 		if dues > 0 {
-			f.addBill(at, port, "berth", dues)
+			f.addBill(at, port, shipID, "berth", dues)
 		}
 		member.state.Ship.Status = "anchored_roadstead"
 	}

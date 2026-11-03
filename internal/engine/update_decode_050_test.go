@@ -151,6 +151,10 @@ func TestLoanMortgageNotCapacityFinancing(t *testing.T) {
 	mortgageShipID := runner.stateCache.Ships[0].Ship.ID
 	mortgage.CollateralShipID = &mortgageShipID
 	loanJournalCapture(t, runner, []gameapi.Loan{capacity, mortgage})
+	// The synthetic loan capture changes generation without changing the ledger.
+	ledgerMeta := runner.meta["ledger"]
+	ledgerMeta.Generation = runner.generation
+	runner.meta["ledger"] = ledgerMeta
 	if loanReserve(mortgage) != 48_400 {
 		t.Fatalf("mortgage omitted from hard reserves: %d", loanReserve(mortgage))
 	}

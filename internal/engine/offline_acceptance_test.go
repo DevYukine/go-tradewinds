@@ -425,6 +425,48 @@ func TestOfflineSourcingLedgerUsesLiveRollingConversions(t *testing.T) {
 	}
 }
 
+func TestOfflineSourcingLedgerCorrectsExactSeedAllocationsWithoutMutatingRows(t *testing.T) {
+	in := probeHistoryLiveInput(t)
+	probe := probeHistoryRow(in, "amsterdam", in.Now.Add(-3*time.Hour))
+	probe.ID, probe.MissionID = "seed-inflated-probe", "seed-probe-mission"
+	probe.CostsKnown = true
+	probe.ExpensesPence, probe.FeesPence, probe.ProvisionsPence = 100_200, 100, 50
+	probe.ExplorationExpensePence = new(int64(100_350))
+	rows := []store.Settlement{probe, {
+		ID: "seed-conversion", MissionID: "seed-conversion-mission", ShipID: in.Ship.Ship.ID,
+		Kind: "spot", Origin: "amsterdam", Destination: "portsmouth", Commodity: "sawn_planks", QuantityTons: 1,
+		StartedAt: in.Now.Add(-2 * time.Hour), CompletedAt: in.Now.Add(-time.Hour), CostsKnown: true,
+		AcquisitionPence: 1_000, ProceedsPence: 21_000, FeesPence: 100, ProvisionsPence: 50, ExpensesPence: 90_200,
+	}}
+	snapshot := map[string]json.RawMessage{
+		"_expense_allocations": encode(map[string]string{
+			"company-probe": probe.MissionID, "wrong-ship-berth": probe.MissionID,
+			"company-conversion": "seed-conversion-mission", "own-berth": "seed-conversion-mission",
+		}),
+		"ledger": encode([]map[string]any{
+			{"id": "company-probe", "amount_pence": 100_000},
+			{"id": "wrong-ship-berth", "amount_pence": 200, "metadata": map[string]any{"ship_id": "another-ship"}},
+			{"id": "company-conversion", "amount_pence": 90_000},
+			{"id": "own-berth", "amount_pence": 200, "metadata": map[string]any{"ship_id": in.Ship.Ship.ID}},
+		}),
+	}
+	before := encode(rows)
+	ledger := NewSourcingLedger(rows, nil)
+	for range 2 {
+		input := in
+		if err := ledger.Apply(&input, snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if input.SourcingProbeExpensePence != 150 || input.SourcingProbeHistory.ConversionNetPence != 19_650 ||
+			input.SourcingAllowancePence == nil || *input.SourcingAllowancePence != 29_675 {
+			t.Fatalf("offline seed correction diverged from live ship-local budget: %+v", input.SourcingProbeHistory)
+		}
+		if !bytes.Equal(before, encode(rows)) {
+			t.Fatal("offline read-time correction changed its retained seed rows")
+		}
+	}
+}
+
 // TestOfflineSourcingHistoryLanesMatchLiveShortlist pins the exported
 // shortlist to the lanes the live loader actually queries.
 func TestOfflineSourcingHistoryLanesMatchLiveShortlist(t *testing.T) {

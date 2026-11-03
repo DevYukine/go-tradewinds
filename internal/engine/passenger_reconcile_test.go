@@ -136,7 +136,7 @@ func TestPassengerRESTCompletionRejectsStaleOrIncompleteArrivalEvidence(t *testi
 func TestPassengerRESTFallbackLatePaymentRestartUpgradesSameReceiptAndExpenseOnce(t *testing.T) {
 	h, r, ship, mission, data := passengerCompletionFixture(t)
 	// This ledger sample is an actual overhead debit, not guessed passenger income.
-	r.snapshot["ledger"] = json.RawMessage(`[{"id":"arrival-overhead","debit_account_id":"vault","credit_account_id":"crown","amount_pence":70,"reason":"berth dues"}]`)
+	r.snapshot["ledger"] = json.RawMessage(`[{"id":"arrival-overhead","debit_account_id":"vault","credit_account_id":"crown","amount_pence":70,"reason":"berth dues","metadata":{"ship_id":"ship-a"}}]`)
 	unknown := completePassengerRESTFallback(t, h, r, ship, mission, &data)
 	if unknown.ExpensesPence != 100 || unknown.ProvisionsPence != 100 || unknown.FeesPence != 20 {
 		t.Fatalf("fallback did not preserve exact single cost allocation: %+v", unknown)
@@ -150,7 +150,7 @@ func TestPassengerRESTFallbackLatePaymentRestartUpgradesSameReceiptAndExpenseOnc
 	if changed, err := replacement.reconcilePendingPassengerReceipts(h.ctx); err != nil || changed {
 		t.Fatalf("restart without terminal proof fabricated progress: %t %v", changed, err)
 	}
-	other := missionData{InitialLedgerIDs: map[string]bool{}}
+	other := missionData{Plan: Plan{ShipID: ship.Ship.ID}, InitialLedgerIDs: map[string]bool{}}
 	if amount, ids := replacement.claimBillsSince(&other, "another-voyage"); amount != 0 || len(ids) != 0 {
 		t.Fatalf("archived overhead was claimed by a second mission: %d %+v", amount, ids)
 	}

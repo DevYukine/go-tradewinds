@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"strings"
 	"testing"
@@ -56,6 +57,179 @@ func putProbeHistorySettlement(t *testing.T, h *recoveryHarness, row store.Settl
 	}
 	if err := h.db.PutSettlement(h.ctx, &row); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProbeHistoryMissionSettlementExcludesCompanyBills(t *testing.T) {
+	for _, kind := range []string{"relocation", "spot"} {
+		t.Run(kind, func(t *testing.T) {
+			data := missionData{
+				Plan: Plan{Kind: kind, ShipID: recoveryShipBlastoise, Origin: recoveryHomePort,
+					Destination: recoveryFarPort, Commodity: recoveryGrain},
+				CostsKnown: true, FeesPence: 50, ProvisionsPence: 100, ExpensesPence: 25,
+			}
+			if kind == "relocation" {
+				data.Relocation = &relocationIntent{}
+			} else {
+				data.AcquisitionPence, data.ProceedsPence, data.DeliveredQuantity = 1_000, 2_000, 1
+			}
+			settled := procurementReviewSettlement(t, data, []map[string]any{
+				{"id": "fleet-upkeep", "debit_account_id": "vault-north", "credit_account_id": "crown",
+					"amount_pence": 67_081, "reason": "daily_fleet_and_factor_sprawl_upkeep"},
+				{"id": "warehouse-rent", "debit_account_id": "vault-north", "credit_account_id": "crown",
+					"amount_pence": 2_000, "reason": "daily_warehouse_rent", "metadata": map[string]any{}},
+				{"id": "unattributed-berth", "debit_account_id": "vault-north", "credit_account_id": "harbour",
+					"amount_pence": 900, "reason": "berth_dues"},
+				{"id": "another-ship", "debit_account_id": "vault-north", "credit_account_id": "harbour",
+					"amount_pence": 800, "reason": "berth_dues", "metadata": map[string]any{"ship_id": recoveryShipLapras}},
+				{"id": "own-berth", "debit_account_id": "vault-north", "credit_account_id": "harbour",
+					"amount_pence": 200, "reason": "berth_dues", "metadata": map[string]any{"ship_id": recoveryShipBlastoise}},
+				{"id": "own-toll", "debit_account_id": "vault-north", "credit_account_id": "toll-house",
+					"amount_pence": 100, "reason": "toll", "metadata": map[string]any{"ship_id": recoveryShipBlastoise}},
+			})
+			if settled.ExpensesPence != 325 {
+				t.Fatalf("mission lost its own bills or absorbed company overhead: %+v", settled)
+			}
+			if kind == "spot" {
+				net := settled.ProceedsPence - settled.AcquisitionPence - settled.FeesPence - settled.ProvisionsPence - settled.ExpensesPence
+				if net != 525 {
+					t.Fatalf("cargo lane net absorbed unrelated bills: %d", net)
+				}
+				return
+			}
+			if settled.ExplorationExpensePence == nil || *settled.ExplorationExpensePence != 475 {
+				t.Fatalf("company upkeep consumed exploration capital: %+v", settled)
+			}
+			var history sourcingProbeHistory
+			if err := history.rollingBudget([]store.Settlement{settled}, settled.CompletedAt.Add(time.Second), 60); err != nil {
+				t.Fatal(err)
+			}
+			if got := history.rollingAllowance(); got != 19_525 {
+				t.Fatalf("fleet ledger debit exhausted the rolling budget: %d", got)
+			}
+		})
+	}
+}
+
+func TestProbeHistoryRollingBudgetExcludesExactlyAllocatedCompanyBills(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		legacy        bool
+		scout         bool
+		missingLedger bool
+		wrongShip     bool
+		inconsistent  bool
+	}{
+		{name: "consumed-store-expense"},
+		{name: "legacy-full-cash", legacy: true},
+		{name: "scout-expense-and-conversion", scout: true},
+		{name: "missing-ledger-stays-conservative", missingLedger: true},
+		{name: "another-ships-berth", wrongShip: true},
+		{name: "inconsistent-allocation-stays-conservative", inconsistent: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newRecoveryHarness(t)
+			in := probeHistoryLiveInput(t)
+			probe := probeHistoryRow(in, "amsterdam", in.Now.Add(-3*time.Hour))
+			probe.ID, probe.ExpensesPence, probe.FeesPence, probe.ProvisionsPence = "inflated-probe", 100_200, 100, 50
+			if !test.legacy {
+				probe.ExplorationExpensePence = new(int64(100_350))
+			}
+			if test.scout {
+				probe.Lane = "amsterdam|portsmouth|sawn_planks|scout"
+			}
+			putProbeHistorySettlement(t, h, probe)
+			conversion := store.Settlement{
+				ID: "inflated-conversion", ShipID: in.Ship.Ship.ID, Kind: "spot",
+				Origin: "amsterdam", Destination: "portsmouth", Commodity: "sawn_planks", QuantityTons: 1,
+				StartedAt: in.Now.Add(-2 * time.Hour), CompletedAt: in.Now.Add(-time.Hour),
+				AcquisitionPence: 1_000, ProceedsPence: 21_000, FeesPence: 100, ProvisionsPence: 50, ExpensesPence: 90_200,
+			}
+			putProbeHistorySettlement(t, h, conversion)
+			owners := map[string]string{
+				"probe-upkeep": probe.ID, "probe-rent": probe.ID, "probe-berth": probe.ID,
+				"conversion-upkeep": conversion.ID, "conversion-berth": conversion.ID,
+				"unavailable-bill": "unrelated-mission",
+			}
+			ledger := []map[string]any{
+				{"id": "probe-rent", "amount_pence": 10_000, "reason": "daily_warehouse_rent"},
+				{"id": "probe-berth", "amount_pence": 200, "reason": "berth_dues", "metadata": map[string]any{"ship_id": in.Ship.Ship.ID}},
+				{"id": "conversion-upkeep", "amount_pence": 90_000, "reason": "daily_fleet_and_factor_sprawl_upkeep", "metadata": nil},
+				{"id": "conversion-berth", "amount_pence": 200, "reason": "berth_dues", "metadata": map[string]any{"ship_id": in.Ship.Ship.ID}},
+				{"id": "unclaimed-upkeep", "amount_pence": 999_999, "reason": "daily_fleet_and_factor_sprawl_upkeep"},
+			}
+			if test.wrongShip {
+				ledger[1]["metadata"] = map[string]any{"ship_id": "another-ship"}
+			}
+			if !test.missingLedger {
+				amount := int64(90_000)
+				if test.inconsistent {
+					amount = 100_201
+				}
+				ledger = append(ledger, map[string]any{"id": "probe-upkeep", "amount_pence": amount, "reason": "daily_fleet_and_factor_sprawl_upkeep"})
+			}
+			snapshot := map[string]json.RawMessage{"ledger": encode(ledger), "_expense_allocations": encode(owners)}
+			if err := h.db.SaveSnapshot(h.ctx, h.account.ID, snapshot); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				runner := h.runner(primaryTestKey)
+				probeHistoryRunner(runner, in)
+				core, logs := observer.New(zap.WarnLevel)
+				runner.log = zap.New(core)
+				input := in
+				if err := runner.loadRollingSourcingBudget(h.ctx, &input); err != nil {
+					t.Fatal(err)
+				}
+				warnings := 0
+				if test.inconsistent {
+					warnings = 1
+				}
+				if logs.FilterMessage("retaining inconsistent sourcing settlement bill allocation").Len() != warnings {
+					t.Fatalf("inconsistent allocation warning count is wrong: %+v", logs.All())
+				}
+				history := input.SourcingProbeHistory
+				expense, allowance := int64(350), int64(29_475)
+				if test.missingLedger {
+					expense, allowance = 90_350, 0
+				}
+				if test.wrongShip {
+					expense, allowance = 150, 29_675
+				}
+				if test.inconsistent {
+					expense, allowance = 100_350, 0
+				}
+				if test.scout {
+					if history.ProbeExpensePence != 0 || history.ScoutExpensePence != expense || history.ScoutConversionNetPence != 19_650 {
+						t.Fatalf("scout correction lost its own expenses or delivery attribution: %+v", history)
+					}
+					allowance = 29_825
+				} else if history.ProbeExpensePence != expense {
+					t.Fatalf("budget did not exclude exactly the retained company allocations: %+v", history)
+				}
+				if history.ConversionNetPence != 19_650 || input.SourcingAllowancePence == nil || *input.SourcingAllowancePence != allowance {
+					t.Fatalf("corrected delivery net or rolling allowance is wrong: %+v", history)
+				}
+				if !maps.Equal(decode[map[string]string](runner.snapshot, "_expense_allocations"), owners) {
+					t.Fatal("read-time correction changed durable claim ownership")
+				}
+				if err := h.db.SaveSnapshot(h.ctx, h.account.ID, runner.snapshot); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rows, err := h.db.SettlementHistory(h.ctx, h.account.ID, "", 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range rows {
+				if row.ID == probe.ID && (row.ExpensesPence != probe.ExpensesPence ||
+					test.legacy && row.ExplorationExpensePence != nil ||
+					!test.legacy && (row.ExplorationExpensePence == nil || *row.ExplorationExpensePence != *probe.ExplorationExpensePence)) ||
+					row.ID == conversion.ID && row.ExpensesPence != conversion.ExpensesPence {
+					t.Fatalf("read-time correction rewrote immutable settlement: %+v", row)
+				}
+			}
+		})
 	}
 }
 

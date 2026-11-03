@@ -484,6 +484,50 @@ func (h sourcingProbeHistory) rollingAllowance() int64 {
 	return max(0, 20_000+halfNet-h.ProbeExpensePence)
 }
 
+// Correct only exact retained allocations on private row copies. A mismatch
+// retains the stored conservative expense and identifies the row for warning.
+func correctSourcingBills(rows []store.Settlement, snapshot map[string]json.RawMessage) []string {
+	owners := decode[map[string]string](snapshot, "_expense_allocations")
+	byMission := make(map[string]*store.Settlement)
+	for i := range rows {
+		row := &rows[i]
+		switch row.Kind {
+		case "relocation", "spot", "charter", "freight", "spot+freight", "charter+freight", "recovery":
+			if row.MissionID != "" {
+				byMission[row.MissionID] = row
+			}
+		}
+	}
+	bills := make(map[string]int64)
+	for _, bill := range decode[[]ledgerBill](snapshot, "ledger") {
+		generation := owners[bill.ID]
+		row := byMission[generation]
+		if row == nil || bill.Metadata.ShipID != "" && bill.Metadata.ShipID == row.ShipID {
+			continue
+		}
+		amount := bills[generation]
+		if amount < 0 || bill.Amount < 0 || bill.Amount > math.MaxInt64-amount {
+			bills[generation] = -1
+			continue
+		}
+		bills[generation] += bill.Amount
+	}
+	var inconsistent []string
+	for generation, amount := range bills {
+		row := byMission[generation]
+		if amount < 0 || amount > row.ExpensesPence ||
+			row.ExplorationExpensePence != nil && amount > *row.ExplorationExpensePence {
+			inconsistent = append(inconsistent, row.ID)
+			continue
+		}
+		row.ExpensesPence -= amount
+		if row.ExplorationExpensePence != nil {
+			row.ExplorationExpensePence = new(*row.ExplorationExpensePence - amount)
+		}
+	}
+	return inconsistent
+}
+
 func (r *Runner) loadRollingSourcingBudget(ctx context.Context, input *PlanningInput) error {
 	history := r.sourcingHistory.Outcomes
 	if history.Version != sourcingProbeHistoryVersion {
@@ -500,6 +544,9 @@ func (r *Runner) loadRollingSourcingBudget(ctx context.Context, input *PlanningI
 	rows, err := r.db.SourcingBudgetSettlements(ctx, r.account.ID, input.Now.Add(-window), input.Now)
 	if err != nil {
 		return err
+	}
+	for _, id := range correctSourcingBills(rows, r.snapshot) {
+		r.log.Warn("retaining inconsistent sourcing settlement bill allocation", zap.String("settlement_id", id))
 	}
 	if err := history.rollingBudget(rows, input.Now, input.Clock.Calendar.TimeScale); err != nil {
 		return err

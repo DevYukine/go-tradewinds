@@ -476,6 +476,9 @@ func (r *Runner) growthCashFunding(ctx context.Context, evidence *growthEvidence
 }
 
 func (r *Runner) growthLaneProof(ctx context.Context, evidence *growthEvidence) (string, error) {
+	if !r.fresh("ledger") {
+		return "growth requires a fresh ledger for company-wide realized net", nil
+	}
 	history, err := r.db.GrowthHistory(ctx, r.account.ID, "", evidence.asOf)
 	if err != nil {
 		return "", err
@@ -486,9 +489,14 @@ func (r *Runner) growthLaneProof(ctx context.Context, evidence *growthEvidence) 
 	if history.PositiveCycles < 2 {
 		return "no two positive delivered cycles in the recorded 12-real-hour cohort yet; chart balances are not proof of profit", nil
 	}
-	if history.UnknownCosts || history.UnmeasuredDuration || history.NetPence <= 0 {
-		return "growth requires positive recorded 12-real-hour realized net after every in-cohort loss and probe, with no unknown costs or cycle duration", nil
+	bills, err := r.unallocatedBillsBetween(evidence.asOf.Add(-12*time.Hour), evidence.asOf)
+	if err != nil {
+		return "", err
 	}
+	if history.UnknownCosts || history.UnmeasuredDuration || history.NetPence <= bills {
+		return fmt.Sprintf("growth requires positive recorded 12-real-hour realized net after unallocated company bills: recorded net %dp, company bills %dp; no unknown costs or cycle duration", history.NetPence, bills), nil
+	}
+	history.NetPence -= bills
 	evidence.history = history
 	return "", nil
 }

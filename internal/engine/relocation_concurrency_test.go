@@ -119,6 +119,25 @@ func TestRelocationConcurrentCommitmentsProtectCashAndRisk(t *testing.T) {
 			} else if input.ScoutCommittedPence != data.Relocation.ModeledExpensePence || input.SourcingCommittedPence != 0 || scoutAllowance(input) != min(sourcingFreeCash(input)/50, scoutDailySeedPence-input.ScoutCommittedPence) {
 				t.Fatalf("scout did not retain shared daily risk capital: %+v", input)
 			}
+			priorLedger := runner.snapshot["ledger"]
+			ownBill := data.Relocation.ModeledExpensePence + 100
+			runner.snapshot["ledger"] = encode([]map[string]any{
+				{"id": "fleet-upkeep", "debit_account_id": runner.stateCache.Vaults[0].AccountID, "credit_account_id": "crown",
+					"amount_pence": 1_000_000, "reason": "daily_fleet_and_factor_sprawl_upkeep"},
+				{"id": "another-ship-berth", "debit_account_id": runner.stateCache.Vaults[0].AccountID, "credit_account_id": "harbour",
+					"amount_pence": 500_000, "reason": "berth_dues", "metadata": map[string]any{"ship_id": other.Ship.ID}},
+				{"id": "own-berth", "debit_account_id": runner.stateCache.Vaults[0].AccountID, "credit_account_id": "harbour",
+					"amount_pence": ownBill, "reason": "berth_dues", "metadata": map[string]any{"ship_id": data.Plan.ShipID}},
+			})
+			input, err = runner.sourcingInput(h.ctx, other)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if input.SourcingCommittedPence+input.ScoutCommittedPence != ownBill {
+				t.Fatalf("in-flight probe multiplied company bills or another ship's dues: sourcing=%d scout=%d own=%d",
+					input.SourcingCommittedPence, input.ScoutCommittedPence, ownBill)
+			}
+			runner.snapshot["ledger"] = priorLedger
 			own, err := runner.sourcingInput(h.ctx, harnessShip(t, runner, recoveryShipBlastoise))
 			if err != nil || own.SourcingCommittedPence != 0 || own.ScoutCommittedPence != 0 || own.RelocationTargets[data.Plan.Destination] != "" {
 				t.Fatalf("mission blocked itself instead of only its peers: input=%+v error=%v", own, err)

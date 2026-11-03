@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,6 +78,48 @@ func preserveGrowthWindowHistory(t *testing.T, h *recoveryHarness) {
 				t.Errorf("growth changed permanent history for %q: before %+v after %+v", scope, before, after)
 			}
 		})
+	}
+}
+
+func TestGrowthWindowCompanyBillsReduceAccountProofNotLaneProof(t *testing.T) {
+	t.Parallel()
+	h := newRecoveryHarness(t)
+	runner := growthWindowRunner(t, h)
+	asOf := time.Now().UTC()
+	for i := range 2 {
+		persistGrowthWindowSettlement(t, h, store.Settlement{
+			ID: fmt.Sprintf("company-proof-%d", i), Kind: "spot", CostsKnown: true, QuantityTons: 1,
+			AcquisitionPence: 1_000, ProceedsPence: 10_000, GameSeconds: 3_600, CompletedAt: asOf.Add(-time.Hour),
+		})
+	}
+	preserveGrowthWindowHistory(t, h)
+	owned := runner.stateCache.Vaults[0].AccountID
+	bills := []ledgerBill{
+		{ID: "company-upkeep", Debit: owned, Credit: "crown", Amount: 8_000, Reason: "daily_fleet_and_factor_sprawl_upkeep", CreatedAt: asOf.Add(-time.Hour)},
+		{ID: "idle-berth", Debit: owned, Credit: "harbour", Amount: 9_000, Reason: "berth_dues", CreatedAt: asOf.Add(-time.Hour)},
+		{ID: "outside-window", Debit: owned, Credit: "crown", Amount: 99_999, Reason: "upkeep", CreatedAt: asOf.Add(-12*time.Hour - time.Nanosecond)},
+	}
+	bills[1].Metadata.ShipID = recoveryShipLapras
+	runner.snapshot["ledger"] = encode(bills)
+	evidence := growthEvidence{asOf: asOf}
+	if reason, err := runner.growthLaneProof(h.ctx, &evidence); err != nil || reason != "" || evidence.history.NetPence != 1_000 {
+		t.Fatalf("account proof did not deduct unclaimed company and idle-ship bills: %q, %v, %+v", reason, err, evidence.history)
+	}
+	lane := laneKey(Plan{Kind: "spot", Origin: recoveryHomePort, Destination: recoveryFarPort, Commodity: recoveryGrain})
+	history, err := h.db.GrowthHistory(h.ctx, h.account.ID, lane, asOf)
+	if err != nil || history.NetPence != 18_000 || history.PositiveCycles != 2 {
+		t.Fatalf("company bills changed delivered lane proof: %+v, %v", history, err)
+	}
+	bills[0].Amount = 10_000
+	runner.snapshot["ledger"] = encode(bills)
+	if reason, err := runner.growthLaneProof(h.ctx, &evidence); err != nil || reason == "" {
+		t.Fatalf("loss-making company passed realized-net proof: %q, %v", reason, err)
+	}
+	meta := runner.meta["ledger"]
+	meta.Stale = true
+	runner.meta["ledger"] = meta
+	if reason, err := runner.growthLaneProof(h.ctx, &evidence); err != nil || !strings.Contains(reason, "fresh ledger") {
+		t.Fatalf("stale company-cost evidence did not hold growth: %q, %v", reason, err)
 	}
 }
 

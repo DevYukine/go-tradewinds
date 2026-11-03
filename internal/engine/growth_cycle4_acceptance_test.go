@@ -32,19 +32,19 @@ func TestGrowthCycle4UnanchoredWithdrawnExposureSurvivesActualHullHandoff(t *tes
 			const priorOwner = "cycle4-prior-accounting-episode"
 			const billID = "cycle4-unanchored-harbour-bill"
 			w.h.api.mu.Lock()
-			w.bill(baselineBillID, "north", 11)
+			w.bill(baselineBillID, "north", recoveryBuiltShipID, 11)
 			w.h.api.mu.Unlock()
 			if err := runner.refresh(w.h.ctx); err != nil {
 				t.Fatal(err)
 			}
 			data.InitialLedgerIDs = runner.ledgerIDs()
 			w.h.api.mu.Lock()
-			w.bill(priorBillID, "north", 19)
+			w.bill(priorBillID, "north", recoveryBuiltShipID, 19)
 			w.h.api.mu.Unlock()
 			if err := runner.refresh(w.h.ctx); err != nil {
 				t.Fatal(err)
 			}
-			claimed, ids := runner.claimBillsSince(&missionData{InitialLedgerIDs: data.InitialLedgerIDs}, priorOwner)
+			claimed, ids := runner.claimBillsSince(&missionData{Plan: Plan{ShipID: recoveryBuiltShipID}, InitialLedgerIDs: data.InitialLedgerIDs}, priorOwner)
 			if claimed != 19 || len(ids) != 1 || ids[0] != priorBillID {
 				t.Fatalf("fixture did not establish an independent prior bill allocation: %d %v", claimed, ids)
 			}
@@ -73,7 +73,7 @@ func TestGrowthCycle4UnanchoredWithdrawnExposureSurvivesActualHullHandoff(t *tes
 				data.BuildCostPence = 0
 			}
 			if billPosted {
-				w.bill(billID, "north", 37)
+				w.bill(billID, "north", recoveryBuiltShipID, 37)
 			}
 			w.h.api.mu.Unlock()
 			if err := runner.saveMission(w.h.ctx, control, &data); err != nil {
@@ -167,7 +167,7 @@ func TestGrowthCycle4UnanchoredWithdrawnExposureSurvivesActualHullHandoff(t *tes
 			// settlement anchor. Exactly the eligible bill may now be claimed.
 			if !billPosted {
 				w.h.api.mu.Lock()
-				w.bill(billID, "north", 37)
+				w.bill(billID, "north", recoveryBuiltShipID, 37)
 				w.h.api.mu.Unlock()
 			}
 			retainedData.LastActionID = terminalAction
@@ -249,7 +249,7 @@ func TestGrowthCycle4UnsentBuildCancellationIgnoresUnrelatedUpkeepLedgerDebit(t 
 	const upkeepPence int64 = 123
 	w.h.api.mu.Lock()
 	initialNorth := w.h.api.vaultBalance["north"]
-	w.bill(upkeepID, "north", upkeepPence)
+	w.bill(upkeepID, "north", "", upkeepPence)
 	w.ledger[len(w.ledger)-1]["reason"] = "company upkeep"
 	w.h.api.mu.Unlock()
 	// Match the production notification/capture relationship, while also

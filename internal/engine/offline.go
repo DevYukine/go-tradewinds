@@ -290,6 +290,7 @@ func (ledger *SourcingLedger) Apply(input *PlanningInput, snapshot map[string]js
 			rows = append(rows, row)
 		}
 	}
+	correctSourcingBills(rows, snapshot)
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
 			return rows[i].ID < rows[j].ID

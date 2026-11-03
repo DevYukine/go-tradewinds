@@ -79,6 +79,7 @@ func (p *procurementRecoveryAPI) ServeHTTP(writer http.ResponseWriter, request *
 				rows = append(rows, map[string]any{
 					"id": "procurement-recovery-harbour-bill", "debit_account_id": "vault-south",
 					"credit_account_id": "harbour", "amount_pence": 1_000, "reason": "berth_dues",
+					"metadata": map[string]any{"ship_id": recoveryShipBlastoise},
 				})
 			}
 			api.writeJSON(writer, http.StatusOK, rows)

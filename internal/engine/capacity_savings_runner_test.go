@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -36,6 +37,66 @@ func TestCapacitySavingsRateRecordedWindow(t *testing.T) {
 	want := float64(600_000+300_000-60_000)/60 - float64(installment)/10
 	if err != nil || math.IsNaN(rate) || math.Abs(rate-want) > 1e-9 {
 		t.Fatalf("savings rate = %v, %v; want %v including charter, unknown loss, upkeep and active borrower installment", rate, err, want)
+	}
+}
+
+func TestCapacitySavingsRateDeductsUnallocatedCompanyAndIdleShipBills(t *testing.T) {
+	t.Parallel()
+	h := newRecoveryHarness(t)
+	runner := growthWindowRunner(t, h)
+	asOf := time.Now().UTC()
+	runner.stateCache.Clock.Calendar.TimeScale = 60
+	persistGrowthWindowSettlement(t, h, store.Settlement{
+		ID: "savings-after-claimed-dues", Kind: "spot", CostsKnown: true, QuantityTons: 1,
+		ProceedsPence: 125_000, ExpensesPence: 5_000, GameSeconds: 3_600, CompletedAt: asOf.Add(-time.Hour),
+	})
+	owned := runner.stateCache.Vaults[0].AccountID
+	bills := []ledgerBill{
+		{ID: "fleet", Debit: owned, Credit: "crown", Amount: 40_000, Reason: "daily_fleet_and_factor_sprawl_upkeep", CreatedAt: asOf.Add(-time.Hour)},
+		{ID: "warehouse", Debit: owned, Credit: "crown", Amount: 8_000, Reason: "daily_warehouse_rent", CreatedAt: asOf.Add(-time.Hour)},
+		{ID: "research", Debit: owned, Credit: "crown", Amount: 4_000, Reason: "research_upkeep", CreatedAt: asOf.Add(-time.Hour)},
+		{ID: "idle-berth", Debit: owned, Credit: "harbour", Amount: 3_000, Reason: "berth_dues", CreatedAt: asOf.Add(-time.Hour)},
+		{ID: "idle-toll", Debit: owned, Credit: "canal", Amount: 1_000, Reason: "toll", CreatedAt: asOf.Add(-time.Hour)},
+		{ID: "window-start", Debit: owned, Credit: "crown", Amount: 1_000, Reason: "upkeep", CreatedAt: asOf.Add(-24 * time.Hour)},
+		{ID: "window-end", Debit: owned, Credit: "crown", Amount: 2_000, Reason: "rent", CreatedAt: asOf},
+		{ID: "claimed", Debit: owned, Credit: "harbour", Amount: 5_000, Reason: "berth_dues", CreatedAt: asOf.Add(-time.Hour)},
+		{ID: "transfer", Debit: owned, Credit: owned, Amount: 999_999, Reason: "upkeep", CreatedAt: asOf.Add(-time.Hour)},
+		{ID: "foreign", Debit: "other-company", Credit: "crown", Amount: 999_999, Reason: "upkeep", CreatedAt: asOf.Add(-time.Hour)},
+		{ID: "purchase", Debit: owned, Credit: "merchant", Amount: 999_999, Reason: "market_order", CreatedAt: asOf.Add(-time.Hour)},
+		{ID: "old", Debit: owned, Credit: "crown", Amount: 999_999, Reason: "upkeep", CreatedAt: asOf.Add(-24*time.Hour - time.Nanosecond)},
+		{ID: "future", Debit: owned, Credit: "crown", Amount: 999_999, Reason: "upkeep", CreatedAt: asOf.Add(time.Nanosecond)},
+	}
+	bills[3].Metadata.ShipID = recoveryShipLapras
+	bills[4].Metadata.ShipID = recoveryShipLapras
+	runner.snapshot["ledger"] = encode(bills)
+	runner.expenseOwners = map[string]string{"claimed": "savings-after-claimed-dues-mission"}
+	rate, err := runner.capacitySavingsRate(h.ctx, asOf)
+	want := float64(120_000-59_000) / 60
+	if err != nil || math.IsNaN(rate) || math.Abs(rate-want) > 1e-9 {
+		t.Fatalf("company and idle-ship bills must count once in their inclusive window: %v, %v; want %v", rate, err, want)
+	}
+	meta := runner.meta["ledger"]
+	meta.Stale = true
+	runner.meta["ledger"] = meta
+	if rate, err := runner.capacitySavingsRate(h.ctx, asOf); err != nil || rate != 0 {
+		t.Fatalf("stale ledger enabled savings: %v, %v", rate, err)
+	}
+}
+
+func TestUnallocatedBillsBetweenSkipsNonPositiveAmounts(t *testing.T) {
+	t.Parallel()
+	asOf := time.Now().UTC()
+	runner := &Runner{
+		stateCache: AccountState{Vaults: []Vault{{AccountID: "vault"}}},
+		snapshot: map[string]json.RawMessage{"ledger": encode([]ledgerBill{
+			{ID: "positive", Debit: "vault", Credit: "crown", Amount: 200, Reason: "upkeep", CreatedAt: asOf},
+			{ID: "negative", Debit: "vault", Credit: "crown", Amount: -100, Reason: "upkeep", CreatedAt: asOf},
+			{ID: "zero", Debit: "vault", Credit: "crown", Amount: 0, Reason: "upkeep", CreatedAt: asOf},
+		})},
+	}
+	amount, err := runner.unallocatedBillsBetween(asOf.Add(-time.Hour), asOf)
+	if err != nil || amount != 200 {
+		t.Fatalf("non-positive bill blocked or changed company overhead: %d, %v", amount, err)
 	}
 }
 

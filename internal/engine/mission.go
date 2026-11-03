@@ -1659,9 +1659,47 @@ func laneKey(plan Plan) string {
 	return plan.Origin + "|" + plan.Destination + "|" + plan.Commodity + "|" + strings.Split(plan.Kind, "+")[0]
 }
 
-// claimBillsSince assigns each actual overhead debit exactly once across
-// overlapping missions. The claim is included in the durable settling mission
-// before it is published to the snapshot and before the settlement is inserted.
+type ledgerBill struct {
+	ID        string    `json:"id"`
+	Debit     string    `json:"debit_account_id"`
+	Credit    string    `json:"credit_account_id"`
+	Amount    int64     `json:"amount_pence"`
+	Reason    string    `json:"reason"`
+	CreatedAt time.Time `json:"created_at"`
+	Metadata  struct {
+		ShipID string `json:"ship_id"`
+	} `json:"metadata"`
+}
+
+func (bill ledgerBill) overhead() bool {
+	return strings.Contains(bill.Reason, "upkeep") || strings.Contains(bill.Reason, "rent") ||
+		strings.Contains(bill.Reason, "berth") || strings.Contains(bill.Reason, "toll")
+}
+
+// Company-wide earnings include bills that no mission has claimed, including
+// ship-tagged dues incurred while idle or between missions.
+func (r *Runner) unallocatedBillsBetween(from, asOf time.Time) (int64, error) {
+	owned := make(map[string]bool, len(r.stateCache.Vaults))
+	for _, vault := range r.stateCache.Vaults {
+		owned[vault.AccountID] = true
+	}
+	var amount int64
+	for _, bill := range decode[[]ledgerBill](r.snapshot, "ledger") {
+		if bill.Amount <= 0 || bill.CreatedAt.Before(from) || bill.CreatedAt.After(asOf) || !owned[bill.Debit] ||
+			owned[bill.Credit] || r.expenseOwners[bill.ID] != "" || !bill.overhead() {
+			continue
+		}
+		if bill.Amount > math.MaxInt64-amount {
+			return 0, errors.New("unallocated ledger bills exceed integer-pence bounds")
+		}
+		amount += bill.Amount
+	}
+	return amount, nil
+}
+
+// claimBillsSince assigns each ship-attributed overhead debit exactly once across
+// overlapping missions. Company-wide bills stay outside mission accounting. The
+// claim is persisted before the snapshot and settlement are published.
 func (r *Runner) claimBillsSince(data *missionData, generation string) (int64, []string) {
 	amount, ids := r.unclaimedBillsSince(data)
 	for _, id := range ids {
@@ -1672,28 +1710,28 @@ func (r *Runner) claimBillsSince(data *missionData, generation string) (int64, [
 }
 
 func (r *Runner) unclaimedBillsSince(data *missionData) (int64, []string) {
+	shipID := data.Plan.ShipID
+	if data.BuiltShipID != "" {
+		// Commissioning plans can still name the quoted prototype hull.
+		shipID = data.BuiltShipID
+	}
+	if shipID == "" {
+		return 0, nil
+	}
 	owned := make(map[string]bool)
 	for _, vault := range r.stateCache.Vaults {
 		owned[vault.AccountID] = true
 	}
 	var amount int64
 	ids := make([]string, 0)
-	for _, row := range decode[[]struct {
-		ID     string `json:"id"`
-		Debit  string `json:"debit_account_id"`
-		Credit string `json:"credit_account_id"`
-		Amount int64  `json:"amount_pence"`
-		Reason string `json:"reason"`
-	}](r.snapshot, "ledger") {
-		if data.InitialLedgerIDs[row.ID] || !owned[row.Debit] || owned[row.Credit] || r.expenseOwners[row.ID] != "" {
+	for _, row := range decode[[]ledgerBill](r.snapshot, "ledger") {
+		if row.Metadata.ShipID != shipID ||
+			data.InitialLedgerIDs[row.ID] || !owned[row.Debit] || owned[row.Credit] || r.expenseOwners[row.ID] != "" {
 			continue
 		}
-		for _, reason := range []string{"upkeep", "rent", "berth", "toll"} {
-			if strings.Contains(row.Reason, reason) {
-				amount += row.Amount
-				ids = append(ids, row.ID)
-				break
-			}
+		if row.overhead() {
+			amount += row.Amount
+			ids = append(ids, row.ID)
 		}
 	}
 	return amount, ids

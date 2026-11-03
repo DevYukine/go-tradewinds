@@ -30,7 +30,7 @@ func TestGrowthCycle3LegacyHullLossRetainsUnknownAnchoredHistory(t *testing.T) {
 				t.Fatal("fixture lacks a paid build's terminal evidence before operating purchases")
 			}
 			w.h.api.mu.Lock()
-			w.bill("cycle3-unattributed-old-bill", "north", 999)
+			w.bill("cycle3-unattributed-old-bill", "north", recoveryBuiltShipID, 999)
 			w.builtRow()["ship"].(map[string]any)["status"] = "sunk"
 			w.h.api.mu.Unlock()
 			if err := runner.refresh(w.h.ctx); err != nil {
@@ -52,7 +52,7 @@ func TestGrowthCycle3LegacyHullLossRetainsUnknownAnchoredHistory(t *testing.T) {
 				// debits, even when all direct measured counters remain zero.
 				expectedTerminalBill = 17
 				w.h.api.mu.Lock()
-				w.bill("cycle3-terminal-after-baseline-bill", "north", expectedTerminalBill)
+				w.bill("cycle3-terminal-after-baseline-bill", "north", recoveryBuiltShipID, expectedTerminalBill)
 				w.h.api.mu.Unlock()
 			}
 			before, err := w.h.db.EconomicHistory(w.h.ctx, w.h.account.ID, "")
@@ -137,7 +137,7 @@ func TestGrowthCycle3LegacyHullLossRetainsUnknownAnchoredHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			w.h.api.mu.Lock()
-			w.bill("cycle3-later-ship-bill", "north", 37)
+			w.bill("cycle3-later-ship-bill", "north", recoveryShipLapras, 37)
 			w.h.api.mu.Unlock()
 			for range 16 {
 				w.tick(runner)

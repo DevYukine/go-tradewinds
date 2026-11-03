@@ -478,6 +478,7 @@ func procurementReviewSettlement(t *testing.T, data missionData, ledger []map[st
 	ship := harnessShip(t, runner, recoveryShipBlastoise)
 	destinationSeedAction(t, h, "procurement-review-terminal", "/v1/market/place-order", `{"ship_id":"33333333-3333-4333-8333-000000000001"}`, `{"filled_quantity":0,"total_gross_pence":0,"customs_duty_pence":0}`)
 	data.LastActionID = "procurement-review-terminal"
+	data.Plan.ShipID = ship.Ship.ID
 	data.FinishAtDestination = true
 	data.InitialLedgerIDs = map[string]bool{}
 	data.StartedAt = time.Now().UTC().Add(-time.Minute)
@@ -514,6 +515,7 @@ func TestProcurementReviewBetterRecoveryStillSettlesActualLoss(t *testing.T) {
 	settled := procurementReviewSettlement(t, data, []map[string]any{{
 		"id": "actual-destination-berth", "debit_account_id": "vault-south",
 		"credit_account_id": "harbour", "amount_pence": 1_000, "reason": "berth_dues",
+		"metadata": map[string]any{"ship_id": recoveryShipBlastoise},
 	}})
 	net := settled.ProceedsPence - settled.AcquisitionPence - settled.FeesPence - settled.ProvisionsPence - settled.ExpensesPence
 	if settled.AcquisitionPence != 10_000 || settled.ProceedsPence != 9_500 ||

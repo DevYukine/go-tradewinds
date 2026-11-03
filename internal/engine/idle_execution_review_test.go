@@ -364,7 +364,7 @@ func TestIdleExecutionReviewActiveCostsAndBillsCountOnceWithoutGrowingCap(t *tes
 	idleExecutionReviewSetFree(t, w, runner, 50_000)
 	ship, _ := runner.ship(recoveryShipBlastoise)
 	data.FeesPence, data.ExpensesPence = 100, 200
-	runner.snapshot["ledger"] = encode([]map[string]any{{"id": "idle-unclaimed-bill", "debit_account_id": "vault-north", "credit_account_id": "harbour", "amount_pence": 700, "reason": "berth_dues"}})
+	runner.snapshot["ledger"] = encode([]map[string]any{{"id": "idle-unclaimed-bill", "debit_account_id": "vault-north", "credit_account_id": "harbour", "amount_pence": 700, "reason": "berth_dues", "metadata": map[string]any{"ship_id": data.Plan.ShipID}}})
 	cap := data.Relocation.ExpenseCapPence
 	if err := runner.relocationSpendingReady(w.h.ctx, ship, &data, 0); err != nil {
 		t.Fatalf("300p active expense plus 700p unclaimed bill must fit exactly the current 1000p cap at the committed source: %v", err)

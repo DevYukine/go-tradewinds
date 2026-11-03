@@ -52,7 +52,7 @@ func TestGrowthCycle5ActionlessPostSettlementCancellationReleasesDespiteCompanyU
 	w.h.api.mu.Lock()
 	northBefore := w.h.api.vaultBalance["north"]
 	w.source = nil
-	w.bill(upkeepID, "north", upkeepPence)
+	w.bill(upkeepID, "north", "", upkeepPence)
 	w.ledger[len(w.ledger)-1]["reason"] = "company upkeep"
 	w.h.api.mu.Unlock()
 	runner.publishedFinancial.Add(1)

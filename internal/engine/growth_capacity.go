@@ -421,6 +421,9 @@ func (r *Runner) liveCapacitySavingsTarget(ctx context.Context) (capacitySavings
 }
 
 func (r *Runner) capacitySavingsRate(ctx context.Context, asOf time.Time) (float64, error) {
+	if !r.fresh("ledger") {
+		return 0, nil
+	}
 	window, err := r.db.EconomicHistoryWindow(ctx, r.account.ID, "", asOf, capacityHistoryWindow)
 	if err != nil {
 		return 0, err
@@ -429,7 +432,11 @@ func (r *Runner) capacitySavingsRate(ctx context.Context, asOf time.Time) (float
 	if gameDays <= 0 || r.stateCache.Clock.Paused {
 		return 0, nil
 	}
-	rate := (float64(window.NetPence) + float64(window.UnknownLossPence)) / gameDays
+	bills, err := r.unallocatedBillsBetween(asOf.Add(-capacityHistoryWindow), asOf)
+	if err != nil {
+		return 0, err
+	}
+	rate := (float64(window.NetPence) + float64(window.UnknownLossPence) - float64(bills)) / gameDays
 	for _, loan := range r.stateCache.Loans {
 		if loan.Status == "active" && loan.Repayment == "amortised" &&
 			loan.BorrowerCompanyID == r.account.CompanyID && loan.InstallmentPence != nil {

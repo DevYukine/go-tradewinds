@@ -82,6 +82,7 @@ func ApplyReceipt(money *Money, stage string, response json.RawMessage) error {
 type Bill struct {
 	ID          string    `json:"id"`
 	Region      string    `json:"region"`
+	ShipID      string    `json:"ship_id,omitempty"`
 	Reason      string    `json:"reason"`
 	Owner       string    `json:"owner,omitempty"`
 	At          time.Time `json:"at"`
@@ -174,7 +175,7 @@ func (a *Accounting) Settle(missionID string, at time.Time) (store.Settlement, e
 	}
 	for i := range a.bills {
 		bill := &a.bills[i]
-		if bill.Owner != "" || bill.At.Before(mission.settlement.StartedAt) || bill.At.After(at) {
+		if bill.Owner != "" || bill.ShipID == "" || bill.ShipID != mission.settlement.ShipID || bill.At.Before(mission.settlement.StartedAt) || bill.At.After(at) {
 			continue
 		}
 		for _, reason := range []string{"upkeep", "rent", "berth", "toll"} {

@@ -60,13 +60,15 @@ func TestAccountingAcceptanceReceiptsKeepFiveCashFieldsSeparate(t *testing.T) {
 	}
 }
 
-func TestAccountingAcceptanceFirstSettlerClaimsBillsAndExplorationIsDisclosure(t *testing.T) {
+func TestAccountingAcceptanceShipBillsExcludeCompanyOverheadAndExplorationIsDisclosure(t *testing.T) {
 	at := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
 	accounting := NewAccounting([]engine.Vault{{AccountID: "vault-a", AccountType: "vault", BankingRegion: "north", BalancePence: 100_000}})
-	accounting.Start(store.Settlement{ID: "first", MissionID: "first", Kind: "relocation", StartedAt: at, CostsKnown: true, ExplorationExpensePence: new(int64(77))})
-	accounting.Start(store.Settlement{ID: "second", MissionID: "second", Kind: "spot", StartedAt: at, CostsKnown: true})
+	accounting.Start(store.Settlement{ID: "first", MissionID: "first", ShipID: "ship-a", Kind: "relocation", StartedAt: at, CostsKnown: true, ExplorationExpensePence: new(int64(77))})
+	accounting.Start(store.Settlement{ID: "second", MissionID: "second", ShipID: "ship-b", Kind: "spot", StartedAt: at, CostsKnown: true})
 	for _, bill := range []Bill{
-		{ID: "berth-1", Region: "north", At: at.Add(time.Minute), Reason: "berth", AmountPence: 100},
+		{ID: "berth-a", Region: "north", ShipID: "ship-a", At: at.Add(time.Minute), Reason: "berth", AmountPence: 100},
+		{ID: "toll-a", Region: "north", ShipID: "ship-a", At: at.Add(time.Minute), Reason: "toll", AmountPence: 50},
+		{ID: "berth-b", Region: "north", ShipID: "ship-b", At: at.Add(time.Minute), Reason: "berth", AmountPence: 150},
 		{ID: "upkeep-1", Region: "north", At: at.Add(2 * time.Minute), Reason: "upkeep", AmountPence: 200},
 	} {
 		if err := accounting.Charge(bill); err != nil {
@@ -84,11 +86,12 @@ func TestAccountingAcceptanceFirstSettlerClaimsBillsAndExplorationIsDisclosure(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ExpensesPence != 300 || second.ExpensesPence != 0 || first.ProvisionsPence != 205 || first.ExplorationExpensePence == nil || *first.ExplorationExpensePence != 77 {
-		t.Fatalf("shared bill ownership or exploration disclosure: first=%+v second=%+v", first, second)
+	if first.ExpensesPence != 150 || second.ExpensesPence != 150 || first.ProvisionsPence != 205 || first.ExplorationExpensePence == nil || *first.ExplorationExpensePence != 77 {
+		t.Fatalf("ship bill ownership or exploration disclosure: first=%+v second=%+v", first, second)
 	}
-	if _, err := accounting.Reconcile(); err != nil {
-		t.Fatalf("closed mission cash no longer reconciles: %v", err)
+	reconciliation, err := accounting.Reconcile()
+	if err != nil || reconciliation.UnclaimedOverheadPence != 200 {
+		t.Fatalf("company overhead must reconcile outside ship missions: %+v, %v", reconciliation, err)
 	}
 }
 
