@@ -357,11 +357,19 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 			json.Unmarshal(data.Action.Body, &request) != nil || request.Gross != *result.Gross {
 			return false, r.hold(ctx, mission.ShipID, errUninterpretableResult.Error())
 		}
+		companyTransfer := stage == "remit" && (mission.ShipID == "__treasury" || mission.ShipID == "__loans")
+		if companyTransfer {
+			// No settlement carries this fee and the ledger copy is excluded, so a
+			// failed write keeps the receipt for the next pass.
+			if err := r.recordCompanyRemittanceFee(ctx, data.Action, *result.Fee); err != nil {
+				return false, err
+			}
+		}
 		data.FeesPence += *result.Fee
 		if stage == "remit" && data.Commission != nil {
 			data.Commission.FundingShortfallPence = max(int64(1), *result.Net)
 		}
-		if stage == "remit" && (mission.ShipID == "__treasury" || mission.ShipID == "__loans") {
+		if companyTransfer {
 			mission.Phase = "done"
 		}
 	case "build":

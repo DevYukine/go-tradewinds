@@ -168,6 +168,13 @@ export interface MoneyPeriod {
   net_pence: number | null;
 }
 
+export interface CompanyPeriod {
+  at: string;
+  to: string;
+  count: number;
+  pence: number;
+}
+
 export interface MoneyHistory {
   account_id: string;
   generated_at: string;
@@ -176,6 +183,8 @@ export interface MoneyHistory {
   bucket_seconds: number;
   metrics: Metric[];
   settlements: MoneyPeriod[];
+  company_flows: CompanyPeriod[];
+  company_flows_from: string | null;
 }
 
 export interface StandingPoint {

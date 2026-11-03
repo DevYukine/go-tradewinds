@@ -10,16 +10,18 @@ import (
 	"gorm.io/gorm"
 )
 
-// MoneyHistory keeps sampled balance observations separate from additive,
-// durable settlement accounting. No shared row limit can crowd out a series.
+// MoneyHistory keeps sampled balances separate from additive, durable
+// settlement and company-flow accounting.
 type MoneyHistory struct {
-	AccountID     string        `json:"account_id"`
-	GeneratedAt   time.Time     `json:"generated_at"`
-	From          time.Time     `json:"from"`
-	To            time.Time     `json:"to"`
-	BucketSeconds int64         `json:"bucket_seconds"`
-	Metrics       []Metric      `json:"metrics"`
-	Settlements   []MoneyPeriod `json:"settlements"`
+	AccountID        string          `json:"account_id"`
+	GeneratedAt      time.Time       `json:"generated_at"`
+	From             time.Time       `json:"from"`
+	To               time.Time       `json:"to"`
+	BucketSeconds    int64           `json:"bucket_seconds"`
+	Metrics          []Metric        `json:"metrics"`
+	Settlements      []MoneyPeriod   `json:"settlements"`
+	CompanyFlows     []CompanyPeriod `json:"company_flows"`
+	CompanyFlowsFrom *time.Time      `json:"company_flows_from"`
 }
 
 // Gross includes all recorded proceeds. Costs and net include only settlements
@@ -48,6 +50,13 @@ func (value MoneyPeriod) MarshalJSON() ([]byte, error) {
 	}{moneyPeriodJSON: moneyPeriodJSON(value), GrossPence: gross})
 }
 
+type CompanyPeriod struct {
+	At    time.Time `json:"at"`
+	To    time.Time `json:"to"`
+	Count int64     `json:"count"`
+	Pence int64     `json:"pence"`
+}
+
 func moneyBucketSeconds(spanSeconds int64) int64 {
 	for _, seconds := range []int64{60, 300, 1800, 7200, 21600, 86400, 604800} {
 		if spanSeconds <= seconds*480 {
@@ -65,11 +74,20 @@ func (s *Store) MoneyHistory(ctx context.Context, accountID string, from, to tim
 	}
 	result := MoneyHistory{
 		AccountID: accountID, GeneratedAt: time.Now().UTC(), From: from.UTC(), To: to.UTC(),
-		Metrics: make([]Metric, 0), Settlements: make([]MoneyPeriod, 0),
+		Metrics: make([]Metric, 0), Settlements: make([]MoneyPeriod, 0), CompanyFlows: make([]CompanyPeriod, 0),
 	}
 	db, cancel := s.query(ctx)
 	defer cancel()
 	err := db.Transaction(func(tx *gorm.DB) error {
+		var flowsFrom sql.NullTime
+		if err := tx.Raw(`SELECT min(created_at) FROM company_ledger_flows WHERE account_id = ?`, accountID).
+			Row().Scan(&flowsFrom); err != nil {
+			return err
+		}
+		if flowsFrom.Valid {
+			start := flowsFrom.Time.UTC()
+			result.CompanyFlowsFrom = &start
+		}
 		if from.IsZero() {
 			var first sql.NullTime
 			if err := tx.Raw(`SELECT min(at) FROM (
@@ -82,7 +100,10 @@ func (s *Store) MoneyHistory(ctx context.Context, accountID string, from, to tim
 				UNION ALL
 				(SELECT completed_at FROM settlements WHERE account_id = ? AND completed_at <= ?
 					ORDER BY completed_at ASC LIMIT 1)
-			) AS starts`, accountID, to, accountID, to).Row().Scan(&first); err != nil {
+				UNION ALL
+				(SELECT created_at FROM company_ledger_flows WHERE account_id = ? AND created_at <= ?
+					ORDER BY created_at ASC LIMIT 1)
+			) AS starts`, accountID, to, accountID, to, accountID, to).Row().Scan(&first); err != nil {
 				return err
 			}
 			result.From = result.To
@@ -118,7 +139,7 @@ func (s *Store) MoneyHistory(ctx context.Context, accountID string, from, to tim
 		// Numeric arithmetic avoids bigint overflow before aggregation. Scanning
 		// back to integer pence fails rather than silently rounding an overflow.
 		// Edge periods expose only their requested span, not a full bucket label.
-		return tx.Raw(`WITH bucketed AS (
+		if err := tx.Raw(`WITH bucketed AS (
 				SELECT *, date_bin(? * interval '1 second', completed_at, 'epoch'::timestamptz) AS bucket
 				FROM settlements WHERE account_id = ? AND completed_at >= ? AND completed_at <= ?
 			)
@@ -133,7 +154,19 @@ func (s *Store) MoneyHistory(ctx context.Context, accountID string, from, to tim
 					FILTER (WHERE costs_known) AS net_pence
 			FROM bucketed GROUP BY bucket ORDER BY bucket`,
 			result.BucketSeconds, accountID, result.From, result.To, result.From, result.BucketSeconds, result.To).
-			Scan(&result.Settlements).Error
+			Scan(&result.Settlements).Error; err != nil {
+			return err
+		}
+		return tx.Raw(`WITH bucketed AS (
+				SELECT amount_pence, date_bin(? * interval '1 second', created_at, 'epoch'::timestamptz) AS bucket
+				FROM company_ledger_flows WHERE account_id = ? AND created_at >= ? AND created_at <= ?
+			)
+			SELECT greatest(bucket, ?::timestamptz) AS at,
+				least(bucket + ? * interval '1 second', ?::timestamptz) AS to,
+				count(*) AS count, sum(amount_pence::numeric) AS pence
+			FROM bucketed GROUP BY bucket ORDER BY bucket`,
+			result.BucketSeconds, accountID, result.From, result.To, result.From, result.BucketSeconds, result.To).
+			Scan(&result.CompanyFlows).Error
 	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return MoneyHistory{}, err

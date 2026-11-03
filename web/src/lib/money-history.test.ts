@@ -68,6 +68,8 @@ const history: MoneyHistory = {
     },
   ],
   settlements: periods,
+  company_flows: [],
+  company_flows_from: null,
 };
 
 describe("recorded money history", () => {
@@ -88,10 +90,87 @@ describe("recorded money history", () => {
       gross: 21000,
       costs: 18000,
       net: -2000,
+      realNet: -2000,
       known: 3,
       unknown: 1,
       count: 4,
     });
+  });
+
+  it("reports no real net total when every settlement has unknown costs and no company flows exist", () => {
+    const unknown = periods.filter((period) => period.net_pence === null);
+    expect(unknown.length).toBeGreaterThan(0);
+    expect(settlementTotals(unknown).realNet).toBeUndefined();
+    expect(
+      settlementTotals(unknown, [
+        { at: unknown[0].at, to: unknown[0].to, count: 1, pence: -500 },
+      ]).realNet,
+    ).toBe(-500);
+  });
+
+  it("merges settlement-only, shared and company-only buckets in time order", () => {
+    const result = moneyPoints(
+      {
+        ...history,
+        settlements: periods.slice(0, 2),
+        company_flows_from: "2026-10-24T10:30:00Z",
+        company_flows: [
+          {
+            at: periods[2].at,
+            to: periods[2].to,
+            count: 1,
+            pence: -700,
+          },
+          {
+            at: periods[1].at,
+            to: periods[1].to,
+            count: 2,
+            pence: -1200,
+          },
+        ],
+      },
+      "real_net",
+    );
+    expect(result.map(({ at, to, value }) => ({ at, to, value }))).toEqual([
+      { at: periods[0].at, to: periods[0].to, value: 3000 },
+      { at: periods[1].at, to: periods[1].to, value: -6200 },
+      { at: periods[2].at, to: periods[2].to, value: -700 },
+    ]);
+  });
+
+  it("marks periods ending at the company coverage boundary as trade only and skips unknown-cost periods", () => {
+    const covered = {
+      ...history,
+      company_flows_from: periods[0].to,
+    };
+    expect(
+      moneyPoints(covered, "real_net").map((point) => point.tradeOnly),
+    ).toEqual([true, false]);
+    expect(
+      moneyPoints(history, "real_net").map((point) => point.tradeOnly),
+    ).toEqual([true, true]);
+    expect(
+      moneyPoints(
+        { ...covered, company_flows_from: "2026-10-24T10:30:00Z" },
+        "real_net",
+      ).map((point) => point.tradeOnly),
+    ).toEqual([false, false]);
+  });
+
+  it("adds signed company flows to known-cost net without inventing unknown settlement costs", () => {
+    const flows = [
+      { at: periods[0].at, to: periods[0].to, count: 2, pence: -1501 },
+      { at: periods[2].at, to: periods[2].to, count: 1, pence: 100 },
+    ];
+    expect(settlementTotals(periods, flows).realNet).toBe(-3401);
+    expect(settlementTotals([], flows).realNet).toBe(-1401);
+    expect(settlementTotals([], []).realNet).toBeUndefined();
+    expect(
+      moneyPoints({ ...history, company_flows: flows }, "real_net").reduce(
+        (sum, point) => sum + point.value,
+        0,
+      ),
+    ).toBe(-3401);
   });
 
   it("keeps aggregate proceeds unknown and omits unknown gross chart periods", () => {
@@ -105,6 +184,7 @@ describe("recorded money history", () => {
       gross: undefined,
       costs: 18000,
       net: -2000,
+      realNet: -2000,
       known: 3,
       unknown: 1,
       count: 4,
@@ -187,7 +267,7 @@ describe("recorded money history", () => {
 describe("persisted money preferences", () => {
   it("validates enum selections and rejects malformed custom ranges", () => {
     expect(restoreMoneyPreferences(null)).toEqual({
-      series: "liquid_funds_pence",
+      series: "real_net",
       range: "24h",
       from: "",
       to: "",
@@ -198,7 +278,7 @@ describe("persisted money preferences", () => {
         range: "deleted-range",
       }),
     ).toEqual({
-      series: "liquid_funds_pence",
+      series: "real_net",
       range: "24h",
       from: "",
       to: "",
@@ -215,6 +295,14 @@ describe("persisted money preferences", () => {
       range: "24h",
       from: "2026-10-25T11:45",
       to: "2026-10-24T10:15",
+    });
+    expect(
+      restoreMoneyPreferences({ series: "liquid_funds_pence", range: "7d" }),
+    ).toEqual({
+      series: "liquid_funds_pence",
+      range: "7d",
+      from: "",
+      to: "",
     });
   });
 });
@@ -271,6 +359,7 @@ it("persists only UI preferences and restores them after hydration", async () =>
   // Load after storage is installed, then reload the module to exercise a fresh
   // Zustand hydration boundary rather than reusing the in-memory preferences.
   const { useUI } = await import("./ui-store");
+  expect(useUI.getState().moneyHistory.series).toBe("real_net");
   const preferences = {
     series: "settlement_net" as const,
     range: "custom" as const,
@@ -296,7 +385,7 @@ it("persists only UI preferences and restores them after hydration", async () =>
   );
   await restored.persist.rehydrate();
   expect(restored.getState().moneyHistory).toEqual({
-    series: "liquid_funds_pence",
+    series: "real_net",
     range: "24h",
     from: "",
     to: "",

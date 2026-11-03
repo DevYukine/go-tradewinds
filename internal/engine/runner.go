@@ -62,15 +62,21 @@ type Runner struct {
 	lastShipStatus   map[string]string
 	decisionHashes   map[string]decisionFingerprint
 	// outageWarnedAt rate-limits dataset failures caused by game 5xx outages.
-	outageWarnedAt     time.Time
-	lastMutationStatus atomic.Int64
-	expenseOwners      map[string]string
-	nextDeadline       time.Time
-	publishedFinancial atomic.Uint64
-	capturedFinancial  uint64
-	publishedControl   atomic.Uint64
-	capturedControl    uint64
-	financialSession   string
+	outageWarnedAt       time.Time
+	lastMutationStatus   atomic.Int64
+	expenseOwners        map[string]string
+	companyFlowsRecorded map[string]bool
+	// companyFlowsMissionClaims holds durable mission bill claims that mission
+	// recovery has not merged into expenseOwners yet.
+	companyFlowsMissionClaims map[string]string
+	// companyFlowsWarnedAt rate-limits profit-history recording failures.
+	companyFlowsWarnedAt time.Time
+	nextDeadline         time.Time
+	publishedFinancial   atomic.Uint64
+	capturedFinancial    uint64
+	publishedControl     atomic.Uint64
+	capturedControl      uint64
+	financialSession     string
 	// Local retirements never reached transport and do not end a fleet pass.
 	localRetirements       uint64
 	requestJournalMu       sync.Mutex

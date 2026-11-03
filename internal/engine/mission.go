@@ -1667,7 +1667,9 @@ type ledgerBill struct {
 	Reason    string    `json:"reason"`
 	CreatedAt time.Time `json:"created_at"`
 	Metadata  struct {
-		ShipID string `json:"ship_id"`
+		ShipID         string `json:"ship_id"`
+		FuturesID      string `json:"futures_id"`
+		UnderwritingID string `json:"underwriting_id"`
 	} `json:"metadata"`
 }
 

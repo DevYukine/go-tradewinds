@@ -1,8 +1,9 @@
-import type { MoneyHistory, MoneyPeriod } from "./types";
+import type { CompanyPeriod, MoneyHistory, MoneyPeriod } from "./types";
 
 const MONEY_RANGES = ["24h", "7d", "30d", "all", "custom"] as const;
 export type MoneyRange = (typeof MONEY_RANGES)[number];
 const MONEY_SERIES = [
+  "real_net",
   "liquid_funds_pence",
   "net_worth_pence",
   "settlement_net",
@@ -22,7 +23,7 @@ export interface MoneyPreferences {
 }
 
 export const DEFAULT_MONEY_PREFERENCES: MoneyPreferences = {
-  series: "liquid_funds_pence",
+  series: "real_net",
   range: "24h",
   from: "",
   to: "",
@@ -64,8 +65,10 @@ export function customMoneyRange(from: string, to: string) {
 export interface MoneyPoint {
   id: string;
   at: string;
+  to?: string;
   value: number;
   period?: MoneyPeriod;
+  tradeOnly?: boolean;
 }
 
 export function moneyPoints(
@@ -73,6 +76,48 @@ export function moneyPoints(
   series: MoneySeries,
 ): MoneyPoint[] {
   if (!history) return [];
+  if (series === "real_net") {
+    // Unknown-cost settlements stay out rather than plotting an invented zero.
+    const buckets = new Map<string, MoneyPoint & { to: string }>(
+      history.settlements.flatMap((period) =>
+        period.net_pence === null
+          ? []
+          : [
+              [
+                period.at,
+                {
+                  id: period.at,
+                  at: period.at,
+                  to: period.to,
+                  value: period.net_pence,
+                  period,
+                },
+              ] as const,
+            ],
+      ),
+    );
+    for (const flow of history.company_flows) {
+      const point = buckets.get(flow.at);
+      if (point) {
+        point.value += flow.pence;
+      } else {
+        buckets.set(flow.at, {
+          id: flow.at,
+          at: flow.at,
+          to: flow.to,
+          value: flow.pence,
+        });
+      }
+    }
+    const coverage = history.company_flows_from;
+    return [...buckets.values()]
+      .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+      .map((point) => ({
+        ...point,
+        tradeOnly:
+          coverage === null || Date.parse(point.to) <= Date.parse(coverage),
+      }));
+  }
   if (!series.startsWith("settlement_") && series !== "cumulative_net") {
     return history.metrics
       .filter((item) => item.name === series && Number.isFinite(item.value))
@@ -102,7 +147,7 @@ export function moneyPoints(
     }
     return value === null
       ? []
-      : [{ id: period.at, at: period.at, value, period }];
+      : [{ id: period.at, at: period.at, to: period.to, value, period }];
   });
 }
 export function moneyAxisTicks(values: readonly number[]): number[] {
@@ -123,7 +168,10 @@ export function moneyAxisTicks(values: readonly number[]): number[] {
   );
 }
 
-export function settlementTotals(periods: MoneyPeriod[]) {
+export function settlementTotals(
+  periods: MoneyPeriod[],
+  companyFlows: CompanyPeriod[] = [],
+) {
   let gross: number | undefined = 0;
   let costs = 0;
   let net = 0;
@@ -143,6 +191,10 @@ export function settlementTotals(periods: MoneyPeriod[]) {
     gross: count ? gross : undefined,
     costs: known ? costs : undefined,
     net: known ? net : undefined,
+    realNet:
+      known || companyFlows.length
+        ? net + companyFlows.reduce((sum, flow) => sum + flow.pence, 0)
+        : undefined,
     known,
     unknown: count - known,
     count,

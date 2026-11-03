@@ -1180,13 +1180,12 @@ func (r *Runner) recordBalances(ctx context.Context) error {
 	if !r.fresh("ledger") {
 		return nil
 	}
-	rows := decode[[]struct {
-		Debit     string    `json:"debit_account_id"`
-		Credit    string    `json:"credit_account_id"`
-		Amount    int64     `json:"amount_pence"`
-		Reason    string    `json:"reason"`
-		CreatedAt time.Time `json:"created_at"`
-	}](r.snapshot, "ledger")
+	rows := decode[[]ledgerBill](r.snapshot, "ledger")
+	// Profit history must never stop trading; the recorder retries next refresh.
+	if err := r.recordCompanyFlows(ctx, rows, owned); err != nil && time.Since(r.companyFlowsWarnedAt) >= time.Hour {
+		r.companyFlowsWarnedAt = time.Now()
+		r.log.Warn("company flow history not recorded", zap.Error(err))
+	}
 	// The retained ledger can reach further back while missions are open; a
 	// fixed window keeps the series comparable over time.
 	since := time.Now().Add(-ledgerRetention)

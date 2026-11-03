@@ -4,10 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 import type * as Data from "@/lib/data";
 import type { MoneyHistory, MoneyPeriod } from "@/lib/types";
 import type { MoneyPreferences } from "@/lib/money-history";
+import { dateTime } from "@/lib/format";
 import { Performance } from "./performance";
 
 const state = vi.hoisted(() => ({
   data: undefined as MoneyHistory | undefined,
+  series: "settlement_gross" as MoneyPreferences["series"],
 }));
 vi.mock("@/lib/data", async (original) => ({
   ...(await original<typeof Data>()),
@@ -26,7 +28,7 @@ vi.mock("@/lib/ui-store", () => ({
   ) =>
     select({
       moneyHistory: {
-        series: "settlement_gross",
+        series: state.series,
         range: "24h",
         from: "",
         to: "",
@@ -44,7 +46,12 @@ const known: MoneyPeriod = {
   net_pence: 1400,
 };
 
-function render(periods: MoneyPeriod[]) {
+function render(
+  periods: MoneyPeriod[],
+  series: MoneyPreferences["series"] = "settlement_gross",
+  overrides: Partial<MoneyHistory> = {},
+) {
+  state.series = series;
   state.data = {
     account_id: "account-a",
     generated_at: "2026-10-28T12:00:00Z",
@@ -53,6 +60,9 @@ function render(periods: MoneyPeriod[]) {
     bucket_seconds: 3600,
     metrics: [],
     settlements: periods,
+    company_flows: [],
+    company_flows_from: null,
+    ...overrides,
   };
   return renderToStaticMarkup(
     createElement(Performance, { accountID: "account-a" }),
@@ -110,5 +120,46 @@ describe("settlement performance evidence", () => {
       "Known proceeds from unknown-cost settlements count toward gross only.",
     );
     expect(html).not.toContain("Gross revenueProceeds unknown");
+  });
+
+  it("shows signed real net and the daily average across the whole requested range", () => {
+    const coverage = "2026-10-28T10:30:00Z";
+    const html = render([known], "real_net", {
+      to: "2026-10-30T00:00:00Z",
+      company_flows_from: coverage,
+      company_flows: [{ at: known.at, to: known.to, count: 2, pence: -2400 }],
+    });
+    expect(html).toContain("Range real net-10.00 Cr");
+    expect(html).toContain("Average per day-5.00 Cr");
+    expect(html).toContain(
+      `Company costs recorded from ${dateTime(coverage)}; earlier periods show settlement net only.`,
+    );
+    expect(html).toContain("Company flows included");
+    expect(html).not.toContain("Faded bars: settlement net only");
+  });
+
+  it("labels trade-only bars and selected values when company costs are unrecorded", () => {
+    const html = render([known], "real_net");
+    expect(html).toContain("Range real net+14.00 Cr");
+    expect(html).toContain("Average per day+14.00 Cr");
+    expect(html).toContain(
+      "Company costs not recorded; periods show settlement net only.",
+    );
+    expect(html).toContain("Faded bars: settlement net only");
+    expect(html).toContain("settlement net only, company costs not recorded");
+  });
+
+  it("renders company-only costs and omits the earlier-period note for a covered range", () => {
+    const html = render([], "real_net", {
+      company_flows_from: "2026-10-27T00:00:00Z",
+      company_flows: [{ at: known.at, to: known.to, count: 1, pence: -301 }],
+    });
+    expect(html).toContain("Range real net-3.01 Cr");
+    expect(html).toContain("Average per day-3.01 Cr");
+    expect(html).toContain(
+      "1 populated 1-hour periods from 0 completed settlements and recorded company flows.",
+    );
+    expect(html).not.toContain("earlier periods show settlement net only");
+    expect(html).not.toContain("Faded bars: settlement net only");
   });
 });

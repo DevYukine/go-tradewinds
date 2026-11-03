@@ -219,6 +219,15 @@ func TestCapacitySavingsLaneBuildHonorsExactAffordableTarget(t *testing.T) {
 				if treasury.Phase != "done" || transfer.Action != nil || transfer.FeesPence <= 0 {
 					t.Fatalf("B funding did not consume its measured receipt: %+v %+v", treasury, transfer)
 				}
+				// A treasury fee is in no settlement, so real net must carry it once.
+				history, err := h.db.MoneyHistory(h.ctx, h.account.ID, time.Time{}, time.Now().Add(time.Minute))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(history.CompanyFlows) != 1 || history.CompanyFlows[0].Count != 1 ||
+					history.CompanyFlows[0].Pence != -transfer.FeesPence {
+					t.Fatalf("treasury remittance fee missing from company flows: %+v", history.CompanyFlows)
+				}
 				assertPendingSavings()
 				if err := h.db.DeleteMission(h.ctx, h.account.ID, "__treasury"); err != nil {
 					t.Fatal(err)

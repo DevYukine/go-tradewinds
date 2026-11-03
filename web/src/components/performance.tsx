@@ -20,6 +20,11 @@ import styles from "./performance.module.css";
 import viewStyles from "./world-views.module.css";
 
 const SERIES: Record<MoneySeries, { label: string; description: string }> = {
+  real_net: {
+    label: "Real net profit",
+    description:
+      "Voyage net (settlements with known costs, including voyage insurance, penalties, remittance fees and the bills each ship paid) plus company income and costs outside voyages: fleet upkeep, warehouse rent, idle tolls and berth dues, repairs, treasury and loan transfer fees, loan interest, factor hire and marques. Excludes loan principal, own transfers, escrow, bank drafts, capital spending such as new hulls and guns, game auto-remit fees, and fees or stores of missions that close without a voyage result.",
+  },
   liquid_funds_pence: {
     label: "Cash balance",
     description:
@@ -89,14 +94,21 @@ export function Performance({ accountID }: { accountID: string }) {
     [history.data, series],
   );
   const totals = useMemo(
-    () => settlementTotals(history.data?.settlements ?? []),
+    () =>
+      settlementTotals(
+        history.data?.settlements ?? [],
+        history.data?.company_flows ?? [],
+      ),
     [history.data],
   );
   const hasPoints = points.length > 0;
   const settlementSeries =
     series.startsWith("settlement_") || series === "cumulative_net";
-  const bars = series.startsWith("settlement_");
+  const profitSeries = series === "real_net";
+  const periodSeries = settlementSeries || profitSeries;
+  const bars = series.startsWith("settlement_") || profitSeries;
   const signed =
+    profitSeries ||
     series === "settlement_net" ||
     series === "settlement_costs" ||
     series === "cumulative_net";
@@ -124,7 +136,7 @@ export function Performance({ accountID }: { accountID: string }) {
   // Net worth is published hourly, so a two-hour gap means a missed valuation.
   const staleAfterMs = series === "net_worth_pence" ? 7_200_000 : 120_000;
   const stale =
-    !settlementSeries &&
+    !periodSeries &&
     history.data &&
     last &&
     Math.abs(
@@ -132,9 +144,11 @@ export function Performance({ accountID }: { accountID: string }) {
     ) <= 120_000 &&
     now - Date.parse(last.at) > staleAfterMs;
   const pointDate = (point: (typeof points)[number]) =>
-    bars && point.period
-      ? `${dateTime(point.at)} – ${dateTime(point.period.to)}`
+    bars && point.to
+      ? `${dateTime(point.at)} to ${dateTime(point.to)}`
       : dateTime(point.at);
+  const pointCoverage = (point: (typeof points)[number]) =>
+    point.tradeOnly ? "settlement net only, company costs not recorded" : "";
 
   useEffect(() => {
     const element = plot.current;
@@ -173,8 +187,8 @@ export function Performance({ accountID }: { accountID: string }) {
         Math.min(
           1,
           (Date.parse(point.at) +
-            (bars && point.period
-              ? (Date.parse(point.period.to) - Date.parse(point.at)) / 2
+            (bars && point.to
+              ? (Date.parse(point.to) - Date.parse(point.at)) / 2
               : 0) -
             start) /
             duration,
@@ -196,6 +210,15 @@ export function Performance({ accountID }: { accountID: string }) {
     ),
   );
   const selectedPosition = coordinates[activeIndex];
+  const dailyNet =
+    totals.realNet === undefined
+      ? undefined
+      : Math.round((totals.realNet * 86_400_000) / duration);
+  const companyCoverage = history.data?.company_flows_from;
+  const partialCompanyCoverage =
+    history.data &&
+    (companyCoverage === null ||
+      (companyCoverage !== undefined && start < Date.parse(companyCoverage)));
   const periodLabel = history.data
     ? history.data.bucket_seconds < 3600
       ? `${history.data.bucket_seconds / 60}-minute`
@@ -220,6 +243,9 @@ export function Performance({ accountID }: { accountID: string }) {
               setSelectedID(null);
             }}
           >
+            <optgroup label="Company profit">
+              <option value="real_net">Real net profit</option>
+            </optgroup>
             <optgroup label="Balances">
               <option value="liquid_funds_pence">Cash balance</option>
               <option value="net_worth_pence">Net worth</option>
@@ -317,7 +343,22 @@ export function Performance({ accountID }: { accountID: string }) {
             : "No history could be retrieved."}
         </p>
       )}
-      {settlementSeries ? (
+      {profitSeries ? (
+        <dl className={styles.summary}>
+          <div>
+            <dt>Range real net</dt>
+            <dd className={tone(totals.realNet)}>
+              {summaryPlaceholder ?? signedMoney(totals.realNet)}
+            </dd>
+          </div>
+          <div>
+            <dt>Average per day</dt>
+            <dd className={tone(dailyNet)}>
+              {summaryPlaceholder ?? signedMoney(dailyNet)}
+            </dd>
+          </div>
+        </dl>
+      ) : settlementSeries ? (
         <dl className={styles.summary}>
           <div>
             <dt>Gross revenue</dt>
@@ -364,11 +405,20 @@ export function Performance({ accountID }: { accountID: string }) {
             ? `No leaderboard valuation recorded for over two hours; latest ${dateTime(last.at)}. `
             : `Balance observations are stale; latest recorded ${dateTime(last.at)}. `
           : ""}
-        {settlementSeries && history.data && (
+        {profitSeries && partialCompanyCoverage && (
+          <span>
+            {companyCoverage
+              ? `Company costs recorded from ${dateTime(companyCoverage)}; earlier periods show settlement net only. `
+              : "Company costs not recorded; periods show settlement net only. "}
+          </span>
+        )}
+        {periodSeries && history.data && (
           <>
             {count(totals.known)} known-cost settlements;{" "}
-            {count(totals.unknown)} with unknown costs or proceeds. Not complete
-            company profit.
+            {count(totals.unknown)} with unknown costs or proceeds.
+            {settlementSeries
+              ? " Not complete company profit."
+              : " Unknown-cost settlements are excluded from net."}
           </>
         )}
       </div>
@@ -411,6 +461,9 @@ export function Performance({ accountID }: { accountID: string }) {
                 "Recorded observations only"
               )}
             </span>
+            {profitSeries && points.some((point) => point.tradeOnly) && (
+              <span>Faded bars: settlement net only</span>
+            )}
           </div>
           <div ref={plot} className={styles.chart}>
             <svg
@@ -503,9 +556,13 @@ export function Performance({ accountID }: { accountID: string }) {
                     width={barWidth}
                     height={Math.max(1, Math.abs(zeroY - point.y))}
                     className={`${styles.bar} ${signed ? (points[i].value < 0 ? styles.lossBar : points[i].value > 0 ? styles.gainBar : "") : ""} ${i === activeIndex ? styles.selectedBar : ""}`}
+                    fillOpacity={points[i].tradeOnly ? 0.45 : undefined}
                   >
                     <title>
                       {pointDate(points[i])}: {signedMoney(points[i].value)}
+                      {points[i].tradeOnly
+                        ? `; ${pointCoverage(points[i])}`
+                        : ""}
                     </title>
                   </rect>
                 ) : (
@@ -541,6 +598,7 @@ export function Performance({ accountID }: { accountID: string }) {
               <strong className={signed ? tone(selected.value) : undefined}>
                 {signed ? signedMoney(selected.value) : money(selected.value)}
               </strong>
+              {selected.tradeOnly && <span>{pointCoverage(selected)}</span>}
               <span>
                 {count(activeIndex + 1)} of {count(points.length)}
               </span>
@@ -566,7 +624,7 @@ export function Performance({ accountID }: { accountID: string }) {
                   onChange={(event) =>
                     setSelectedID(points[Number(event.target.value)].id)
                   }
-                  aria-valuetext={`${pointDate(selected)}, ${signed ? signedMoney(selected.value) : money(selected.value)}`}
+                  aria-valuetext={`${pointDate(selected)}, ${signed ? signedMoney(selected.value) : money(selected.value)}${selected.tradeOnly ? `; ${pointCoverage(selected)}` : ""}`}
                 />
               </label>
               <button
@@ -585,16 +643,18 @@ export function Performance({ accountID }: { accountID: string }) {
       <p className={styles.description}>{SERIES[series].description}</p>
       {history.data && (
         <p className={styles.coverage}>
-          {settlementSeries
-            ? `${count(points.length)} populated ${periodLabel} periods from ${count(totals.count)} completed settlements.`
+          {periodSeries
+            ? `${count(points.length)} populated ${periodLabel} periods from ${count(totals.count)} completed settlements${profitSeries ? " and recorded company flows" : ""}.`
             : `${count(points.length)} plotted samples. Last observation per ${periodLabel} bucket; never summed.`}{" "}
           {first && (
             <>
               Plotted span: {dateTime(first.at)} to {dateTime(last?.at)}.{" "}
             </>
           )}
-          Missing intervals are not filled. Recorded settlements exclude
-          uncompleted voyages and unallocated company costs.
+          Missing intervals are not filled.{" "}
+          {profitSeries
+            ? "Net excludes uncompleted voyages and settlements with unknown costs or proceeds."
+            : "Recorded settlements exclude uncompleted voyages and unallocated company costs."}
           {settlementSeries &&
             totals.unknown > 0 &&
             " Known proceeds from unknown-cost settlements count toward gross only. Unknown proceeds keep total gross unknown; affected gross chart periods are omitted. Costs and net include only settlements with known proceeds and costs."}
@@ -623,6 +683,17 @@ export function Performance({ accountID }: { accountID: string }) {
                 ),
                 className: "numeric",
               },
+              ...(profitSeries
+                ? [
+                    {
+                      label: "Company cost coverage",
+                      value: (point: (typeof points)[number]) =>
+                        point.tradeOnly ? 0 : 1,
+                      render: (point: (typeof points)[number]) =>
+                        pointCoverage(point) || "Company flows included",
+                    },
+                  ]
+                : []),
               ...(settlementSeries
                 ? [
                     {
