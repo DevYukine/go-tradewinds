@@ -5,7 +5,13 @@ import {
   shipOperation,
   shipStatusLabel,
 } from "./operations";
-import type { Account, DashboardData, Settlement, ShipDetail } from "./types";
+import type {
+  Account,
+  DashboardData,
+  Settlement,
+  ShipDetail,
+  ShipLoss,
+} from "./types";
 
 const observedAt = "2026-10-24T00:00:00.000Z";
 const now = Date.parse(observedAt) + 5_000;
@@ -90,13 +96,15 @@ function settlement(id: string, changes: Partial<Settlement>): Settlement {
 
 describe("ship fate labels", () => {
   it.each([
-    ["lost_at_sea", "Lost at sea"],
-    ["captured", "Captured by pirates"],
+    ["lost_at_sea", "Sunk"],
+    ["captured", "Captured"],
     ["seized_smuggling", "Seized for smuggling"],
     ["seized_bailiff", "Seized by the bailiff"],
     ["seized_bankruptcy", "Seized after bankruptcy"],
     ["broken_up", "Broken up"],
-    ["royal_navy", "Joined the Royal Navy"],
+    ["royal_navy", "Commissioned to the Royal Navy"],
+    ["missing", "Missing from fleet list"],
+    ["unknown", "Sunk"],
     [undefined, "Sunk"],
     [null, "Sunk"],
     ["", "Sunk"],
@@ -118,6 +126,69 @@ describe("ship fate labels", () => {
     expect(shipStatusLabel(status)).toBe(label);
     expect(shipStatusLabel(status, "captured")).toBe(label);
   });
+});
+
+describe("retained loss operational descriptions", () => {
+  it.each([
+    [null, "At sea near North Sea approaches (approximate)"],
+    ["london", "Last afloat: London docks"],
+  ])(
+    "uses the known berth before approximate sea context (last port=%s)",
+    (lastPort, location) => {
+      const loss: ShipLoss = {
+        account_id: "account-a",
+        ship_id: "lapras",
+        ship_name: "Lapras",
+        ship_class: "hoy",
+        status: "sunk",
+        fate: "lost_at_sea",
+        observed_at: observedAt,
+        last_observed_at: observedAt,
+        recovered_at: null,
+        last_port_id: lastPort,
+        last_sea_zone_id: "north_sea",
+        voyage_origin_id: "london",
+        voyage_destination_id: "hamburg",
+        cargo_manifest: { grain: 12, timber: 0 },
+        stores: { provisions_tons: 1.5, sea_days_remaining: 8 },
+        hazard_cause: "storm",
+        insurance_claim_paid_pence: null,
+      };
+      const lost = {
+        ...ship,
+        ship: { ...ship.ship, status: "sunk", fate: "lost_at_sea" },
+        loss,
+      };
+      const value = account();
+      value.snapshot.catalog = {
+        ports: [{ id: "london", name: "London docks" }],
+        sea_zones: [{ id: "north_sea", name: "North Sea approaches" }],
+        commodities: [],
+      };
+      const operation = shipOperation(value, lost, now);
+      expect(operation.route).toBe(location);
+      if (lastPort === null) expect(operation.route).not.toContain("London");
+      expect(operation.cargo).toBe("Last afloat: 12 t Grain");
+      expect(operation.cargo).not.toContain("Timber");
+      expect(operation.holdsCurrent).toBe(false);
+      expect(operation.starving).toBe(false);
+      const unavailable = shipOperation(
+        account(),
+        {
+          ...lost,
+          loss: {
+            ...loss,
+            last_port_id: null,
+            last_sea_zone_id: null,
+            cargo_manifest: null,
+          },
+        },
+        now,
+      );
+      expect(unavailable.route).toBe("Last afloat location not recorded");
+      expect(unavailable.cargo).toBe("Last afloat cargo not recorded");
+    },
+  );
 });
 
 describe("operational evidence boundaries", () => {

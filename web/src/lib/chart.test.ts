@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   chartBlockingHolds,
   chartCurrentPlan,
+  chartLossPort,
+  chartPortActivity,
   chartShipWarnings,
   chartRoster,
   chartSelectionURL,
@@ -20,14 +22,18 @@ import {
   routeSegments,
   type ChartPosition,
 } from "./geography";
+import { fleet } from "./data";
+import { shipOperation } from "./operations";
 import type {
   Account,
+  Catalog,
   EngineWarning,
   Clock,
   DatasetMeta,
   Decision,
   RouteLeg,
   ShipDetail,
+  ShipLoss,
   WarningReport,
 } from "./types";
 
@@ -79,6 +85,44 @@ function makeShip(
     stores: { provisions_tons: 2, sea_days_remaining: 30 },
     route_legs: routeLegs,
     voyage: null,
+  };
+}
+
+function makeLoss(overrides: Partial<ShipLoss> = {}): ShipLoss {
+  return {
+    account_id: "a",
+    ship_id: "ship-lapras",
+    ship_name: "Lapras",
+    ship_class: "sloop",
+    fate: "lost_at_sea",
+    status: "sunk",
+    observed_at: iso(NOW),
+    last_observed_at: iso(DEPART),
+    recovered_at: null,
+    last_port_id: "dover",
+    last_sea_zone_id: "dover_strait",
+    voyage_origin_id: "london",
+    voyage_destination_id: "calais",
+    cargo_manifest: null,
+    stores: null,
+    hazard_cause: null,
+    insurance_claim_paid_pence: null,
+    ...overrides,
+  };
+}
+
+function makeAccount(ships: ShipDetail[], losses: ShipLoss[] = []): Account {
+  return {
+    id: "a",
+    label: "Yukine",
+    company_id: "company-pokemon-pirates",
+    enabled: true,
+    created_at: iso(DEPART),
+    snapshot: {
+      ships,
+      _meta: { ships: meta() },
+    },
+    ship_losses: losses,
   };
 }
 
@@ -160,6 +204,14 @@ describe("splitChartRoute", () => {
     expect(splitChartRoute(segments, 1)).toEqual({
       wake: [segments[0]],
       remaining: [segments[1]],
+    });
+  });
+
+  it("keeps every leg remaining when the recorded current leg is unknown", () => {
+    const segments = routeSegments(makeShip());
+    expect(splitChartRoute(segments, null, estimate())).toEqual({
+      wake: [],
+      remaining: segments,
     });
   });
 
@@ -287,6 +339,66 @@ describe("relativeETA", () => {
   });
 });
 
+describe("chartPortActivity", () => {
+  it("counts only active current ports and deduplicated sailing endpoints", () => {
+    const account = makeAccount(
+      [
+        makeShip({
+          id: "berthed",
+          status: "berthed",
+          current_port_id: "calais",
+        }),
+        makeShip({ id: "sailing" }),
+        makeShip({ id: "round-trip" }, [{ ...DOVER_CALAIS, to_node: "dover" }]),
+        makeShip({
+          id: "anchored",
+          status: "anchored_roadstead",
+          current_port_id: "london",
+        }),
+        makeShip({
+          id: "repairing",
+          status: "repairing",
+          current_port_id: "calais",
+        }),
+        makeShip({
+          id: "unknown-port",
+          status: "berthed",
+          current_port_id: null,
+        }),
+        makeShip({ id: "unknown-route", current_port_id: "calais" }, []),
+        makeShip({
+          id: "game-sunk",
+          status: "sunk",
+          current_port_id: "calais",
+        }),
+        makeShip({
+          id: "recovered",
+          status: "berthed",
+          current_port_id: "london",
+        }),
+      ],
+      [
+        makeLoss({ ship_id: "omitted-sunk" }),
+        makeLoss({ ship_id: "recovered", recovered_at: iso(NOW) }),
+      ],
+    );
+    const rows = fleet(account).map((detail) => ({ detail }));
+    expect(chartPortActivity(rows)).toEqual(
+      new Map([
+        ["calais", 2],
+        ["dover", 2],
+        ["london", 3],
+      ]),
+    );
+    expect(
+      chartPortActivity(
+        rows.filter((row) => row.detail.ship.status === "sunk"),
+      ),
+    ).toEqual(new Map());
+    expect(chartPortActivity([])).toEqual(new Map());
+  });
+});
+
 describe("chartPosition", () => {
   it("distinguishes estimates from recorded ports and scheduled endpoints", () => {
     expect(estimate().kind).toBe("estimated");
@@ -310,38 +422,225 @@ describe("chartPosition", () => {
     expect(recorded?.coordinate).toEqual(PORT_COORDINATES.calais);
   });
 
-  it("places a wreck only at its recorded last port, never the estimated loss position", () => {
+  it("retains a game-omitted hull and maps its durable last observed port", () => {
+    const account = makeAccount([], [makeLoss()]);
+    const details = fleet(account);
+    expect(details).toHaveLength(1);
+    const [detail] = details;
+    expect(detail.ship.status).toBe("sunk");
+    expect(detail.ship.current_port_id).toBeNull();
+    expect(detail.ship.current_leg_idx).toBeNull();
+    expect(chartLossPort(detail)).toEqual({
+      id: "dover",
+      kind: "observed-port",
+    });
+    const position = chartPosition(
+      detail,
+      meta(),
+      undefined,
+      {},
+      NOW,
+      estimate(),
+    );
+    expect(position).toEqual({
+      coordinate: PORT_COORDINATES.dover,
+      voyageKey: "",
+      kind: "recorded",
+      label: "Last observed port; loss location not recorded",
+    });
+    expect(
+      resolveChartDeepLink([account], "?ship=ship-lapras&account=a"),
+    ).toEqual({
+      shipID: "ship-lapras",
+      accountID: "a",
+    });
+  });
+
+  it("prefers durable port context over a sunk record's current port, voyage origin and estimate", () => {
+    const account = makeAccount(
+      [makeShip({ status: "sunk", current_port_id: "calais" })],
+      [makeLoss()],
+    );
+    const [detail] = fleet(account);
     const previous = estimate();
     const position = chartPosition(
-      makeShip({ status: "sunk", current_port_id: "dover" }),
+      detail,
       meta(),
       clock(),
       meta(),
       NOW,
       previous,
     );
-    expect(position).toEqual({
+    expect(position?.coordinate).toEqual(PORT_COORDINATES.dover);
+    expect(position?.coordinate).not.toEqual(previous.coordinate);
+    expect(position?.label).toBe(
+      "Last observed port; loss location not recorded",
+    );
+  });
+
+  it.each([true, false])(
+    "leaves an at-sea observation unplaced despite a voyage origin and current port (omitted hull: %s)",
+    (omitted) => {
+      const account = makeAccount(
+        omitted
+          ? []
+          : [makeShip({ status: "sunk", current_port_id: "calais" })],
+        [makeLoss({ last_port_id: null })],
+      );
+      const [detail] = fleet(account);
+      expect(chartLossPort(detail)).toBeUndefined();
+      expect(
+        chartPosition(detail, meta(), clock(), meta(), NOW, estimate()),
+      ).toBeUndefined();
+      expect(shipOperation(account, detail, NOW).route).toBe(
+        "At sea near Dover strait (approximate)",
+      );
+      expect(chartUnavailableReason(detail)).toContain(
+        "At-sea observations remain unplaced",
+      );
+    },
+  );
+
+  it.each([
+    { last_port_id: "uncharted_port", voyage_origin_id: "london" },
+    { last_port_id: "dover_strait", voyage_origin_id: "london" },
+    { last_port_id: null, voyage_origin_id: "uncharted_port" },
+    { last_port_id: null, voyage_origin_id: "dover_strait" },
+  ])(
+    "does not invent a wreck location from unmapped durable context %j",
+    (context) => {
+      const account = makeAccount(
+        [makeShip({ status: "sunk", current_port_id: "calais" })],
+        [makeLoss(context)],
+      );
+      const [detail] = fleet(account);
+      expect(
+        chartPosition(detail, meta(), clock(), meta(), NOW, estimate()),
+      ).toBeUndefined();
+      expect(chartUnavailableReason(detail, clock())).toContain(
+        "Loss location not recorded",
+      );
+    },
+  );
+
+  it("does not use a sunk row's stale current port when the durable last observation was at sea", () => {
+    const [detail] = fleet(
+      makeAccount(
+        [makeShip({ status: "sunk", current_port_id: "calais" })],
+        [makeLoss({ last_port_id: null, voyage_origin_id: null })],
+      ),
+    );
+    expect(chartLossPort(detail)).toBeUndefined();
+    expect(
+      chartPosition(detail, meta(), clock(), meta(), NOW, estimate()),
+    ).toBeUndefined();
+  });
+
+  it("keeps an omitted hull unplaced when no port context was recorded", () => {
+    const [detail] = fleet(
+      makeAccount(
+        [],
+        [makeLoss({ last_port_id: null, voyage_origin_id: null })],
+      ),
+    );
+    expect(chartLossPort(detail)).toBeUndefined();
+    expect(
+      chartPosition(detail, meta(), clock(), meta(), NOW, estimate()),
+    ).toBeUndefined();
+  });
+
+  it("keeps a legacy sunk hull at its game-reported last port", () => {
+    const [detail] = fleet(
+      makeAccount([makeShip({ status: "sunk", current_port_id: "dover" })]),
+    );
+    expect(chartLossPort(detail)).toEqual({
+      id: "dover",
+      kind: "game-port",
+    });
+    expect(
+      chartPosition(detail, meta(), clock(), meta(), NOW, estimate()),
+    ).toEqual({
       coordinate: PORT_COORDINATES.dover,
       voyageKey: "",
       kind: "recorded",
-      label: "Last recorded port; loss location not recorded",
+      label: "Game-reported last port; loss location not recorded",
     });
-    expect(position?.coordinate).not.toEqual(previous.coordinate);
   });
 
-  it.each([null, "uncharted_port"])(
-    "does not invent a wreck location for last port %s",
+  it.each([null, "uncharted_port", "dover_strait"])(
+    "does not invent a legacy wreck location for current port %s",
     (currentPort) => {
-      expect(
-        chartPosition(
+      const [detail] = fleet(
+        makeAccount([
           makeShip({ status: "sunk", current_port_id: currentPort }),
-          meta(),
-          clock(),
-          meta(),
-          NOW,
-          estimate(),
-        ),
+        ]),
+      );
+      expect(chartLossPort(detail)).toEqual(
+        currentPort === null
+          ? undefined
+          : { id: currentPort, kind: "game-port" },
+      );
+      expect(
+        chartPosition(detail, meta(), clock(), meta(), NOW, estimate()),
       ).toBeUndefined();
+    },
+  );
+
+  it.each(["sailing", "berthed"])(
+    "keeps a recovered historical loss from replacing an afloat %s position",
+    (status) => {
+      const current = makeShip({
+        status,
+        current_port_id: status === "berthed" ? "calais" : null,
+      });
+      const [detail] = fleet(
+        makeAccount(
+          [current],
+          [makeLoss({ fate: "missing", recovered_at: iso(NOW) })],
+        ),
+      );
+      expect(detail.loss?.recovered_at).toBe(iso(NOW));
+      expect(detail.ship.status).toBe(status);
+      expect(chartLossPort(detail)).toBeUndefined();
+      expect(chartPosition(detail, meta(), clock(), meta(), NOW)).toEqual(
+        chartPosition(current, meta(), clock(), meta(), NOW),
+      );
+      expect(
+        chartPosition(detail, meta(), clock(), meta(), NOW)?.coordinate,
+      ).not.toEqual(PORT_COORDINATES.dover);
+    },
+  );
+
+  it.each([null, "calais"])(
+    "ignores a recovered loss's old ports when the hull is lost again at game port %s",
+    (currentPort) => {
+      const [detail] = fleet(
+        makeAccount(
+          [makeShip({ status: "sunk", current_port_id: currentPort })],
+          [makeLoss({ recovered_at: iso(NOW) })],
+        ),
+      );
+      expect(chartLossPort(detail)).toEqual(
+        currentPort === null
+          ? undefined
+          : { id: currentPort, kind: "game-port" },
+      );
+      const position = chartPosition(
+        detail,
+        meta(),
+        clock(),
+        meta(),
+        NOW,
+        estimate(),
+      );
+      if (currentPort === null) {
+        expect(position).toBeUndefined();
+      } else {
+        expect(position).toMatchObject({
+          coordinate: PORT_COORDINATES.calais,
+          label: "Game-reported last port; loss location not recorded",
+        });
+      }
     },
   );
 
@@ -455,10 +754,13 @@ describe("chartUnavailableReason", () => {
     expect(chartUnavailableReason(makeShip({}, []))).toBe(
       "Current route leg not recorded.",
     );
+    expect(
+      chartUnavailableReason(makeShip({ current_leg_idx: null }), clock()),
+    ).toBe("Current route leg not recorded.");
   });
   it("does not imply that a fresh clock reveals a wreck location", () => {
     expect(chartUnavailableReason(makeShip({ status: "sunk" }), clock())).toBe(
-      "Loss location not recorded; no mapped last port is available.",
+      "Loss location not recorded; no mapped last observed port is available. At-sea observations remain unplaced.",
     );
   });
 });
@@ -703,8 +1005,8 @@ describe("chart roster", () => {
     name: string,
     arrival = "NaN",
     status = "sailing",
-    used = 0,
-    capacity = 100,
+    used: number | null = 0,
+    capacity: number | null = 100,
   ) {
     const detail = makeShip({ id: name, name, status }, []);
     detail.voyage = makeVoyage({ estimated_arrival_at: arrival });
@@ -735,6 +1037,170 @@ describe("chart roster", () => {
       );
     }
     expect(chartRoster([lapras], "timber", "", "name")).toEqual([]);
+  });
+
+  it("retains omitted loss rows and filters and searches their displayed fates", () => {
+    const fates = [
+      ["lost_at_sea", "Sunk"],
+      ["captured", "Captured"],
+      ["missing", "Missing from fleet list"],
+      ["broken_up", "Broken up"],
+      ["royal_navy", "Commissioned to the Royal Navy"],
+      ["seized_smuggling", "Seized for smuggling"],
+    ];
+    const account = makeAccount(
+      [makeShip()],
+      fates.map(([fate]) =>
+        makeLoss({
+          ship_id: fate,
+          ship_name: fate,
+          fate,
+          last_port_id: null,
+          voyage_origin_id: null,
+        }),
+      ),
+    );
+    account.ship_losses?.push(
+      makeLoss({ fate: "missing", recovered_at: iso(NOW) }),
+    );
+    const rows = fleet(account).map((detail) => ({
+      key: `${account.id}:${detail.ship.id}`,
+      account,
+      company: "Pokemon Pirates",
+      detail,
+      operation: shipOperation(account, detail, NOW),
+    }));
+    expect(
+      rows.filter((row) => row.detail.ship.status === "sunk"),
+    ).toHaveLength(fates.length);
+    expect(chartRoster(rows, "", "sunk", "name")).toHaveLength(fates.length);
+    expect(
+      chartRoster(rows, "LOSS", "", "name").map((row) => row.detail.ship.id),
+    ).toEqual(["captured", "lost_at_sea"]);
+    for (const [fate, label] of fates) {
+      const row = rows.find((entry) => entry.detail.ship.id === fate);
+      expect(row?.operation.activity).toBe(label);
+      expect(chartRoster(rows, label.toUpperCase(), "sunk", "name")).toEqual([
+        row,
+      ]);
+      expect(chartRoster(rows, fate, "sunk", "name")).toEqual([row]);
+      expect(chartRoster(rows, "", label, "name")).toEqual([row]);
+    }
+    expect(
+      chartRoster(rows, "", "Sailing", "name").map((row) => row.detail.ship.id),
+    ).toEqual(["ship-lapras"]);
+    expect(chartRoster(rows, "missing", "sailing", "name")).toEqual([]);
+    expect(
+      chartRoster(rows, "", "", "state").map((row) => row.operation.activity),
+    ).toEqual([
+      "Broken up",
+      "Captured",
+      "Commissioned to the Royal Navy",
+      "Missing from fleet list",
+      "Sailing",
+      "Seized for smuggling",
+      "Sunk",
+    ]);
+  });
+
+  it("searches displayed loss ports by ID, humanized ID and accented catalogue aliases", () => {
+    const catalog: Catalog = {
+      ports: [
+        ["konigsberg", "Königsberg"],
+        ["st_peter_port", "Saint Peter Port"],
+      ].map(([id, name]) => ({
+        id,
+        name,
+        banking_region: "europe",
+        sea_zone_id: "",
+        phase: 1,
+        is_hub: false,
+        has_shipyard: false,
+        customs_bps: 0,
+        base_berths: 1,
+        effective_berths: 1,
+        total_warehouse_cap: 0,
+        produces: [],
+        manufactures: [],
+        imports: [],
+      })),
+      ship_classes: [],
+      commodities: [],
+      sea_zones: [],
+    };
+    const account = makeAccount(
+      [
+        makeShip({
+          id: "legacy",
+          status: "sunk",
+          current_port_id: "st_peter_port",
+        }),
+        makeShip({
+          id: "fallback",
+          status: "sunk",
+          current_port_id: "london",
+        }),
+        makeShip({
+          id: "relost",
+          status: "sunk",
+          current_port_id: "calais",
+        }),
+        makeShip({
+          id: "unknown",
+          status: "sunk",
+          current_port_id: "uncharted_port",
+        }),
+      ],
+      [
+        makeLoss({
+          ship_id: "observed",
+          last_port_id: "konigsberg",
+          last_sea_zone_id: null,
+        }),
+        makeLoss({
+          ship_id: "origin",
+          last_port_id: null,
+          voyage_origin_id: "st_peter_port",
+        }),
+        makeLoss({
+          ship_id: "fallback",
+          last_port_id: null,
+          voyage_origin_id: null,
+        }),
+        makeLoss({
+          ship_id: "relost",
+          last_port_id: "konigsberg",
+          last_sea_zone_id: null,
+          recovered_at: iso(NOW),
+        }),
+      ],
+    );
+    const rows = fleet(account).map((detail) => ({
+      key: `${account.id}:${detail.ship.id}`,
+      account,
+      company: "Pokemon Pirates",
+      detail,
+      operation: shipOperation(account, detail, NOW),
+    }));
+    const cases: [string, string[]][] = [
+      ["konigsberg", ["observed"]],
+      ["KÖNIGSBERG", ["observed"]],
+      ["st_peter_port", ["legacy"]],
+      ["St peter port", ["legacy"]],
+      ["SAINT PETER PORT", ["legacy"]],
+      ["london", []],
+      ["calais", ["relost"]],
+      ["uncharted_port", ["unknown"]],
+      ["Uncharted port", ["unknown"]],
+    ];
+    for (const [term, expected] of cases) {
+      expect(
+        chartRoster(rows, term, "sunk", "name", catalog).map(
+          (row) => row.detail.ship.id,
+        ),
+      ).toEqual(expected);
+    }
+    expect(chartRoster(rows, "Königsberg", "sunk", "name")).toEqual([]);
   });
 
   it("sorts finite arrivals first and treats Infinity, NaN and unavailable arrivals as unknown", () => {
@@ -776,10 +1242,21 @@ describe("chart roster", () => {
       vessel("Full", "", "berthed", 20, 20),
       vessel("Infinite", "", "berthed", 5, Infinity),
       vessel("Malformed", "", "berthed", NaN, 10),
+      vessel("Unknown capacity", "", "sunk", 0, null),
+      vessel("Unknown cargo", "", "sunk", null, 100),
     ];
     expect(
       chartRoster(input, "", "", "cargo").map((row) => row.detail.ship.name),
-    ).toEqual(["Full", "Half", "Empty", "Infinite", "Malformed", "Unknown"]);
+    ).toEqual([
+      "Full",
+      "Half",
+      "Empty",
+      "Infinite",
+      "Malformed",
+      "Unknown",
+      "Unknown capacity",
+      "Unknown cargo",
+    ]);
   });
 });
 

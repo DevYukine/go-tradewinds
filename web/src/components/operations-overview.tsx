@@ -9,6 +9,7 @@ import {
   datasetObservation,
   observationLabel,
   shipOperation,
+  shipRecordKind,
   type ShipOperation,
 } from "@/lib/operations";
 import type {
@@ -18,6 +19,7 @@ import type {
   DashboardData,
 } from "@/lib/types";
 import { useUI } from "@/lib/ui-store";
+import { ShipLossHistoryNotice } from "./ship-loss-details";
 import { Badge, EmptyState, SpriteImage, StatusBadge } from "./ui";
 import styles from "./operations-overview.module.css";
 
@@ -131,6 +133,10 @@ export function OperationsOverview({
                 .
               </span>
             </div>
+            <ShipLossHistoryNotice
+              account={account}
+              className={styles.observation}
+            />
             {ships.length ? (
               <ul className={styles.ships}>
                 {ships.map((detail) => {
@@ -151,18 +157,28 @@ export function OperationsOverview({
                           <SpriteImage name={detail.ship.name} />
                           <strong>{detail.ship.name}</strong>
                         </button>
-                        {operation.observation.state !==
-                          fleetObservation.state && (
+                        {detail.ship.status === "sunk" && detail.loss ? (
+                          <span className={styles.observation}>
+                            Retained{" "}
+                            {shipRecordKind(
+                              detail.ship.status,
+                              detail.ship.fate,
+                            )}{" "}
+                            record
+                          </span>
+                        ) : operation.observation.state !==
+                          fleetObservation.state ? (
                           <span className={styles.observation}>
                             {observationLabel(operation.observation.state)}
                             {operation.observation.timestamp &&
                               `, ${age(operation.observation.timestamp, now)}`}
                             .
                           </span>
-                        )}
+                        ) : null}
                       </div>
                       <div className={styles.activity}>
-                        {operation.observation.current ? (
+                        {detail.ship.status === "sunk" ||
+                        operation.observation.current ? (
                           <StatusBadge
                             status={detail.ship.status}
                             fate={detail.ship.fate}
@@ -178,7 +194,9 @@ export function OperationsOverview({
                           </span>
                         )}
                       </div>
-                      <ShipCurrentHold operation={operation} />
+                      {detail.ship.status !== "sunk" && (
+                        <ShipCurrentHold operation={operation} />
+                      )}
                     </li>
                   );
                 })}

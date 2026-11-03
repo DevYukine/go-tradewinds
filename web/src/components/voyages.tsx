@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { useNow } from "@/app/providers";
 import { fleet, shipSource } from "@/lib/data";
-import { count, dateTime, humanize } from "@/lib/format";
+import { count, dateTime, humanize, quantity } from "@/lib/format";
 import type { Account, ShipDetail } from "@/lib/types";
 import { useUI } from "@/lib/ui-store";
 import { RecentSettlements } from "./settlements";
@@ -52,7 +52,10 @@ export function VoyagesView({ account }: { account: Account }) {
       (detail) =>
         selectedAccountID === account.id && detail.ship.id === selectedShipID,
     ) ?? sailing[0];
-  const leg = focused?.route_legs?.[focused.ship.current_leg_idx];
+  const leg =
+    focused && focused.ship.current_leg_idx !== null
+      ? focused.route_legs?.[focused.ship.current_leg_idx]
+      : undefined;
   const destination = focused?.route_legs?.at(-1)?.to_node;
   const eta = focused && arrival(focused);
   const awaiting =
@@ -131,14 +134,16 @@ export function VoyagesView({ account }: { account: Account }) {
                     <Package size={15} strokeWidth={1.7} aria-hidden="true" />{" "}
                     Cargo aboard
                   </dt>
-                  <dd>{count(focused.cargo_used_tons)} tons</dd>
+                  <dd>{quantity(focused.cargo_used_tons, "tons")}</dd>
                 </div>
                 <div>
                   <dt className={styles.inline}>
                     <Utensils size={15} strokeWidth={1.7} aria-hidden="true" />{" "}
                     Provisions
                   </dt>
-                  <dd>{count(focused.stores?.sea_days_remaining)} sea days</dd>
+                  <dd>
+                    {quantity(focused.stores?.sea_days_remaining, "sea days")}
+                  </dd>
                 </div>
               </dl>
               {awaiting && (

@@ -16,9 +16,13 @@ import Link from "next/link";
 import { useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useNow } from "@/app/providers";
 import { dataset, fleet, shipSource } from "@/lib/data";
-import { count, dateTime, humanize } from "@/lib/format";
+import { count, dateTime, humanize, quantity } from "@/lib/format";
 import {
+  cargoEntries,
+  catalogPlaceName,
   observationLabel,
+  shipLastLocation,
+  shipRecordKind,
   shipOperation,
   shipStatusLabel,
 } from "@/lib/operations";
@@ -32,6 +36,7 @@ import type {
 } from "@/lib/types";
 import { useUI } from "@/lib/ui-store";
 import { ShipCurrentHold } from "./operations-overview";
+import { ShipLossDetails, ShipLossHistoryNotice } from "./ship-loss-details";
 import {
   Badge,
   DataTable,
@@ -49,6 +54,7 @@ interface FleetRow {
   detail: ShipDetail;
   company: string;
   className: string;
+  catalog?: Catalog;
 }
 
 const WIDE_INSPECTOR = "(min-width: 1280px)";
@@ -108,6 +114,7 @@ export function FleetPanel({
             observedCatalog?.ship_classes.find(
               (item) => item.id === detail.ship.ship_class,
             )?.name ?? humanize(detail.ship.ship_class),
+          catalog: observedCatalog,
         }));
       }),
     [accounts, catalog],
@@ -128,7 +135,9 @@ export function FleetPanel({
     () =>
       [
         ...new Set([
-          ...rows.map((row) => row.detail.ship.status),
+          ...rows.map((row) =>
+            shipStatusLabel(row.detail.ship.status, row.detail.ship.fate),
+          ),
           ...(statusFilter && statusFilter !== "starving"
             ? [statusFilter]
             : []),
@@ -141,10 +150,11 @@ export function FleetPanel({
       [
         ...new Set(
           [
-            ...rows.flatMap((row) => [
-              row.detail.ship.current_port_id,
-              destination(row.detail),
-            ]),
+            ...rows.flatMap((row) =>
+              row.detail.ship.status === "sunk"
+                ? []
+                : [row.detail.ship.current_port_id, destination(row.detail)],
+            ),
             portFilter,
           ].filter((id): id is string => Boolean(id)),
         ),
@@ -157,12 +167,15 @@ export function FleetPanel({
         const matchesStatus =
           !statusFilter ||
           (statusFilter === "starving"
-            ? detail.voyage?.legs?.some((leg) => leg.starving)
-            : detail.ship.status === statusFilter);
+            ? detail.ship.status !== "sunk" &&
+              detail.voyage?.legs?.some((leg) => leg.starving)
+            : shipStatusLabel(detail.ship.status, detail.ship.fate) ===
+              statusFilter);
         const matchesPort =
           !portFilter ||
-          detail.ship.current_port_id === portFilter ||
-          destination(detail) === portFilter;
+          (detail.ship.status !== "sunk" &&
+            (detail.ship.current_port_id === portFilter ||
+              destination(detail) === portFilter));
         return matchesStatus && matchesPort;
       }),
     [rows, statusFilter, portFilter],
@@ -220,12 +233,13 @@ export function FleetPanel({
       {
         label: "Observed activity",
         value: ({ detail }) =>
-          `${shipStatusLabel(detail.ship.status, detail.ship.fate)}${detail.voyage?.legs?.some((leg) => leg.starving) ? " starving" : ""}`,
+          `${shipStatusLabel(detail.ship.status, detail.ship.fate)}${detail.ship.status !== "sunk" && detail.voyage?.legs?.some((leg) => leg.starving) ? " starving" : ""}`,
         render: ({ account, detail }) => {
           const operation = shipOperation(account, detail, now);
           return (
             <span>
-              {operation.observation.current ? (
+              {detail.ship.status === "sunk" ||
+              operation.observation.current ? (
                 <StatusBadge
                   status={detail.ship.status}
                   fate={detail.ship.fate}
@@ -234,7 +248,9 @@ export function FleetPanel({
                 <Badge>Last recorded: {operation.activity}</Badge>
               )}
               <span className={styles.cellSubtext}>
-                {observationLabel(operation.observation.state)}
+                {detail.ship.status === "sunk" && detail.loss
+                  ? `Retained ${shipRecordKind(detail.ship.status, detail.ship.fate)} record`
+                  : observationLabel(operation.observation.state)}
               </span>
               {operation.starving && (
                 <span className={styles.cellSubtext}>
@@ -248,54 +264,80 @@ export function FleetPanel({
       {
         label: "Ship hold",
         value: ({ account, detail }) =>
-          shipOperation(account, detail, now)
-            .holds.map((hold) => hold.reason)
-            .join("; ") || undefined,
-        render: ({ account, detail }) => (
-          <ShipCurrentHold operation={shipOperation(account, detail, now)} />
-        ),
+          detail.ship.status === "sunk"
+            ? undefined
+            : shipOperation(account, detail, now)
+                .holds.map((hold) => hold.reason)
+                .join("; ") || undefined,
+        render: ({ account, detail }) =>
+          detail.ship.status === "sunk" ? (
+            <span className={styles.cellSubtext}>No active ship hold</span>
+          ) : (
+            <ShipCurrentHold operation={shipOperation(account, detail, now)} />
+          ),
       },
       {
         label: "Port / destination",
-        value: ({ detail }) => {
-          const portID = destination(detail) ?? detail.ship.current_port_id;
-          return portID ? humanize(portID) : undefined;
-        },
+        value: ({ detail, catalog }) =>
+          detail.ship.status === "sunk"
+            ? shipLastLocation(detail, catalog)
+            : catalogPlaceName(
+                catalog,
+                destination(detail) ?? detail.ship.current_port_id,
+              ),
         className: styles.location,
-        render: ({ detail }) =>
-          detail.ship.status === "sailing"
-            ? destination(detail)
-              ? `To ${humanize(destination(detail))}`
-              : "Destination not recorded"
-            : detail.ship.current_port_id
-              ? humanize(detail.ship.current_port_id)
-              : "Not recorded",
+        render: ({ detail, catalog }) =>
+          detail.ship.status === "sunk"
+            ? shipLastLocation(detail, catalog)
+            : detail.ship.status === "sailing"
+              ? destination(detail)
+                ? `To ${catalogPlaceName(catalog, destination(detail))}`
+                : "Destination not recorded"
+              : catalogPlaceName(catalog, detail.ship.current_port_id),
       },
       {
         label: "Cargo",
-        value: ({ detail }) => detail.cargo_used_tons,
-        render: ({ detail }) => (
-          <span>
-            {count(detail.cargo_used_tons)} t
+        value: ({ detail }) =>
+          detail.ship.status === "sunk"
+            ? undefined
+            : (detail.cargo_used_tons ?? undefined),
+        render: ({ detail }) =>
+          detail.ship.status === "sunk" ? (
             <span className={styles.cellSubtext}>
-              {count(detail.effective_hold_capacity_tons)} t capacity
+              {detail.loss
+                ? `See ${shipRecordKind(detail.ship.status, detail.ship.fate)} record`
+                : "Not recorded"}
             </span>
-          </span>
-        ),
+          ) : (
+            <span>
+              {quantity(detail.cargo_used_tons, "t")}
+              <span className={styles.cellSubtext}>
+                {quantity(detail.effective_hold_capacity_tons, "t capacity")}
+              </span>
+            </span>
+          ),
         className: styles.numeric,
       },
       {
         label: "Stores",
-        value: ({ detail }) => detail.stores?.sea_days_remaining,
+        value: ({ detail }) =>
+          detail.ship.status === "sunk"
+            ? detail.loss?.stores?.sea_days_remaining
+            : detail.stores?.sea_days_remaining,
         render: ({ detail }) =>
-          detail.stores
-            ? `${count(detail.stores.sea_days_remaining)} sea days`
-            : "Not recorded",
+          detail.ship.status === "sunk"
+            ? detail.loss?.stores
+              ? `Last afloat: ${quantity(detail.loss.stores.sea_days_remaining, "sea days")}`
+              : "Last afloat stores not recorded"
+            : detail.stores
+              ? quantity(detail.stores.sea_days_remaining, "sea days")
+              : "Not recorded",
         className: styles.numeric,
       },
       {
         label: "Scheduled arrival",
         value: ({ detail }) => {
+          if (detail.ship.status !== "sailing") return undefined;
           const timestamp = Date.parse(
             detail.voyage?.estimated_arrival_at ?? "",
           );
@@ -329,6 +371,13 @@ export function FleetPanel({
 
   return (
     <div className={`${styles.workspace} ${compact ? styles.compact : ""}`}>
+      {accounts.map((account) => (
+        <ShipLossHistoryNotice
+          key={account.id}
+          account={account}
+          className={styles.note}
+        />
+      ))}
       <div className={styles.fleetLayout}>
         {compact && (
           <section
@@ -396,7 +445,7 @@ export function FleetPanel({
             </div>
             <div className={styles.filters}>
               <label className={styles.filterField}>
-                Status and warnings
+                Status, fate and warnings
                 <select
                   value={statusFilter}
                   onChange={(event) => setStatusFilter(event.target.value)}
@@ -404,7 +453,7 @@ export function FleetPanel({
                   <option value="">All recorded states</option>
                   {statuses.map((status) => (
                     <option key={status} value={status}>
-                      {status === "sunk" ? "Gone" : humanize(status)}
+                      {status}
                     </option>
                   ))}
                   <option value="starving">
@@ -540,17 +589,20 @@ export function ShipInspector({
   decision?: Decision;
 }) {
   const now = useNow();
+  const gone = detail.ship.status === "sunk";
   const shipClass = catalog?.ship_classes.find(
     (item) => item.id === detail.ship.ship_class,
   );
   const starvingLegs = detail.voyage?.legs?.filter((leg) => leg.starving);
-  const cargo = detail.cargo_manifest
-    ? Object.entries(detail.cargo_manifest)
-    : undefined;
-  const capacityKnown =
+  const cargo = cargoEntries(detail.cargo_manifest);
+  const capacityUsed =
+    detail.cargo_used_tons !== null &&
+    detail.effective_hold_capacity_tons !== null &&
     Number.isFinite(detail.cargo_used_tons) &&
     Number.isFinite(detail.effective_hold_capacity_tons) &&
-    detail.effective_hold_capacity_tons > 0;
+    detail.effective_hold_capacity_tons > 0
+      ? (detail.cargo_used_tons / detail.effective_hold_capacity_tons) * 100
+      : undefined;
   const hasVoyage =
     detail.ship.status === "sailing" ||
     Boolean(
@@ -587,12 +639,16 @@ export function ShipInspector({
           </dl>
         </section>
       )}
-      <DatasetStatus
-        account={account}
-        name={shipSource(account, detail.ship.id)}
-      />
-      <ShipCurrentHold operation={shipOperation(account, detail, now)} />
-      {starvingLegs && starvingLegs.length > 0 && (
+      {!gone && (
+        <>
+          <DatasetStatus
+            account={account}
+            name={shipSource(account, detail.ship.id)}
+          />
+          <ShipCurrentHold operation={shipOperation(account, detail, now)} />
+        </>
+      )}
+      {!gone && starvingLegs && starvingLegs.length > 0 && (
         <p className={styles.warning}>
           <TriangleAlert size={15} strokeWidth={1.7} aria-hidden="true" />
           <span>
@@ -603,79 +659,94 @@ export function ShipInspector({
           </span>
         </p>
       )}
+      <ShipLossDetails
+        detail={detail}
+        catalog={catalog}
+        historyUnavailable={
+          account.ship_losses_unavailable || account.ship_losses === undefined
+        }
+        className={styles.inspectorSection}
+        factsClassName={styles.facts}
+        noteClassName={styles.note}
+      />
       <div className={styles.inspectorColumns}>
         <div className={styles.inspectorColumn}>
-          <section className={styles.inspectorSection}>
-            <h3>
-              <Box size={17} strokeWidth={1.7} aria-hidden="true" /> Cargo
-              manifest
-            </h3>
-            {cargo ? (
-              cargo.length ? (
-                <ul className={styles.cargo}>
-                  {cargo.map(([commodity, quantity]) => (
-                    <li key={commodity}>
-                      <span>
-                        {catalog?.commodities.find(
-                          (item) => item.id === commodity,
-                        )?.name ?? humanize(commodity)}
-                      </span>
-                      <strong>{count(quantity)} t</strong>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
+          {!gone && (
+            <>
+              <section className={styles.inspectorSection}>
+                <h3>
+                  <Box size={17} strokeWidth={1.7} aria-hidden="true" /> Cargo
+                  manifest
+                </h3>
+                {cargo ? (
+                  cargo.length ? (
+                    <ul className={styles.cargo}>
+                      {cargo.map(([commodity, quantity]) => (
+                        <li key={commodity}>
+                          <span>
+                            {catalog?.commodities.find(
+                              (item) => item.id === commodity,
+                            )?.name ?? humanize(commodity)}
+                          </span>
+                          <strong>{count(quantity)} t</strong>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className={styles.note}>
+                      No trade cargo in the recorded manifest.
+                    </p>
+                  )
+                ) : (
+                  <p className={styles.note}>Cargo manifest not recorded.</p>
+                )}
                 <p className={styles.note}>
-                  No trade cargo in the recorded manifest.
+                  {detail.cargo_used_tons !== null &&
+                  detail.effective_hold_capacity_tons !== null &&
+                  Number.isFinite(detail.cargo_used_tons) &&
+                  Number.isFinite(detail.effective_hold_capacity_tons)
+                    ? `${count(detail.cargo_used_tons)} / ${quantity(detail.effective_hold_capacity_tons, "t")} of effective cargo capacity.`
+                    : "Cargo capacity use not recorded."}
                 </p>
-              )
-            ) : (
-              <p className={styles.note}>Cargo manifest not recorded.</p>
-            )}
-            <p className={styles.note}>
-              {count(detail.cargo_used_tons)} /{" "}
-              {count(detail.effective_hold_capacity_tons)} t of effective cargo
-              capacity.
-            </p>
-            {capacityKnown && (
-              <Progress
-                value={
-                  (detail.cargo_used_tons /
-                    detail.effective_hold_capacity_tons) *
-                  100
-                }
-                label={`${detail.ship.name} cargo capacity used`}
-              />
-            )}
-          </section>
-          <section className={styles.inspectorSection}>
-            <h3>
-              <Utensils size={17} strokeWidth={1.7} aria-hidden="true" /> Crew
-              and stores
-            </h3>
-            <dl className={styles.facts}>
-              <div>
-                <dt>Provisions aboard</dt>
-                <dd>{count(detail.stores?.provisions_tons)} t</dd>
-              </div>
-              <div>
-                <dt>Sea endurance</dt>
-                <dd>{count(detail.stores?.sea_days_remaining)} game days</dd>
-              </div>
-              <div>
-                <dt>Exact provision units</dt>
-                <dd>{count(detail.ship.stores_provisions_units)}</dd>
-              </div>
-              <div>
-                <dt>Crew required</dt>
-                <dd>{count(shipClass?.crew_required)}</dd>
-              </div>
-            </dl>
-            <p className={styles.note}>
-              Stores occupy hold space and feed the crew. They are separate from
-              trade cargo. One provision unit is 1/10,000 crew-day.
-            </p>
-          </section>
+                {capacityUsed !== undefined && (
+                  <Progress
+                    value={capacityUsed}
+                    label={`${detail.ship.name} cargo capacity used`}
+                  />
+                )}
+              </section>
+              <section className={styles.inspectorSection}>
+                <h3>
+                  <Utensils size={17} strokeWidth={1.7} aria-hidden="true" />{" "}
+                  Crew and stores
+                </h3>
+                <dl className={styles.facts}>
+                  <div>
+                    <dt>Provisions aboard</dt>
+                    <dd>{quantity(detail.stores?.provisions_tons, "t")}</dd>
+                  </div>
+                  <div>
+                    <dt>Sea endurance</dt>
+                    <dd>
+                      {quantity(detail.stores?.sea_days_remaining, "game days")}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Exact provision units</dt>
+                    <dd>{count(detail.ship.stores_provisions_units)}</dd>
+                  </div>
+                  <div>
+                    <dt>Crew required</dt>
+                    <dd>{count(shipClass?.crew_required)}</dd>
+                  </div>
+                </dl>
+                <p className={styles.note}>
+                  Stores occupy hold space and feed the crew. They are separate
+                  from trade cargo. One provision unit is 1/10,000 crew-day.
+                </p>
+              </section>
+            </>
+          )}
           <details
             className={`${styles.inspectorSection} ${styles.inspectorDisclosures}`}
           >
@@ -690,22 +761,24 @@ export function ShipInspector({
               </div>
               <div>
                 <dt>Hull hold capacity</dt>
-                <dd>{count(detail.hold_capacity_tons)} t</dd>
+                <dd>{quantity(detail.hold_capacity_tons, "t")}</dd>
               </div>
               <div>
                 <dt>Mounted cannons</dt>
                 <dd>
-                  {count(detail.ship.cannons_count)} /{" "}
-                  {count(shipClass?.max_cannons)}
+                  {detail.ship.cannons_count === null
+                    ? "Not recorded"
+                    : shipClass
+                      ? `${count(detail.ship.cannons_count)} / ${count(shipClass.max_cannons)}`
+                      : count(detail.ship.cannons_count)}
                 </dd>
               </div>
               <div>
                 <dt>Base catalog speed</dt>
                 <dd>
                   {shipClass
-                    ? count(shipClass.base_speed_centiknots / 100)
-                    : "Unknown"}{" "}
-                  kn
+                    ? quantity(shipClass.base_speed_centiknots / 100, "kn")
+                    : "Not recorded"}
                 </dd>
               </div>
               <div>
@@ -730,174 +803,188 @@ export function ShipInspector({
           </details>
         </div>
         <div className={styles.inspectorColumn}>
-          <section className={styles.inspectorSection}>
-            <h3>
-              <Navigation size={17} strokeWidth={1.7} aria-hidden="true" />{" "}
-              Recorded voyage
-            </h3>
-            {hasVoyage ? (
-              <>
-                <dl className={styles.facts}>
-                  <div>
-                    <dt>Current port</dt>
-                    <dd>{humanize(detail.ship.current_port_id)}</dd>
-                  </div>
-                  <div>
-                    <dt>Destination</dt>
-                    <dd>
-                      {detail.ship.status === "sailing"
-                        ? humanize(destination(detail))
-                        : "No active voyage recorded"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Recorded current leg</dt>
-                    <dd>
-                      {detail.ship.status === "sailing" &&
-                      Number.isFinite(detail.ship.current_leg_idx)
-                        ? detail.ship.current_leg_idx + 1
-                        : "No active leg recorded"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Leg departure</dt>
-                    <dd>{dateTime(detail.ship.leg_departs_at)}</dd>
-                  </div>
-                  <div>
-                    <dt>Scheduled leg arrival</dt>
-                    <dd>{dateTime(detail.ship.leg_arrives_at)}</dd>
-                  </div>
-                  <div>
-                    <dt>Scheduled voyage arrival</dt>
-                    <dd>{dateTime(detail.voyage?.estimated_arrival_at)}</dd>
-                  </div>
-                  <div>
-                    <dt>Recorded voyage speed</dt>
-                    <dd>
-                      {detail.voyage
-                        ? `${count(detail.voyage.speed_centiknots / 100)} kn`
-                        : "Not recorded"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Starving legs</dt>
-                    <dd>
-                      {starvingLegs
-                        ? starvingLegs.length
-                          ? starvingLegs
-                              .map((leg) => leg.leg_idx + 1)
-                              .join(", ")
-                          : "None in recorded estimate"
-                        : "Voyage estimate not recorded"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Convoy</dt>
-                    <dd>
-                      {detail.ship.convoy_id ??
-                        (detail.ship.convoy_id === null
-                          ? "None recorded"
-                          : "Not recorded")}
-                    </dd>
-                  </div>
-                </dl>
-                <p className={styles.note}>
-                  Schedule timestamps are real UTC, not accelerated game time.
-                  Arrival and leg changes require another recording.
-                </p>
-                {(detail.route_legs?.length ?? 0) > 0 && (
-                  <ol className={styles.legs} aria-label="Recorded route legs">
-                    {detail.route_legs.map((leg, index) => {
-                      const estimate = detail.voyage?.legs?.find(
-                        (item) => item.leg_idx === index,
-                      );
-                      return (
-                        <li
-                          key={`${index}:${leg.from_node}:${leg.to_node}`}
-                          aria-current={
-                            detail.ship.status === "sailing" &&
-                            index === detail.ship.current_leg_idx
-                              ? "step"
-                              : undefined
-                          }
-                        >
-                          {humanize(leg.from_node)} to {humanize(leg.to_node)}
-                          <small>
-                            {count(leg.distance_nm)} nm,{" "}
-                            {humanize(leg.edge_class)}
-                            {leg.is_sound_toll ? ", Sound toll" : ""}
-                          </small>
-                          {estimate && (
-                            <small>
-                              {count(estimate.speed_centiknots / 100)} kn; ETA{" "}
-                              {dateTime(estimate.estimated_arrival_at)}
-                              {estimate.starving ? "; starving" : ""}
-                            </small>
+          {!gone && (
+            <>
+              <section className={styles.inspectorSection}>
+                <h3>
+                  <Navigation size={17} strokeWidth={1.7} aria-hidden="true" />{" "}
+                  Recorded voyage
+                </h3>
+                {hasVoyage ? (
+                  <>
+                    <dl className={styles.facts}>
+                      <div>
+                        <dt>Current port</dt>
+                        <dd>
+                          {catalogPlaceName(
+                            catalog,
+                            detail.ship.current_port_id,
                           )}
-                        </li>
-                      );
-                    })}
-                  </ol>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Destination</dt>
+                        <dd>
+                          {detail.ship.status === "sailing"
+                            ? catalogPlaceName(catalog, destination(detail))
+                            : "No active voyage recorded"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Recorded current leg</dt>
+                        <dd>
+                          {detail.ship.status === "sailing" &&
+                          detail.ship.current_leg_idx !== null &&
+                          Number.isFinite(detail.ship.current_leg_idx)
+                            ? detail.ship.current_leg_idx + 1
+                            : "No active leg recorded"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Leg departure</dt>
+                        <dd>{dateTime(detail.ship.leg_departs_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>Scheduled leg arrival</dt>
+                        <dd>{dateTime(detail.ship.leg_arrives_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>Scheduled voyage arrival</dt>
+                        <dd>{dateTime(detail.voyage?.estimated_arrival_at)}</dd>
+                      </div>
+                      <div>
+                        <dt>Recorded voyage speed</dt>
+                        <dd>
+                          {detail.voyage
+                            ? `${count(detail.voyage.speed_centiknots / 100)} kn`
+                            : "Not recorded"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Starving legs</dt>
+                        <dd>
+                          {starvingLegs
+                            ? starvingLegs.length
+                              ? starvingLegs
+                                  .map((leg) => leg.leg_idx + 1)
+                                  .join(", ")
+                              : "None in recorded estimate"
+                            : "Voyage estimate not recorded"}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Convoy</dt>
+                        <dd>
+                          {detail.ship.convoy_id ??
+                            (detail.ship.convoy_id === null
+                              ? "None recorded"
+                              : "Not recorded")}
+                        </dd>
+                      </div>
+                    </dl>
+                    <p className={styles.note}>
+                      Schedule timestamps are real UTC, not accelerated game
+                      time. Arrival and leg changes require another recording.
+                    </p>
+                    {(detail.route_legs?.length ?? 0) > 0 && (
+                      <ol
+                        className={styles.legs}
+                        aria-label="Recorded route legs"
+                      >
+                        {detail.route_legs.map((leg, index) => {
+                          const estimate = detail.voyage?.legs?.find(
+                            (item) => item.leg_idx === index,
+                          );
+                          return (
+                            <li
+                              key={`${index}:${leg.from_node}:${leg.to_node}`}
+                              aria-current={
+                                detail.ship.status === "sailing" &&
+                                index === detail.ship.current_leg_idx
+                                  ? "step"
+                                  : undefined
+                              }
+                            >
+                              {catalogPlaceName(catalog, leg.from_node)} to{" "}
+                              {catalogPlaceName(catalog, leg.to_node)}
+                              <small>
+                                {count(leg.distance_nm)} nm,{" "}
+                                {humanize(leg.edge_class)}
+                                {leg.is_sound_toll ? ", Sound toll" : ""}
+                              </small>
+                              {estimate && (
+                                <small>
+                                  {count(estimate.speed_centiknots / 100)} kn;
+                                  ETA {dateTime(estimate.estimated_arrival_at)}
+                                  {estimate.starving ? "; starving" : ""}
+                                </small>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ol>
+                    )}
+                  </>
+                ) : (
+                  <p className={styles.note}>
+                    No active voyage recorded
+                    {detail.ship.current_port_id
+                      ? `; recorded port: ${catalogPlaceName(catalog, detail.ship.current_port_id)}.`
+                      : "."}
+                  </p>
                 )}
-              </>
-            ) : (
-              <p className={styles.note}>
-                No active voyage recorded
-                {detail.ship.current_port_id
-                  ? `; recorded port: ${humanize(detail.ship.current_port_id)}.`
-                  : "."}
-              </p>
-            )}
-          </section>
-          <details
-            className={`${styles.inspectorSection} ${styles.inspectorDisclosures}`}
-          >
-            <summary>
-              <Anchor size={17} strokeWidth={1.7} aria-hidden="true" /> Berth
-              and turnaround
-            </summary>
-            {hasBerth ? (
-              <dl className={styles.facts}>
-                <div>
-                  <dt>Berthed at</dt>
-                  <dd>
-                    {detail.ship.berthed_at === null
-                      ? "No berth timestamp recorded"
-                      : dateTime(detail.ship.berthed_at)}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Berth queue entered</dt>
-                  <dd>
-                    {detail.ship.dock_queued_at === null
-                      ? "No queue recorded"
-                      : dateTime(detail.ship.dock_queued_at)}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Turnaround unlock</dt>
-                  <dd>
-                    {detail.ship.turnaround_unlocks_at === null
-                      ? "No lock recorded"
-                      : dateTime(detail.ship.turnaround_unlocks_at)}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Ship record updated</dt>
-                  <dd>{dateTime(detail.ship.updated_at)}</dd>
-                </div>
-              </dl>
-            ) : (
-              <p className={styles.note}>
-                No berth, queue or turnaround timestamps recorded. Ship record
-                updated {dateTime(detail.ship.updated_at)}.
-              </p>
-            )}
-            <p className={styles.note}>
-              The ship record timestamp is a game fact, not the recording
-              service&apos;s recording time.
-            </p>
-          </details>
+              </section>
+              <details
+                className={`${styles.inspectorSection} ${styles.inspectorDisclosures}`}
+              >
+                <summary>
+                  <Anchor size={17} strokeWidth={1.7} aria-hidden="true" />{" "}
+                  Berth and turnaround
+                </summary>
+                {hasBerth ? (
+                  <dl className={styles.facts}>
+                    <div>
+                      <dt>Berthed at</dt>
+                      <dd>
+                        {detail.ship.berthed_at === null
+                          ? "No berth timestamp recorded"
+                          : dateTime(detail.ship.berthed_at)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Berth queue entered</dt>
+                      <dd>
+                        {detail.ship.dock_queued_at === null
+                          ? "No queue recorded"
+                          : dateTime(detail.ship.dock_queued_at)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Turnaround unlock</dt>
+                      <dd>
+                        {detail.ship.turnaround_unlocks_at === null
+                          ? "No lock recorded"
+                          : dateTime(detail.ship.turnaround_unlocks_at)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Ship record updated</dt>
+                      <dd>{dateTime(detail.ship.updated_at)}</dd>
+                    </div>
+                  </dl>
+                ) : (
+                  <p className={styles.note}>
+                    No berth, queue or turnaround timestamps recorded. Ship
+                    record updated {dateTime(detail.ship.updated_at)}.
+                  </p>
+                )}
+                <p className={styles.note}>
+                  The ship record timestamp is a game fact, not the recording
+                  service&apos;s recording time.
+                </p>
+              </details>
+            </>
+          )}
           <section className={styles.inspectorSection}>
             <h3>
               <ScrollText size={17} strokeWidth={1.7} aria-hidden="true" />{" "}

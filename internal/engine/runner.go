@@ -71,12 +71,18 @@ type Runner struct {
 	companyFlowsMissionClaims map[string]string
 	// companyFlowsWarnedAt rate-limits profit-history recording failures.
 	companyFlowsWarnedAt time.Time
-	nextDeadline         time.Time
-	publishedFinancial   atomic.Uint64
-	capturedFinancial    uint64
-	publishedControl     atomic.Uint64
-	capturedControl      uint64
-	financialSession     string
+	shipLossesWarnedAt   map[string]time.Time
+	shipLossesGeneration string
+	shipLosses           map[string]store.ShipLoss
+	// Pending observations must never become authority for superseding retries.
+	shipLossesDurable  map[string]store.ShipLoss
+	shipLossesLoaded   bool
+	nextDeadline       time.Time
+	publishedFinancial atomic.Uint64
+	capturedFinancial  uint64
+	publishedControl   atomic.Uint64
+	capturedControl    uint64
+	financialSession   string
 	// Local retirements never reached transport and do not end a fleet pass.
 	localRetirements       uint64
 	requestJournalMu       sync.Mutex

@@ -12,6 +12,15 @@ export function count(value: number | null | undefined): string {
     : countFormat.format(value);
 }
 
+export function quantity(
+  value: number | null | undefined,
+  unit: string,
+): string {
+  return typeof value !== "number" || !Number.isFinite(value)
+    ? "Not recorded"
+    : `${countFormat.format(value)} ${unit}`;
+}
+
 export function money(
   pence: number | null | undefined,
   compact = false,

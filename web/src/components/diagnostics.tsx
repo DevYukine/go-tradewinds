@@ -13,15 +13,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNow } from "@/app/providers";
-import {
-  dataset,
-  fleet,
-  number,
-  record,
-  rows,
-  text,
-  useHistory,
-} from "@/lib/data";
+import { dataset, number, record, rows, text, useHistory } from "@/lib/data";
 import { count, dateTime, humanize } from "@/lib/format";
 import type {
   Account,
@@ -665,8 +657,10 @@ function AccountIdentity({ account }: { account: Account }) {
         </Dataset>
         <Dataset account={account} name="ships">
           <p className={styles.note}>
-            {count(fleet(account).length)} ships in the recorded fleet snapshot.
-            This can differ from a separately recorded profile fleet count.
+            {count(rows(dataset(account, "ships")).length)} ships in the
+            recorded fleet snapshot. Ships retained only in loss history are
+            excluded. This can differ from a separately recorded profile fleet
+            count.
           </p>
         </Dataset>
       </Section>

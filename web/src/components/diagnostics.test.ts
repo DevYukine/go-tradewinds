@@ -9,7 +9,7 @@ import { DiagnosticsView } from "./diagnostics";
 
 type TableProps = Parameters<typeof UI.DataTable<JsonRecord>>[0];
 const state = vi.hoisted(() => ({
-  kind: "events" as "events" | "requests" | "decisions",
+  kind: "events" as "events" | "requests" | "decisions" | "identity",
   history: [] as JsonRecord[],
   table: undefined as TableProps | undefined,
 }));
@@ -127,4 +127,43 @@ describe("diagnostic dashboard and history reconciliation", () => {
       );
     },
   );
+});
+
+describe("diagnostic fleet snapshot counts", () => {
+  it("does not count a history-only lost hull as part of the REST fleet snapshot", () => {
+    state.kind = "identity";
+    const recorded: Account = {
+      ...account,
+      snapshot: { ships: [] },
+      ship_losses: [
+        {
+          account_id: account.id,
+          ship_id: "lost",
+          ship_name: "Lapras",
+          ship_class: "hoy",
+          fate: "lost_at_sea",
+          status: "sunk",
+          observed_at: common.created_at,
+          last_observed_at: null,
+          recovered_at: null,
+          last_port_id: null,
+          last_sea_zone_id: null,
+          voyage_origin_id: null,
+          voyage_destination_id: null,
+          cargo_manifest: null,
+          stores: null,
+          hazard_cause: null,
+          insurance_claim_paid_pence: null,
+        },
+      ],
+    };
+    const text = renderToStaticMarkup(
+      createElement(DiagnosticsView, { account: recorded, dashboard }),
+    )
+      .replace(/<[^>]+>/g, "")
+      .replace(/\s+/g, " ");
+    expect(text).toContain("0 ships in the recorded fleet snapshot.");
+    expect(text).toContain("Ships retained only in loss history are excluded.");
+    expect(text).not.toContain("1 ships in the recorded fleet snapshot.");
+  });
 });

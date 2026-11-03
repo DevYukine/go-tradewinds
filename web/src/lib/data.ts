@@ -264,11 +264,96 @@ export function fleet(account: Account | undefined): ShipDetail[] {
   const ships = dataset<ShipDetail[]>(account, "ships") ?? [];
   const details =
     dataset<Record<string, ShipDetail>>(account, "ship_details") ?? {};
-  return ships.map((item) =>
-    shipSource(account, item.ship.id) === "ships"
-      ? item
-      : (details[item.ship.id] ?? item),
+  const recorded = new Map<string, ShipDetail>(
+    ships.map((item) => [
+      item.ship.id,
+      shipSource(account, item.ship.id) === "ships"
+        ? item
+        : (details[item.ship.id] ?? item),
+    ]),
   );
+  for (const loss of account?.ship_losses ?? []) {
+    const detail =
+      recorded.get(loss.ship_id) ??
+      (shipSource(account, loss.ship_id) === "ships"
+        ? undefined
+        : details[loss.ship_id]);
+    if (
+      loss.recovered_at ||
+      (loss.fate === "missing" && detail?.ship.status === "sunk")
+    ) {
+      if (detail) {
+        recorded.set(
+          loss.ship_id,
+          detail.ship.status === "sunk" ? detail : { ...detail, loss },
+        );
+      }
+      continue;
+    }
+    if (detail) {
+      const observed = Date.parse(
+        metadata(account, shipSource(account, loss.ship_id)).updated_at ?? "",
+      );
+      const superseded =
+        detail.ship.status !== "sunk" &&
+        (!Number.isFinite(observed) ||
+          observed <= Date.parse(loss.observed_at));
+      const retained = { ...detail, loss };
+      if (
+        detail.ship.status === "sunk" &&
+        (!detail.ship.fate || detail.ship.fate === "unknown")
+      ) {
+        retained.ship = { ...detail.ship, fate: loss.fate };
+      }
+      if (superseded) {
+        retained.ship = {
+          ...detail.ship,
+          status: loss.status,
+          fate: loss.fate,
+          current_port_id: null,
+          current_leg_idx: null,
+          turnaround_unlocks_at: null,
+          dock_queued_at: null,
+          leg_departs_at: null,
+          leg_arrives_at: null,
+          berthed_at: null,
+          convoy_id: null,
+          stores_provisions_units: null,
+        };
+        retained.cargo_used_tons = null;
+        retained.cargo_manifest = null;
+        retained.stores = null;
+        retained.route_legs = [];
+        retained.voyage = null;
+      }
+      recorded.set(loss.ship_id, retained);
+    } else {
+      recorded.set(loss.ship_id, {
+        ship: {
+          id: loss.ship_id,
+          company_id: account?.company_id ?? "",
+          name: loss.ship_name,
+          ship_class: loss.ship_class,
+          status: loss.status,
+          fate: loss.fate,
+          current_port_id: null,
+          current_leg_idx: null,
+          cannons_count: null,
+          stores_provisions_units: null,
+          updated_at: null,
+        },
+        loss,
+        hold_capacity_tons: null,
+        effective_hold_capacity_tons: null,
+        cargo_used_tons: null,
+        cargo_manifest: null,
+        stores: null,
+        route_legs: [],
+        voyage: null,
+      });
+    }
+  }
+  return [...recorded.values()];
 }
 
 export function shipSource(

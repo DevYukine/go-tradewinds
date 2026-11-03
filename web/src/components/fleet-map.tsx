@@ -47,7 +47,15 @@ import {
   useDashboard,
   useWarnings,
 } from "@/lib/data";
-import { age, count, dateTime, humanize, money, percent } from "@/lib/format";
+import {
+  age,
+  count,
+  dateTime,
+  humanize,
+  money,
+  percent,
+  quantity,
+} from "@/lib/format";
 import {
   nodeCoordinate,
   PORT_COORDINATES,
@@ -55,9 +63,13 @@ import {
   type ChartPosition,
 } from "@/lib/geography";
 import {
+  cargoEntries,
   controllerStatus,
   datasetObservation,
   observationLabel,
+  shipIsLoss,
+  shipLastLocation,
+  shipRecordKind,
   shipOperation,
   shipStatusLabel,
   type ShipOperation,
@@ -75,6 +87,7 @@ import type {
 } from "@/lib/types";
 import { useUI } from "@/lib/ui-store";
 import { warningText } from "@/lib/warnings";
+import { ShipLossDetails, ShipLossHistoryNotice } from "./ship-loss-details";
 import { SpriteImage } from "./ui";
 import styles from "./map/chart.module.css";
 
@@ -119,12 +132,6 @@ function portName(catalog: Catalog | undefined, id?: string | null) {
     catalog?.ports.find((port) => port.id === id)?.name ??
     (id ? humanize(id) : "Not recorded")
   ).replaceAll(" / ", " and ");
-}
-
-function measured(value: number | undefined, unit: string) {
-  return typeof value === "number" && Number.isFinite(value)
-    ? `${count(value)} ${unit}`
-    : "Not recorded";
 }
 
 function focusVisible(element: HTMLElement | null | undefined) {
@@ -173,10 +180,7 @@ export function FleetChartPage() {
           account.company_id;
         const clock = dataset<Clock>(account, "clock");
         const clockMeta = metadata(account, "clock");
-        return fleet(account).map((recorded) => {
-          const detail = recorded.route_legs
-            ? recorded
-            : { ...recorded, route_legs: [] };
+        return fleet(account).map((detail) => {
           return {
             key: `${account.id}:${detail.ship.id}`,
             account,
@@ -240,7 +244,7 @@ export function FleetChartPage() {
           .filter((port) => !PORT_COORDINATES[port.id])
           .map((port) => port.id) ?? []),
         ...sources.flatMap(({ detail }) =>
-          detail.route_legs
+          (detail.route_legs ?? [])
             .flatMap((leg) => [leg.from_node, leg.to_node])
             .filter((node) => !nodeCoordinate(node)),
         ),
@@ -249,16 +253,29 @@ export function FleetChartPage() {
     [catalog, sources],
   );
   const visible = useMemo(
-    () => chartRoster(vessels, search, stateFilter, sort),
-    [vessels, search, stateFilter, sort],
+    () => chartRoster(vessels, search, stateFilter, sort, catalog),
+    [vessels, search, stateFilter, sort, catalog],
   );
   const active = visible.filter((row) => row.detail.ship.status !== "sunk");
-  const lost = visible.filter((row) => row.detail.ship.status === "sunk");
+  const lost = visible.filter((row) =>
+    shipIsLoss(row.detail.ship.status, row.detail.ship.fate),
+  );
+  const exits = visible.filter(
+    (row) =>
+      row.detail.ship.status === "sunk" &&
+      !shipIsLoss(row.detail.ship.status, row.detail.ship.fate),
+  );
+  const historyUnavailable = scoped.some(
+    (account) =>
+      account.ship_losses_unavailable || account.ship_losses === undefined,
+  );
   const sailing = vessels.filter(
     (row) => row.detail.ship.status === "sailing",
   ).length;
   const uncertain = vessels.filter(
-    (row) => row.operation.observation.state !== "current",
+    (row) =>
+      row.detail.ship.status !== "sunk" &&
+      row.operation.observation.state !== "current",
   ).length;
 
   const chooseShip = useCallback(
@@ -486,7 +503,7 @@ export function FleetChartPage() {
       <div className={styles.recordingStatus}>
         <span
           className={styles.statusDot}
-          data-error={query.isError || uncertain > 0}
+          data-error={query.isError || uncertain > 0 || historyUnavailable}
         />
         <span role="status">
           {query.isError
@@ -502,6 +519,7 @@ export function FleetChartPage() {
               {count(uncertain)} need updated records
             </span>
           )}
+          {historyUnavailable && ", loss and exit history incomplete"}
         </span>
         {query.data && (
           <span className={styles.statusTime}>
@@ -571,7 +589,12 @@ export function FleetChartPage() {
                     {[
                       ...new Set(
                         [
-                          ...vessels.map((row) => row.detail.ship.status),
+                          ...vessels.map((row) =>
+                            shipStatusLabel(
+                              row.detail.ship.status,
+                              row.detail.ship.fate,
+                            ),
+                          ),
                           stateFilter,
                         ].filter(Boolean),
                       ),
@@ -579,7 +602,7 @@ export function FleetChartPage() {
                       .sort()
                       .map((status) => (
                         <option key={status} value={status}>
-                          {humanize(status)}
+                          {status}
                         </option>
                       ))}
                   </select>
@@ -600,6 +623,13 @@ export function FleetChartPage() {
                 </label>
               </div>
               <div className={styles.rosterList}>
+                {scoped.map((account) => (
+                  <ShipLossHistoryNotice
+                    key={account.id}
+                    account={account}
+                    className={styles.note}
+                  />
+                ))}
                 {selectedPortID && (
                   <PortInspection
                     id={selectedPortID}
@@ -650,32 +680,37 @@ export function FleetChartPage() {
                         />
                       ))}
                     </ul>
-                    {lost.length > 0 && (
-                      <>
-                        <h3 className={styles.lossHeading}>
-                          Recorded losses <span>{lost.length}</span>
-                        </h3>
-                        <ul>
-                          {lost.map((row) => (
-                            <RosterRow
-                              key={row.key}
-                              row={row}
-                              catalog={catalog}
-                              serverUTC={serverUTC}
-                              selected={row.key === selectedKey}
-                              onSelect={chooseShip}
-                              showCompany={scoped.length > 1}
-                            />
-                          ))}
-                        </ul>
-                      </>
+                    {[
+                      { title: "Recorded losses", rows: lost },
+                      { title: "Fleet exits and absences", rows: exits },
+                    ].map(
+                      (group) =>
+                        group.rows.length > 0 && (
+                          <div key={group.title}>
+                            <h3 className={styles.lossHeading}>
+                              {group.title} <span>{group.rows.length}</span>
+                            </h3>
+                            <ul>
+                              {group.rows.map((row) => (
+                                <RosterRow
+                                  key={row.key}
+                                  row={row}
+                                  catalog={catalog}
+                                  serverUTC={serverUTC}
+                                  selected={row.key === selectedKey}
+                                  onSelect={chooseShip}
+                                  showCompany={scoped.length > 1}
+                                />
+                              ))}
+                            </ul>
+                          </div>
+                        ),
                     )}
                   </>
                 )}
               </div>
               <p className={styles.rosterNote}>
-                Select a vessel to follow its route and inspect its recorded
-                plan.
+                Select a vessel to inspect its route, recorded plan or history.
               </p>
             </div>
           )}
@@ -778,7 +813,7 @@ export function FleetChartPage() {
               risk
             </span>
             <span className={styles.attention}>
-              <X size={13} aria-hidden="true" /> Wreck: last port only
+              <X size={13} aria-hidden="true" /> Wreck: observed port only
             </span>
             <span>
               <span className={styles.legendHub} /> Hub port
@@ -788,7 +823,8 @@ export function FleetChartPage() {
             </span>
             <small>
               Route lines, sea positions and ETAs are estimates. A wake is not a
-              measured track; a scheduled arrival is not confirmation.
+              measured track; a scheduled arrival is not confirmation. Wreck
+              symbols do not show confirmed loss locations.
             </small>
           </div>
         </details>
@@ -861,25 +897,35 @@ function RosterRow({
   const { detail, operation } = row;
   const { ship } = detail;
   const sailing = ship.status === "sailing";
+  const gone = ship.status === "sunk";
   const holds = operation.holdsCurrent
     ? chartBlockingHolds(operation.holds, ship.status)
     : [];
-  const attention = operation.starving || holds.length > 0;
+  const attention = !gone && (operation.starving || holds.length > 0);
   const capacity = detail.effective_hold_capacity_tons;
+  const cargoTons = detail.cargo_used_tons;
+  const cargoKnown =
+    typeof cargoTons === "number" &&
+    Number.isFinite(cargoTons) &&
+    typeof capacity === "number" &&
+    Number.isFinite(capacity);
   const fill =
-    capacity > 0 && Number.isFinite(detail.cargo_used_tons)
-      ? Math.max(0, Math.min(100, (detail.cargo_used_tons / capacity) * 100))
+    cargoKnown && capacity > 0
+      ? Math.max(0, Math.min(100, (cargoTons / capacity) * 100))
       : undefined;
+  const cargoSummary = cargoKnown
+    ? `${count(cargoTons)} of ${quantity(capacity, "t")}`
+    : "Cargo use not recorded";
   const destination = sailing
-    ? `to ${portName(catalog, detail.route_legs.at(-1)?.to_node)}`
-    : ship.status === "sunk"
-      ? ship.current_port_id
-        ? `Last port: ${portName(catalog, ship.current_port_id)}`
-        : "Loss position unknown"
+    ? `to ${portName(catalog, detail.route_legs?.at(-1)?.to_node)}`
+    : gone
+      ? shipLastLocation(detail, catalog)
       : portName(catalog, ship.current_port_id);
-  const state = ship.status.startsWith("anchored")
-    ? "Anchored"
-    : operation.activity;
+  const state = gone
+    ? shipStatusLabel(ship.status, ship.fate)
+    : ship.status.startsWith("anchored")
+      ? "Anchored"
+      : operation.activity;
   const eta = chartETA(
     detail,
     row.clock,
@@ -910,7 +956,7 @@ function RosterRow({
                 : chartHoldLabel(holds[0].reason)}
             </small>
           )}
-          {!operation.observation.current && (
+          {!gone && !operation.observation.current && (
             <small className={styles.attention}>
               {observationLabel(operation.observation.state)}
             </small>
@@ -923,17 +969,24 @@ function RosterRow({
           </span>
           {sailing && <small className={styles.rowETA}>{eta}</small>}
         </span>
-        <span
-          className={styles.cargoSummary}
-          aria-label={`Cargo ${count(detail.cargo_used_tons)} of ${measured(capacity, "t")}`}
-        >
-          <span className={styles.cargoTrack} aria-hidden="true">
-            {fill !== undefined && <span style={{ width: `${fill}%` }} />}
+        {gone ? (
+          <span
+            className={styles.cargoSummary}
+            aria-label="Last observed cargo"
+          >
+            {operation.cargo}
           </span>
-          <span>
-            {count(detail.cargo_used_tons)} of {measured(capacity, "t")}
+        ) : (
+          <span
+            className={styles.cargoSummary}
+            aria-label={`Cargo: ${cargoSummary}`}
+          >
+            <span className={styles.cargoTrack} aria-hidden="true">
+              {fill !== undefined && <span style={{ width: `${fill}%` }} />}
+            </span>
+            <span>{cargoSummary}</span>
           </span>
-        </span>
+        )}
       </button>
     </li>
   );
@@ -963,7 +1016,7 @@ function ShipInspection({
   const { detail, operation } = row;
   const { ship } = detail;
   const sailing = ship.status === "sailing";
-  const loss = ship.status === "sunk";
+  const gone = ship.status === "sunk";
   const position: ChartPosition | undefined = chartPosition(
     detail,
     row.meta,
@@ -975,7 +1028,9 @@ function ShipInspection({
   const report = warningReport?.accounts.find(
     (account) => account.account_id === row.account.id,
   );
-  const currentPlan = chartCurrentPlan(row.account, ship.id, decisions);
+  const currentPlan = gone
+    ? undefined
+    : chartCurrentPlan(row.account, ship.id, decisions);
   const holds = operation.holdsCurrent
     ? chartBlockingHolds(operation.holds, ship.status)
     : [];
@@ -989,9 +1044,7 @@ function ShipInspection({
   const needsAttention =
     holds.length > 0 || operation.starving || shipWarnings.length > 0;
   const positionSummary = !sailing
-    ? loss
-      ? "Last recorded port"
-      : "Recorded port"
+    ? "Recorded port"
     : !estimates
       ? "Estimates hidden"
       : row.clock?.paused
@@ -1003,13 +1056,13 @@ function ShipInspection({
             : position?.kind === "estimated"
               ? "Estimated at sea"
               : "Position unavailable";
-  const manifest = detail.cargo_manifest
-    ? Object.entries(detail.cargo_manifest).filter(
-        ([, tons]) => Number.isFinite(tons) && tons > 0,
-      )
-    : undefined;
+  const manifest = cargoEntries(detail.cargo_manifest);
   const eta = voyageETA(detail);
-  const lastPort = ship.current_port_id;
+  const locationLabel = gone
+    ? shipLastLocation(detail, catalog)
+    : ship.current_port_id
+      ? portName(catalog, ship.current_port_id)
+      : "Position not recorded";
   return (
     <div className={styles.inspectorBody}>
       <section className={styles.journey} aria-label="Vessel location">
@@ -1023,10 +1076,8 @@ function ShipInspection({
         </div>
         <h3>
           {sailing
-            ? `${portName(catalog, detail.route_legs[0]?.from_node)} to ${portName(catalog, detail.route_legs.at(-1)?.to_node)}`
-            : lastPort
-              ? portName(catalog, lastPort)
-              : "Position not recorded"}
+            ? `${portName(catalog, detail.route_legs?.[0]?.from_node)} to ${portName(catalog, detail.route_legs?.at(-1)?.to_node)}`
+            : locationLabel}
         </h3>
         <p
           className={styles.positionNote}
@@ -1036,7 +1087,9 @@ function ShipInspection({
             chartUnavailableReason(detail, row.clock)
           }
         >
-          {positionSummary}, recorded {age(row.meta.updated_at, now)}
+          {gone
+            ? (position?.label ?? chartUnavailableReason(detail, row.clock))
+            : `${positionSummary}, recorded ${age(row.meta.updated_at, now)}`}
         </p>
         {sailing && (
           <div className={styles.arrival}>
@@ -1050,187 +1103,212 @@ function ShipInspection({
             </span>
           </div>
         )}
-        {loss && (
+        {gone && (
           <p className={styles.attention}>
-            Removed from the active fleet. A wreck symbol marks only the last
-            recorded port, not the location or cause of loss.
+            {shipIsLoss(ship.status, ship.fate)
+              ? "Retained outside the active fleet. A wreck symbol marks only an observed port, not a confirmed loss location. At-sea observations remain unplaced."
+              : shipRecordKind(ship.status, ship.fate) === "absence"
+                ? "Retained absence record. Being absent from the fleet list does not confirm the ship's fate."
+                : "Retained fleet exit record. The last afloat observation does not confirm the exit location."}
           </p>
         )}
-        {!row.account.enabled && (
+        {!gone && !row.account.enabled && (
           <p className={styles.attention}>
             Automation disabled for this account.
           </p>
         )}
-        {controller.mode === "observe" && (
+        {!gone && controller.mode === "observe" && (
           <p className={styles.note}>
             Observation only. The controller is not executing plans.
           </p>
         )}
       </section>
-      <section className={styles.inspectionSection}>
-        <div className={styles.planHeading}>
-          <h3>
-            {currentPlan?.source === "decision"
-              ? "Latest decision"
-              : "Current plan"}
-          </h3>
-          {currentPlan && (
-            <time
-              dateTime={currentPlan.updatedAt}
-              title={dateTime(currentPlan.updatedAt)}
-            >
-              {age(currentPlan.updatedAt, now)}
-            </time>
-          )}
-        </div>
-        {currentPlan ? (
-          <>
-            <p className={styles.planLane}>
-              <strong title={currentPlan.contract_id}>
-                {currentPlan.rejected ? "Rejected: " : ""}
-                {humanize(currentPlan.kind)}
-              </strong>
-              {currentPlan.commodity
-                ? `: ${currentPlan.quantity ? `${count(currentPlan.quantity)} t ` : ""}${humanize(currentPlan.commodity)}`
-                : ""}
-            </p>
-            {currentPlan.destination ? (
-              <p className={styles.note}>
-                {currentPlan.origin
-                  ? `${portName(catalog, currentPlan.origin)} to `
-                  : "To "}
-                {portName(catalog, currentPlan.destination)}
-              </p>
-            ) : currentPlan.origin ? (
-              <p className={styles.note}>
-                At {portName(catalog, currentPlan.origin)}
-              </p>
-            ) : null}
-            <p className={styles.planValue}>
-              {currentPlan.expectedNetPence === undefined
-                ? "Value not recorded"
-                : `${money(currentPlan.expectedNetPence)} estimated net`}
-            </p>
-          </>
-        ) : (
-          <p className={styles.note}>
-            {row.account.missions_unavailable
-              ? "Plan unavailable."
-              : "Plan not recorded."}
-          </p>
-        )}
-      </section>
-      {(needsAttention || warningAssessment.status !== "assessed") && (
-        <section className={styles.inspectionSection}>
-          <h3>{needsAttention ? "Needs attention" : "Ship warnings"}</h3>
-          {warningAssessment.message && (
-            <p className={styles.note}>{warningAssessment.message}</p>
-          )}
-          {operation.starving && (
-            <p className={styles.warning}>Provisions at risk</p>
-          )}
-          {holds.map((hold, index) => (
-            <p key={index} className={styles.warning} title={hold.reason}>
-              {chartHoldLabel(hold.reason)}
-            </p>
-          ))}
-          {shipWarnings.map((warning) => (
-            <p
-              key={warning.code}
-              className={styles.warning}
-              title={warningText(warning)}
-            >
-              {warning.code === "upkeep_seizure"
-                ? "Upkeep seizure recorded"
-                : "Ship held"}
-            </p>
-          ))}
-        </section>
-      )}
-      <section className={styles.inspectionSection}>
-        <h3>Cargo and stores</h3>
-        <dl className={styles.facts}>
-          <div>
-            <dt>Cargo hold</dt>
-            <dd>
-              {count(detail.cargo_used_tons)} of{" "}
-              {measured(detail.effective_hold_capacity_tons, "t")}
-            </dd>
-          </div>
-          <div>
-            <dt>Provisions</dt>
-            <dd>{measured(detail.stores?.provisions_tons, "t")}</dd>
-          </div>
-          <div>
-            <dt>Sea days remaining</dt>
-            <dd>{count(detail.stores?.sea_days_remaining)}</dd>
-          </div>
-          <div>
-            <dt>Cannons</dt>
-            <dd>{count(ship.cannons_count)}</dd>
-          </div>
-        </dl>
-        {manifest === undefined ? (
-          <p className={styles.note}>Cargo manifest not recorded.</p>
-        ) : manifest.length ? (
-          <ul className={styles.manifest}>
-            {manifest.map(([commodity, tons]) => (
-              <li key={commodity}>
-                <span>
-                  {catalog?.commodities.find((item) => item.id === commodity)
-                    ?.name ?? humanize(commodity)}
-                </span>
-                <strong>{measured(tons, "t")}</strong>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className={styles.note}>
-            No trade cargo in the recorded manifest.
-          </p>
-        )}
-      </section>
-      <section className={styles.inspectionSection}>
-        <h3>Recorded route</h3>
-        {detail.route_legs.length ? (
-          <ol className={styles.routeLegs}>
-            {detail.route_legs.map((leg, index) => {
-              const current = sailing && index === ship.current_leg_idx;
-              const voyageLeg = detail.voyage?.legs?.find(
-                (item) => item.leg_idx === index,
-              );
-              const arrival = current
-                ? ship.leg_arrives_at
-                : voyageLeg?.estimated_arrival_at;
-              return (
-                <li
-                  key={`${index}:${leg.from_node}`}
-                  aria-current={current ? "step" : undefined}
+      <ShipLossDetails
+        detail={detail}
+        catalog={catalog}
+        historyUnavailable={
+          row.account.ship_losses_unavailable ||
+          row.account.ship_losses === undefined
+        }
+        className={styles.inspectionSection}
+        factsClassName={styles.facts}
+        noteClassName={styles.note}
+      />
+      {!gone && (
+        <>
+          <section className={styles.inspectionSection}>
+            <div className={styles.planHeading}>
+              <h3>
+                {currentPlan?.source === "decision"
+                  ? "Latest decision"
+                  : "Current plan"}
+              </h3>
+              {currentPlan && (
+                <time
+                  dateTime={currentPlan.updatedAt}
+                  title={dateTime(currentPlan.updatedAt)}
                 >
-                  <strong>
-                    {portName(catalog, leg.from_node)} to{" "}
-                    {portName(catalog, leg.to_node)}
+                  {age(currentPlan.updatedAt, now)}
+                </time>
+              )}
+            </div>
+            {currentPlan ? (
+              <>
+                <p className={styles.planLane}>
+                  <strong title={currentPlan.contract_id}>
+                    {currentPlan.rejected ? "Rejected: " : ""}
+                    {humanize(currentPlan.kind)}
                   </strong>
-                  <span>
-                    {count(leg.distance_nm)} nm, {humanize(leg.edge_class)}
-                    {current
-                      ? ", current leg"
-                      : sailing && index < ship.current_leg_idx
-                        ? ", previous leg"
-                        : ""}
-                  </span>
-                  {current && (
-                    <small>Departs {dateTime(ship.leg_departs_at)}</small>
-                  )}
-                  <small>Scheduled arrival {dateTime(arrival)}</small>
-                </li>
-              );
-            })}
-          </ol>
-        ) : (
-          <p className={styles.note}>No route legs recorded.</p>
-        )}
-      </section>
+                  {currentPlan.commodity
+                    ? `: ${currentPlan.quantity ? `${count(currentPlan.quantity)} t ` : ""}${humanize(currentPlan.commodity)}`
+                    : ""}
+                </p>
+                {currentPlan.destination ? (
+                  <p className={styles.note}>
+                    {currentPlan.origin
+                      ? `${portName(catalog, currentPlan.origin)} to `
+                      : "To "}
+                    {portName(catalog, currentPlan.destination)}
+                  </p>
+                ) : currentPlan.origin ? (
+                  <p className={styles.note}>
+                    At {portName(catalog, currentPlan.origin)}
+                  </p>
+                ) : null}
+                <p className={styles.planValue}>
+                  {currentPlan.expectedNetPence === undefined
+                    ? "Value not recorded"
+                    : `${money(currentPlan.expectedNetPence)} estimated net`}
+                </p>
+              </>
+            ) : (
+              <p className={styles.note}>
+                {row.account.missions_unavailable
+                  ? "Plan unavailable."
+                  : "Plan not recorded."}
+              </p>
+            )}
+          </section>
+          {(needsAttention || warningAssessment.status !== "assessed") && (
+            <section className={styles.inspectionSection}>
+              <h3>{needsAttention ? "Needs attention" : "Ship warnings"}</h3>
+              {warningAssessment.message && (
+                <p className={styles.note}>{warningAssessment.message}</p>
+              )}
+              {operation.starving && (
+                <p className={styles.warning}>Provisions at risk</p>
+              )}
+              {holds.map((hold, index) => (
+                <p key={index} className={styles.warning} title={hold.reason}>
+                  {chartHoldLabel(hold.reason)}
+                </p>
+              ))}
+              {shipWarnings.map((warning) => (
+                <p
+                  key={warning.code}
+                  className={styles.warning}
+                  title={warningText(warning)}
+                >
+                  {warning.code === "upkeep_seizure"
+                    ? "Upkeep seizure recorded"
+                    : "Ship held"}
+                </p>
+              ))}
+            </section>
+          )}
+          <section className={styles.inspectionSection}>
+            <h3>Cargo and stores</h3>
+            <dl className={styles.facts}>
+              <div>
+                <dt>Cargo hold</dt>
+                <dd>
+                  {detail.cargo_used_tons !== null &&
+                  detail.effective_hold_capacity_tons !== null &&
+                  Number.isFinite(detail.cargo_used_tons) &&
+                  Number.isFinite(detail.effective_hold_capacity_tons)
+                    ? `${count(detail.cargo_used_tons)} of ${quantity(detail.effective_hold_capacity_tons, "t")}`
+                    : "Not recorded"}
+                </dd>
+              </div>
+              <div>
+                <dt>Provisions</dt>
+                <dd>{quantity(detail.stores?.provisions_tons, "t")}</dd>
+              </div>
+              <div>
+                <dt>Sea days remaining</dt>
+                <dd>{count(detail.stores?.sea_days_remaining)}</dd>
+              </div>
+              <div>
+                <dt>Cannons</dt>
+                <dd>{count(ship.cannons_count)}</dd>
+              </div>
+            </dl>
+            {manifest === undefined ? (
+              <p className={styles.note}>Cargo manifest not recorded.</p>
+            ) : manifest.length ? (
+              <ul className={styles.manifest}>
+                {manifest.map(([commodity, tons]) => (
+                  <li key={commodity}>
+                    <span>
+                      {catalog?.commodities.find(
+                        (item) => item.id === commodity,
+                      )?.name ?? humanize(commodity)}
+                    </span>
+                    <strong>{quantity(tons, "t")}</strong>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className={styles.note}>
+                No trade cargo in the recorded manifest.
+              </p>
+            )}
+          </section>
+          <section className={styles.inspectionSection}>
+            <h3>Recorded route</h3>
+            {detail.route_legs?.length ? (
+              <ol className={styles.routeLegs}>
+                {detail.route_legs.map((leg, index) => {
+                  const current = sailing && index === ship.current_leg_idx;
+                  const voyageLeg = detail.voyage?.legs?.find(
+                    (item) => item.leg_idx === index,
+                  );
+                  const arrival = current
+                    ? ship.leg_arrives_at
+                    : voyageLeg?.estimated_arrival_at;
+                  return (
+                    <li
+                      key={`${index}:${leg.from_node}`}
+                      aria-current={current ? "step" : undefined}
+                    >
+                      <strong>
+                        {portName(catalog, leg.from_node)} to{" "}
+                        {portName(catalog, leg.to_node)}
+                      </strong>
+                      <span>
+                        {count(leg.distance_nm)} nm, {humanize(leg.edge_class)}
+                        {current
+                          ? ", current leg"
+                          : sailing &&
+                              ship.current_leg_idx !== null &&
+                              index < ship.current_leg_idx
+                            ? ", previous leg"
+                            : ""}
+                      </span>
+                      {current && (
+                        <small>Departs {dateTime(ship.leg_departs_at)}</small>
+                      )}
+                      <small>Scheduled arrival {dateTime(arrival)}</small>
+                    </li>
+                  );
+                })}
+              </ol>
+            ) : (
+              <p className={styles.note}>No route legs recorded.</p>
+            )}
+          </section>
+        </>
+      )}
       <section className={styles.inspectionSection}>
         <h3>Recording</h3>
         <dl className={styles.facts}>
@@ -1239,7 +1317,7 @@ function ShipInspection({
             <dd>{row.account.label}</dd>
           </div>
           <div>
-            <dt>Ship observed</dt>
+            <dt>{gone ? "Fleet data observed" : "Ship observed"}</dt>
             <dd>{dateTime(row.meta.updated_at)}</dd>
           </div>
           <div>

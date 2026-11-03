@@ -178,6 +178,9 @@ func (r *Runner) applyCapture(ctx context.Context, key string, result fetchResul
 		r.meta[key] = meta
 		return false
 	}
+	if key == "ships" || strings.HasPrefix(key, "ship_details/") {
+		r.observeShipLosses(ctx, key, result.data, result.completedAt)
+	}
 	r.snapshot[key] = result.data
 	var observed struct {
 		AsOf *time.Time `json:"as_of"`

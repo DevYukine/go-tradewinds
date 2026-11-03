@@ -34,6 +34,8 @@ import {
 import {
   chartBlockingHolds,
   chartETA,
+  chartLossPort,
+  chartPortActivity,
   chartPosition,
   chartUnavailableReason,
   splitChartRoute,
@@ -48,7 +50,7 @@ import {
   type ChartPosition,
   type Coordinate,
 } from "@/lib/geography";
-import { shipStatusLabel } from "@/lib/operations";
+import { shipIsLoss, shipStatusLabel } from "@/lib/operations";
 import type { Catalog, Port } from "@/lib/types";
 import type { ChartControls, ChartLayers, ChartVessel } from "../fleet-map";
 import styles from "./chart.module.css";
@@ -104,9 +106,10 @@ interface TrackedVessel {
   segments?: ChartSegment[];
   splitLatitude?: number;
   splitLongitude?: number;
-  splitLeg?: number;
+  splitLeg?: number | null;
   glyph: HTMLElement;
   wreck: boolean;
+  gone: boolean;
   leader: LeafletLine;
   labelLeader: LeafletLine;
   arrivalLeader: LeafletLine;
@@ -321,18 +324,7 @@ export default function FleetChart({
   onReady: (controls: ChartControls | null) => void;
   onPositionNote: (key: string, text: string) => void;
 }) {
-  const activity = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const { detail } of vessels) {
-      const nodes =
-        detail.ship.status === "sailing"
-          ? [detail.route_legs[0]?.from_node, detail.route_legs.at(-1)?.to_node]
-          : [detail.ship.current_port_id];
-      for (const id of new Set(nodes))
-        if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
-    }
-    return counts;
-  }, [vessels]);
+  const activity = useMemo(() => chartPortActivity(vessels), [vessels]);
   return (
     <div className={styles.mapFrame}>
       <MapContainer
@@ -640,7 +632,7 @@ function VesselLayers({
   const fitFleet = useCallback(() => {
     const bounds = latLngBounds([]);
     for (const entry of registry.current.values()) {
-      if (!entry.wreck && map.hasLayer(entry.marker))
+      if (!entry.gone && map.hasLayer(entry.marker))
         bounds.extend(entry.marker.getLatLng());
     }
     if (!bounds.isValid()) return false;
@@ -694,11 +686,12 @@ function VesselLayers({
     const present = new Set<string>();
     const portGroups = new Map<string, string[]>();
     for (const row of current.vessels) {
-      if (
-        row.detail.ship.status !== "sailing" &&
-        row.detail.ship.current_port_id
-      ) {
-        const id = row.detail.ship.current_port_id;
+      const { ship } = row.detail;
+      const id =
+        ship.status === "sunk"
+          ? chartLossPort(row.detail)?.id
+          : ship.current_port_id;
+      if (ship.status !== "sailing" && id) {
         const group = portGroups.get(id) ?? [];
         group.push(row.key);
         portGroups.set(id, group);
@@ -708,7 +701,8 @@ function VesselLayers({
     for (const row of current.vessels) {
       present.add(row.key);
       const sailing = row.detail.ship.status === "sailing";
-      const wreck = row.detail.ship.status === "sunk";
+      const gone = row.detail.ship.status === "sunk";
+      const wreck = shipIsLoss(row.detail.ship.status, row.detail.ship.fate);
       const selected = row.key === current.selectedKey;
       const old = registry.current.get(row.key);
       const position = chartPosition(
@@ -802,6 +796,7 @@ function VesselLayers({
           position,
           glyph,
           wreck,
+          gone,
           leader: polyline([], {
             color: "var(--ink)",
             weight: 0.7,
@@ -839,6 +834,7 @@ function VesselLayers({
         registry.current.set(row.key, entry);
       }
       if (!entry) continue;
+      entry.gone = gone;
       if (entry.wreck !== wreck) {
         entry.glyph.innerHTML = wreck ? WRECK_GLYPH : SHIP_GLYPH;
         entry.wreck = wreck;
@@ -851,7 +847,10 @@ function VesselLayers({
       if (position && (!sailing || current.layers.estimates)) {
         entry.position = position;
         let coordinate = coordinateTuple(position.coordinate);
-        const peers = portGroups.get(row.detail.ship.current_port_id ?? "");
+        const port = gone
+          ? chartLossPort(row.detail)?.id
+          : row.detail.ship.current_port_id;
+        const peers = portGroups.get(port ?? "");
         if (!sailing && peers && peers.length > 1) {
           const point = map.latLngToLayerPoint(coordinate);
           const offset = (peers.indexOf(row.key) - (peers.length - 1) / 2) * 34;
@@ -866,21 +865,30 @@ function VesselLayers({
         entry.marker.setLatLng(coordinate);
         if (!map.hasLayer(entry.marker)) entry.marker.addTo(map);
         const element = entry.marker.getElement();
-        const leg = row.detail.route_legs[row.detail.ship.current_leg_idx];
-        const from = leg && nodeCoordinate(leg.from_node);
-        const to = leg && nodeCoordinate(leg.to_node);
-        const bearing = sailing && from && to ? travelBearing(from, to) : 0;
+        const leg =
+          row.detail.ship.current_leg_idx === null
+            ? undefined
+            : row.detail.route_legs?.[row.detail.ship.current_leg_idx];
+        const from = leg ? nodeCoordinate(leg.from_node) : undefined;
+        const to = leg ? nodeCoordinate(leg.to_node) : undefined;
+        const bearing =
+          row.detail.ship.status === "sailing" && from && to
+            ? travelBearing(from, to)
+            : 0;
         element?.style.setProperty("--bearing", `${bearing}deg`);
         element?.setAttribute(
           "data-state",
-          row.operation.starving ||
-            (row.operation.holdsCurrent &&
-              chartBlockingHolds(row.operation.holds, row.detail.ship.status)
-                .length > 0)
+          !gone &&
+            (row.operation.starving ||
+              (row.operation.holdsCurrent &&
+                chartBlockingHolds(row.operation.holds, row.detail.ship.status)
+                  .length > 0))
             ? "attention"
             : position.kind === "frozen"
               ? "frozen"
-              : row.detail.ship.status,
+              : gone && !wreck
+                ? "exit"
+                : row.detail.ship.status,
         );
         element?.setAttribute(
           "data-estimated",
@@ -933,7 +941,7 @@ function VesselLayers({
         if (!map.hasLayer(entry.wake)) entry.wake.addTo(map);
         if (!map.hasLayer(entry.remaining)) entry.remaining.addTo(map);
         const final = nodeCoordinate(
-          row.detail.route_legs.at(-1)?.to_node ?? "",
+          row.detail.route_legs?.at(-1)?.to_node ?? "",
         );
         if (final) {
           entry.destination.setLatLng(coordinateTuple(final));

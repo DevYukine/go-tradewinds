@@ -154,6 +154,29 @@ export interface ShipMission {
   };
 }
 
+export interface ShipLoss {
+  account_id: string;
+  ship_id: string;
+  ship_name: string;
+  ship_class: string;
+  fate: string;
+  status: string;
+  observed_at: string;
+  last_observed_at: string | null;
+  recovered_at: string | null;
+  last_port_id: string | null;
+  last_sea_zone_id: string | null;
+  voyage_origin_id: string | null;
+  voyage_destination_id: string | null;
+  cargo_manifest: Record<string, number> | null;
+  cargo_unavailable_reason?: string;
+  stores: { provisions_tons: number; sea_days_remaining: number } | null;
+  stores_unavailable_reason?: string;
+  hazard_cause: string | null;
+  hazard_unavailable_reason?: string;
+  insurance_claim_paid_pence: number | null;
+}
+
 export interface Account {
   id: string;
   label: string;
@@ -164,6 +187,8 @@ export interface Account {
   snapshot: Record<string, unknown>;
   missions?: ShipMission[];
   missions_unavailable?: boolean;
+  ship_losses?: ShipLoss[];
+  ship_losses_unavailable?: boolean;
 }
 
 export interface Metric {
@@ -635,9 +660,9 @@ export interface ShipDetail {
     status: string;
     fate?: string | null;
     current_port_id?: string | null;
-    current_leg_idx: number;
-    cannons_count: number;
-    stores_provisions_units: number;
+    current_leg_idx: number | null;
+    cannons_count: number | null;
+    stores_provisions_units: number | null;
     turnaround_unlocks_at?: string | null;
     dock_queued_at?: string | null;
     leg_departs_at?: string | null;
@@ -645,14 +670,15 @@ export interface ShipDetail {
     berthed_at?: string | null;
     convoy_id?: string | null;
     created_at?: string;
-    updated_at: string;
+    updated_at: string | null;
   };
   former_names?: { name: string; renamed_at: string }[];
-  hold_capacity_tons: number;
-  effective_hold_capacity_tons: number;
-  cargo_used_tons: number;
-  cargo_manifest: Record<string, number>;
-  stores: { provisions_tons: number; sea_days_remaining: number };
+  loss?: ShipLoss;
+  hold_capacity_tons: number | null;
+  effective_hold_capacity_tons: number | null;
+  cargo_used_tons: number | null;
+  cargo_manifest: Record<string, number> | null;
+  stores: { provisions_tons: number; sea_days_remaining: number } | null;
   route_legs: RouteLeg[];
   voyage?: {
     current_leg_idx: number;

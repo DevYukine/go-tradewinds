@@ -1,10 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -38,9 +40,10 @@ func (s *Store) Dashboard(ctx context.Context) (Dashboard, error) {
 			indices[account.ID] = len(result.Accounts)
 			ids = append(ids, account.ID)
 			result.Accounts = append(result.Accounts, DashboardAccount{
-				Account:  account,
-				Snapshot: make(map[string]json.RawMessage),
-				Missions: make([]DashboardMission, 0),
+				Account:    account,
+				Snapshot:   make(map[string]json.RawMessage),
+				Missions:   make([]DashboardMission, 0),
+				ShipLosses: make([]ShipLoss, 0),
 			})
 		}
 		if len(ids) != 0 {
@@ -98,6 +101,9 @@ func (s *Store) Dashboard(ctx context.Context) (Dashboard, error) {
 				if err := json.Unmarshal(snapshot.Data, &result.Accounts[index].Snapshot); err != nil {
 					return fmt.Errorf("decode dashboard snapshot: %w", err)
 				}
+				if err := stripDashboardShipLossState(result.Accounts[index].Snapshot); err != nil {
+					return err
+				}
 				for key, raw := range result.Accounts[index].Snapshot {
 					clean, err := displayJSON(raw, credentials)
 					if err != nil {
@@ -115,6 +121,70 @@ func (s *Store) Dashboard(ctx context.Context) (Dashboard, error) {
 				account.MissionsUnavailable = unavailable
 				if !unavailable {
 					account.Missions = missions
+				}
+			}
+			displayIDs := make([]string, 0, len(ids))
+			for _, id := range ids {
+				if scrubber.credentials(id).available {
+					displayIDs = append(displayIDs, id)
+					continue
+				}
+				index := indices[id]
+				result.Accounts[index].ShipLossesUnavailable = true
+				meta := make(map[string]json.RawMessage)
+				if raw := result.Accounts[index].Snapshot["_meta"]; len(raw) != 0 {
+					if err := json.Unmarshal(raw, &meta); err != nil {
+						return err
+					}
+				}
+				meta["ship_losses"] = json.RawMessage(`{
+					"complete": false,
+					"stale": true,
+					"error": "Account credentials unavailable; retained ship losses cannot be safely displayed."
+				}`)
+				encoded, err := json.Marshal(meta)
+				if err != nil {
+					return err
+				}
+				result.Accounts[index].Snapshot["_meta"] = encoded
+			}
+			if len(displayIDs) != 0 {
+				var sizes []struct {
+					AccountID string
+					DataSize  int64
+				}
+				if err := tx.Table("ship_losses").
+					Select("account_id, SUM(octet_length(row_to_json(ship_losses)::text)::bigint) AS data_size").
+					Where("account_id IN ?", displayIDs).Group("account_id").
+					Order("data_size, account_id").Find(&sizes).Error; err != nil {
+					return err
+				}
+				// Keep each history within the ordinary account snapshot cap
+				// and their aggregate within the remaining snapshot budget.
+				// Small histories take priority so a growing account cannot
+				// crowd out healthy peers. Only approved rows are hydrated.
+				remaining := int64(maxDashboardSnapshotBytes) - total
+				displayIDs = displayIDs[:0]
+				for _, size := range sizes {
+					if size.DataSize < 0 || size.DataSize > MaxSnapshotBytes || size.DataSize > remaining {
+						result.Accounts[indices[size.AccountID]].ShipLossesUnavailable = true
+						continue
+					}
+					remaining -= size.DataSize
+					displayIDs = append(displayIDs, size.AccountID)
+				}
+				var losses []ShipLoss
+				if len(displayIDs) != 0 {
+					if err := tx.Where("account_id IN ?", displayIDs).Order("observed_at, ship_id").Find(&losses).Error; err != nil {
+						return err
+					}
+				}
+				for _, loss := range losses {
+					index := indices[loss.AccountID]
+					if err := scrubber.shipLoss(&loss); err != nil {
+						return err
+					}
+					result.Accounts[index].ShipLosses = append(result.Accounts[index].ShipLosses, loss)
 				}
 			}
 		}
@@ -158,6 +228,43 @@ func (s *Store) Dashboard(ctx context.Context) (Dashboard, error) {
 		return Dashboard{}, err
 	}
 	return result, err
+}
+
+// Recorder state is durable recovery data, never a dashboard dataset. Strip
+// only its reserved namespace from this display copy, including metadata.
+func stripDashboardShipLossState(snapshot map[string]json.RawMessage) error {
+	internal := func(key string) bool {
+		return key == "_pending_ship_losses" || strings.HasPrefix(key, "_ship_loss_")
+	}
+	for key := range snapshot {
+		if internal(key) {
+			delete(snapshot, key)
+		}
+	}
+	raw := bytes.TrimSpace(snapshot["_meta"])
+	if len(raw) == 0 || raw[0] != '{' {
+		return nil
+	}
+	var metadata map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &metadata); err != nil {
+		return fmt.Errorf("decode dashboard snapshot metadata: %w", err)
+	}
+	changed := false
+	for key := range metadata {
+		if internal(key) {
+			delete(metadata, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("encode dashboard snapshot metadata: %w", err)
+	}
+	snapshot["_meta"] = encoded
+	return nil
 }
 
 func (s *Store) History(ctx context.Context, accountID, kind string, limit int) (any, error) {

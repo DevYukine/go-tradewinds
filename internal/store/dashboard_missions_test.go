@@ -350,6 +350,12 @@ func TestPostgresDashboardMissionsDegradeOnlyAffectedAccount(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
+				if err := database.SaveShipLosses(ctx, accountID, []ShipLoss{{
+					ShipID: "lost-" + accountID, ShipName: "Lapras", ShipClass: "hoy",
+					Fate: "seized_bailiff", Status: "sunk", ObservedAt: time.Now().UTC(),
+				}}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			row, err := database.encodeMission(Mission{
 				AccountID: affectedID, ShipID: "damaged", Phase: "sailing", Data: data,
@@ -432,6 +438,10 @@ func TestPostgresDashboardMissionsDegradeOnlyAffectedAccount(t *testing.T) {
 				}
 				if err := json.Unmarshal(account.Snapshot["ships"], &ships); err != nil || len(ships) != 1 || ships[0].ID != "healthy" || account.UpdatedAt == nil {
 					t.Fatalf("mission failure lost account %q snapshot: %v", account.ID, err)
+				}
+				if len(account.ShipLosses) != 1 || account.ShipLosses[0].ShipID != "lost-"+account.ID ||
+					account.ShipLosses[0].Fate != "seized_bailiff" {
+					t.Fatalf("mission failure lost or crossed account %q loss history: %+v", account.ID, account.ShipLosses)
 				}
 				if account.ID == affectedID {
 					if !account.MissionsUnavailable || account.Missions == nil || len(account.Missions) != 0 {

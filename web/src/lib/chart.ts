@@ -8,8 +8,11 @@ import {
 } from "./geography";
 import { fleet, number, record, text } from "./data";
 import { buildDecisionView } from "./decisions";
+import { shipIsLoss, shipRecordKind, shipStatusLabel } from "./operations";
+import { humanize } from "./format";
 import type {
   Account,
+  Catalog,
   Clock,
   DatasetMeta,
   Decision,
@@ -71,13 +74,50 @@ interface ChartRosterEntry {
   operation: { route: string; activity: string; cargo: string };
 }
 
+export function chartLossPort(
+  detail: ShipDetail,
+): { id: string; kind: "observed-port" | "game-port" } | undefined {
+  if (detail.ship.status !== "sunk") return undefined;
+  const loss = detail.loss;
+  if (loss) {
+    return loss.last_port_id
+      ? { id: loss.last_port_id, kind: "observed-port" }
+      : undefined;
+  }
+  return detail.ship.current_port_id
+    ? { id: detail.ship.current_port_id, kind: "game-port" }
+    : undefined;
+}
+
+export function chartPortActivity(
+  vessels: readonly { detail: ShipDetail }[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const { detail } of vessels) {
+    if (detail.ship.status === "sunk") continue;
+    const nodes =
+      detail.ship.status === "sailing"
+        ? [
+            detail.route_legs?.[0]?.from_node,
+            detail.route_legs?.at(-1)?.to_node,
+          ]
+        : [detail.ship.current_port_id];
+    for (const id of new Set(nodes))
+      if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export function chartRoster<T extends ChartRosterEntry>(
   vessels: readonly T[],
   search: string,
   stateFilter: string,
   sort: string,
+  catalog?: Catalog,
 ): T[] {
   const term = search.trim().toLocaleLowerCase();
+  const state = (row: T) =>
+    shipStatusLabel(row.detail.ship.status, row.detail.ship.fate);
   const arrival = (row: T) => {
     const eta = voyageETA(row.detail);
     return eta !== undefined && Number.isFinite(eta) ? eta : Infinity;
@@ -85,37 +125,50 @@ export function chartRoster<T extends ChartRosterEntry>(
   const fill = (row: T) => {
     const capacity = row.detail.effective_hold_capacity_tons;
     const used = row.detail.cargo_used_tons;
-    return Number.isFinite(capacity) &&
+    return typeof capacity === "number" &&
+      Number.isFinite(capacity) &&
       capacity > 0 &&
+      typeof used === "number" &&
       Number.isFinite(used) &&
       used >= 0
       ? used / capacity
       : -1;
   };
   return vessels
-    .filter(
-      (row) =>
-        (!stateFilter || row.detail.ship.status === stateFilter) &&
-        (!term ||
-          [
-            row.detail.ship.name,
-            row.company,
-            row.account.label,
-            row.operation.route,
-            row.operation.activity,
-            row.operation.cargo,
-          ]
-            .join(" ")
-            .toLocaleLowerCase()
-            .includes(term)),
-    )
+    .filter((row) => {
+      if (
+        stateFilter &&
+        row.detail.ship.status !== stateFilter &&
+        state(row) !== stateFilter
+      ) {
+        return false;
+      }
+      if (!term) return true;
+      const port = chartLossPort(row.detail);
+      return [
+        row.detail.ship.name,
+        state(row),
+        row.detail.ship.status === "sunk"
+          ? `${shipRecordKind(row.detail.ship.status, row.detail.ship.fate)} ${row.detail.ship.fate ?? ""}`
+          : "",
+        row.company,
+        row.account.label,
+        row.operation.route,
+        row.operation.activity,
+        row.operation.cargo,
+        port?.id,
+        port ? humanize(port.id) : "",
+        port ? catalog?.ports.find(({ id }) => id === port.id)?.name : "",
+      ]
+        .join(" ")
+        .toLocaleLowerCase()
+        .includes(term);
+    })
     .sort((left, right) => {
       let result = 0;
       if (sort === "arrival") result = arrival(left) - arrival(right);
       else if (sort === "state")
-        result = left.operation.activity.localeCompare(
-          right.operation.activity,
-        );
+        result = state(left).localeCompare(state(right));
       else if (sort === "cargo") result = fill(right) - fill(left);
       return (
         (Number.isNaN(result) ? 0 : result) ||
@@ -267,7 +320,7 @@ export function chartShipWarnings(
 
 export function splitChartRoute(
   segments: ChartSegment[],
-  currentLegIndex: number,
+  currentLegIndex: number | null,
   position?: ChartPosition,
 ): { wake: ChartSegment[]; remaining: ChartSegment[] } {
   const wake: ChartSegment[] = [];
@@ -279,7 +332,7 @@ export function splitChartRoute(
     Number.isFinite(coordinate.longitude);
 
   for (const segment of segments) {
-    if (segment.index < currentLegIndex) {
+    if (currentLegIndex !== null && segment.index < currentLegIndex) {
       wake.push(segment);
     } else if (segment.index === currentLegIndex && usablePosition) {
       wake.push({ ...segment, to: coordinate });
@@ -366,13 +419,18 @@ export function chartUnavailableReason(
   clock?: Clock,
 ): string {
   const ship = detail.ship;
-  if (ship.status === "sunk")
-    return "Loss location not recorded; no mapped last port is available.";
+  if (ship.status === "sunk") {
+    const kind = shipRecordKind(ship.status, ship.fate);
+    return `${humanize(kind)} location not recorded; no mapped last observed port is available. At-sea observations remain unplaced.`;
+  }
   if (ship.status !== "sailing")
     return ship.current_port_id
       ? `No chart coordinates for ${ship.current_port_id.replaceAll("_", " ")}.`
       : "Current port not recorded.";
-  const leg = detail.route_legs?.[ship.current_leg_idx];
+  const leg =
+    ship.current_leg_idx === null
+      ? undefined
+      : detail.route_legs?.[ship.current_leg_idx];
   if (!leg) return "Current route leg not recorded.";
   const unmapped = [leg.from_node, leg.to_node].filter(
     (node) => !nodeCoordinate(node),
@@ -392,13 +450,15 @@ export function chartPosition(
   previous?: ChartPosition,
 ): ChartPosition | undefined {
   if (detail.ship.status === "sunk") {
-    const coordinate = PORT_COORDINATES[detail.ship.current_port_id ?? ""];
+    const port = chartLossPort(detail);
+    if (!port) return undefined;
+    const coordinate = PORT_COORDINATES[port.id];
     return coordinate
       ? {
           coordinate,
           voyageKey: "",
           kind: "recorded",
-          label: "Last recorded port; loss location not recorded",
+          label: `${port.kind === "observed-port" ? "Last observed port" : "Game-reported last port"}; ${shipIsLoss(detail.ship.status, detail.ship.fate) ? "loss" : "exit or absence"} location not recorded`,
         }
       : undefined;
   }

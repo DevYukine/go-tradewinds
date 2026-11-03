@@ -15,8 +15,8 @@ function badge(status: string, fate?: string | null) {
 
 describe("ship status badges", () => {
   it.each([
-    ["lost_at_sea", "Lost at sea", "danger", "skull"],
-    ["captured", "Captured by pirates", "danger", "triangle-alert"],
+    ["lost_at_sea", "Sunk", "danger", "skull"],
+    ["captured", "Captured", "danger", "triangle-alert"],
     ["seized_smuggling", "Seized for smuggling", "danger", "triangle-alert"],
     ["seized_bailiff", "Seized by the bailiff", "danger", "triangle-alert"],
     [
@@ -26,7 +26,9 @@ describe("ship status badges", () => {
       "triangle-alert",
     ],
     ["broken_up", "Broken up", "neutral", "hammer"],
-    ["royal_navy", "Joined the Royal Navy", "neutral", "flag"],
+    ["royal_navy", "Commissioned to the Royal Navy", "neutral", "flag"],
+    ["missing", "Missing from fleet list", "neutral", "circle"],
+    ["unknown", "Sunk", "danger", "skull"],
     [undefined, "Sunk", "danger", "skull"],
     [null, "Sunk", "danger", "skull"],
     ["", "Sunk", "danger", "skull"],

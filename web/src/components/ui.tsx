@@ -22,6 +22,7 @@ import { age, dateTime } from "@/lib/format";
 import {
   datasetObservation,
   observationLabel,
+  shipIsLoss,
   shipStatusLabel,
 } from "@/lib/operations";
 import type { Account } from "@/lib/types";
@@ -52,7 +53,8 @@ export function StatusBadge({
   status: string;
   fate?: string | null;
 }) {
-  const goneFate = status === "sunk" ? fate : undefined;
+  const gone = status === "sunk";
+  const loss = shipIsLoss(status, fate);
   const label = shipStatusLabel(status, fate);
   const tone = [
     "sailing",
@@ -64,17 +66,10 @@ export function StatusBadge({
     "good",
   ].includes(status)
     ? "good"
-    : [
-          "sunk",
-          "starving",
-          "defaulted",
-          "claimed_loss",
-          "error",
-          "rejected",
-        ].includes(status) &&
-        goneFate !== "broken_up" &&
-        goneFate !== "royal_navy" &&
-        label !== "Gone"
+    : (gone && (loss || fate?.startsWith("seized_"))) ||
+        ["starving", "defaulted", "claimed_loss", "error", "rejected"].includes(
+          status,
+        )
       ? "danger"
       : [
             "anchored_roadstead",
@@ -94,15 +89,15 @@ export function StatusBadge({
       : ["berthed", "anchored_roadstead"].includes(status)
         ? Anchor
         : status === "sunk"
-          ? label === "Gone"
-            ? Circle
-            : goneFate === "broken_up"
-              ? Hammer
-              : goneFate === "royal_navy"
-                ? Flag
-                : goneFate && goneFate !== "lost_at_sea"
-                  ? AlertTriangle
-                  : Skull
+          ? fate === "broken_up"
+            ? Hammer
+            : fate === "royal_navy"
+              ? Flag
+              : fate === "captured" || fate?.startsWith("seized_")
+                ? AlertTriangle
+                : loss
+                  ? Skull
+                  : Circle
           : tone === "danger" || ["warning", "frozen"].includes(status)
             ? AlertTriangle
             : ["waiting", "pending", "held"].includes(status)

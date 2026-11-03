@@ -163,8 +163,22 @@ func TestRuntimeStartsHealthyAccountAndDashboardWithUnreadableCredentials(t *tes
 		}
 		healthyStarted := false
 		for _, account := range dashboard.Accounts {
-			if account.ID == broken.ID && len(account.Snapshot) != 0 {
-				t.Fatal("unreadable account unexpectedly ran and persisted a snapshot")
+			if account.ID == broken.ID {
+				if account.UpdatedAt != nil || len(account.Snapshot) != 1 || len(account.Snapshot["_meta"]) == 0 {
+					t.Fatal("unreadable account exposed persisted observation data")
+				}
+				var meta map[string]struct {
+					Complete bool   `json:"complete"`
+					Stale    bool   `json:"stale"`
+					Error    string `json:"error"`
+				}
+				if err := json.Unmarshal(account.Snapshot["_meta"], &meta); err != nil {
+					t.Fatal(err)
+				}
+				lossMeta, exists := meta["ship_losses"]
+				if !exists || lossMeta.Complete || !lossMeta.Stale || lossMeta.Error == "" {
+					t.Fatal("unreadable account did not disclose withheld loss history")
+				}
 			}
 			if account.ID == healthy.ID {
 				var state struct {
@@ -187,6 +201,10 @@ func TestRuntimeStartsHealthyAccountAndDashboardWithUnreadableCredentials(t *tes
 			t.Fatal("healthy runner never completed its initial observation")
 		case <-time.After(10 * time.Millisecond):
 		}
+	}
+	retained, err := db.Snapshot(ctx, broken.ID)
+	if err != nil || len(retained) != 0 {
+		t.Fatalf("unreadable account unexpectedly persisted a snapshot: %v", err)
 	}
 	skipped := logs.FilterMessage("skipping account with unreadable credentials").All()
 	if len(skipped) != 1 || skipped[0].Level != zap.ErrorLevel ||

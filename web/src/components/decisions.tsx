@@ -61,16 +61,18 @@ export function DecisionPanel({
     <div className={styles.workspace}>
       <ControllerSummary account={account} />
       <dl className={styles.facts} aria-label="Ship-scoped automation holds">
-        {ships.map((detail) => (
-          <div key={detail.ship.id}>
-            <dt>{detail.ship.name}</dt>
-            <dd>
-              <ShipCurrentHold
-                operation={shipOperation(account, detail, now)}
-              />
-            </dd>
-          </div>
-        ))}
+        {ships
+          .filter((detail) => detail.ship.status !== "sunk")
+          .map((detail) => (
+            <div key={detail.ship.id}>
+              <dt>{detail.ship.name}</dt>
+              <dd>
+                <ShipCurrentHold
+                  operation={shipOperation(account, detail, now)}
+                />
+              </dd>
+            </div>
+          ))}
         {controller.holds
           .filter(
             (hold) =>

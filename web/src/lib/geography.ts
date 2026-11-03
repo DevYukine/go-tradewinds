@@ -135,7 +135,10 @@ export function shipCoordinate(
   if (detail.ship.status !== "sailing") {
     return PORT_COORDINATES[detail.ship.current_port_id ?? ""];
   }
-  const leg = detail.route_legs?.[detail.ship.current_leg_idx];
+  const leg =
+    detail.ship.current_leg_idx === null
+      ? undefined
+      : detail.route_legs?.[detail.ship.current_leg_idx];
   if (!leg) {
     return undefined;
   }
@@ -254,7 +257,10 @@ export function shipPosition(
       : undefined;
   }
 
-  const leg = detail.route_legs?.[detail.ship.current_leg_idx];
+  const leg =
+    detail.ship.current_leg_idx === null
+      ? undefined
+      : detail.route_legs?.[detail.ship.current_leg_idx];
   const voyageKey = [
     detail.ship.current_leg_idx,
     leg?.from_node,

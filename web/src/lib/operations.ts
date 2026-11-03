@@ -155,15 +155,37 @@ export function controllerStatus(account: Account, now: number) {
   };
 }
 
+export function shipIsLoss(status: string, fate?: string | null): boolean {
+  return (
+    status === "sunk" &&
+    (!fate ||
+      fate === "unknown" ||
+      fate === "lost_at_sea" ||
+      fate === "captured")
+  );
+}
+
+export function shipRecordKind(
+  status: string,
+  fate?: string | null,
+): "loss" | "exit" | "absence" {
+  return shipIsLoss(status, fate)
+    ? "loss"
+    : fate === "missing"
+      ? "absence"
+      : "exit";
+}
+
 export function shipStatusLabel(status: string, fate?: string | null): string {
   if (status !== "sunk") {
     return humanize(status);
   }
   switch (fate) {
     case "lost_at_sea":
-      return "Lost at sea";
+    case "unknown":
+      return "Sunk";
     case "captured":
-      return "Captured by pirates";
+      return "Captured";
     case "seized_smuggling":
       return "Seized for smuggling";
     case "seized_bailiff":
@@ -173,10 +195,51 @@ export function shipStatusLabel(status: string, fate?: string | null): string {
     case "broken_up":
       return "Broken up";
     case "royal_navy":
-      return "Joined the Royal Navy";
+      return "Commissioned to the Royal Navy";
+    case "missing":
+      return "Missing from fleet list";
     default:
       return fate ? "Gone" : "Sunk";
   }
+}
+
+export function catalogPlaceName(
+  catalog: Catalog | undefined,
+  id: string | null | undefined,
+): string {
+  return (
+    catalog?.ports.find((port) => port.id === id)?.name ??
+    catalog?.sea_zones.find((zone) => zone.id === id)?.name ??
+    humanize(id)
+  );
+}
+
+export function shipLastLocation(
+  detail: ShipDetail,
+  catalog?: Catalog,
+): string {
+  const loss = detail.loss;
+  if (loss) {
+    if (loss.last_port_id) {
+      return `Last afloat: ${catalogPlaceName(catalog, loss.last_port_id)}`;
+    }
+    return loss.last_sea_zone_id
+      ? `At sea near ${catalogPlaceName(catalog, loss.last_sea_zone_id)} (approximate)`
+      : "Last afloat location not recorded";
+  }
+  return detail.ship.current_port_id
+    ? `Game-reported last port: ${catalogPlaceName(catalog, detail.ship.current_port_id)}`
+    : "Last afloat location not recorded";
+}
+
+export function cargoEntries(
+  manifest: ShipDetail["cargo_manifest"] | undefined,
+): [string, number][] | undefined {
+  return manifest
+    ? Object.entries(manifest).filter(
+        ([, quantity]) => Number.isFinite(quantity) && quantity > 0,
+      )
+    : undefined;
 }
 
 export function shipOperation(
@@ -190,24 +253,26 @@ export function shipOperation(
   const controllerGeneration = metadata(account, "_engine").generation;
   const controller = controllerStatus(account, now);
   const catalog = dataset<Catalog>(account, "catalog");
-  const portName = (id: string) =>
-    catalog?.ports.find((port) => port.id === id)?.name ?? humanize(id);
+  const portName = (id: string) => catalogPlaceName(catalog, id);
   const sailing = detail.ship.status === "sailing";
+  const gone = detail.ship.status === "sunk";
   const origin = detail.route_legs?.[0]?.from_node;
   const destination = detail.route_legs?.at(-1)?.to_node;
-  const route = sailing
-    ? origin && destination
-      ? `${portName(origin)} to ${portName(destination)}`
-      : destination
-        ? `To ${portName(destination)}`
-        : "Route not recorded"
-    : detail.ship.current_port_id
-      ? portName(detail.ship.current_port_id)
-      : "Port not recorded";
-  const manifest = detail.cargo_manifest;
-  const cargo = manifest
-    ? Object.entries(manifest)
-        .filter(([, quantity]) => Number.isFinite(quantity) && quantity > 0)
+  const route = gone
+    ? shipLastLocation(detail, catalog)
+    : sailing
+      ? origin && destination
+        ? `${portName(origin)} to ${portName(destination)}`
+        : destination
+          ? `To ${portName(destination)}`
+          : "Route not recorded"
+      : detail.ship.current_port_id
+        ? portName(detail.ship.current_port_id)
+        : "Port not recorded";
+  const manifest = gone ? detail.loss?.cargo_manifest : detail.cargo_manifest;
+  const entries = cargoEntries(manifest);
+  const cargo = entries
+    ? entries
         .map(
           ([commodity, quantity]) =>
             `${count(quantity)} t ${catalog?.commodities.find((item) => item.id === commodity)?.name ?? humanize(commodity)}`,
@@ -218,10 +283,16 @@ export function shipOperation(
     observation,
     activity: shipStatusLabel(detail.ship.status, detail.ship.fate),
     route,
-    cargo,
-    starving: Boolean(detail.voyage?.legs?.some((leg) => leg.starving)),
+    cargo: gone
+      ? manifest
+        ? `Last afloat: ${cargo}`
+        : "Last afloat cargo not recorded"
+      : cargo,
+    starving:
+      !gone && Boolean(detail.voyage?.legs?.some((leg) => leg.starving)),
     holds: controller.holds.filter((hold) => hold.ship_id === detail.ship.id),
     holdsCurrent:
+      !gone &&
       observation.current &&
       controller.observation.current &&
       controller.holdsValid &&
