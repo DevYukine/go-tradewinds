@@ -30,6 +30,7 @@ vi.mock("@/lib/ui-store", () => ({
       moneyHistory: {
         series: state.series,
         range: "24h",
+        period: "auto",
         from: "",
         to: "",
       },
@@ -88,7 +89,7 @@ describe("settlement performance evidence", () => {
     expect(html).toContain("Gross revenueProceeds unknown");
     expect(html).toContain("Known-cost net+14.00 Cr");
     expect(html).toContain(
-      "1 populated 1-hour periods from 2 completed settlements.",
+      "1 populated UTC hour periods from 2 completed settlements.",
     );
     expect(html).toContain(
       "Unknown proceeds keep total gross unknown; affected gross chart periods are omitted.",
@@ -157,7 +158,7 @@ describe("settlement performance evidence", () => {
     expect(html).toContain("Range real net-3.01 Cr");
     expect(html).toContain("Average per day-3.01 Cr");
     expect(html).toContain(
-      "1 populated 1-hour periods from 0 completed settlements and recorded company flows.",
+      "1 populated UTC hour periods from 0 completed settlements and recorded company flows.",
     );
     expect(html).not.toContain("earlier periods show settlement net only");
     expect(html).not.toContain("Faded bars: settlement net only");

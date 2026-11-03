@@ -10,6 +10,7 @@ import {
   moneyAxisTicks,
   moneyPoints,
   settlementTotals,
+  type MoneyPeriodWidth,
   type MoneyPreferences,
   type MoneySeries,
 } from "@/lib/money-history";
@@ -219,13 +220,29 @@ export function Performance({ accountID }: { accountID: string }) {
     history.data &&
     (companyCoverage === null ||
       (companyCoverage !== undefined && start < Date.parse(companyCoverage)));
-  const periodLabel = history.data
-    ? history.data.bucket_seconds < 3600
-      ? `${history.data.bucket_seconds / 60}-minute`
-      : history.data.bucket_seconds < 86400
-        ? `${history.data.bucket_seconds / 3600}-hour`
-        : `${history.data.bucket_seconds / 86400}-day`
-    : "";
+  const bucketSeconds = history.data?.bucket_seconds;
+  const periodLabel =
+    bucketSeconds === undefined
+      ? ""
+      : bucketSeconds === 3600
+        ? "UTC hour"
+        : bucketSeconds === 86400
+          ? "UTC day"
+          : bucketSeconds < 3600
+            ? `${bucketSeconds / 60}-minute`
+            : bucketSeconds < 86400
+              ? `${bucketSeconds / 3600}-hour`
+              : `${bucketSeconds / 86400}-day`;
+  const requestedSeconds =
+    preferences.period === "hour"
+      ? 3600
+      : preferences.period === "day"
+        ? 86400
+        : undefined;
+  const periodFallback =
+    requestedSeconds !== undefined &&
+    bucketSeconds !== undefined &&
+    bucketSeconds !== requestedSeconds;
 
   return (
     <Section
@@ -260,6 +277,22 @@ export function Performance({ accountID }: { accountID: string }) {
               <option value="cash_outflow_pence">Ledger cash outflow</option>
               <option value="expenses_pence">Ledger fees &amp; bills</option>
             </optgroup>
+          </select>
+        </label>
+        <label className={styles.metric}>
+          Period
+          <select
+            value={preferences.period}
+            onChange={(event) => {
+              setPreferences({
+                period: event.target.value as MoneyPeriodWidth,
+              });
+              setSelectedID(null);
+            }}
+          >
+            <option value="auto">Automatic</option>
+            <option value="hour">Per hour</option>
+            <option value="day">Per day (UTC)</option>
           </select>
         </label>
         <HistoryRange
@@ -405,6 +438,11 @@ export function Performance({ accountID }: { accountID: string }) {
             ? `No leaderboard valuation recorded for over two hours; latest ${dateTime(last.at)}. `
             : `Balance observations are stale; latest recorded ${dateTime(last.at)}. `
           : ""}
+        {periodFallback && (
+          <span role="status">
+            {`This range has too many ${preferences.period === "hour" ? "hours" : "days"} to draw one bar each; showing ${periodLabel} periods instead. `}
+          </span>
+        )}
         {profitSeries && partialCompanyCoverage && (
           <span>
             {companyCoverage

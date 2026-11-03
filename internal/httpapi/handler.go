@@ -190,11 +190,27 @@ func (h *handler) moneyHistory(ctx context.Context, w http.ResponseWriter, r *ht
 		h.failure(w, http.StatusBadRequest, "invalid_range", "from and to require range=custom.")
 		return
 	}
+	var period int64
+	switch query.Get("period") {
+	case "", "auto":
+	case "hour":
+		period = 3600
+	case "day":
+		period = 86400
+	default:
+		h.failure(w, http.StatusBadRequest, "invalid_period", "period must be auto, hour, or day.")
+		return
+	}
+	// Rolling presets start mid-period; start at the UTC hour or day boundary so
+	// the first bar is a whole period. Custom bounds stay exactly as requested.
+	if period > 0 && !from.IsZero() && query.Get("range") != "custom" {
+		from = from.Truncate(time.Duration(period) * time.Second)
+	}
 	if h.store == nil {
 		h.failure(w, http.StatusServiceUnavailable, "database_unavailable", "PostgreSQL is not ready.")
 		return
 	}
-	data, err := h.store.MoneyHistory(ctx, accountID, from, to)
+	data, err := h.store.MoneyHistory(ctx, accountID, from, to, period)
 	if err != nil {
 		h.readError(ctx, w, "money history", err)
 		return

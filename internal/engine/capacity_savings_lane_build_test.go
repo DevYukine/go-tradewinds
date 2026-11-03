@@ -220,7 +220,7 @@ func TestCapacitySavingsLaneBuildHonorsExactAffordableTarget(t *testing.T) {
 					t.Fatalf("B funding did not consume its measured receipt: %+v %+v", treasury, transfer)
 				}
 				// A treasury fee is in no settlement, so real net must carry it once.
-				history, err := h.db.MoneyHistory(h.ctx, h.account.ID, time.Time{}, time.Now().Add(time.Minute))
+				history, err := h.db.MoneyHistory(h.ctx, h.account.ID, time.Time{}, time.Now().Add(time.Minute), 0)
 				if err != nil {
 					t.Fatal(err)
 				}

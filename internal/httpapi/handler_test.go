@@ -48,6 +48,8 @@ func TestReadOnlyRoutesAndTruthfulUnavailableResponses(t *testing.T) {
 		{name: "money reversed range rejected", method: "GET", path: "/api/money-history?account_id=one&range=custom&from=2026-10-25T12:00:00Z&to=2026-10-24T12:00:00Z", status: 400, body: `"error":"invalid_range"`},
 		{name: "money custom dates respected", method: "GET", path: "/api/money-history?account_id=one&range=custom&from=2026-10-24T12:00:00%2B02:00&to=2026-10-25T12:00:00Z", status: 503, body: `"error":"database_unavailable"`},
 		{name: "money dates need custom mode", method: "GET", path: "/api/money-history?account_id=one&range=24h&from=2026-10-24T12:00:00Z", status: 400, body: `"error":"invalid_range"`},
+		{name: "money period rejected", method: "GET", path: "/api/money-history?account_id=one&range=all&period=week", status: 400, body: `"error":"invalid_period"`},
+		{name: "money day period accepted", method: "GET", path: "/api/money-history?account_id=one&range=all&period=day", status: 503, body: `"error":"database_unavailable"`},
 		{name: "standings all unavailable", method: "GET", path: "/api/standings-history?account_id=one&range=all", status: 503, body: `"error":"database_unavailable"`},
 		{name: "standings 24h unavailable", method: "GET", path: "/api/standings-history?account_id=one&range=24h", status: 503, body: `"error":"database_unavailable"`},
 		{name: "standings 7d unavailable", method: "GET", path: "/api/standings-history?account_id=one&range=7d", status: 503, body: `"error":"database_unavailable"`},

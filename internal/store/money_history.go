@@ -66,10 +66,17 @@ func moneyBucketSeconds(spanSeconds int64) int64 {
 	return spanSeconds/480 + 1
 }
 
+// maxMoneyBuckets bounds a requested fixed period so a long range cannot turn
+// into an unreadable chart or an expensive per-bucket metric scan; wider ranges
+// fall back to the automatic width.
+const maxMoneyBuckets = 1000
+
 // MoneyHistory reads the inclusive host-time range in one consistent snapshot.
 // A zero from means all recorded history up to to, not the latest 500 records.
-func (s *Store) MoneyHistory(ctx context.Context, accountID string, from, to time.Time) (MoneyHistory, error) {
-	if !validID(accountID) || to.IsZero() || !from.IsZero() && from.After(to) {
+// A positive periodSeconds fixes the bucket width (for example one hour or one
+// day); zero picks a width that fits about 480 buckets.
+func (s *Store) MoneyHistory(ctx context.Context, accountID string, from, to time.Time, periodSeconds int64) (MoneyHistory, error) {
+	if !validID(accountID) || to.IsZero() || !from.IsZero() && from.After(to) || periodSeconds < 0 {
 		return MoneyHistory{}, fmt.Errorf("money history range: %w", ErrInvalidInput)
 	}
 	result := MoneyHistory{
@@ -111,7 +118,12 @@ func (s *Store) MoneyHistory(ctx context.Context, accountID string, from, to tim
 				result.From = first.Time.UTC()
 			}
 		}
-		result.BucketSeconds = moneyBucketSeconds(result.To.Unix() - result.From.Unix() + 1)
+		span := result.To.Unix() - result.From.Unix() + 1
+		result.BucketSeconds = moneyBucketSeconds(span)
+		// Unaligned bounds add up to two partial edge buckets.
+		if periodSeconds > 0 && span/periodSeconds+2 <= maxMoneyBuckets {
+			result.BucketSeconds = periodSeconds
+		}
 		// Each bucket probes metrics_latest_idx for one actual observation per
 		// series. Work stays bounded as retained metric history grows; overlapping
 		// ledger snapshots are neither summed nor scanned for a coverage count.

@@ -141,7 +141,7 @@ func TestPassengerPendingReceiptNullProceedsExcludedFromMeasuredRates(t *testing
 		history.PositiveCycles != 0 || history.PositiveNetPence != 0 || history.PositiveGameSeconds != 0 || history.GameSeconds != 0 {
 		t.Fatalf("unknown passenger proceeds contributed measured realization: %+v %v", history, err)
 	}
-	money, err := database.MoneyHistory(ctx, accountID, now.Add(-time.Minute), now.Add(time.Second))
+	money, err := database.MoneyHistory(ctx, accountID, now.Add(-time.Minute), now.Add(time.Second), 0)
 	if err != nil || len(money.Settlements) != 1 || money.Settlements[0].UnknownProceedsCount != 1 ||
 		money.Settlements[0].KnownCount != 0 || money.Settlements[0].NetPence != nil || money.Settlements[0].CostsPence != nil {
 		t.Fatalf("money history misclassified unknown receipt: %+v %v", money, err)

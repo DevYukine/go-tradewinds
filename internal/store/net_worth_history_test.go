@@ -76,7 +76,7 @@ func TestNetWorthHistoryRecordsOwnHourlyValuationsOnce(t *testing.T) {
 		t.Fatalf("net worth metrics = %v, want 2,000 at %s and 2,500 at %s", got, first, second)
 	}
 
-	history, err := db.MoneyHistory(ctx, "one", time.Time{}, time.Now().UTC())
+	history, err := db.MoneyHistory(ctx, "one", time.Time{}, time.Now().UTC(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -40,7 +40,7 @@ func TestMoneyHistoryKeepsSparseSettlementsAndBoundsEachSeries(t *testing.T) {
 		t.Fatal(err)
 	}
 	putEconomicEvidence(t, db, "money-other", "money-other", "spot", "other", 1, 999999, 0, true, nil)
-	history, err := db.MoneyHistory(ctx, account, base, base.Add(24*time.Hour))
+	history, err := db.MoneyHistory(ctx, account, base, base.Add(24*time.Hour), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestMoneyHistoryKeepsSparseSettlementsAndBoundsEachSeries(t *testing.T) {
 	if history.Metrics[len(history.Metrics)-1].Value != 799 {
 		t.Fatal("balance buckets must retain the last observation, not a sum")
 	}
-	custom, err := db.MoneyHistory(ctx, account, base.Add(3*time.Hour), base.Add(4*time.Hour))
+	custom, err := db.MoneyHistory(ctx, account, base.Add(3*time.Hour), base.Add(4*time.Hour), 0)
 	if err != nil || len(custom.Settlements) != 2 || len(custom.Metrics) != 0 {
 		t.Fatalf("inclusive custom bounds ignored: %+v, %v", custom, err)
 	}
@@ -77,13 +77,32 @@ func TestMoneyHistoryKeepsSparseSettlementsAndBoundsEachSeries(t *testing.T) {
 			t.Fatalf("partial period exceeds requested bounds: %+v", period)
 		}
 	}
-	all, err := db.MoneyHistory(ctx, account, time.Time{}, base.Add(24*time.Hour))
+	all, err := db.MoneyHistory(ctx, account, time.Time{}, base.Add(24*time.Hour), 0)
 	if err != nil || !all.From.Equal(base) || len(all.Settlements) != 13 {
 		t.Fatalf("all history was not the full recorded range: %+v, %v", all, err)
 	}
-	empty, err := db.MoneyHistory(ctx, account, base.Add(-time.Hour), base.Add(-time.Minute))
+	empty, err := db.MoneyHistory(ctx, account, base.Add(-time.Hour), base.Add(-time.Minute), 0)
 	if err != nil || len(empty.Metrics) != 0 || len(empty.Settlements) != 0 {
 		t.Fatalf("missing history was fabricated: %+v, %v", empty, err)
+	}
+	daily, err := db.MoneyHistory(ctx, account, base.Add(-48*time.Hour), base.Add(24*time.Hour), 86400)
+	if err != nil || daily.BucketSeconds != 86400 || len(daily.Settlements) != 1 ||
+		!daily.Settlements[0].At.Equal(base) || daily.Settlements[0].Count != 13 ||
+		daily.Settlements[0].NetPence == nil || *daily.Settlements[0].NetPence != 11*400-500 {
+		t.Fatalf("day period did not sum the UTC day: %+v, %v", daily, err)
+	}
+	hourly, err := db.MoneyHistory(ctx, account, base, base.Add(24*time.Hour), 3600)
+	if err != nil || hourly.BucketSeconds != 3600 || len(hourly.Settlements) != 13 {
+		t.Fatalf("hour period did not give one bucket per hour: %+v, %v", hourly, err)
+	}
+	for _, period := range hourly.Settlements {
+		if !period.At.Equal(period.At.Truncate(time.Hour)) || !period.To.Equal(period.At.Add(time.Hour)) {
+			t.Fatalf("hour period is not a whole UTC hour: %+v", period)
+		}
+	}
+	bounded, err := db.MoneyHistory(ctx, account, base, base.Add(24*time.Hour), 1)
+	if err != nil || bounded.BucketSeconds != moneyBucketSeconds(24*3600+1) {
+		t.Fatalf("a period finer than the bucket bound was not replaced by the automatic width: %+v, %v", bounded.BucketSeconds, err)
 	}
 }
 
@@ -113,7 +132,7 @@ func TestMoneyHistoryUsesUTCBucketsAndClampsEdgePeriods(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	history, err := db.MoneyHistory(context.Background(), account, from, to)
+	history, err := db.MoneyHistory(context.Background(), account, from, to, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +158,7 @@ func TestMoneyHistoryRejectsInvalidBounds(t *testing.T) {
 		{"account", time.Time{}, time.Time{}},
 		{"account", time.Now(), time.Now().Add(-time.Hour)},
 	} {
-		if _, err := (*Store)(nil).MoneyHistory(context.Background(), test.account, test.from, test.to); err == nil {
+		if _, err := (*Store)(nil).MoneyHistory(context.Background(), test.account, test.from, test.to, 0); err == nil {
 			t.Fatal("invalid money history query accepted")
 		}
 	}

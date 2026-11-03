@@ -34,7 +34,7 @@ func TestCompanyFlowsSyncIsIdempotentAndAccountScoped(t *testing.T) {
 	if err := db.Prune(ctx); err != nil {
 		t.Fatal(err)
 	}
-	history, err := db.MoneyHistory(ctx, account, time.Time{}, at.Add(24*time.Hour))
+	history, err := db.MoneyHistory(ctx, account, time.Time{}, at.Add(24*time.Hour), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,12 +49,12 @@ func TestCompanyFlowsSyncIsIdempotentAndAccountScoped(t *testing.T) {
 	if err := db.SyncCompanyFlows(ctx, account, nil, []string{"upkeep"}); err != nil {
 		t.Fatal(err)
 	}
-	history, err = db.MoneyHistory(ctx, account, time.Time{}, at.Add(24*time.Hour))
+	history, err = db.MoneyHistory(ctx, account, time.Time{}, at.Add(24*time.Hour), 0)
 	if err != nil || len(history.CompanyFlows) != 1 || history.CompanyFlows[0].Pence != 300 ||
 		history.CompanyFlowsFrom == nil || !history.CompanyFlowsFrom.Equal(at.Add(time.Hour)) {
 		t.Fatalf("claimed expense was not removed: %+v, %v", history, err)
 	}
-	other, err := db.MoneyHistory(ctx, "company-other", time.Time{}, at.Add(24*time.Hour))
+	other, err := db.MoneyHistory(ctx, "company-other", time.Time{}, at.Add(24*time.Hour), 0)
 	if err != nil || len(other.CompanyFlows) != 1 || other.CompanyFlows[0].Pence != -900 {
 		t.Fatalf("expense removal crossed account boundary: %+v, %v", other, err)
 	}
@@ -102,7 +102,7 @@ func TestMoneyHistoryCompanyFlowsShareUTCBucketsAndCoverage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	history, err := db.MoneyHistory(ctx, account, from, to)
+	history, err := db.MoneyHistory(ctx, account, from, to, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,11 +122,11 @@ func TestMoneyHistoryCompanyFlowsShareUTCBucketsAndCoverage(t *testing.T) {
 	if !history.CompanyFlows[0].At.Equal(from) || !history.CompanyFlows[3].To.Equal(to) {
 		t.Fatalf("company-flow edge buckets were not clamped: %+v", history.CompanyFlows)
 	}
-	all, err := db.MoneyHistory(ctx, account, time.Time{}, to)
+	all, err := db.MoneyHistory(ctx, account, time.Time{}, to, 0)
 	if err != nil || !all.From.Equal(earliest) {
 		t.Fatalf("all history omitted its earliest company flow: %+v, %v", all, err)
 	}
-	before, err := db.MoneyHistory(ctx, account, earliest.Add(-24*time.Hour), earliest.Add(-time.Hour))
+	before, err := db.MoneyHistory(ctx, account, earliest.Add(-24*time.Hour), earliest.Add(-time.Hour), 0)
 	if err != nil || before.CompanyFlows == nil || len(before.CompanyFlows) != 0 ||
 		before.CompanyFlowsFrom == nil || !before.CompanyFlowsFrom.Equal(earliest) {
 		t.Fatalf("coverage depended on the requested range: %+v, %v", before, err)
@@ -138,7 +138,7 @@ func TestMoneyHistoryCompanyFlowsEmptyJSON(t *testing.T) {
 	const account = "company-empty"
 	saveTestAccount(t, db, account)
 	now := time.Now().UTC()
-	history, err := db.MoneyHistory(context.Background(), account, now.Add(-time.Hour), now)
+	history, err := db.MoneyHistory(context.Background(), account, now.Add(-time.Hour), now, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

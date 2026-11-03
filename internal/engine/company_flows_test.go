@@ -135,7 +135,7 @@ func TestCompanyFlowRecorderBackfillsOnceAndRemovesClaimedBillsAcrossRestart(t *
 	}
 	read := func(wantCount, wantNet int64) store.MoneyHistory {
 		t.Helper()
-		history, err := h.db.MoneyHistory(h.ctx, h.account.ID, time.Time{}, now.Add(time.Minute))
+		history, err := h.db.MoneyHistory(h.ctx, h.account.ID, time.Time{}, now.Add(time.Minute), 0)
 		if err != nil {
 			t.Fatal(err)
 		}

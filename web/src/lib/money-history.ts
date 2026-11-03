@@ -14,10 +14,13 @@ const MONEY_SERIES = [
   "expenses_pence",
 ] as const;
 export type MoneySeries = (typeof MONEY_SERIES)[number];
+const MONEY_PERIODS = ["auto", "hour", "day"] as const;
+export type MoneyPeriodWidth = (typeof MONEY_PERIODS)[number];
 
 export interface MoneyPreferences {
   series: MoneySeries;
   range: MoneyRange;
+  period: MoneyPeriodWidth;
   from: string;
   to: string;
 }
@@ -25,6 +28,7 @@ export interface MoneyPreferences {
 export const DEFAULT_MONEY_PREFERENCES: MoneyPreferences = {
   series: "real_net",
   range: "24h",
+  period: "auto",
   from: "",
   to: "",
 };
@@ -40,12 +44,15 @@ export function restoreMoneyPreferences(value: unknown): MoneyPreferences {
   let range =
     MONEY_RANGES.find((item) => item === preferences.range) ??
     DEFAULT_MONEY_PREFERENCES.range;
+  const period =
+    MONEY_PERIODS.find((item) => item === preferences.period) ??
+    DEFAULT_MONEY_PREFERENCES.period;
   const from = typeof preferences.from === "string" ? preferences.from : "";
   const to = typeof preferences.to === "string" ? preferences.to : "";
   if (range === "custom" && !customMoneyRange(from, to)) {
     range = DEFAULT_MONEY_PREFERENCES.range;
   }
-  return { series, range, from, to };
+  return { series, range, period, from, to };
 }
 
 export function customMoneyRange(from: string, to: string) {

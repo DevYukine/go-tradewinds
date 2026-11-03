@@ -269,6 +269,7 @@ describe("persisted money preferences", () => {
     expect(restoreMoneyPreferences(null)).toEqual({
       series: "real_net",
       range: "24h",
+      period: "auto",
       from: "",
       to: "",
     });
@@ -276,10 +277,12 @@ describe("persisted money preferences", () => {
       restoreMoneyPreferences({
         series: "deleted-series",
         range: "deleted-range",
+        period: "week",
       }),
     ).toEqual({
       series: "real_net",
       range: "24h",
+      period: "auto",
       from: "",
       to: "",
     });
@@ -293,14 +296,20 @@ describe("persisted money preferences", () => {
     ).toEqual({
       series: "cumulative_net",
       range: "24h",
+      period: "auto",
       from: "2026-10-25T11:45",
       to: "2026-10-24T10:15",
     });
     expect(
-      restoreMoneyPreferences({ series: "liquid_funds_pence", range: "7d" }),
+      restoreMoneyPreferences({
+        series: "liquid_funds_pence",
+        range: "7d",
+        period: "day",
+      }),
     ).toEqual({
       series: "liquid_funds_pence",
       range: "7d",
+      period: "day",
       from: "",
       to: "",
     });
@@ -363,6 +372,7 @@ it("persists only UI preferences and restores them after hydration", async () =>
   const preferences = {
     series: "settlement_net" as const,
     range: "custom" as const,
+    period: "day" as const,
     from: "2026-10-24T10:15",
     to: "2026-10-25T11:45",
   };
@@ -387,6 +397,7 @@ it("persists only UI preferences and restores them after hydration", async () =>
   expect(restored.getState().moneyHistory).toEqual({
     series: "real_net",
     range: "24h",
+    period: "auto",
     from: "",
     to: "",
   });

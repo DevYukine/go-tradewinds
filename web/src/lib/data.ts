@@ -87,6 +87,7 @@ export function useMoneyHistory(
       "money-history",
       accountID,
       preferences.range,
+      preferences.period,
       custom?.from,
       custom?.to,
     ],
@@ -94,6 +95,7 @@ export function useMoneyHistory(
       const query = new URLSearchParams({
         account_id: accountID,
         range: preferences.range,
+        period: preferences.period,
         ...(custom ?? {}),
       });
       return fetchJSON<MoneyHistory>(`/api/money-history?${query}`, signal);
