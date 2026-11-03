@@ -17,6 +17,7 @@ import (
 
 const americaFlagshipMission = "__america_flagship"
 const americaFlagshipQuoteRetry = 30 * time.Minute
+const krakenCompanyID = "01a16469-7564-711d-b8da-e69d7d73e623"
 
 // A request is open only 72 game hours (72 real minutes at time scale 60), so
 // a lapsed one is reposted quickly to keep it visible to lenders.
@@ -263,7 +264,7 @@ func (r *Runner) americaFlagshipLender(request gameapi.LoanRequestView, intent *
 	}
 	var best *gameapi.LoanQuote
 	kraken := func(q *gameapi.LoanQuote) bool {
-		return q.LenderCompanyID == "01a16469-7564-711d-b8da-e69d7d73e623" || strings.EqualFold(q.LenderName, "The Kraken Cartel") || strings.EqualFold(q.LenderName, "Kraken Cartel")
+		return q.LenderCompanyID == krakenCompanyID || strings.EqualFold(q.LenderName, "The Kraken Cartel") || strings.EqualFold(q.LenderName, "Kraken Cartel")
 	}
 	for index := range request.Quotes {
 		quote := &request.Quotes[index]

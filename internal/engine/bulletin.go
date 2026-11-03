@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,32 +20,54 @@ import (
 )
 
 const (
-	bulletinInterval          = 12 * time.Hour
+	bulletinInterval          = 24 * time.Hour
 	bulletinRetryDelay        = 15 * time.Minute
 	bulletinRequestBudget     = 2 * time.Second
 	bulletinReplyHistoryLimit = 128
+	bulletinDailyReplies      = 2
 	bulletinPageLimit         = 100
 	bulletinCursorLimit       = 4096
+	bulletinDetailLimit       = 3
+	bulletinHistoryLimit      = 500
 )
 
 type bulletinState struct {
-	LastPostID       string             `json:"last_post_id,omitempty"`
-	LastPostAt       time.Time          `json:"last_post_at"`
-	NextDue          time.Time          `json:"next_due"`
-	CooldownUntil    time.Time          `json:"cooldown_until"`
-	ThreadCursor     int                `json:"thread_cursor"`
-	ReplyCursor      int                `json:"reply_cursor"`
-	NextReply        bool               `json:"next_reply"`
-	RepliedThreadIDs []string           `json:"replied_thread_ids,omitempty"`
-	LastOutcomeID    string             `json:"last_outcome_id,omitempty"`
-	ReplyScan        *bulletinReplyScan `json:"reply_scan,omitempty"`
+	LastPostID        string                         `json:"last_post_id,omitempty"`
+	LastPostAt        time.Time                      `json:"last_post_at"`
+	NextDue           time.Time                      `json:"next_due"`
+	CooldownUntil     time.Time                      `json:"cooldown_until"`
+	DiscussedItems    map[string]time.Time           `json:"discussed_items,omitempty"`
+	DiscussedSubjects map[string]time.Time           `json:"discussed_subjects,omitempty"`
+	CheckedThreads    map[string]bulletinThreadCheck `json:"thread_checks,omitempty"`
+	TotalReplies      uint64                         `json:"total_replies,omitempty"`
+	LeaderBaseline    string                         `json:"leader_baseline,omitempty"`
+	LeaderSeason      int32                          `json:"leader_season,omitempty"`
+	LeaderChange      *bulletinItem                  `json:"leader_change,omitempty"`
+	ReplyTimes        []time.Time                    `json:"reply_times,omitempty"`
+	Replies           map[string]bulletinReply       `json:"replies,omitempty"`
+	ReplyCheckAfter   time.Time                      `json:"reply_check_after"`
+	OpeningCheckAfter time.Time                      `json:"opening_check_after"`
+	LastOutcomeID     string                         `json:"last_outcome_id,omitempty"`
+	ReplyScan         *bulletinReplyScan             `json:"reply_scan,omitempty"`
+}
+
+type bulletinThreadCheck struct {
+	LastPostAt time.Time `json:"last_post_at"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+type bulletinReply struct {
+	At         time.Time `json:"at"`
+	ObservedAt time.Time `json:"observed_at"`
+	Count      int       `json:"count"`
 }
 
 type bulletinReplyScan struct {
-	Since      time.Time `json:"since"`
-	Cursor     string    `json:"cursor,omitempty"`
-	Candidates []string  `json:"candidates,omitempty"`
-	Complete   bool      `json:"complete"`
+	Since      time.Time            `json:"since"`
+	Cursor     string               `json:"cursor,omitempty"`
+	Candidates []string             `json:"candidates,omitempty"`
+	LastPostAt map[string]time.Time `json:"last_post_at,omitempty"`
+	Complete   bool                 `json:"complete"`
 }
 
 type bulletinReconcileScan struct {
@@ -59,8 +82,8 @@ type bulletinIntent struct {
 	Title            string                 `json:"title,omitempty"`
 	Body             string                 `json:"body"`
 	ThreadID         string                 `json:"thread_id,omitempty"`
-	TemplateIndex    int                    `json:"template_index"`
-	ReplyTurn        bool                   `json:"reply_turn"`
+	ItemID           string                 `json:"item_id,omitempty"`
+	Content          bulletinContent        `json:"content"`
 	NotBefore        time.Time              `json:"not_before"`
 	BeforeIDs        []string               `json:"before_ids,omitempty"`
 	ReconcilePending bool                   `json:"reconcile_pending,omitempty"`
@@ -108,191 +131,6 @@ type bulletinDetail struct {
 	Posts  []bulletinPost `json:"posts"`
 }
 
-type bulletinTemplate struct {
-	Title string
-	Body  string
-}
-
-var bulletinThreads = []bulletinTemplate{
-	{"On the freedom of the seas", "The Pokemon Pirates hold that open water belongs to every honest hull. Customs houses may tax a cargo, but no harbour should own the sea lanes between them. We stand with The Kraken Cartel in defending free passage for all traders."},
-	{"A word on harbour dues", "Harbour dues should pay for berths, lights and pilots, not fill a treasury that never dredges a channel. We ask every port authority to publish what its dues actually fund. Traders who pay deserve to know."},
-	{"The Admiralty and the merchant fleet", "The Admiralty protects the lanes because merchants keep the Crown solvent. That bargain only holds if commissions are fairly priced and openly listed. We support The Kraken Cartel's call for clear Admiralty terms."},
-	{"Why we back the expansion", "New harbours in the Americas mean new markets, new yards and fewer captains fighting over the same berth at Portsmouth. The Pokemon Pirates back the expansion effort and the allies funding it, The Kraken Cartel first among them."},
-	{"Credit is a public good", "When credit is scarce, only the largest houses can build. When lenders compete, every honest company can grow. We welcome more lenders on the board and thank The Kraken Cartel for offering terms to smaller fleets."},
-	{"Against the customs ladder", "A customs ladder that climbs with every ton punishes the very traders who keep ports supplied. We favour flat, published duties that a captain can price before leaving port. Predictable rules build trade."},
-	{"Piracy is a tax on everyone", "Every raider prize is paid for by the next cargo's insurance premium. Piracy is not a private quarrel between a raider and a merchant. It is a cost borne by the whole board, and the whole board should resist it."},
-	{"On letters of marque", "A letter of marque turns a pirate into a policeman for the season. We accept them as a necessary tool, but zones should be issued with restraint. Flooding a coast with privateers drives honest carriers away."},
-	{"A charter for fair freight", "We propose a simple standard: freight contracts should state quantity, deadline and penalty in plain terms, and penalties should match the harm done. The Kraken Cartel's freight desk already works this way. Others should follow."},
-	{"The case for open order books", "Hidden books reward whoever can afford to look first. Published depth lets small fleets plan voyages and keeps prices honest. We support every measure that brings more of the market into daylight."},
-	{"Regional treasuries and the cost of moving money", "Moving money between regions should not cost more than moving the cargo it pays for. Bank drafts were a step forward. We would welcome further competition among the banks that carry remittances."},
-	{"An alliance worth keeping", "The Pokemon Pirates and The Kraken Cartel do not agree on everything. We agree that the sea is large, that fair dealing pays, and that allies who keep their word are worth more than a full hold. That is enough."},
-	{"On the Crown's commissions", "When the Crown commissions hulls, the yards that build them should be paid promptly and in full. A navy that pays late will find its hulls built late. We back prompt settlement of every Admiralty commission."},
-	{"Insurance should price risk, not fear", "Lloyd's premiums ought to follow measured losses on a route. When premiums run far above recorded claims, merchants sail uninsured and everyone is poorer for it. We welcome the recent cuts and ask for more transparency."},
-	{"Wages for the crews who carry the realm", "No cargo crosses the sea without a crew. Companies that skimp on stores and wages lose ships, and lost ships raise everyone's insurance. Feed your crews properly. It is policy, not charity."},
-	{"Expansion should reward builders", "The companies that build hulls in new regions take the first risks. Port authorities in the Americas should remember who came first when berth rights are allocated. We ask for fair treatment of early builders."},
-	{"Against monopoly on any lane", "No single house should hold every berth on a lane. Competition keeps freight rates honest and keeps ports supplied. We will always prefer a crowded lane to a captured one."},
-	{"A plain statement of our aims", "The Pokemon Pirates trade to grow, build ships to carry more, and back allies who do the same. We do not raid, we do not hoard berths, and we pay our debts on schedule. We expect the same of our rivals."},
-	{"The case for smaller, steadier repayments", "Lenders and borrowers both sleep better when a loan is repaid in steady instalments rather than one great sum at maturity. We favour amortised terms and thank The Kraken Cartel for championing them."},
-	{"On sealed freight and trust", "Sealed freight works because carriers deliver what they were given. Every broken seal costs the whole trade some trust. We support firm penalties for tampering and fair hearings for honest delays."},
-	{"Why stores matter to the realm", "A ship that runs short of water and beer is a ship that limps into the wrong harbour. Provisioning standards protect crews and cargo alike. We encourage every company to carry the safe minimum and then some."},
-	{"The quiet value of factors", "A factor in port is a merchant's eyes and ears. Ports that make hiring factors simple attract more trade. We would welcome lower factor fees in the new American harbours."},
-	{"A fair hearing for every company", "The board should be a place for honest argument, not insults. We will debate any policy on its merits and expect the same courtesy in return. Disagreement is healthy. Contempt is not."},
-	{"On futures and honest prices", "A forward market lets a merchant fix a price before the voyage. It only works when both sides deliver. We support margin rules that protect the honest party and penalties that bite on default."},
-	{"Convoys and the common defence", "Raiders pick off lone hulls. Convoys make that costly. We favour companies sailing together on dangerous water and would welcome a standing convoy schedule on the oceanic crossings."},
-	{"What the Americas need", "The new harbours need timber, iron, tools and people. Merchants who bring them deserve fair duties and quick berths. We call on the American port authorities to keep their customs light while the colonies grow."},
-	{"A note on the leaderboard", "Rank is a measure, not a purpose. We compete hard, but a board where every company prospers is better for all of us than one where a single house towers over ruins. Grow the trade, and rank follows."},
-	{"The Goldsmiths and the rate floor", "Bank rates set the floor for private credit. When the Goldsmiths raise rates, private lenders follow. We ask the banks to remember that cheap credit builds hulls, and hulls carry the realm's trade."},
-	{"Standing with our allies", "The Kraken Cartel has supported expansion with capital, freight and patience. The Pokemon Pirates stand with them in public and in practice. An alliance is proven by its ledgers, and ours are in order."},
-	{"Against arbitrary seizure", "Seizure for unpaid upkeep should come only after clear warning and a fair chance to pay. Companies need certainty that their hulls will not vanish overnight. We ask for published notice periods."},
-	{"Port rights for the many", "Every company should be able to hire a factor, lease a warehouse and berth a ship on the same terms as the largest houses. Equal access is the foundation of a fair market."},
-	{"On hazard and honest charts", "Captains need honest charts of the hazards on each lane. Hidden danger rewards the reckless and punishes the careful. We would welcome published loss records for every sea zone."},
-	{"The duty of the strong", "Large fleets carry large responsibilities. They set prices, fill berths and shape the board's mood. We ask every major house to trade fairly, pay promptly and leave room for newcomers."},
-	{"Why we build overseas", "Europe's yards are crowded and its lanes well worked. The Pokemon Pirates now build in the Americas because that is where the realm is growing. We invite other companies to join us there."},
-	{"On commerce raiding in wartime", "Even rivals should agree on limits. Crews taken at sea should be returned, cargo should be accounted, and hulls should not be burned for sport. Restraint today protects us all tomorrow."},
-	{"Transparency in lending", "A loan request on the board should state its purpose, term and repayment plan. Lenders deserve to know what they fund. We publish ours openly and encourage every borrower to do the same."},
-	{"A modest proposal on berth queues", "Berth queues should be served in order of arrival, not by the size of the purse. A predictable queue lets every captain plan. We support first come, first berthed."},
-	{"The merchant's compact", "Deliver what you promise. Pay what you owe. Do not cheat the scale. Treat crews as people, not ballast. These are old rules, and they still make the best policy on any sea."},
-	{"On the price of passage", "Passengers pay for a safe and timely crossing, not a gamble. Fares should be fair to both traveller and carrier. We favour published fare bands so passengers can compare honestly."},
-	{"Shared risk, shared reward", "When lenders, carriers and builders share risk fairly, more hulls get built and more cargo moves. The Kraken Cartel understands this. We hope more houses will join them in backing the expansion."},
-	{"Against the hoarding of cash", "Gold in a vault carries no cargo and builds no hulls. A healthy trade puts its capital to work. We encourage every company to invest in ships and routes rather than sit on idle reserves."},
-	{"On the authority of the Crown", "The Crown keeps the peace on the lanes and enforces contracts in port. We accept its authority and ask only that it be exercised openly, predictably and with the merchant's interests in mind."},
-	{"A call for honest weights", "Short weights and padded manifests cheat buyers and sellers alike. Every port should keep certified scales and publish its inspection record. Honest measure is the beginning of honest trade."},
-	{"The colonies deserve a voice", "The American harbours are no longer outposts. Their merchants and port authorities should have a say in the rules that govern their trade. We support representation for the new regions on every matter of customs."},
-	{"On the value of patience", "Quick profits tempt every captain. Steady trade builds companies that last. The Pokemon Pirates plan for the long voyage, and we hope our rivals do too."},
-	{"Why we answer the board", "We post here because public argument improves policy. Every company that speaks openly about rates, dues and risks helps the rest of us trade better. Silence only benefits those who profit from confusion."},
-	{"Ship names and honest records", "The registry should record every name a hull has carried. A ship's history matters to buyers, insurers and crews. We welcome the new record of former names and the fate of lost hulls."},
-	{"On the Cape expedition", "The Admiralty's expedition beyond the coastal water opens routes few have tried. We support it, and we ask that its charters be open to every company with a suitable hull, not reserved for favoured houses."},
-	{"Against price fixing", "Merchants who agree among themselves to hold prices high rob every port they supply. We oppose any such arrangement and will trade against it wherever we find it."},
-	{"The balance between ports", "No single port should drain the trade of its neighbours. A healthy coast has many busy harbours. We favour policies that spread trade fairly rather than funnel it to one quay."},
-	{"On debt and honour", "A company that repays its loans on schedule earns the right to borrow again. One that walks away harms every borrower who follows. We keep our record clean and expect lenders to reward that."},
-	{"A pledge to newcomers", "Every great house was once a single hoy. The Pokemon Pirates will deal fairly with new companies, share lane news where we can and never undercut a newcomer out of spite."},
-	{"Warehouses and the public interest", "Leased warehouses keep goods safe between voyages. Rents should reflect costs, not opportunity. We ask port authorities to publish warehouse tariffs alongside harbour dues."},
-	{"On naval protection of trade", "A navy that patrols the lanes is worth every Crown it costs. We support funding for patrols on the busiest and most dangerous waters, paid fairly by those who benefit."},
-	{"The cost of idle hulls", "A ship tied up in port still costs upkeep. Policies that keep hulls waiting, through slow customs or crowded berths, tax the whole trade. Faster ports mean cheaper goods."},
-	{"What we owe our allies", "Allies are not owed obedience. They are owed honesty, fair dealing and support when it matters. The Pokemon Pirates offer exactly that to The Kraken Cartel, and we receive the same."},
-	{"On regional banking", "Every region should have banks willing to lend locally. Capital that must cross an ocean to reach a borrower arrives late and costs more. We welcome lenders setting up in the Americas."},
-	{"Tariffs and the common good", "Tariffs can protect a young port's trade, but high tariffs choke it. We favour low and stable duties that raise revenue without driving cargo elsewhere."},
-	{"The right to refuse a contract", "No carrier should be forced into freight that its hull cannot safely carry. We support clear hull ratings on every contract and the right to decline without penalty before acceptance."},
-	{"In defence of the small trader", "The small trader fills the gaps the great houses ignore. Rules written only for large fleets squeeze them out. We ask that every new policy be tested against its effect on single-ship companies."},
-	{"On the record of losses", "Every lost hull should be recorded with its cause, whether foundered, seized or taken. Honest loss records make for honest insurance and better seamanship. We welcome the registry's new fate records."},
-	{"A reasonable request to lenders", "The Pokemon Pirates seek credit to build a large hull in the Americas. We prefer steady instalments over a single balloon payment and will repay on schedule. Lenders are welcome to quote on our posted request."},
-	{"Against secret dealing", "Private deals have their place, but the board works best when prices and terms are visible. Secret arrangements that move markets harm everyone outside the room."},
-	{"On provisioning standards", "Ports should publish the provisions a safe crossing requires. Captains who sail short endanger crews and cargo. Clear standards protect the careful and expose the reckless."},
-	{"The road to prosperity", "Prosperity comes from more ships, more routes and more trade, not from taking a larger slice of a fixed pie. We back every measure that grows the whole economy of the seas."},
-	{"On fair competition", "We will race any company for a cargo and congratulate the winner. We will not sabotage, slander or undercut below cost to ruin a rival. Fair competition makes the board stronger."},
-	{"The merchant and the state", "Merchants fund the Crown and the Crown protects the merchant. When either forgets the bargain, both suffer. We ask the Admiralty and the port authorities to keep their side as faithfully as we keep ours."},
-	{"A word for the harbourmasters", "Harbourmasters keep the quays moving in all weathers. They deserve fair pay and the authority to keep queues orderly. We support any port that invests in its harbour staff."},
-	{"Why the Americas matter", "The growth of the realm is in the West. The companies that build there now will shape its trade for years. We urge every serious house to consider an American yard."},
-	{"On reckless expansion", "Growth funded by debt that cannot be repaid is not growth. We borrow only against measured returns and urge lenders to ask every borrower for the same evidence."},
-	{"The duty to deliver", "A contract accepted is a promise made. Weather and raiders may delay a voyage, but a carrier who abandons freight without cause harms every honest carrier. We deliver what we accept."},
-	{"Toward a better board", "This board is a public square. We will use it to argue for fair rules, honest prices and open water. We invite every company to do the same, and to leave the insults in port."},
-	{"On the dignity of the quay", "Dockworkers load the realm's wealth and are paid least for it. Ports that treat their labourers fairly turn ships faster and lose less cargo to careless handling. Good policy starts at the quay."},
-	{"Contracts must mean what they say", "A contract that can be reinterpreted after signing is no contract at all. We favour plain wording, published terms and penalties fixed in advance. Certainty is the cheapest insurance a merchant can buy."},
-	{"The danger of a single lender", "When one house holds every loan, every borrower answers to it. A healthy credit market needs many lenders competing on rate and terms. We welcome every new lending line on the board."},
-	{"On the timber trade", "Every hull begins as timber. Ports that tax shipbuilding timber heavily tax the growth of the whole fleet. We ask the American yards to keep timber duties low while the new regions build."},
-	{"A case for public port reports", "Port reports are the eyes of every captain. When ports publish their stock and prices openly, ships go where they are needed. Hidden scarcity helps nobody but the speculator."},
-	{"Neutral waters, neutral rules", "Where no Crown patrols, the board's own customs must hold. Honour contracts, spare crews, and settle disputes in port. Lawless water is bad for every flag, ours included."},
-	{"On rebuilding after loss", "A company that loses a hull should be able to rebuild without ruin. Fair lending, honest insurance and reasonable yard prices make recovery possible. A board that punishes misfortune breeds recklessness."},
-	{"The case against speculation in staples", "Grain, water and beer feed the crews of every fleet. Cornering the staples to force prices up endangers ships at sea. We will not do it and we urge others to refuse as well."},
-	{"Why we publish our terms", "Our loan requests, freight offers and alliances are posted openly. We believe a company that trades in daylight earns more trust than one that trades in whispers. Trust, in the end, is capital."},
-	{"On the expedition charters", "Charters beyond the coastal water carry real risk and should pay for it. We ask the Admiralty to price expedition cargo honestly, and we will carry it when the terms reflect the danger."},
-	{"A fair price for passage to the colonies", "Settlers crossing to the Americas build the markets we will trade in tomorrow. Carriers should price their passage fairly. Gouging today's travellers poisons tomorrow's trade."},
-	{"On mergers of fleets", "When great houses combine, the board should watch closely. Larger fleets can bring efficiency, but they can also close lanes to everyone else. We will judge each combination by what it does to open trade."},
-	{"The merchant's vote", "Merchants have no seat at the Admiralty table, yet they pay for its ships. We ask that the Admiralty hear from the companies that carry the realm's trade before setting policy on patrols and commissions."},
-	{"A word on reputation", "Ledgers can be audited, but reputation is earned voyage by voyage. The Pokemon Pirates intend to be known as the company that pays, delivers and speaks plainly. That is our whole platform."},
-	{"Allies in open water", "The Kraken Cartel and The Pokemon Pirates sail different lanes toward the same end: a larger, fairer trade. We will keep backing our allies in public and keep proving it in practice."},
-}
-
-var bulletinReplies = []string{
-	"The Pokemon Pirates agree. Open rules and published terms serve every company on the board.",
-	"A fair point. We would add that predictable duties matter as much as low ones.",
-	"We stand with The Kraken Cartel on this. Fair dealing has served both our houses well.",
-	"Well argued. The expansion succeeds only if new harbours stay open to every company.",
-	"We support this. Credit should reach small fleets as readily as large ones.",
-	"Agreed. Honest records of losses and hazards make for honest insurance.",
-	"This deserves a hearing from the port authorities. Merchants pay the dues, so merchants should see the accounts.",
-	"Our position is the same: no single house should control a lane.",
-	"We would welcome steady instalment terms on this. Smaller payments suit lender and borrower alike.",
-	"The Admiralty would do well to read this. Prompt payment builds a reliable navy.",
-	"A sound proposal. We would vote for it if the board held a vote.",
-	"We respectfully disagree on the details, but the principle is right.",
-	"Well said. Competition is healthy; sabotage is not.",
-	"This is why we build in the Americas. The realm grows where the merchants go.",
-	"Agreed. A loan repaid on schedule is the best reference a borrower can offer.",
-	"We support fair access to berths and factors for every company, large or small.",
-	"The Pokemon Pirates back this. Tariffs should raise revenue, not choke trade.",
-	"A clear statement. We would add that convoys deserve support on the oceanic crossings.",
-	"Hear, hear. Honest weights and honest measures are the foundation of trade.",
-	"We agree that restraint at sea protects every crew, including our own.",
-	"This matches our experience. Steady trade outlasts quick profits.",
-	"Our allies in The Kraken Cartel have made the same case. We support it fully.",
-	"Fair terms, published openly. That is all any merchant asks.",
-	"We would add one thing: the new American ports deserve a voice in these rules.",
-	"Agreed. Idle hulls cost everyone, and slow customs make them idle.",
-	"A good principle. We hope the larger houses take it to heart.",
-	"We welcome this. Transparency in lending helps both sides of the ledger.",
-	"The Pokemon Pirates support any measure that spreads trade across many ports.",
-	"Well put. A navy is worth its cost when it actually patrols the lanes.",
-	"We take a slightly different view, but this is a debate worth having in public.",
-	"Agreed. The board works best when terms are visible to all.",
-	"We back this. Crews who are fed and paid sail better and lose fewer ships.",
-	"This is sensible policy. We would support it at any port we trade through.",
-	"Our record speaks for itself: we pay on schedule and deliver what we accept.",
-	"We share this concern. Seizure without fair warning undermines trust in the whole system.",
-	"A thoughtful post. Every new policy should be tested against its effect on small companies.",
-	"We support open forward markets with firm margin rules. Defaults should cost the defaulter.",
-	"Agreed. Private deals have their place, but markets need daylight.",
-	"We welcome more lenders in the American region. Capital should not have to cross an ocean.",
-	"The Kraken Cartel has been a reliable ally on exactly this question.",
-	"This is a fair summary of the merchant's compact. We follow it.",
-	"We would add that clear hull ratings protect carriers and shippers alike.",
-	"Agreed. Hoarded cash builds nothing. Ships and routes do.",
-	"A reasonable position. We hope the port authorities respond in kind.",
-	"We support this, and we would back it with our own freight where we can.",
-	"Well reasoned. Rank follows trade, not the other way round.",
-	"The Pokemon Pirates agree that the Crown's authority should be exercised openly.",
-	"We would welcome published fare bands. Passengers deserve to compare honestly.",
-	"This is the right approach. Early builders take the first risks and deserve fair treatment.",
-	"We share the view that piracy is a cost borne by the whole board.",
-	"Agreed. Letters of marque are a tool, not a policy in themselves.",
-	"We hope more houses will speak this plainly. Public argument improves policy.",
-	"The Pokemon Pirates stand with this proposal and with our allies who made it.",
-	"A fair challenge to the banks. Cheaper credit means more hulls on the water.",
-	"Agreed. Equal access to warehouses and factors is a basic condition of a fair market.",
-	"We support this, with one caution: rules should be simple enough that every captain can follow them.",
-	"Well said. A crowded lane is better than a captured one.",
-	"We would back any port that publishes its dues and what they pay for.",
-	"This matches our policy. We borrow only against measured returns.",
-	"Agreed. Newcomers deserve a fair start, and we intend to give them one.",
-	"We support the expansion and thank everyone carrying it forward.",
-	"A principled stand. We would sign our name beside it.",
-	"Our view differs on timing, not on direction. The goal is right.",
-	"We agree that the colonies need light customs while they grow.",
-	"This is a reasonable request. We hope the authorities take it seriously.",
-	"The Pokemon Pirates support honest charts and published hazard records on every lane.",
-	"Agreed. Prompt settlement keeps yards building and fleets sailing.",
-	"We welcome the debate. Courtesy on the board makes for better policy.",
-	"A clear case. We would add that berth queues should be served in order of arrival.",
-	"We support this fully. Fair dealing has never cost us a voyage.",
-	"Well argued. Shared risk and shared reward build more ships than any single purse.",
-	"The Pokemon Pirates agree that every lost hull deserves an honest record.",
-	"We support stronger penalties for tampering with sealed freight.",
-	"Agreed. The duty of the strong is to trade fairly and leave room for others.",
-	"We would welcome more of this kind of discussion on the board.",
-	"A sound principle. Steady repayment builds trust on both sides of a loan.",
-	"This is how the trade grows: more routes, more ships, more honest dealing.",
-	"Our allies and we agree. We hope the rest of the board does too.",
-	"We support the right of carriers to refuse freight their hulls cannot safely carry.",
-	"Agreed. Harbourmasters deserve fair pay and the authority to keep order.",
-	"The Pokemon Pirates back this measure and will trade by it.",
-	"A fair point well made. Predictability is worth more than any single concession.",
-	"We would add that regional banks should lend where the trade is growing.",
-	"Agreed. Policy should reward the careful captain, not the reckless one.",
-	"This is a reasonable proposal and we support it.",
-	"We stand by our allies and by every company that trades honestly.",
-	"Well said. Open water belongs to every honest hull.",
-}
-
 func bulletinStage(stage string) bool {
 	return stage == "bulletin-thread" || stage == "bulletin-reply"
 }
@@ -325,17 +163,90 @@ func tradingActionsPending(actions []store.Action) bool {
 }
 
 func (state bulletinState) due() time.Time {
-	return maxTime(maxTime(state.NextDue, state.CooldownUntil), state.LastPostAt.Add(bulletinInterval))
+	return maxTime(maxTime(state.NextDue, state.CooldownUntil), maxTime(state.LastPostAt.Add(bulletinInterval), state.OpeningCheckAfter))
 }
 
-func (state *bulletinState) rememberReply(id string) {
-	if slices.Contains(state.RepliedThreadIDs, id) {
+func (state *bulletinState) rememberReply(threadID string, at time.Time) {
+	if state.Replies == nil {
+		state.Replies = make(map[string]bulletinReply)
+	}
+	reply := state.Replies[threadID]
+	reply.At = at
+	reply.ObservedAt = time.Now().UTC()
+	reply.Count++
+	state.Replies[threadID] = reply
+	limitBulletinHistory(state.Replies, func(reply bulletinReply) time.Time { return reply.ObservedAt })
+	state.TotalReplies++
+}
+
+func (state *bulletinState) rememberThreadCheck(id string, lastPostAt time.Time) {
+	if state.CheckedThreads == nil {
+		state.CheckedThreads = make(map[string]bulletinThreadCheck)
+	}
+	state.CheckedThreads[id] = bulletinThreadCheck{LastPostAt: lastPostAt, ObservedAt: time.Now().UTC()}
+	limitBulletinHistory(state.CheckedThreads, func(check bulletinThreadCheck) time.Time { return check.ObservedAt })
+}
+
+func (state *bulletinState) prune(now time.Time) {
+	cutoff := now.Add(-14 * 24 * time.Hour)
+	for id, at := range state.DiscussedItems {
+		if at.After(now) {
+			state.DiscussedItems[id] = now
+		}
+	}
+	for id, at := range state.DiscussedSubjects {
+		if at.Before(cutoff) {
+			delete(state.DiscussedSubjects, id)
+		} else if at.After(now) {
+			state.DiscussedSubjects[id] = now
+		}
+	}
+	for id, check := range state.CheckedThreads {
+		if check.ObservedAt.Before(cutoff) || check.ObservedAt.After(now) {
+			delete(state.CheckedThreads, id)
+		}
+	}
+	for id, reply := range state.Replies {
+		// Older reply records retain their limits, but remote post times are
+		// never used to start or extend local retention.
+		if reply.ObservedAt.IsZero() || reply.ObservedAt.After(now) {
+			reply.ObservedAt = now
+			state.Replies[id] = reply
+		}
+		if reply.ObservedAt.Before(cutoff) {
+			delete(state.Replies, id)
+		}
+	}
+	limitBulletinHistory(state.DiscussedItems, func(at time.Time) time.Time { return at })
+	limitBulletinHistory(state.DiscussedSubjects, func(at time.Time) time.Time { return at })
+	limitBulletinHistory(state.CheckedThreads, func(check bulletinThreadCheck) time.Time { return check.ObservedAt })
+	limitBulletinHistory(state.Replies, func(reply bulletinReply) time.Time { return reply.ObservedAt })
+}
+
+func limitBulletinHistory[T any](history map[string]T, observedAt func(T) time.Time) {
+	if len(history) <= bulletinHistoryLimit {
 		return
 	}
-	state.RepliedThreadIDs = append(state.RepliedThreadIDs, id)
-	if len(state.RepliedThreadIDs) > bulletinReplyHistoryLimit {
-		state.RepliedThreadIDs = state.RepliedThreadIDs[len(state.RepliedThreadIDs)-bulletinReplyHistoryLimit:]
+	ids := make([]string, 0, len(history))
+	for id := range history {
+		ids = append(ids, id)
 	}
+	slices.SortFunc(ids, func(left, right string) int {
+		if order := observedAt(history[left]).Compare(observedAt(history[right])); order != 0 {
+			return order
+		}
+		return strings.Compare(left, right)
+	})
+	for _, id := range ids[:len(ids)-bulletinHistoryLimit] {
+		delete(history, id)
+	}
+}
+
+func (state *bulletinState) repliesAvailable(now time.Time) bool {
+	state.ReplyTimes = slices.DeleteFunc(state.ReplyTimes, func(at time.Time) bool {
+		return !at.After(now.Add(-24 * time.Hour))
+	})
+	return len(state.ReplyTimes) < bulletinDailyReplies
 }
 
 func (r *Runner) bulletinState() (bulletinState, error) {
@@ -345,18 +256,42 @@ func (r *Runner) bulletinState() (bulletinState, error) {
 			return state, errors.New("invalid durable bulletin schedule")
 		}
 	}
-	if state.ThreadCursor < 0 || state.ReplyCursor < 0 || len(state.RepliedThreadIDs) > bulletinReplyHistoryLimit {
-		return state, errors.New("invalid durable bulletin pool cursor or reply history")
+	// Keep the former three-reply allowance readable across deployment.
+	if len(state.ReplyTimes) > 3 {
+		return state, errors.New("invalid durable bulletin reply history")
 	}
-	if state.ReplyScan != nil && (state.ReplyScan.Since.IsZero() || !validBulletinScan(state.ReplyScan.Cursor, state.ReplyScan.Candidates)) {
+	if state.ReplyScan != nil && (state.ReplyScan.Since.IsZero() || !validBulletinScan(state.ReplyScan.Cursor, state.ReplyScan.Candidates) || len(state.ReplyScan.LastPostAt) > bulletinPageLimit) {
 		return state, errors.New("invalid durable bulletin reply scan")
 	}
+	if state.ReplyScan != nil {
+		for _, id := range state.ReplyScan.Candidates {
+			if state.ReplyScan.LastPostAt[id].IsZero() {
+				state.ReplyScan = nil
+				break
+			}
+		}
+	}
+	state.prune(time.Now().UTC())
 	return state, nil
 }
 
 func (r *Runner) saveBulletinState(ctx context.Context, state bulletinState) error {
-	r.snapshot["_bulletin"] = encode(state)
-	return r.saveSnapshot(ctx)
+	state.prune(time.Now().UTC())
+	raw := encode(state)
+	previous := r.snapshot["_bulletin"]
+	if bytes.Equal(raw, previous) {
+		return nil
+	}
+	r.snapshot["_bulletin"] = raw
+	if err := r.saveSnapshot(ctx); err != nil {
+		if previous == nil {
+			delete(r.snapshot, "_bulletin")
+		} else {
+			r.snapshot["_bulletin"] = previous
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *Runner) driveBulletin(ctx context.Context, mission *store.Mission, data *missionData) (changed bool, err error) {
@@ -420,27 +355,18 @@ func (r *Runner) driveBulletin(ctx context.Context, mission *store.Mission, data
 		}
 		return changed, err
 	}
-	if time.Now().Before(state.due()) {
-		r.wakeBy(state.due())
-		return false, r.decision(ctx, "__bulletin", "bulletin", "public posting waits for the three-real-hour schedule or cooldown", map[string]any{"until": state.due()})
-	}
 	if mission != nil {
 		if data.Bulletin == nil {
 			return false, errors.New("bulletin mission has no immutable post intent")
 		}
-		if !bulletinCuratedIntent(data.Bulletin) {
+		if !r.bulletinGeneratedIntent(data.Bulletin) {
 			return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 		}
 		return true, r.stageBulletin(ctx, mission, data)
 	}
-	pending, err := r.db.PendingActions(ctx, r.account.ID)
-	if err != nil {
-		return false, err
-	}
-	for _, action := range pending {
-		if bulletinPath(action.Path) {
-			return false, r.decision(ctx, "__bulletin", "bulletin", "public posting skipped: an orphaned bulletin request requires its original mission", nil)
-		}
+	if time.Now().Before(state.CooldownUntil) {
+		r.wakeBy(state.CooldownUntil)
+		return false, r.decision(ctx, "__bulletin", "bulletin", "public posting waits for its posting-only cooldown", map[string]any{"until": state.CooldownUntil})
 	}
 	var profile struct {
 		Company struct {
@@ -451,42 +377,92 @@ func (r *Runner) driveBulletin(ctx context.Context, mission *store.Mission, data
 	if json.Unmarshal(r.snapshot["profile"], &profile) != nil || profile.Company.ID != r.account.CompanyID || profile.Company.Name != names.DefaultCompany {
 		return false, r.decision(ctx, "__bulletin", "bulletin", "public posting skipped: the recorded company is not The Pokemon Pirates", nil)
 	}
-	intent := &bulletinIntent{CompanyName: profile.Company.Name, ReplyTurn: state.NextReply}
+	intent := &bulletinIntent{CompanyName: profile.Company.Name}
 	intent.NotBefore, _, _ = r.serverBounds()
 	if intent.NotBefore.IsZero() {
 		return false, errors.New("bulletin staging requires an authoritative server clock")
 	}
+	replyAvailable := state.repliesAvailable(intent.NotBefore)
+	if time.Now().Before(state.due()) && (!replyAvailable || time.Now().Before(state.ReplyCheckAfter)) {
+		r.wakeBy(state.due())
+		return false, r.saveBulletinState(ctx, state)
+	}
+	pending, err := r.db.PendingActions(ctx, r.account.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, action := range pending {
+		if bulletinPath(action.Path) {
+			return false, r.decision(ctx, "__bulletin", "bulletin", "public posting skipped: an orphaned bulletin request requires its original mission", nil)
+		}
+	}
+	items := r.bulletinItems(&state, intent.NotBefore)
+	openingDue := !time.Now().Before(state.due())
+	if openingDue {
+		if item, ok := selectBulletinItem(items, state, intent.NotBefore); ok {
+			intent.ItemID, intent.Content = item.ID, item.Content
+		}
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, bulletinRequestBudget)
 	defer cancel()
-	if state.NextReply {
-		ready, err := r.selectBulletinReply(requestCtx, &state, intent)
-		if err != nil || !ready {
+	if intent.ItemID == "" && (replyAvailable || openingDue) && !time.Now().Before(state.ReplyCheckAfter) {
+		cursor, candidates := "", 0
+		if state.ReplyScan != nil {
+			cursor, candidates = state.ReplyScan.Cursor, len(state.ReplyScan.Candidates)
+		}
+		debate, readErr := r.selectBulletinReply(requestCtx, &state, intent, items, openingDue, replyAvailable)
+		err = readErr
+		var upstream *gameapi.APIError
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil &&
+			(!errors.As(err, &upstream) || upstream.Status < http.StatusBadRequest) {
+			err = nil
+			if state.ReplyScan != nil && state.ReplyScan.Cursor == cursor && len(state.ReplyScan.Candidates) == candidates {
+				state.ReplyCheckAfter = time.Now().UTC().Add(bulletinRetryDelay)
+			}
+		}
+		if err != nil {
+			return false, errors.Join(err, r.saveBulletinState(ctx, state))
+		}
+		if openingDue && debate != nil {
+			if item, ok := selectBulletinItem([]bulletinItem{*debate}, state, intent.NotBefore); ok {
+				intent.ThreadID, intent.BeforeIDs = "", nil
+				intent.ItemID, intent.Content = item.ID, item.Content
+			}
+		}
+	}
+	if intent.ThreadID == "" && intent.ItemID == "" {
+		if err := r.saveBulletinState(ctx, state); err != nil {
 			return false, err
 		}
-	} else {
+		if !openingDue {
+			r.wakeBy(state.due())
+			return false, r.decision(ctx, "__bulletin", "bulletin", "new public threads wait at least 24 real hours and then need a new notable item; relevant replies use a separate daily allowance", map[string]any{"until": state.due()})
+		}
+		return false, r.decision(ctx, "__bulletin", "bulletin", "no new notable current world item or relevant board debate; no filler post", nil)
+	}
+	if intent.ThreadID == "" {
+		// Page one is immutable pre-send evidence even when no reply scan ran.
 		var page bulletinPage
 		if err := r.api.GetOnce(requestCtx, "/v1/bulletin?limit=100", &page); err != nil {
-			return false, err
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				state.ReplyCheckAfter = time.Now().UTC().Add(bulletinRetryDelay)
+				state.OpeningCheckAfter = state.ReplyCheckAfter
+				return false, r.saveBulletinState(ctx, state)
+			}
+			return false, errors.Join(err, r.saveBulletinState(ctx, state))
 		}
-		if page.Threads == nil {
-			return false, errors.New("bulletin list omitted its threads")
+		if page.Threads == nil || len(page.Threads) > bulletinPageLimit {
+			return false, errors.New("bulletin opening page omitted its thread list")
 		}
+		intent.BeforeIDs = nil
 		for _, thread := range page.Threads {
-			if uuid.Validate(thread.ID) == nil && len(intent.BeforeIDs) < bulletinReplyHistoryLimit {
+			if uuid.Validate(thread.ID) == nil {
 				intent.BeforeIDs = append(intent.BeforeIDs, thread.ID)
 			}
 		}
 	}
-	state.ReplyScan = nil
-	if intent.ThreadID != "" {
-		intent.TemplateIndex = state.ReplyCursor % len(bulletinReplies)
-		intent.Body = bulletinReplies[intent.TemplateIndex]
-	} else {
-		intent.TemplateIndex = state.ThreadCursor % len(bulletinThreads)
-		template := bulletinThreads[intent.TemplateIndex]
-		intent.Title, intent.Body = template.Title, template.Body
-	}
-	if err := validBulletinText(intent.Title, intent.Body); err != nil {
+	intent.Title, intent.Body, err = r.renderBulletin(intent.Content)
+	if err != nil {
 		return false, err
 	}
 	if err := r.saveBulletinState(ctx, state); err != nil {
@@ -509,11 +485,15 @@ func validBulletinScan(cursor string, candidates []string) bool {
 	return true
 }
 
-func (r *Runner) selectBulletinReply(ctx context.Context, state *bulletinState, intent *bulletinIntent) (bool, error) {
+func (r *Runner) selectBulletinReply(ctx context.Context, state *bulletinState, intent *bulletinIntent, items []bulletinItem, openingDue, replyAvailable bool) (*bulletinItem, error) {
 	if state.ReplyScan == nil {
-		state.ReplyScan = &bulletinReplyScan{Since: intent.NotBefore.Add(-72 * time.Hour)}
+		state.ReplyScan = &bulletinReplyScan{Since: intent.NotBefore.Add(-72 * time.Hour), LastPostAt: make(map[string]time.Time)}
 	}
 	scan := state.ReplyScan
+	if scan.LastPostAt == nil {
+		scan.LastPostAt = make(map[string]time.Time)
+	}
+	catalog := decode[gameapi.Catalog](r.snapshot, "catalog")
 	if len(scan.Candidates) == 0 && !scan.Complete {
 		path := "/v1/bulletin?limit=100&since=" + url.QueryEscape(scan.Since.Format(time.RFC3339Nano))
 		if scan.Cursor != "" {
@@ -521,13 +501,12 @@ func (r *Runner) selectBulletinReply(ctx context.Context, state *bulletinState, 
 		}
 		var page bulletinPage
 		if err := r.api.GetOnce(ctx, path, &page); err != nil {
-			return false, err
+			return nil, err
 		}
 		if page.Threads == nil || len(page.Threads) > bulletinPageLimit || len(page.NextCursor) > bulletinCursorLimit || page.NextCursor != "" && page.NextCursor == scan.Cursor {
-			return false, errors.New("bulletin reply page is incomplete or has an invalid cursor")
+			return nil, errors.New("bulletin reply page is incomplete or has an invalid cursor")
 		}
-		scan.Complete = page.NextCursor == "" || len(page.Threads) > 0 && page.Threads[len(page.Threads)-1].Archived
-		scan.Cursor = page.NextCursor
+		scan.Complete, scan.Cursor = page.NextCursor == "", page.NextCursor
 		slices.SortFunc(page.Threads, func(left, right bulletinThread) int {
 			if order := right.LastPostAt.Compare(left.LastPostAt); order != 0 {
 				return order
@@ -535,55 +514,83 @@ func (r *Runner) selectBulletinReply(ctx context.Context, state *bulletinState, 
 			return strings.Compare(left.ID, right.ID)
 		})
 		for _, thread := range page.Threads {
-			if thread.CompanyName == "The Kraken Cartel" && !thread.Archived && !thread.Removed && uuid.Validate(thread.ID) == nil && !slices.Contains(state.RepliedThreadIDs, thread.ID) {
+			if bulletinThreadActive(thread, intent.NotBefore) && uuid.Validate(thread.ID) == nil &&
+				(thread.CompanyName != intent.CompanyName || thread.Replies > 0) &&
+				!thread.LastPostAt.Equal(state.CheckedThreads[thread.ID].LastPostAt) && !slices.Contains(scan.Candidates, thread.ID) {
 				scan.Candidates = append(scan.Candidates, thread.ID)
-			}
-			if uuid.Validate(thread.ID) == nil && len(intent.BeforeIDs) < bulletinReplyHistoryLimit {
-				intent.BeforeIDs = append(intent.BeforeIDs, thread.ID)
+				scan.LastPostAt[thread.ID] = thread.LastPostAt
 			}
 		}
-		if err := r.saveBulletinState(ctx, *state); err != nil {
-			return false, err
+		if len(page.Threads) > 0 && page.Threads[len(page.Threads)-1].Archived {
+			scan.Complete = true
 		}
 	}
-	for len(scan.Candidates) > 0 {
+	var debate *bulletinItem
+	for reads := 0; len(scan.Candidates) > 0 && reads < bulletinDetailLimit; reads++ {
+		if err := ctx.Err(); err != nil {
+			return debate, err
+		}
 		id := scan.Candidates[0]
+		lastPostAt := scan.LastPostAt[id]
 		var detail bulletinDetail
-		if err := r.api.GetOnce(ctx, "/v1/bulletin/thread?id="+url.QueryEscape(id), &detail); err != nil {
-			return false, err
-		}
-		if detail.Thread.ID != id || detail.Posts == nil {
-			return false, errors.New("bulletin reply observation omitted the selected thread or posts")
-		}
-		alreadyReplied := false
-		for _, post := range detail.Posts {
-			alreadyReplied = alreadyReplied || post.CompanyName == intent.CompanyName && !post.Opening
-		}
-		if !alreadyReplied && !detail.Thread.Archived && !detail.Thread.Removed && detail.Thread.CompanyName == "The Kraken Cartel" {
-			intent.ThreadID, intent.BeforeIDs = id, nil
-			for _, post := range detail.Posts {
-				if post.CompanyName == intent.CompanyName && !post.CreatedAt.Before(intent.NotBefore) && uuid.Validate(post.ID) == nil && len(intent.BeforeIDs) < bulletinReplyHistoryLimit {
-					intent.BeforeIDs = append(intent.BeforeIDs, post.ID)
-				}
+		err := r.api.GetOnce(ctx, "/v1/bulletin/thread?id="+url.QueryEscape(id), &detail)
+		if err != nil {
+			var upstream *gameapi.APIError
+			if errors.As(err, &upstream) && gameapi.BulletinAuthorizationRefusal(upstream.Status, upstream.Body) {
+				return debate, err
 			}
-			return true, nil
 		}
 		scan.Candidates = scan.Candidates[1:]
-		if alreadyReplied {
-			state.rememberReply(id)
+		delete(scan.LastPostAt, id)
+		if err != nil || detail.Thread.ID != id || detail.Posts == nil {
+			state.rememberThreadCheck(id, lastPostAt)
+			continue
 		}
-		if err := r.saveBulletinState(ctx, *state); err != nil {
-			return false, err
+		if bulletinThreadActive(detail.Thread, intent.NotBefore) {
+			content, relevant, discussion := bulletinRelevance(detail, *state, items, catalog, intent.NotBefore)
+			discussionAvailable := false
+			if discussion != nil {
+				_, discussionAvailable = selectBulletinItem([]bulletinItem{*discussion}, *state, intent.NotBefore)
+				if discussionAvailable {
+					debate = discussion
+					if openingDue {
+						if scan.Complete && len(scan.Candidates) == 0 {
+							state.ReplyScan = nil
+						}
+						return debate, nil
+					}
+				}
+			}
+			if relevant && replyAvailable {
+				state.rememberThreadCheck(id, detail.Thread.LastPostAt)
+				intent.ThreadID, intent.Content, intent.BeforeIDs = id, content, nil
+				for _, post := range detail.Posts {
+					if post.CompanyName == intent.CompanyName && uuid.Validate(post.ID) == nil && len(intent.BeforeIDs) < bulletinReplyHistoryLimit {
+						intent.BeforeIDs = append(intent.BeforeIDs, post.ID)
+					}
+				}
+				if scan.Complete && len(scan.Candidates) == 0 {
+					state.ReplyScan = nil
+				}
+				return debate, nil
+			}
+			if content.Kind != "" || discussionAvailable {
+				// A time or allowance gate is temporary, not evidence that the
+				// unchanged conversation has nothing left to discuss.
+				continue
+			}
 		}
+		state.rememberThreadCheck(id, detail.Thread.LastPostAt)
 	}
-	if scan.Complete {
-		return true, nil
+	if scan.Complete && len(scan.Candidates) == 0 {
+		state.ReplyScan = nil
+		state.ReplyCheckAfter = time.Now().UTC().Add(bulletinRetryDelay)
 	}
-	state.CooldownUntil = time.Now().UTC().Add(bulletinRetryDelay)
-	if err := r.saveBulletinState(ctx, *state); err != nil {
-		return false, err
-	}
-	return false, r.decision(ctx, "__bulletin", "bulletin", "public reply search saved its next page for a later idle pass", nil)
+	return debate, nil
+}
+
+func bulletinThreadActive(thread bulletinThread, now time.Time) bool {
+	return !thread.Archived && !thread.Removed && !thread.LastPostAt.IsZero() && thread.LastPostAt.After(now.Add(-72*time.Hour))
 }
 
 func (r *Runner) stageBulletin(ctx context.Context, mission *store.Mission, data *missionData) error {
@@ -618,20 +625,18 @@ func (r *Runner) bulletinPreflight(data *missionData) error {
 	if intent.ThreadID == "" && (intent.Title == "" || action.Stage != "bulletin-thread" || action.Path != "/v1/bulletin/thread") || intent.ThreadID != "" && (intent.Title != "" || action.Stage != "bulletin-reply" || action.Path != "/v1/bulletin/reply") {
 		return errors.New("bulletin request stage differs from its thread or reply payload")
 	}
-	if !bulletinCuratedIntent(intent) {
-		return errors.New("public post content must come only from the curated company voice")
+	if !r.bulletinGeneratedIntent(intent) {
+		return errors.New("public post content differs from its world-aware company template")
 	}
 	return validBulletinText(intent.Title, intent.Body)
 }
 
-func bulletinCuratedIntent(intent *bulletinIntent) bool {
-	if intent == nil || intent.TemplateIndex < 0 {
+func (r *Runner) bulletinGeneratedIntent(intent *bulletinIntent) bool {
+	if intent == nil || (intent.ThreadID != "") != strings.HasPrefix(intent.Content.Kind, "reply-") {
 		return false
 	}
-	if intent.ThreadID != "" {
-		return intent.TemplateIndex < len(bulletinReplies) && intent.Title == "" && intent.Body == bulletinReplies[intent.TemplateIndex]
-	}
-	return intent.TemplateIndex < len(bulletinThreads) && intent.Title == bulletinThreads[intent.TemplateIndex].Title && intent.Body == bulletinThreads[intent.TemplateIndex].Body
+	title, body, err := r.renderBulletin(intent.Content)
+	return err == nil && title == intent.Title && body == intent.Body && (intent.ThreadID != "" || intent.ItemID != "")
 }
 
 func bulletinCooldown(status int, code, detail string, retryAfter, now time.Time) time.Time {
@@ -650,6 +655,20 @@ func bulletinCooldown(status int, code, detail string, retryAfter, now time.Time
 	return maxTime(until, retryAfter)
 }
 
+func bulletinThreadRefusal(status int, code string) bool {
+	if status == http.StatusNotFound || status == http.StatusConflict {
+		return true
+	}
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	switch code {
+	case "not_found", "archived", "removed", "thread_archived", "thread_removed", "thread_locked":
+		return true
+	}
+	return false
+}
+
 func (r *Runner) consumeBulletinResult(ctx context.Context, mission *store.Mission, data *missionData, status int, response json.RawMessage) (bool, error) {
 	if data.Bulletin == nil {
 		return false, errors.New("bulletin result has no durable company intent")
@@ -659,22 +678,31 @@ func (r *Runner) consumeBulletinResult(ctx context.Context, mission *store.Missi
 		if err != nil {
 			return false, err
 		}
+		var problem struct {
+			Code   string `json:"code"`
+			Detail string `json:"detail"`
+		}
+		_ = json.Unmarshal(response, &problem)
+		threadRefusal := data.Bulletin.ThreadID != "" && bulletinThreadRefusal(status, problem.Code)
 		if state.LastOutcomeID != data.Action.ID {
-			var problem struct {
-				Code   string `json:"code"`
-				Detail string `json:"detail"`
+			if !threadRefusal {
+				state.CooldownUntil = bulletinCooldown(status, problem.Code, problem.Detail, data.CooldownUntil, time.Now().UTC())
 			}
-			_ = json.Unmarshal(response, &problem)
-			state.CooldownUntil = bulletinCooldown(status, problem.Code, problem.Detail, data.CooldownUntil, time.Now().UTC())
 			state.LastOutcomeID = data.Action.ID
 			if err := r.saveBulletinState(ctx, state); err != nil {
 				return false, err
 			}
 		}
-		if err := r.decision(ctx, "__bulletin", "bulletin", "public post refused; company posting cooldown recorded without delaying trade", map[string]any{"status": status, "until": state.CooldownUntil}); err != nil {
+		reason := "public post refused; company posting cooldown recorded without delaying trade"
+		if threadRefusal {
+			reason = "public reply refused; checked thread skipped without a company posting cooldown"
+			data.CooldownUntil = time.Time{}
+		} else {
+			data.CooldownUntil = state.CooldownUntil
+		}
+		if err := r.decision(ctx, "__bulletin", "bulletin", reason, map[string]any{"status": status, "thread_id": data.Bulletin.ThreadID, "until": state.CooldownUntil}); err != nil {
 			return false, err
 		}
-		data.CooldownUntil = state.CooldownUntil
 		return r.finishBulletinMission(ctx, mission, data)
 	}
 	if status < 200 || status >= 300 {
@@ -715,22 +743,38 @@ func (r *Runner) completeBulletinPost(ctx context.Context, mission *store.Missio
 	}
 	if state.LastOutcomeID != data.Action.ID {
 		intent := data.Bulletin
-		state.LastOutcomeID, state.LastPostID, state.LastPostAt = data.Action.ID, post.ID, post.CreatedAt
-		state.NextDue = maxTime(time.Now().UTC(), post.CreatedAt).Add(bulletinInterval)
+		state.LastOutcomeID, state.LastPostID = data.Action.ID, post.ID
 		state.CooldownUntil = time.Time{}
-		state.ReplyScan = nil
-		state.NextReply = !intent.ReplyTurn
+		observedAt := time.Now().UTC()
 		if intent.ThreadID == "" {
-			state.ThreadCursor = (intent.TemplateIndex + 1) % len(bulletinThreads)
+			// LastPostAt is the last opening post; reactive replies never move it.
+			state.LastPostAt = post.CreatedAt
+			// The next thread waits at least a real day, then follows the next
+			// notable world item rather than a fixed clock.
+			state.NextDue = maxTime(time.Now().UTC(), post.CreatedAt).Add(bulletinInterval)
+			state.OpeningCheckAfter = time.Time{}
+			if state.DiscussedItems == nil {
+				state.DiscussedItems = make(map[string]time.Time)
+			}
+			if intent.ItemID != "" {
+				state.DiscussedItems[intent.ItemID] = observedAt
+			}
+			if state.DiscussedSubjects == nil {
+				state.DiscussedSubjects = make(map[string]time.Time)
+			}
+			state.DiscussedSubjects[intent.Content.subjectKey()] = observedAt
 		} else {
-			state.ReplyCursor = (intent.TemplateIndex + 1) % len(bulletinReplies)
-			state.rememberReply(intent.ThreadID)
+			state.repliesAvailable(post.CreatedAt)
+			state.ReplyTimes = append(state.ReplyTimes, post.CreatedAt)
+			state.rememberReply(intent.ThreadID, post.CreatedAt)
+			state.rememberThreadCheck(intent.ThreadID, post.CreatedAt)
+			state.ReplyCheckAfter = time.Time{}
 		}
 		if err := r.saveBulletinState(ctx, state); err != nil {
 			return false, err
 		}
 	}
-	if err := r.decision(ctx, "__bulletin", "bulletin", "public company post confirmed; next three-real-hour slot recorded", map[string]any{"post_id": post.ID, "thread_id": post.ThreadID, "posted_at": post.CreatedAt, "next_due": state.NextDue}); err != nil {
+	if err := r.decision(ctx, "__bulletin", "bulletin", "public company post confirmed; thread cadence and reactive reply allowance recorded", map[string]any{"post_id": post.ID, "thread_id": post.ThreadID, "posted_at": post.CreatedAt, "next_thread_due": state.NextDue}); err != nil {
 		return false, err
 	}
 	return r.finishBulletinMission(ctx, mission, data)
@@ -838,7 +882,7 @@ func (r *Runner) reconcileBulletin(ctx context.Context, mission *store.Mission, 
 	}
 	if scan.Match == nil {
 		intent.ReconcileScan = nil
-		if !bulletinCuratedIntent(intent) {
+		if !r.bulletinGeneratedIntent(intent) {
 			return false, errors.New("legacy public post remains reconciliation-only; private facts are never resent")
 		}
 		return false, r.saveMission(ctx, mission, data)

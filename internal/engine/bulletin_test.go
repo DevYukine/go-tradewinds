@@ -20,6 +20,7 @@ import (
 	"unicode"
 
 	"github.com/DevYukine/go-tradewinds/internal/gameapi"
+	"github.com/DevYukine/go-tradewinds/internal/names"
 	"github.com/DevYukine/go-tradewinds/internal/store"
 	"github.com/google/uuid"
 )
@@ -33,6 +34,7 @@ type bulletinTestAPI struct {
 	posted        map[string]bulletinPost
 	bodies        map[string][]byte
 	boardReads    int
+	detailReads   map[string]int
 	boardSince    time.Time
 	boardCursors  []string
 	postCalls     int
@@ -45,12 +47,17 @@ type bulletinTestAPI struct {
 	badReceipt    bool
 	dropReceipt   bool
 	hideOwn       bool
+	worldEvents   []bulletinWorldEvent
 }
 
 func newBulletinFixture(t *testing.T) (*recoveryHarness, *bulletinTestAPI, *Runner) {
 	t.Helper()
 	h := newRecoveryHarness(t)
 	proxy := &bulletinTestAPI{h: h, downstream: h.api.server.Config.Handler, threads: []bulletinThread{}, details: make(map[string]bulletinDetail), posted: make(map[string]bulletinPost), bodies: make(map[string][]byte)}
+	proxy.worldEvents = []bulletinWorldEvent{{MarketShock: MarketShock{
+		ID: uuid.NewString(), EventType: "demand_shortage", PortID: recoveryFarPort, CommodityID: recoveryGrain,
+		StartsAt: time.Now().UTC().Add(-time.Minute), ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}}}
 	h.api.server.Config.Handler = proxy
 	runner := h.runner(primaryTestKey)
 	refreshBulletinRunner(t, h, runner)
@@ -66,6 +73,19 @@ func refreshBulletinRunner(t *testing.T, h *recoveryHarness, runner *Runner) {
 }
 
 func (p *bulletinTestAPI) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	if request.Method == http.MethodGet && request.URL.Path == "/v1/world/events" {
+		p.h.api.writeJSON(writer, http.StatusOK, append([]bulletinWorldEvent{}, p.worldEvents...))
+		return
+	}
+	if request.Method == http.MethodGet && request.URL.Path == "/v1/world/catalog" {
+		catalog := p.h.api.catalogDocument()
+		catalog["commodities"] = []gameapi.Commodity{{ID: recoveryGrain, Name: "Grain"}}
+		zones := catalog["sea_zones"].([]any)
+		zones[0].(map[string]any)["name"] = "Northern waters"
+		zones[1].(map[string]any)["name"] = "Southern waters"
+		p.h.api.writeJSON(writer, http.StatusOK, catalog)
+		return
+	}
 	if request.URL.Path != "/v1/bulletin" && !bulletinPath(request.URL.Path) {
 		p.downstream.ServeHTTP(writer, request)
 		return
@@ -113,6 +133,10 @@ func (p *bulletinTestAPI) ServeHTTP(writer http.ResponseWriter, request *http.Re
 			p.h.api.writeJSON(writer, http.StatusOK, bulletinPage{Threads: threads, NextCursor: cursor})
 			return
 		}
+		if p.detailReads == nil {
+			p.detailReads = make(map[string]int)
+		}
+		p.detailReads[request.URL.Query().Get("id")]++
 		detail, exists := p.details[request.URL.Query().Get("id")]
 		if !exists {
 			p.h.api.writeProblem(writer, http.StatusNotFound, "not_found", "no thread")
@@ -175,6 +199,15 @@ func (p *bulletinTestAPI) ServeHTTP(writer http.ResponseWriter, request *http.Re
 		p.posted[key] = post
 		detail := p.details[threadID]
 		detail.Posts = append(detail.Posts, post)
+		detail.Thread.LastPostAt = now
+		if !opening {
+			detail.Thread.Replies++
+		}
+		for index := range p.threads {
+			if p.threads[index].ID == threadID {
+				p.threads[index] = detail.Thread
+			}
+		}
 		p.details[threadID] = detail
 	}
 	if p.dropReceipt {
@@ -241,87 +274,117 @@ func makeBulletinDue(t *testing.T, h *recoveryHarness, runner *Runner) bulletinS
 	state.LastPostAt = time.Now().UTC().Add(-bulletinInterval - time.Hour)
 	state.NextDue = time.Now().UTC().Add(-time.Hour)
 	state.CooldownUntil = time.Time{}
+	state.ReplyCheckAfter = time.Time{}
+	state.OpeningCheckAfter = time.Time{}
 	if err := runner.saveBulletinState(h.ctx, state); err != nil {
 		t.Fatal(err)
 	}
 	return state
 }
 
-func TestBulletinScheduleAndAlternation(t *testing.T) {
+func TestBulletinThreadCadenceAndIndependentReplies(t *testing.T) {
 	h, proxy, runner := newBulletinFixture(t)
-	old := proxy.addThread("The Kraken Cartel", 2*time.Hour, false, false)
-	latest := proxy.addThread("The Kraken Cartel", time.Hour, false, false)
-	proxy.addThread("The Kraken Cartel", time.Minute, true, false)
-	proxy.addThread("The Kraken Cartel", time.Second, false, true)
-	proxy.addThread("Friendly rivals", 0, false, false)
 	mission, data := stageBulletinFixture(t, h, runner)
-	if data.Action.Stage != "bulletin-thread" || proxy.boardReads != 1 {
-		t.Fatalf("first slot was not a thread with one board read: %s, %d", data.Action.Stage, proxy.boardReads)
-	}
+	itemID := data.Bulletin.ItemID
 	sendBulletinFixture(t, h, runner, mission, &data)
 	state, err := runner.bulletinState()
-	if err != nil || state.LastPostID == "" || state.LastPostAt.IsZero() || !state.NextReply || state.ThreadCursor != 1 || state.NextDue.Before(state.LastPostAt.Add(bulletinInterval)) {
-		t.Fatalf("successful thread lost its schedule: %+v, %v", state, err)
+	if err != nil || state.LastPostID == "" || state.LastPostAt.IsZero() || state.DiscussedItems[itemID].IsZero() ||
+		state.NextDue.Before(state.LastPostAt.Add(bulletinInterval)) || state.NextDue.After(time.Now().UTC().Add(bulletinInterval+time.Second)) {
+		t.Fatalf("successful thread lost its bounded durable schedule: %+v, %v", state, err)
 	}
-	reads := proxy.boardReads
-	for _, until := range []time.Time{time.Now().Add(time.Hour), time.Now().Add(3 * time.Hour)} {
-		state.NextDue = until
-		if err := runner.saveBulletinState(h.ctx, state); err != nil {
-			t.Fatal(err)
-		}
-		if changed, err := runner.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed || proxy.boardReads != reads {
-			t.Fatalf("not-due schedule read or posted: %t %v reads=%d", changed, err, proxy.boardReads)
-		}
+	nextThread := state.NextDue
+	ally := proxy.addThread(bulletinAlly, time.Minute, false, false)
+	state.ReplyCheckAfter = time.Time{}
+	if err := runner.saveBulletinState(h.ctx, state); err != nil {
+		t.Fatal(err)
 	}
-	makeBulletinDue(t, h, runner)
 	mission, data = stageBulletinFixture(t, h, runner)
-	if data.Action.Stage != "bulletin-reply" || data.Bulletin.ThreadID != latest || proxy.boardReads != reads+1 {
-		t.Fatalf("reply did not select latest eligible ally thread: %+v", data.Bulletin)
+	if data.Action.Stage != "bulletin-reply" || data.Bulletin.ThreadID != ally {
+		t.Fatalf("thread cadence suppressed a relevant reactive reply: %+v", data.Bulletin)
 	}
 	sendBulletinFixture(t, h, runner, mission, &data)
 	state, _ = runner.bulletinState()
-	if state.NextReply || state.ReplyCursor != 1 || !slices.Contains(state.RepliedThreadIDs, latest) {
-		t.Fatalf("reply did not advance the separate pool and thread history: %+v", state)
+	if !state.NextDue.Equal(nextThread) || len(state.ReplyTimes) != 1 || state.Replies[ally].Count != 1 {
+		t.Fatalf("reactive reply changed the thread schedule or lost its allowance: %+v", state)
 	}
-	makeBulletinDue(t, h, runner)
-	mission, data = stageBulletinFixture(t, h, runner)
-	if data.Action.Stage != "bulletin-thread" || data.Bulletin.TemplateIndex != 1 {
-		t.Fatalf("third slot did not return to a new thread template: %+v", data)
+	// A new item must not override the lower cadence bound, even if NextDue
+	// was saved by an older policy with a shorter interval.
+	runner.snapshot["world_events"] = encode([]bulletinWorldEvent{{MarketShock: MarketShock{
+		ID: uuid.NewString(), EventType: "supply_boom", PortID: recoveryFarPort, CommodityID: recoveryGrain,
+		StartsAt: time.Now().Add(-time.Minute), ExpiresAt: time.Now().Add(time.Hour),
+	}}})
+	state.NextDue = time.Now().Add(-time.Minute)
+	state.LastPostAt = time.Now().Add(-23 * time.Hour)
+	if err := runner.saveBulletinState(h.ctx, state); err != nil {
+		t.Fatal(err)
 	}
-	sendBulletinFixture(t, h, runner, mission, &data)
-	makeBulletinDue(t, h, runner)
-	mission, data = stageBulletinFixture(t, h, runner)
-	if data.Bulletin.ThreadID != old {
-		t.Fatalf("already-replied ally thread repeated: got %s want %s", data.Bulletin.ThreadID, old)
+	if changed, err := runner.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed {
+		t.Fatalf("second thread was allowed inside 24 hours: %t %v", changed, err)
+	}
+	state.LastPostAt = time.Now().Add(-25 * time.Hour)
+	if err := runner.saveBulletinState(h.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	_, data = stageBulletinFixture(t, h, runner)
+	if data.Action.Stage != "bulletin-thread" || data.Bulletin.ItemID == itemID {
+		t.Fatal("a due thread with a new current item was not attempted after the 24-hour minimum")
 	}
 }
 
-func TestBulletinReplyFallbackAndPriorCompanyReply(t *testing.T) {
-	for _, priorReply := range []bool{false, true} {
-		t.Run(fmt.Sprint(priorReply), func(t *testing.T) {
-			h, proxy, runner := newBulletinFixture(t)
-			state := bulletinState{NextReply: true}
-			if priorReply {
-				id := proxy.addThread("The Kraken Cartel", time.Hour, false, false)
-				proxy.mu.Lock()
-				detail := proxy.details[id]
-				detail.Posts = append(detail.Posts, bulletinPost{ID: uuid.NewString(), ThreadID: id, CompanyName: "The Pokemon Pirates", Body: "Earlier company reply", CreatedAt: time.Now().Add(-time.Minute)})
-				proxy.details[id] = detail
-				proxy.mu.Unlock()
+func TestBulletinPerThreadReplyLimits(t *testing.T) {
+	h, proxy, runner := newBulletinFixture(t)
+	id := proxy.addThread(bulletinAlly, time.Hour, false, false)
+	if err := runner.saveBulletinState(h.ctx, bulletinState{LastPostAt: time.Now(), NextDue: time.Now().Add(36 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	mission, data := stageBulletinFixture(t, h, runner)
+	sendBulletinFixture(t, h, runner, mission, &data)
+	if data.Bulletin.ThreadID != id {
+		t.Fatal("initial ally reply targeted the wrong thread")
+	}
+	for attempt := range 3 {
+		proxy.mu.Lock()
+		detail := proxy.details[id]
+		if attempt > 0 {
+			for index := range detail.Posts {
+				if detail.Posts[index].CompanyName == names.DefaultCompany {
+					detail.Posts[index].CreatedAt = time.Now().Add(-25 * time.Hour)
+				}
 			}
-			if err := runner.saveBulletinState(h.ctx, state); err != nil {
-				t.Fatal(err)
-			}
-			mission, data := stageBulletinFixture(t, h, runner)
-			if data.Action.Stage != "bulletin-thread" || !data.Bulletin.ReplyTurn || proxy.boardReads != 1 {
-				t.Fatalf("no unreplied ally did not fall back to a thread: %+v", data)
+		}
+		detail.Posts = append(detail.Posts, bulletinPost{ID: uuid.NewString(), ThreadID: id, CompanyName: bulletinAlly,
+			Body: "A follow-up for Pokemon Pirates", CreatedAt: time.Now().UTC().Add(-time.Second)})
+		detail.Thread.LastPostAt = detail.Posts[len(detail.Posts)-1].CreatedAt
+		proxy.details[id], proxy.threads[0] = detail, detail.Thread
+		proxy.mu.Unlock()
+		state, _ := runner.bulletinState()
+		state.ReplyCheckAfter, state.ReplyScan = time.Time{}, nil
+		if attempt > 0 {
+			reply := state.Replies[id]
+			reply.At = time.Now().Add(-25 * time.Hour)
+			state.Replies[id] = reply
+			state.ReplyTimes = nil
+		}
+		if err := runner.saveBulletinState(h.ctx, state); err != nil {
+			t.Fatal(err)
+		}
+		if attempt == 1 {
+			runner = h.runner(primaryTestKey)
+			refreshBulletinRunner(t, h, runner)
+			mission, data = stageBulletinFixture(t, h, runner)
+			if data.Action.Stage != "bulletin-reply" || data.Bulletin.ThreadID != id {
+				t.Fatal("a new foreign post did not reopen the thread after a real day")
 			}
 			sendBulletinFixture(t, h, runner, mission, &data)
-			state, _ = runner.bulletinState()
-			if state.NextReply || state.ThreadCursor != 1 || state.ReplyCursor != 0 {
-				t.Fatalf("fallback did not advance the reply slot using only the thread pool: %+v", state)
-			}
-		})
+			continue
+		}
+		if changed, err := runner.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed {
+			t.Fatalf("thread reply limit was bypassed on attempt %d: %t %v", attempt, changed, err)
+		}
+	}
+	state, _ := runner.bulletinState()
+	if state.Replies[id].Count != 2 || proxy.postCalls != 2 {
+		t.Fatalf("thread did not retain its two-reply lifetime cap: %+v", state)
 	}
 }
 
@@ -359,8 +422,8 @@ func TestBulletinCooldownResultsSurviveRestart(t *testing.T) {
 			if !test.until.IsZero() {
 				minimum, maximum = test.until, test.until
 			}
-			if err != nil || state.CooldownUntil.Before(minimum) || state.CooldownUntil.After(maximum) || state.ThreadCursor != 0 || !state.LastPostAt.IsZero() {
-				t.Fatalf("refusal cooldown or unposted pool changed: %+v error=%v", state, err)
+			if err != nil || state.CooldownUntil.Before(minimum) || state.CooldownUntil.After(maximum) || !state.LastPostAt.IsZero() {
+				t.Fatalf("refusal cooldown or unposted thread changed: %+v error=%v", state, err)
 			}
 			restarted := h.runner(primaryTestKey)
 			refreshBulletinRunner(t, h, restarted)
@@ -448,7 +511,7 @@ func TestBulletinAmbiguousCommitReconcilesBeforeNewPost(t *testing.T) {
 	proxy.hideOwn = false
 	sendBulletinFixture(t, h, restarted, mission, &data)
 	state, _ := restarted.bulletinState()
-	if proxy.postCalls != 1 || state.LastPostID != proxy.posted[key].ID || data.LastActionID != key || state.ThreadCursor != 1 {
+	if proxy.postCalls != 1 || state.LastPostID != proxy.posted[key].ID || data.LastActionID != key || state.DiscussedItems[data.Bulletin.ItemID].IsZero() {
 		t.Fatalf("reconciliation duplicated the post or lost its receipt: posts=%d state=%+v", proxy.postCalls, state)
 	}
 }
@@ -489,7 +552,7 @@ func TestBulletinPendingTransportCommitReconcilesWithoutResend(t *testing.T) {
 	sendBulletinFixture(t, h, restarted, mission, &data)
 	pending, err = h.db.PendingActions(h.ctx, h.account.ID)
 	state, stateErr := restarted.bulletinState()
-	if err != nil || stateErr != nil || len(pending) != 0 || proxy.postCalls != 1 || proxy.boardReads != 2 || state.LastPostID != proxy.posted[key].ID || state.ThreadCursor != 1 || data.LastActionID != key {
+	if err != nil || stateErr != nil || len(pending) != 0 || proxy.postCalls != 1 || proxy.boardReads != 2 || state.LastPostID != proxy.posted[key].ID || state.DiscussedItems[data.Bulletin.ItemID].IsZero() || data.LastActionID != key {
 		t.Fatalf("GET reconciliation resent or failed to settle the pending post: pending=%+v posts=%d reads=%d state=%+v errors=%v,%v", pending, proxy.postCalls, proxy.boardReads, state, err, stateErr)
 	}
 }
@@ -575,33 +638,26 @@ func TestOptionalControlPendingFilterKeepsMoneyActions(t *testing.T) {
 	}
 }
 
-func TestBulletinContentPoolsAndBounds(t *testing.T) {
-	if len(bulletinThreads) < 24 || len(bulletinReplies) < 24 {
-		t.Fatalf("too few curated templates: threads=%d replies=%d", len(bulletinThreads), len(bulletinReplies))
-	}
-	seen := make(map[string]bool)
-	for _, template := range bulletinThreads {
-		body := template.Body
-		if err := validBulletinText(template.Title, body); err != nil || template.Title == "" || seen[template.Body] || strings.Contains(body, "{log}") {
-			t.Fatalf("invalid or repeated thread template %q: %v", template.Title, err)
+func TestBulletinGeneratedContentAndBounds(t *testing.T) {
+	_, _, runner := newBulletinFixture(t)
+	for _, content := range []bulletinContent{
+		{Kind: "event", Event: "pirate_outbreak", ZoneID: "zone-north", PiracyBPS: 350},
+		{Kind: "event", Event: "demand_shortage", PortID: recoveryFarPort, CommodityID: recoveryGrain},
+		{Kind: "event", Event: "supply_boom", PortID: recoveryFarPort, CommodityID: recoveryGrain},
+		{Kind: "event", Event: "admiralty_mobilization", PortID: recoveryFarPort, CommodityID: recoveryGrain},
+		{Kind: "monopoly", CommodityID: recoveryGrain},
+		{Kind: "leader", Season: 1, Companies: 10, Ally: true},
+		{Kind: "reply-mention"}, {Kind: "reply-ally"},
+		{Kind: "reply-event", Event: "pirate_outbreak", ZoneID: "zone-north", PiracyBPS: 350},
+		{Kind: "debate", PortID: recoveryHomePort}, {Kind: "debate", Ally: true},
+	} {
+		title, body, err := runner.renderBulletin(content)
+		if err != nil || body == "" {
+			t.Fatalf("template failed for %+v: %v", content, err)
 		}
-		seen[template.Body] = true
-		for _, character := range template.Title + body {
+		for _, character := range title + body {
 			if unicode.IsSymbol(character) || character == '\u2013' || character == '\u2014' {
-				t.Fatalf("non-plain public thread contains %q", character)
-			}
-		}
-	}
-	clear(seen)
-	for _, template := range bulletinReplies {
-		body := template
-		if err := validBulletinText("", body); err != nil || seen[template] {
-			t.Fatalf("invalid or repeated reply template: %v", err)
-		}
-		seen[template] = true
-		for _, character := range body {
-			if unicode.IsSymbol(character) || character == '\u2013' || character == '\u2014' {
-				t.Fatalf("non-plain public reply contains %q", character)
+				t.Fatalf("non-plain public template contains %q", character)
 			}
 		}
 	}
@@ -622,16 +678,17 @@ func TestBulletinPostsNeverCopyPrivateFleetEvidence(t *testing.T) {
 			runner.meta["expansion"] = DatasetMeta{Complete: true, Generation: runner.generation, UpdatedAt: time.Now(), AttemptedAt: time.Now()}
 			if reply {
 				proxy.addThread("The Kraken Cartel", time.Hour, false, false)
+				if err := runner.saveBulletinState(h.ctx, bulletinState{LastPostAt: time.Now(), NextDue: time.Now().Add(36 * time.Hour)}); err != nil {
+					t.Fatal(err)
+				}
 			}
-			if err := runner.saveBulletinState(h.ctx, bulletinState{NextReply: reply}); err != nil {
-				t.Fatal(err)
+			if !reply {
+				if err := runner.saveBulletinState(h.ctx, bulletinState{}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			_, data := stageBulletinFixture(t, h, runner)
-			expected := bulletinThreads[0].Body
-			if reply {
-				expected = bulletinReplies[0]
-			}
-			if data.Bulletin.Body != expected || strings.Contains(data.Bulletin.Body, privateName) ||
+			if data.Bulletin.Body == "" || strings.Contains(data.Bulletin.Body, privateName) ||
 				strings.Contains(data.Bulletin.Body, "Fleet roll:") || strings.Contains(data.Bulletin.Body, "43.21%") ||
 				strings.Contains(data.Bulletin.Body, primaryTestKey) || strings.Contains(data.Bulletin.Body, "[REDACTED]") {
 				t.Fatalf("private fleet or account evidence reached a public post: %s", data.Bulletin.Body)
@@ -640,49 +697,54 @@ func TestBulletinPostsNeverCopyPrivateFleetEvidence(t *testing.T) {
 	}
 }
 
-func TestBulletinReplyHistoryIsBounded(t *testing.T) {
-	var state bulletinState
-	for index := range 2 * bulletinReplyHistoryLimit {
-		state.rememberReply(fmt.Sprint(index))
+func TestBulletinOldAbsentDiscussionAndReplyHistoriesExpire(t *testing.T) {
+	h, _, runner := newBulletinFixture(t)
+	now := time.Now().UTC()
+	state := bulletinState{
+		DiscussedItems:    map[string]time.Time{"old": now.Add(-15 * 24 * time.Hour), "recent": now.Add(-13 * 24 * time.Hour)},
+		DiscussedSubjects: map[string]time.Time{"old": now.Add(-15 * 24 * time.Hour), "recent": now.Add(-13 * 24 * time.Hour)},
 	}
-	state.rememberReply(fmt.Sprint(2*bulletinReplyHistoryLimit - 1))
-	if len(state.RepliedThreadIDs) != bulletinReplyHistoryLimit || state.RepliedThreadIDs[0] != fmt.Sprint(bulletinReplyHistoryLimit) {
-		t.Fatalf("reply history grew or duplicate retention changed: %+v", state.RepliedThreadIDs)
+	state.rememberReply("old", now.Add(-15*24*time.Hour))
+	state.rememberReply("recent", now.Add(-13*24*time.Hour))
+	for id, reply := range state.Replies {
+		reply.ObservedAt = reply.At
+		state.Replies[id] = reply
+	}
+	runner.bulletinItems(&state, now)
+	if err := runner.saveBulletinState(h.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := h.db.Snapshot(h.ctx, h.account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state = bulletinState{}
+	if err := json.Unmarshal(snapshot["_bulletin"], &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.DiscussedItems) != 1 || len(state.DiscussedSubjects) != 1 || len(state.Replies) != 1 ||
+		state.Replies["recent"].Count != 1 || state.TotalReplies != 2 {
+		t.Fatalf("retention lost recent history or wording rotation, or retained expired history: %+v", state)
 	}
 }
 
-func TestBulletinPoolsExhaustBeforeRepeating(t *testing.T) {
+func TestBulletinNoFillerOrRepeatedItem(t *testing.T) {
 	h, proxy, runner := newBulletinFixture(t)
-	// The pools outnumber one board page; hiding our own threads keeps every
-	// ally thread on the first page the reply search reads.
-	proxy.hideOwn = true
-	threadBodies := make(map[string]bool)
-	replyBodies := make(map[string]bool)
-	for index := range 2 * len(bulletinThreads) {
-		if index > 0 {
-			makeBulletinDue(t, h, runner)
-		}
-		if index%2 == 1 {
-			proxy.addThread("The Kraken Cartel", time.Duration(index)*time.Second, false, false)
-		}
-		mission, data := stageBulletinFixture(t, h, runner)
-		seen := threadBodies
-		if data.Action.Stage == "bulletin-reply" {
-			seen = replyBodies
-		}
-		if seen[data.Bulletin.Body] {
-			t.Fatalf("template repeated before its pool was exhausted at slot %d", index)
-		}
-		seen[data.Bulletin.Body] = true
-		sendBulletinFixture(t, h, runner, mission, &data)
+	runner.snapshot["world_events"] = encode([]bulletinWorldEvent{})
+	if changed, err := runner.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed || proxy.postCalls != 0 {
+		t.Fatalf("empty world produced filler: %t %v", changed, err)
 	}
-	if len(threadBodies) != len(bulletinThreads) || len(replyBodies) != len(bulletinReplies) {
-		t.Fatalf("separate pools did not exhaust: threads=%d replies=%d", len(threadBodies), len(replyBodies))
-	}
+	runner.snapshot["world_events"] = encode(proxy.worldEvents)
+	mission, data := stageBulletinFixture(t, h, runner)
+	sendBulletinFixture(t, h, runner, mission, &data)
 	makeBulletinDue(t, h, runner)
-	_, data := stageBulletinFixture(t, h, runner)
-	if data.Bulletin.TemplateIndex != 0 || !threadBodies[data.Bulletin.Body] {
-		t.Fatal("thread pool did not wrap only after every template was posted")
+	if changed, err := runner.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed || proxy.postCalls != 1 {
+		t.Fatalf("discussed event was repeated: %t %v", changed, err)
+	}
+	restarted := h.runner(primaryTestKey)
+	refreshBulletinRunner(t, h, restarted)
+	if changed, err := restarted.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed || proxy.postCalls != 1 {
+		t.Fatalf("restart forgot the discussed event: %t %v", changed, err)
 	}
 }
 
@@ -705,23 +767,27 @@ func TestBulletinReplySearchUsesArchiveBoundaryAndDefersOnlyActivePages(t *testi
 					proxy.addThread("Friendly rivals", time.Hour, false, false)
 				}
 				proxy.addThread("The Kraken Cartel", 2*time.Hour, false, false)
+				runner.snapshot["world_events"] = encode([]bulletinWorldEvent{})
 			}
-			if err := runner.saveBulletinState(h.ctx, bulletinState{NextReply: true}); err != nil {
+			if err := runner.saveBulletinState(h.ctx, bulletinState{}); err != nil {
 				t.Fatal(err)
 			}
 			data := missionData{}
 			changed, err := runner.driveBulletin(h.ctx, nil, &data)
-			if err != nil || proxy.postCalls != 0 || proxy.boardReads != 1 || proxy.boardSince.IsZero() {
+			if err != nil || proxy.postCalls != 0 || proxy.boardReads != 1 {
 				t.Fatalf("reply search did not use one bounded board read: changed=%t error=%v", changed, err)
 			}
 			if mode == "inconclusive active page" {
+				if proxy.boardSince.IsZero() {
+					t.Fatal("reply scan omitted its archive boundary")
+				}
 				state, _ := runner.bulletinState()
-				if changed || data.Action != nil || !state.CooldownUntil.After(time.Now()) {
-					t.Fatal("incomplete active page did not skip with a durable cooldown")
+				if changed || data.Action != nil || state.ReplyScan == nil || state.ReplyScan.Cursor == "" {
+					t.Fatal("incomplete active page did not preserve its scan continuation")
 				}
 				return
 			}
-			if !changed || data.Action == nil || data.Action.Stage != "bulletin-thread" || !proxy.boardSince.Equal(data.Bulletin.NotBefore.Add(-72*time.Hour)) {
+			if !changed || data.Action == nil || data.Action.Stage != "bulletin-thread" || !proxy.boardSince.IsZero() || len(data.Bulletin.BeforeIDs) == 0 {
 				t.Fatalf("archived history prevented the fallback thread: changed=%t data=%+v", changed, data)
 			}
 		})
@@ -804,32 +870,41 @@ func TestBulletinReplyPaginationSurvivesRestart(t *testing.T) {
 			if hasAlly {
 				ally = proxy.addThread("The Kraken Cartel", 2*time.Hour, false, false)
 			}
-			if err := runner.saveBulletinState(h.ctx, bulletinState{NextReply: true}); err != nil {
-				t.Fatal(err)
-			}
 			var since time.Time
-			for index, cursor := range []string{"100", "200"} {
-				if index > 0 {
+			var data missionData
+			found := false
+			for pass := range 80 {
+				if pass > 0 {
 					runner, _, _ = resumeBulletinFixture(t, h)
 				}
-				if changed, err := runner.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed {
-					t.Fatalf("reply page %d did not defer its saved continuation: changed=%t error=%v", index, changed, err)
+				runner.snapshot["world_events"] = encode([]bulletinWorldEvent{})
+				changed, err := runner.driveBulletin(h.ctx, nil, &data)
+				if err != nil {
+					t.Fatal(err)
 				}
 				state, err := runner.bulletinState()
-				if err != nil || state.ReplyScan == nil || state.ReplyScan.Cursor != cursor || !state.CooldownUntil.After(time.Now()) || proxy.boardReads != index+1 {
-					t.Fatalf("reply continuation was lost: state=%+v reads=%d error=%v", state, proxy.boardReads, err)
+				if err != nil {
+					t.Fatal(err)
 				}
-				if index == 0 {
-					since = state.ReplyScan.Since
-				} else if !state.ReplyScan.Since.Equal(since) {
-					t.Fatal("reply restart changed the scan's archive boundary")
+				if state.ReplyScan != nil {
+					if since.IsZero() {
+						since = state.ReplyScan.Since
+					} else if !state.ReplyScan.Since.Equal(since) {
+						t.Fatal("reply restart changed the scan's archive boundary")
+					}
+				}
+				if changed {
+					found = true
+					break
+				}
+				if state.ReplyScan == nil {
+					break
 				}
 			}
-			runner, _, _ = resumeBulletinFixture(t, h)
-			_, data := stageBulletinFixture(t, h, runner)
-			if data.Bulletin.ThreadID != ally || proxy.boardReads != 3 || proxy.postCalls != 0 || !proxy.boardSince.Equal(since) ||
+			if found != hasAlly || hasAlly && (data.Bulletin == nil || data.Bulletin.ThreadID != ally) ||
+				proxy.boardReads != 3 || proxy.postCalls != 0 || !proxy.boardSince.Equal(since) ||
 				!slices.Equal(proxy.boardCursors, []string{"", "100", "200"}) {
-				t.Fatalf("reply search reread page one or missed the older ally/fallback: intent=%+v cursors=%v", data.Bulletin, proxy.boardCursors)
+				t.Fatalf("bounded reply scan lost continuation or invented filler: found=%t data=%+v cursors=%v", found, data.Bulletin, proxy.boardCursors)
 			}
 		})
 	}
@@ -896,7 +971,7 @@ func TestBulletinReconciliationPaginationSurvivesRestartAndAge(t *testing.T) {
 			runner, mission, data = resumeBulletinFixture(t, h)
 			sendBulletinFixture(t, h, runner, mission, &data)
 			state, err := runner.bulletinState()
-			if err != nil || state.LastPostID != post.ID || state.ThreadCursor != 1 || data.LastActionID != key ||
+			if err != nil || state.LastPostID != post.ID || state.DiscussedItems[data.Bulletin.ItemID].IsZero() || data.LastActionID != key ||
 				len(h.pending()) != 0 || proxy.postCalls != 1 || proxy.boardReads != 4 ||
 				!slices.Equal(proxy.boardCursors, []string{"", "", "100", "200"}) {
 				t.Fatalf("page-three evidence failed to reconcile without a resend: state=%+v cursors=%v posts=%d error=%v", state, proxy.boardCursors, proxy.postCalls, err)
@@ -1058,5 +1133,235 @@ func TestBulletinPublicScanStateIsBounded(t *testing.T) {
 		validBulletinScan("", append(slices.Clone(ids), uuid.NewString())) ||
 		validBulletinScan("", []string{"not-a-thread-id"}) {
 		t.Fatal("public scan accepted an oversized cursor, candidate queue or invalid thread ID")
+	}
+}
+
+func TestBulletinAmbiguousReplySettlesAfterRestartAndConsumesDailyAllowance(t *testing.T) {
+	for _, lostReceipt := range []bool{false, true} {
+		t.Run(fmt.Sprint(lostReceipt), func(t *testing.T) {
+			h, proxy, runner := newBulletinFixture(t)
+			for index := range 3 {
+				proxy.addThread(bulletinAlly, time.Duration(index+1)*time.Minute, false, false)
+			}
+			if err := runner.saveBulletinState(h.ctx, bulletinState{LastPostAt: time.Now(), NextDue: time.Now().Add(36 * time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+			mission, data := stageBulletinFixture(t, h, runner)
+			sendBulletinFixture(t, h, runner, mission, &data)
+			mission, data = stageBulletinFixture(t, h, runner)
+			key, threadID := data.Action.ID, data.Bulletin.ThreadID
+			proxy.badReceipt, proxy.dropReceipt = !lostReceipt, lostReceipt
+			h.api.server.CloseClientConnections()
+			if changed, err := runner.driveBulletin(h.ctx, mission, &data); err != nil || changed || data.Action == nil {
+				t.Fatalf("ambiguous reply was not retained: changed=%t error=%v", changed, err)
+			}
+			proxy.badReceipt, proxy.dropReceipt = false, false
+			runner, mission, data = resumeBulletinFixture(t, h)
+			sendBulletinFixture(t, h, runner, mission, &data)
+			state, err := runner.bulletinState()
+			if err != nil || state.LastOutcomeID != key || len(state.ReplyTimes) != 2 || state.TotalReplies != 2 ||
+				state.Replies[threadID].Count != 1 || proxy.postCalls != 2 || len(h.pending()) != 0 {
+				t.Fatalf("reconciled reply lost its allowance or was resent: state=%+v error=%v posts=%d", state, err, proxy.postCalls)
+			}
+			runner = h.runner(primaryTestKey)
+			refreshBulletinRunner(t, h, runner)
+			if changed, err := runner.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed || proxy.postCalls != 2 {
+				t.Fatalf("restart bypassed the cap after reconciling a reply: changed=%t error=%v", changed, err)
+			}
+		})
+	}
+}
+
+func TestBulletinReplyThreadRefusalsDoNotHoldDueOpenings(t *testing.T) {
+	for _, status := range []int{400, 404, 409, 422} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			h, proxy, runner := newBulletinFixture(t)
+			id := proxy.addThread(bulletinAlly, time.Minute, false, false)
+			next := proxy.addThread(bulletinAlly, 2*time.Minute, false, false)
+			if err := runner.saveBulletinState(h.ctx, bulletinState{LastPostAt: time.Now(), NextDue: time.Now().Add(36 * time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+			mission, data := stageBulletinFixture(t, h, runner)
+			if data.Bulletin.ThreadID != id {
+				t.Fatal("fixture did not select the newest ally thread")
+			}
+			proxy.postStatus, proxy.problemCode = status, "thread_archived"
+			sendBulletinFixture(t, h, runner, mission, &data)
+			state, err := runner.bulletinState()
+			if err != nil || !state.CooldownUntil.IsZero() || state.CheckedThreads[id].ObservedAt.IsZero() || len(state.ReplyTimes) != 0 ||
+				state.ReplyScan == nil || !slices.Contains(state.ReplyScan.Candidates, next) {
+				t.Fatalf("thread-local reply refusal lost scan progress or imposed a company cooldown: %+v %v", state, err)
+			}
+			proxy.postStatus = 0
+			runner, _, _ = resumeBulletinFixture(t, h)
+			makeBulletinDue(t, h, runner)
+			_, data = stageBulletinFixture(t, h, runner)
+			if data.Action.Stage != "bulletin-thread" || !slices.Contains(data.Bulletin.BeforeIDs, id) ||
+				!slices.Contains(data.Bulletin.BeforeIDs, next) || proxy.detailReads[id] != 1 {
+				t.Fatal("reply refusal blocked a due opening or lost page-one evidence")
+			}
+		})
+	}
+}
+
+func TestBulletinLegacyReplyScanResetsWithoutLosingPostingState(t *testing.T) {
+	h, proxy, runner := newBulletinFixture(t)
+	id := proxy.addThread(bulletinAlly, time.Minute, false, false)
+	now := time.Now().UTC()
+	state := bulletinState{
+		LastPostID: uuid.NewString(), LastPostAt: now, NextDue: now.Add(24 * time.Hour), TotalReplies: 10,
+		DiscussedItems: map[string]time.Time{"event:confirmed": now}, DiscussedSubjects: map[string]time.Time{"event|port|grain": now},
+		ReplyTimes: []time.Time{now.Add(-time.Hour), now.Add(-2 * time.Hour), now.Add(-3 * time.Hour)},
+		Replies:    map[string]bulletinReply{id: {At: now.Add(-25 * time.Hour), Count: 1}},
+		ReplyScan:  &bulletinReplyScan{Since: now.Add(-72 * time.Hour), Cursor: "100", Candidates: []string{id}},
+	}
+	if err := runner.saveBulletinState(h.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	restarted := h.runner(primaryTestKey)
+	refreshBulletinRunner(t, h, restarted)
+	restored, err := restarted.bulletinState()
+	if err != nil || restored.ReplyScan != nil || restored.LastPostID != state.LastPostID ||
+		!restored.LastPostAt.Equal(state.LastPostAt) || !restored.NextDue.Equal(state.NextDue) || restored.TotalReplies != 10 ||
+		len(restored.ReplyTimes) != 3 || restored.Replies[id].Count != 1 ||
+		restored.DiscussedItems["event:confirmed"].IsZero() || restored.DiscussedSubjects["event|port|grain"].IsZero() {
+		t.Fatalf("legacy scan migration rejected or discarded unrelated posting state: %+v %v", restored, err)
+	}
+	if changed, err := restarted.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed || proxy.boardReads != 0 {
+		t.Fatalf("legacy daily history granted an extra reply: changed=%t error=%v", changed, err)
+	}
+	restored, err = restarted.bulletinState()
+	if err != nil || restored.ReplyScan != nil {
+		t.Fatalf("legacy scan reset did not persist: %+v %v", restored, err)
+	}
+	restored.ReplyTimes, restored.Replies = nil, nil
+	if err := restarted.saveBulletinState(h.ctx, restored); err != nil {
+		t.Fatal(err)
+	}
+	_, data := stageBulletinFixture(t, h, restarted)
+	if data.Bulletin.ThreadID != id || data.Bulletin.Content.Variant != 1 {
+		t.Fatal("posting did not resume from a clean scan with its preserved wording rotation")
+	}
+}
+
+func TestBulletinNonThreadReplyRefusalsKeepCompanyCooldown(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusUnprocessableEntity} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			h, proxy, runner := newBulletinFixture(t)
+			proxy.addThread(bulletinAlly, time.Minute, false, false)
+			proxy.addThread(bulletinAlly, 2*time.Minute, false, false)
+			if err := runner.saveBulletinState(h.ctx, bulletinState{LastPostAt: time.Now(), NextDue: time.Now().Add(36 * time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+			mission, data := stageBulletinFixture(t, h, runner)
+			proxy.postStatus, proxy.problemCode = status, "invalid_body"
+			before := time.Now().UTC()
+			sendBulletinFixture(t, h, runner, mission, &data)
+			state, err := runner.bulletinState()
+			if err != nil || state.CooldownUntil.Before(before.Add(6*time.Hour)) || state.CooldownUntil.After(time.Now().Add(6*time.Hour+time.Second)) {
+				t.Fatalf("non-thread reply refusal lost its company cooldown: %+v %v", state, err)
+			}
+			restarted := h.runner(primaryTestKey)
+			refreshBulletinRunner(t, h, restarted)
+			reads := proxy.boardReads
+			if changed, err := restarted.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed || proxy.boardReads != reads || proxy.postCalls != 1 {
+				t.Fatalf("non-thread refusal retried another thread immediately: changed=%t error=%v", changed, err)
+			}
+		})
+	}
+}
+
+func TestBulletinHistoriesAreBoundedAndFutureActivityCannotExtendRetention(t *testing.T) {
+	h, proxy, runner := newBulletinFixture(t)
+	id := proxy.addThread("Other traders", time.Minute, false, false)
+	future := time.Now().UTC().AddDate(10, 0, 0)
+	detail := proxy.details[id]
+	detail.Thread.LastPostAt = future
+	proxy.details[id], proxy.threads[0] = detail, detail.Thread
+	if err := runner.saveBulletinState(h.ctx, bulletinState{LastPostAt: time.Now(), NextDue: time.Now().Add(36 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().UTC()
+	if changed, err := runner.driveBulletin(h.ctx, nil, &missionData{}); err != nil || changed {
+		t.Fatalf("future activity triggered an irrelevant post: changed=%t error=%v", changed, err)
+	}
+	now := time.Now().UTC()
+	state, err := runner.bulletinState()
+	check := state.CheckedThreads[id]
+	if err != nil || !check.LastPostAt.Equal(future) || check.ObservedAt.Before(before) || check.ObservedAt.After(now) {
+		t.Fatalf("remote activity became the cache retention clock: check=%+v error=%v", check, err)
+	}
+	state.rememberReply(id, future)
+	if state.Replies[id].ObservedAt.Before(before) || state.Replies[id].ObservedAt.After(time.Now()) {
+		t.Fatal("remote reply time became the local reply retention clock")
+	}
+	state.DiscussedItems = make(map[string]time.Time)
+	state.DiscussedSubjects = make(map[string]time.Time)
+	var ids []string
+	for index := range bulletinHistoryLimit + 25 {
+		threadID := uuid.NewString()
+		ids = append(ids, threadID)
+		observedAt := now.Add(-time.Duration(bulletinHistoryLimit+25-index) * time.Minute)
+		state.CheckedThreads[threadID] = bulletinThreadCheck{LastPostAt: future, ObservedAt: observedAt}
+		state.Replies[threadID] = bulletinReply{At: future, ObservedAt: observedAt, Count: 1}
+		state.DiscussedItems["debate:"+threadID] = observedAt
+		state.DiscussedSubjects["debate|"+threadID] = observedAt
+	}
+	if err := runner.saveBulletinState(h.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	restarted := h.runner(primaryTestKey)
+	refreshBulletinRunner(t, h, restarted)
+	state, err = restarted.bulletinState()
+	oldest, newest := ids[0], ids[len(ids)-1]
+	if err != nil || len(state.CheckedThreads) != bulletinHistoryLimit || len(state.Replies) != bulletinHistoryLimit ||
+		len(state.DiscussedItems) != bulletinHistoryLimit || len(state.DiscussedSubjects) != bulletinHistoryLimit ||
+		!state.CheckedThreads[oldest].ObservedAt.IsZero() || state.Replies[oldest].Count != 0 ||
+		!state.DiscussedItems["debate:"+oldest].IsZero() || !state.DiscussedSubjects["debate|"+oldest].IsZero() ||
+		state.CheckedThreads[newest].ObservedAt.IsZero() || state.Replies[newest].Count != 1 ||
+		state.DiscussedItems["debate:"+newest].IsZero() || state.DiscussedSubjects["debate|"+newest].IsZero() ||
+		!state.CheckedThreads[id].LastPostAt.Equal(future) {
+		t.Fatalf("history caps or oldest-observation eviction failed: checked=%d replies=%d items=%d subjects=%d error=%v",
+			len(state.CheckedThreads), len(state.Replies), len(state.DiscussedItems), len(state.DiscussedSubjects), err)
+	}
+	later := time.Now().UTC().Add(15 * 24 * time.Hour)
+	state.prune(later)
+	restarted.bulletinItems(&state, later)
+	if len(state.CheckedThreads) != 0 || len(state.Replies) != 0 || len(state.DiscussedItems) != 0 || len(state.DiscussedSubjects) != 0 {
+		t.Fatalf("future remote timestamps pinned expired histories: checked=%d replies=%d items=%d subjects=%d",
+			len(state.CheckedThreads), len(state.Replies), len(state.DiscussedItems), len(state.DiscussedSubjects))
+	}
+}
+
+func TestBulletinLegacyFutureHistoryDoesNotPinRetention(t *testing.T) {
+	h, _, runner := newBulletinFixture(t)
+	id := uuid.NewString()
+	future := time.Now().UTC().AddDate(10, 0, 0)
+	runner.snapshot["_bulletin"] = encode(map[string]any{
+		"checked_threads":    map[string]time.Time{id: future},
+		"discussed_items":    map[string]time.Time{"debate:" + id: future},
+		"discussed_subjects": map[string]time.Time{"debate||": future},
+		"replies":            map[string]bulletinReply{id: {At: future, Count: 2}},
+	})
+	before := time.Now().UTC()
+	state, err := runner.bulletinState()
+	now := time.Now().UTC()
+	if err != nil || len(state.CheckedThreads) != 0 || state.Replies[id].Count != 2 ||
+		state.Replies[id].ObservedAt.Before(before) || state.Replies[id].ObservedAt.After(now) ||
+		state.DiscussedItems["debate:"+id].Before(before) || state.DiscussedItems["debate:"+id].After(now) ||
+		state.DiscussedSubjects["debate||"].Before(before) || state.DiscussedSubjects["debate||"].After(now) {
+		t.Fatalf("legacy history migration trusted remote retention or lost reply limits: %+v %v", state, err)
+	}
+	if err := runner.saveBulletinState(h.ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(runner.snapshot["_bulletin"]), `"checked_threads"`) {
+		t.Fatal("legacy activity-only cache survived the observation-time cutover")
+	}
+	later := now.Add(15 * 24 * time.Hour)
+	state.prune(later)
+	runner.bulletinItems(&state, later)
+	if len(state.Replies) != 0 || len(state.DiscussedItems) != 0 || len(state.DiscussedSubjects) != 0 {
+		t.Fatal("legacy future timestamps kept expired history alive")
 	}
 }
