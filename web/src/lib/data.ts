@@ -7,6 +7,7 @@ import type {
   DashboardData,
   DatasetMeta,
   JsonRecord,
+  LoanReport,
   MoneyHistory,
   RivalReport,
   ShipDetail,
@@ -15,7 +16,11 @@ import type {
 } from "./types";
 import { customMoneyRange, type MoneyPreferences } from "./money-history";
 
-async function fetchJSON<T>(path: string, signal: AbortSignal): Promise<T> {
+async function fetchJSON<T>(
+  path: string,
+  signal: AbortSignal,
+  tooLargeMessage?: string,
+) {
   const response = await fetch(path, {
     signal,
     cache: "no-store",
@@ -23,6 +28,17 @@ async function fetchJSON<T>(path: string, signal: AbortSignal): Promise<T> {
   });
 
   if (!response.ok) {
+    if (tooLargeMessage) {
+      const failure: unknown = await response.json().catch(() => null);
+      if (
+        failure !== null &&
+        typeof failure === "object" &&
+        "error" in failure &&
+        failure.error === "response_too_large"
+      ) {
+        throw new Error(tooLargeMessage);
+      }
+    }
     throw new Error(`The recording service returned HTTP ${response.status}.`);
   }
 
@@ -46,6 +62,29 @@ export function useWarnings() {
   return useQuery({
     queryKey: ["warnings"],
     queryFn: ({ signal }) => fetchJSON<WarningReport>("/api/warnings", signal),
+    refetchInterval: 30_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    staleTime: 20_000,
+    retry: 1,
+  });
+}
+
+export function useLoans(accountID: string) {
+  return useQuery({
+    queryKey: ["loans", accountID],
+    queryFn: ({ signal }) => {
+      const query = new URLSearchParams();
+      if (accountID) {
+        query.set("account_id", accountID);
+      }
+      return fetchJSON<LoanReport>(
+        `/api/loans${query.size ? `?${query}` : ""}`,
+        signal,
+        "Loan history too large to display.",
+      );
+    },
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,

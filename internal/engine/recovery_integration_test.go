@@ -927,7 +927,11 @@ func (h *recoveryHarness) tick(instance *Runner) (bool, error) {
 	if err := instance.verifyIdentity(); err != nil {
 		return false, err
 	}
-	return instance.work(h.ctx)
+	changed, err := instance.work(h.ctx)
+	if err == nil {
+		instance.refreshLoanHistory(h.ctx, time.Now().UTC())
+	}
+	return changed, err
 }
 
 func (h *recoveryHarness) mission(shipID string) (*store.Mission, missionData) {

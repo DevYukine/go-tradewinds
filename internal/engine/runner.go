@@ -455,6 +455,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				return err
 			}
 		}
+		r.refreshLoanHistory(ctx, time.Now().UTC())
 		financialStale = financialStale || captureFinancial != publishedFinancial.Load()
 		delay := r.nextWake()
 		if changed {

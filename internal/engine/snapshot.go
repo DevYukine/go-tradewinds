@@ -181,6 +181,19 @@ func (r *Runner) applyCapture(ctx context.Context, key string, result fetchResul
 	if key == "ships" || strings.HasPrefix(key, "ship_details/") {
 		r.observeShipLosses(ctx, key, result.data, result.completedAt)
 	}
+	if key == "loans" {
+		if !result.fullLoanHistory {
+			r.observeLoanHistoryClosures(result.data, result.completedAt)
+		}
+		if err := r.recordLoanHistory(ctx, result.data, result.completedAt); err != nil {
+			r.loanHistoryRecordingFailure(ctx, err)
+			if result.fullLoanHistory {
+				r.loanHistoryFailure(ctx, err)
+			}
+		} else if result.fullLoanHistory {
+			r.completeLoanHistoryCapture(result)
+		}
+	}
 	r.snapshot[key] = result.data
 	var observed struct {
 		AsOf *time.Time `json:"as_of"`
@@ -253,6 +266,8 @@ func (r *Runner) captureWave(ctx context.Context, tasks []fetchTask, groups map[
 			return err
 		}
 		results[index].retention = retention
+		results[index].fullLoanHistory = task.key == "loans" && task.kind == fetchPages &&
+			task.path == "/v1/loan/list?role=borrower"
 		captured := r.applyCapture(ctx, task.key, results[index])
 		group, key, child := strings.Cut(task.key, "/")
 		if values, exists := groups[group]; child && exists {

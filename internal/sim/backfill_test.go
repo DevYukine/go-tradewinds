@@ -155,8 +155,12 @@ func TestBackfillLoansRequireCompleteStatusesOrHistory(t *testing.T) {
 			active,
 			{"/v1/loan/list?limit=200&role=borrower&status=defaulted", 200, string(page)},
 		}},
-		{name: "complete history fallback", requests: []request{
+		{name: "reporting history does not replace failed current debt", requests: []request{
 			active, failedDefault,
+			{"/v1/loan/list?limit=200&role=borrower", 200, string(page)},
+			{"/v1/loan/list?cursor=loan-199&limit=200&role=borrower", 200, `[{"id":"loan-200","status":"settled"}]`},
+		}},
+		{name: "complete history without current-debt attempts", requests: []request{
 			{"/v1/loan/list?limit=200&role=borrower", 200, string(page)},
 			{"/v1/loan/list?cursor=loan-199&limit=200&role=borrower", 200, `[{"id":"loan-200","status":"settled"}]`},
 		}, expected: historyData},

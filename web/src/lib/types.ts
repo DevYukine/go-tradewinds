@@ -191,6 +191,97 @@ export interface Account {
   ship_losses_unavailable?: boolean;
 }
 
+export interface LoanEntry {
+  id: string;
+  lender_company_id: string;
+  borrower_company_id: string;
+  banking_region: string;
+  principal_pence: number;
+  rate_basis: string;
+  daily_rate_bps: number;
+  annual_rate_bps: number | null;
+  term_game_days: number;
+  repayment: string;
+  total_repayable_pence: number | null;
+  installment_pence: number | null;
+  next_payment_due_at: string | null;
+  next_payment_pence: number | null;
+  arrears_pence: number;
+  arrears_due_by: string | null;
+  is_mortgage: boolean;
+  recourse: boolean;
+  collateral_kind: string;
+  collateral_ship_id: string | null;
+  collateral_port_id: string | null;
+  collateral_commodity_id: string | null;
+  collateral_tons: number | null;
+  collateral_contract_id: string | null;
+  collateral_deposit_id: string | null;
+  deposit_lock_pence: number;
+  collateral_value_pence: number;
+  collateral_status: string;
+  status: string;
+  outstanding_principal_pence: number;
+  accrued_interest_pence: number;
+  owed_pence: number;
+  principal_repaid_pence: number;
+  interest_paid_pence: number;
+  collateral_credit_pence: number;
+  extinguished_pence: number;
+  written_off_pence: number;
+  foreclosure_surplus_paid_pence: number;
+  foreclosure_surplus_owed_pence: number;
+  offer_expires_at: string;
+  disbursed_at: string | null;
+  matures_at: string | null;
+  defaulted_at: string | null;
+  closed_at: string | null;
+  interest_accrued_through: string | null;
+  request_id: string | null;
+  quote_id: string | null;
+  lending_line_id?: string;
+  created_at: string;
+  updated_at: string;
+  lender_name: string;
+  observed_at: string;
+  remaining_installments: number | null;
+  remaining_installments_derived: boolean;
+  installment_note: string;
+}
+
+export interface LoanTotals {
+  owed_pence: number;
+  principal_repaid_pence: number;
+  interest_paid_pence: number;
+  ledger_principal_repaid_pence: number;
+  ledger_interest_paid_pence: number;
+  principal_difference_pence: number;
+  interest_difference_pence: number;
+  repaid_count: number;
+}
+
+export interface LoanAccount {
+  account_id: string;
+  label: string;
+  company_id: string;
+  observed_at: string | null;
+  history_refreshed_at: string | null;
+  history_attempted_at: string | null;
+  history_complete: boolean;
+  history_error: string;
+  recording_error: string;
+  loans_stale: boolean;
+  loans_error: string;
+  active_loans: LoanEntry[];
+  closed_loans: LoanEntry[];
+  totals: LoanTotals;
+}
+
+export interface LoanReport {
+  updated_at: string;
+  accounts: LoanAccount[];
+}
+
 export interface Metric {
   id: number;
   account_id: string;

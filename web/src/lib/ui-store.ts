@@ -14,6 +14,7 @@ export type View =
   | "bulletin"
   | "performance"
   | "treasury"
+  | "loans"
   | "holdings"
   | "contracts"
   | "exchange"

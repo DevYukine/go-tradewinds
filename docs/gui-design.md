@@ -33,13 +33,13 @@ Use locally hosted IBM Plex Serif for display headings (`h1` and `h2`) and IBM P
 
 Overview retains company state, observed ship activity, current holds, next-check targets and clearly separated money facts. These facts require no ship selection or diagnostic drill-down. A visible Fleet chart link opens the dedicated full-screen `/chart` page; the overview no longer embeds a compact map. The vessel ledger also links to the chart. Account/company scope and account-qualified ship selection are shared across the dashboard and chart without adding or migrating persisted dashboard View values.
 
-Eight icon-led primary destinations expose fifteen dashboard views through adjacent contextual tabs and the full-screen Fleet chart:
+Eight icon-led primary destinations expose dashboard views through adjacent contextual tabs and the full-screen Fleet chart:
 
 - Overview: company operations and financial context, with an entry to Fleet chart.
 - Fleet chart: dedicated spatial fleet operations.
 - Fleet: Vessels and Voyages.
 - Journal: chronological company activity and Bulletin.
-- Money: Performance, Treasury and Warehouses.
+- Money: Performance, Treasury, Loans and Warehouses.
 - Trade: Contracts, Exchange and Shipyards.
 - World: World and Standings.
 - System: Decisions and Diagnostics.

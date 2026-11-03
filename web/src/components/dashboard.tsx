@@ -3,6 +3,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import {
   Anchor,
+  Banknote,
   BookOpen,
   Bot,
   Boxes,
@@ -48,6 +49,7 @@ import { ExchangeView } from "./exchange";
 import { EngineWarnings } from "./engine-warnings";
 import { FleetPanel } from "./fleet";
 import { Journal } from "./journal";
+import { LoansView } from "./loans";
 import { OperationsOverview } from "./operations-overview";
 import { Performance } from "./performance";
 import { ShipyardView } from "./shipyard";
@@ -84,6 +86,7 @@ const navigationGroups: {
     items: [
       { id: "performance", label: "Performance", icon: ChartNoAxesCombined },
       { id: "treasury", label: "Treasury", icon: Landmark },
+      { id: "loans", label: "Loans", icon: Banknote },
       { id: "holdings", label: "Warehouses", icon: Boxes },
     ],
   },
@@ -283,15 +286,19 @@ export function Dashboard() {
               <p>
                 {view === "bulletin"
                   ? "Recorded posts from all companies"
-                  : scoped.length === 1
-                    ? (dataset<CompanyProfile>(scoped[0], "profile")?.company
-                        .name ?? scoped[0].label)
-                    : `${count(scoped.length)} configured accounts`}
+                  : query.isPending
+                    ? "Loading configured accounts"
+                    : !query.data
+                      ? "Account scope unavailable"
+                      : scoped.length === 1
+                        ? (dataset<CompanyProfile>(scoped[0], "profile")
+                            ?.company.name ?? scoped[0].label)
+                        : `${count(scoped.length)} configured accounts`}
               </p>
             )}
           </div>
           <div className="observation-status">
-            {view !== "chart" && view !== "bulletin" && (
+            {view !== "chart" && view !== "bulletin" && view !== "loans" && (
               <span>
                 {freshness}
                 {oldest ? `, ${age(oldest, now)}` : ""}
@@ -336,6 +343,15 @@ export function Dashboard() {
         />
         {view === "bulletin" ? (
           <BulletinView accounts={accounts} />
+        ) : view === "loans" ? (
+          accountID && query.data && scoped.length === 0 ? (
+            <EmptyState
+              title="Selected account is unavailable"
+              description="Choose another account or return to all accounts."
+            />
+          ) : (
+            <LoansView accountID={accountID} accounts={scoped} />
+          )
         ) : query.isPending ? (
           <div className="loading-state" role="status">
             Loading recorded fleet and company data…
@@ -452,6 +468,7 @@ function AccountWorkspace({
       break;
     case "chart":
     case "fleet":
+    case "loans":
       return null;
   }
   return (

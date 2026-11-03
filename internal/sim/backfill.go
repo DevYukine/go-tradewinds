@@ -429,6 +429,7 @@ func Backfill(ctx context.Context, db *store.Store, accountID string) (BackfillR
 		gaps := make(map[string]store.ReplayDiagnostic)
 		pages := make(map[string]*diagnosticPages)
 		decision := false
+		filteredLoanAttempt := false
 		for _, row := range rows {
 			if row.Method == "POST" || row.Method == "PATCH" {
 				decision = true
@@ -441,6 +442,7 @@ func Backfill(ctx context.Context, db *store.Store, accountID string) (BackfillR
 			}
 			if mapped.key == "loans" {
 				gaps["loans"] = row
+				filteredLoanAttempt = filteredLoanAttempt || mapped.variant != ""
 			}
 			if !diagnosticComplete(row) {
 				if strings.HasPrefix(mapped.key, "books/") || mapped.key == "clock" {
@@ -486,10 +488,10 @@ func Backfill(ctx context.Context, db *store.Store, accountID string) (BackfillR
 		defaulted, defaultedComplete := lists["loans\x00defaulted"]
 		if activeComplete && defaultedComplete {
 			values["loans"] = mergeDiagnosticLists([]store.ReplayDiagnostic{active, defaulted})
-		} else if history, complete := lists["loans\x00"]; complete {
+		} else if history, complete := lists["loans\x00"]; complete && !filteredLoanAttempt {
 			values["loans"] = history
 		} else if gap, attempted := gaps["loans"]; attempted {
-			reason := "borrower loans require complete active and defaulted pages or complete unfiltered history"
+			reason := "borrower loans require complete active and defaulted pages, or complete unfiltered history without status-filtered attempts"
 			if gap.Error != "" {
 				reason += ": " + gap.Error
 			}

@@ -156,13 +156,18 @@ func (r *Runner) refreshLoanRefinanceLoan(ctx context.Context, id string) (gamea
 			active = append(active, loan)
 		}
 	}
-	// Full history proves retirement without publishing closed loans as debt
-	// commitments to the ordinary planner.
-	if results[0].err == nil {
-		results[0].data = encode(active)
-	}
+	results[0].fullLoanHistory = true
+	loansCaptured := false
 	for index, task := range tasks {
-		r.applyCapture(ctx, task.key, results[index])
+		captured := r.applyCapture(ctx, task.key, results[index])
+		if task.key == "loans" {
+			loansCaptured = captured
+		}
+	}
+	// Full history is retained for reporting before closed rows leave the
+	// operational debt commitments consumed by the ordinary planner.
+	if loansCaptured {
+		r.snapshot["loans"] = encode(active)
 	}
 	r.stateCache.Loans = decode[[]gameapi.Loan](r.snapshot, "loans")
 	r.stateCache.Vaults = r.state().Vaults

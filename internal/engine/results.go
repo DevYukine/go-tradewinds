@@ -121,6 +121,7 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 		if status != http.StatusOK || !r.acceptLoanResult(data, response) {
 			return r.reconcileCommitted(ctx, mission, data)
 		}
+		r.recordLoanReceipt(ctx, response, data.Action.ReceiptAt)
 		if mission.ShipID == loanRefinanceMission {
 			repaymentConfirmed := true
 			if stage == "loan-repay" {
@@ -374,13 +375,17 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 		}
 	case "build":
 		var result struct {
-			ShipID string `json:"ship_id"`
-			Name   string `json:"name"`
-			Class  string `json:"ship_class"`
-			Cost   *int64 `json:"total_cost_pence"`
+			ShipID   string          `json:"ship_id"`
+			Name     string          `json:"name"`
+			Class    string          `json:"ship_class"`
+			Cost     *int64          `json:"total_cost_pence"`
+			Mortgage json.RawMessage `json:"mortgage"`
 		}
 		if err := json.Unmarshal(response, &result); err != nil || result.ShipID == "" || result.Cost == nil || result.Name != data.BuildName || result.Class != data.BuildClass {
 			return false, r.hold(ctx, mission.ShipID, errUninterpretableResult.Error())
+		}
+		if len(result.Mortgage) != 0 && string(result.Mortgage) != "null" {
+			r.recordLoanReceipt(ctx, result.Mortgage, data.Action.ReceiptAt)
 		}
 		data.BuiltShipID = result.ShipID
 		data.BuildCostPence = *result.Cost

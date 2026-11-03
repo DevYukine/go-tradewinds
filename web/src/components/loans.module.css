@@ -1,0 +1,167 @@
+.workspace {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.essentials {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px 24px;
+  margin: 0;
+  padding-block: 4px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.essentials > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.essentials dt {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+
+.essentials dd {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.essentials .owed {
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.essentials .context {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+.context strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.reportTime {
+  margin-block: 6px 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.recordNotice p {
+  margin-block: 4px 0;
+}
+
+.coverage {
+  min-width: 0;
+  padding-block: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.coverage > summary {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 40px;
+  padding-block: 8px;
+  color: var(--route);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.coverageAccounts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 32px;
+  margin-block: 16px;
+}
+
+.coverageAccounts > section {
+  min-width: 0;
+}
+
+.coverageAccounts h3 {
+  font-size: 14px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.workspace :global(.data-table) .numberCell {
+  min-width: 9rem;
+}
+
+.workspace :global(.data-table) .identityCell {
+  min-width: 11rem;
+  max-width: 22rem;
+}
+
+.workspace :global(.data-table) .dateCell {
+  min-width: 13rem;
+}
+
+.workspace :global(.data-table) .installmentsCell {
+  min-width: 16rem;
+  max-width: 22rem;
+}
+
+.installmentsCell small,
+.arrearsCell small {
+  white-space: normal;
+  line-height: 1.6;
+}
+
+.arrears {
+  color: var(--warning);
+}
+
+.loanDetails {
+  max-width: 26rem;
+  white-space: normal;
+}
+
+.loanDetails > summary {
+  min-height: 32px;
+  padding-block: 4px;
+  color: var(--route);
+}
+
+.loanDetails[open] {
+  min-width: 20rem;
+}
+
+.loanTerms {
+  max-width: 26rem;
+  font-size: 12px;
+}
+
+.loanTerms > div {
+  grid-template-columns: minmax(8rem, 0.9fr) minmax(0, 1.1fr);
+}
+
+.loanTerms dt {
+  font-size: 12px;
+}
+
+@media (max-width: 1200px) {
+  .essentials {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px 28px;
+  }
+
+  .coverageAccounts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .essentials {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+  }
+}

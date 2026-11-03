@@ -29,11 +29,12 @@ type fetchTask struct {
 }
 
 type fetchResult struct {
-	data        json.RawMessage
-	err         error
-	attemptedAt time.Time
-	completedAt time.Time
-	retention   *snapshotRetention
+	data            json.RawMessage
+	err             error
+	attemptedAt     time.Time
+	completedAt     time.Time
+	retention       *snapshotRetention
+	fullLoanHistory bool
 }
 
 // A worker owns its result slot through pagination and the client's existing
