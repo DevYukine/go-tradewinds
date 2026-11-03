@@ -387,8 +387,14 @@ func (r *Runner) playerCapacityNeed(ctx context.Context, intent *playerLoanInten
 		asOf: time.Now().UTC(), balances: planning.Balances, required: planning.ReserveByRegion,
 		workingByRegion: make(map[string]int64),
 	}
-	for region, balance := range planning.Balances {
-		evidence.available = growthCashTotal(evidence.available, max(0, balance-evidence.required[region]))
+	free := growthFreeCash(planning.Balances, evidence.required)
+	hold := r.debtServiceHoldPence()
+	evidence.available = free - hold
+	if evidence.available < 0 {
+		if err := r.recordDebtServiceHold(ctx, free); err != nil {
+			return port, hull, GrowthDecision{}, evidence, err
+		}
+		return port, hull, GrowthDecision{}, evidence, capacityGate("debt_service_hold", true, debtServiceHoldPrefix)
 	}
 	input, reason, err := r.capacityFleetInput(ctx, evidence)
 	if err != nil {
@@ -440,6 +446,12 @@ func (r *Runner) playerCapacityNeed(ctx context.Context, intent *playerLoanInten
 		return port, hull, decision, evidence, capacityGate("need_stale", false, "capacity no longer needs debt")
 	}
 	if !capacityDebtCashReady(decision, evidence.available) {
+		if hold > 0 && capacityDebtCashReady(decision, free) {
+			if err := r.recordDebtServiceHold(ctx, free); err != nil {
+				return port, hull, decision, evidence, err
+			}
+			return port, hull, decision, evidence, capacityGate("debt_service_hold", true, debtServiceHoldPrefix)
+		}
 		return port, hull, decision, evidence, capacityGate("own_cash_buffer", true, "capacity waits for its own working-cash buffer")
 	}
 	decision, gate, err := r.capacityDebtDecision(ctx, hull, decision, evidence.asOf, nil)
@@ -558,6 +570,9 @@ func (r *Runner) drivePlayerLoan(ctx context.Context, mission *store.Mission, da
 			if recordErr := r.recordPlayerLoanDecision(ctx, intent, verdict, err.Error()); recordErr != nil {
 				return false, recordErr
 			}
+			if verdict == "debt_service_hold" {
+				return false, r.holdExpected(ctx, "", err.Error())
+			}
 			return false, r.hold(ctx, "", err.Error())
 		}
 		if recordErr := r.recordPlayerLoanDecision(ctx, intent, verdict, err.Error()); recordErr != nil {
@@ -592,6 +607,9 @@ func (r *Runner) drivePlayerLoan(ctx context.Context, mission *store.Mission, da
 			if hold {
 				if recordErr := r.recordPlayerLoanDecision(ctx, intent, gate, err.Error()); recordErr != nil {
 					return false, recordErr
+				}
+				if gate == "debt_service_hold" {
+					return false, r.holdExpected(ctx, "", err.Error())
 				}
 				return false, r.hold(ctx, "", err.Error())
 			}

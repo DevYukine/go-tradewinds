@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -145,6 +146,17 @@ func (r *Runner) futuresBookBudgets(ctx context.Context, rows []store.FuturesInt
 	budgets := make(map[string]int64, len(input.Balances))
 	for region, balance := range input.Balances {
 		free[region] = balance - input.ReserveByRegion[region]
+	}
+	totalFree := growthFreeCash(input.Balances, input.ReserveByRegion)
+	hold := r.debtServiceHoldPence()
+	if totalFree < hold {
+		if err := r.recordDebtServiceHold(ctx, totalFree); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, fmt.Errorf("%s: %w", debtServiceHoldPrefix, errFuturesPrecondition)
+	}
+	for region := range free {
+		free[region] = min(free[region], totalFree-hold)
 		budgets[region] = free[region]
 	}
 	exposure := make(map[string]int64)
@@ -471,6 +483,12 @@ func (r *Runner) driveFuturesController(ctx context.Context, mission *store.Miss
 		if row.Status != "intent" {
 			continue
 		}
+		if _, _, err := r.futuresBookBudgets(ctx, rows); err != nil {
+			if errors.Is(err, errFuturesPrecondition) {
+				return false, r.holdExpected(ctx, "__futures", err.Error())
+			}
+			return false, err
+		}
 		data.Futures.IntentID = row.IntentID
 		group, err := r.futuresActionIntents(ctx, data)
 		if err != nil {
@@ -500,6 +518,9 @@ func (r *Runner) driveFuturesController(ctx context.Context, mission *store.Miss
 	}
 	budgets, _, err := r.futuresBookBudgets(ctx, rows)
 	if err != nil {
+		if errors.Is(err, errFuturesPrecondition) {
+			return false, r.holdExpected(ctx, "__futures", err.Error())
+		}
 		return false, err
 	}
 	cover := make(map[string]int64)

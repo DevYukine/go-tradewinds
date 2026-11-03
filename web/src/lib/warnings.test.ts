@@ -20,6 +20,27 @@ function WarningQuery() {
 }
 
 describe("warning presentation", () => {
+  it.each([0, 1, 5])("reports loan installment coverage (%s)", (covered) => {
+    expect(
+      warningText(
+        {
+          ...common,
+          code: "loan_payments_at_risk",
+          facts: {
+            cash_pence: covered * 1_000,
+            owed_pence: 50_000,
+            installment_pence: 1_000,
+            arrears_pence: 0,
+            installments_covered: covered,
+          },
+        },
+        "Yukine",
+      ),
+    ).toBe(
+      `Yukine: Loan payments at risk: cash covers ${covered} ${covered === 1 ? "installment" : "installments"}.`,
+    );
+  });
+
   it.each([
     [
       "seized_bailiff",

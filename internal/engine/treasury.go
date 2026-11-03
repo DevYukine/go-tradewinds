@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"slices"
 	"sort"
 	"time"
 
@@ -87,7 +88,7 @@ func (r *Runner) protectedReservePence() int64 {
 
 // obligationReserves protects observed obligations, not every vault or every
 // hypothetical destination. Candidate-specific funding adds its chosen ports.
-func obligationReserves(state AccountState, snapshot map[string]json.RawMessage, base int64) map[string]int64 {
+func obligationReserves(state AccountState, snapshot map[string]json.RawMessage, base int64, excludedLoans ...string) map[string]int64 {
 	required := make(map[string]int64)
 	if home, exists := findPort(state.Catalog, state.HomePortID); exists {
 		upkeep := max(0, DailyUpkeep(state.Ships, state.Catalog, len(state.Factors)))
@@ -147,12 +148,16 @@ func obligationReserves(state AccountState, snapshot map[string]json.RawMessage,
 		required[marque.BankingRegion] += marque.CostPence
 	}
 	for _, loan := range state.Loans {
+		if slices.Contains(excludedLoans, loan.ID) {
+			continue
+		}
 		required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], loanReserve(loan))
 	}
 	for region, fees := range expansionFeeCommitments(state, snapshot) {
 		required[region] = growthCashTotal(max(required[region], base), fees)
 	}
 	reserveAmericaFlagship(required, state, snapshot)
+	reserveLoanRefinance(required, state, snapshot)
 	return required
 }
 
@@ -161,16 +166,13 @@ func (r *Runner) treasuryReserves(ctx context.Context) (map[string]int64, error)
 }
 
 func (r *Runner) treasuryReservesExceptLoan(ctx context.Context, excludedLoan string) (map[string]int64, error) {
-	return r.treasuryReservesFor(ctx, excludedLoan, r.snapshot)
+	return r.treasuryReservesFor(ctx, r.snapshot, excludedLoan)
 }
 
-func (r *Runner) treasuryReservesFor(ctx context.Context, excludedLoan string, snapshot map[string]json.RawMessage) (map[string]int64, error) {
+func (r *Runner) treasuryReservesFor(ctx context.Context, snapshot map[string]json.RawMessage, excludedLoans ...string) (map[string]int64, error) {
 	state := r.stateCache
 	base := r.protectedReservePence()
-	required := obligationReserves(state, snapshot, base)
-	if loan, exists := r.loanByID(excludedLoan); exists {
-		required[loan.BankingRegion] = max(0, required[loan.BankingRegion]-loanReserve(loan))
-	}
+	required := obligationReserves(state, snapshot, base, excludedLoans...)
 	portRegions := make(map[string]string, len(state.Catalog.Ports))
 	for _, port := range state.Catalog.Ports {
 		portRegions[port.ID] = port.BankingRegion

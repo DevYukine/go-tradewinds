@@ -863,7 +863,9 @@ func (r *Runner) expansionAdmission(ctx context.Context) (expansionAdmission, st
 		}
 		if !candidate.probe && candidate.build.EconomicallyViable && candidate.build.CashShortfallPence > 0 {
 			cashWaiting[candidate.region] = true
-			reason = fmt.Sprintf("overseas build waits for %.2f Cr cash shortfall: %s", float64(candidate.build.CashShortfallPence)/100, reason)
+			if !strings.HasPrefix(reason, debtServiceHoldPrefix) {
+				reason = fmt.Sprintf("overseas build waits for %.2f Cr cash shortfall: %s", float64(candidate.build.CashShortfallPence)/100, reason)
+			}
 			firstRejected, firstReason = candidate, reason
 		}
 		if !candidate.probe && !cashWaiting[candidate.region] {
@@ -927,9 +929,11 @@ func (r *Runner) expansionPassEvidence(ctx context.Context, input PlanningInput)
 	if reason, err := r.growthCashFunding(ctx, &pass.growth); err != nil || reason != "" {
 		return pass, reason, err
 	}
-	pass.growth.available = 0
-	for region, balance := range input.Balances {
-		pass.growth.available = growthCashTotal(pass.growth.available, max(0, balance-input.ReserveByRegion[region]))
+	free := growthFreeCash(input.Balances, input.ReserveByRegion)
+	hold := r.debtServiceHoldPence()
+	pass.growth.available = free - hold
+	if pass.growth.available < 0 {
+		return pass, debtServiceHoldPrefix, r.recordDebtServiceHold(ctx, free)
 	}
 	capacity, reason, err := r.capacityFleetInput(ctx, &pass.growth)
 	if err != nil || reason != "" {
@@ -963,10 +967,14 @@ func (r *Runner) expansionProbeAdmission(ctx context.Context, admission *expansi
 		return "expansion agent requires calibrated hazard and net worth no older than 6 real hours", false, nil
 	}
 	admission.required = r.expansionFundingRequired(admission.input, evidence.required, admission.region, 2*expansionAgentHireFeePence)
-	_, fees, _, funded := measuredFunding(admission.input.Balances, admission.required, admission.input.Rates)
+	projected, fees, _, funded := measuredFunding(admission.input.Balances, admission.required, admission.input.Rates)
 	admission.needed = growthCashTotal(admission.required[admission.region], fees)
 	if !funded {
 		return "overseas probe waits for both hire fees, transfer fees and protected regional reserves", false, nil
+	}
+	if hold := r.debtServiceHoldPence(); growthFreeCash(projected, admission.required) < hold {
+		free := growthFreeCash(admission.input.Balances, admission.input.ReserveByRegion)
+		return debtServiceHoldPrefix, false, r.recordDebtServiceHold(ctx, free)
 	}
 	return "", false, nil
 }
@@ -977,10 +985,12 @@ func (r *Runner) expansionBuildAdmissionForPass(ctx context.Context, admission *
 	admission.required = r.expansionFundingRequired(*input, maps.Clone(pass.growth.required), admission.region, 2*expansionAgentHireFeePence)
 	projected, fees, _, funded := measuredFunding(input.Balances, admission.required, input.Rates)
 	capacity := pass.capacity
-	capacity.SurplusPence = 2 * expansionAgentHireFeePence
-	for region, balance := range projected {
-		capacity.SurplusPence = growthCashTotal(capacity.SurplusPence, max(0, balance-admission.required[region]))
+	free := growthFreeCash(projected, admission.required)
+	hold := r.debtServiceHoldPence()
+	if funded && free < hold {
+		return debtServiceHoldPrefix, false, r.recordDebtServiceHold(ctx, growthFreeCash(input.Balances, input.ReserveByRegion))
 	}
+	capacity.SurplusPence = growthCashTotal(2*expansionAgentHireFeePence, free) - hold
 	admission.build, admission.quote, admission.fresh, err = r.expansionBuildEstimateForRegion(ctx,
 		admission.yard, admission.partner, capacity, pass.growth.asOf, pass.rates[admission.region])
 	if err != nil {
@@ -988,6 +998,13 @@ func (r *Runner) expansionBuildAdmissionForPass(ctx context.Context, admission *
 	}
 	admission.needed = growthCashTotal(growthCapital(admission.build), admission.build.WorkingCapitalPence, 2*expansionAgentHireFeePence)
 	if !admission.build.Accepted {
+		if hold > 0 && admission.build.EconomicallyViable && admission.build.rejection == capacityRejectionNone &&
+			admission.build.CashShortfallPence > 0 && admission.build.CashShortfallPence <= hold {
+			admission.build.Reason = debtServiceHoldPrefix
+			if err := r.recordDebtServiceHold(ctx, growthFreeCash(input.Balances, input.ReserveByRegion)); err != nil {
+				return "", false, err
+			}
+		}
 		definitive := admission.build.rejection != capacityRejectionNone
 		return admission.build.Reason, definitive, nil
 	}
@@ -1605,6 +1622,17 @@ func (r *Runner) manageExpansionAgents(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
+		mate, paired := expansionMate(agents, agent)
+		partnerHire := paired && !mate.HiredAt.IsZero() && slices.Contains(r.stateCache.Factors, mate.PortID)
+		if hold := r.debtServiceHoldPence(); hold > 0 && !partnerHire {
+			projected, _, _, funded := measuredFunding(input.Balances, required, input.Rates)
+			if funded && growthFreeCash(projected, required) < hold {
+				if err := r.recordDebtServiceHold(ctx, growthFreeCash(input.Balances, input.ReserveByRegion)); err != nil {
+					return false, err
+				}
+				return false, r.holdExpected(ctx, "", debtServiceHoldPrefix)
+			}
+		}
 		if changed, err := r.fundTreasury(ctx, input.Balances, required); changed || err != nil {
 			return changed, err
 		}
@@ -1882,6 +1910,15 @@ func (r *Runner) expansionHireReady(ctx context.Context, body []byte) error {
 	input, err := r.committedPlanningInput(ctx, ShipState{})
 	if err != nil {
 		return err
+	}
+	if hold := r.debtServiceHoldPence(); hold > 0 && !partnerHire {
+		free := growthFreeCash(input.Balances, input.ReserveByRegion)
+		if free < hold {
+			if err := r.recordDebtServiceHold(ctx, free); err != nil {
+				return err
+			}
+			return errors.New(debtServiceHoldPrefix)
+		}
 	}
 	required, err := r.expansionRequired(ctx, input, port.BankingRegion, expansionAgentHireFeePence)
 	if err != nil {

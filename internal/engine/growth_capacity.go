@@ -382,6 +382,9 @@ func (r *Runner) clearCapacitySavingsAfterBuild(ctx context.Context) error {
 }
 
 func (r *Runner) liveCapacitySavingsTarget(ctx context.Context) (capacitySavingsTarget, error) {
+	if r.debtServiceHoldPence() > 0 {
+		return capacitySavingsTarget{}, r.setCapacitySavingsTarget(ctx, capacitySavingsTarget{})
+	}
 	if err := r.clearPhaseOneGrowthTargets(ctx); err != nil {
 		return capacitySavingsTarget{}, err
 	}
@@ -535,6 +538,7 @@ func expectedGrowthAdmission(reason string) bool {
 		return true
 	}
 	return strings.HasPrefix(reason, "growth deferred: incumbent working capital or protected regional bills are underfunded in ") ||
+		strings.HasPrefix(reason, debtServiceHoldPrefix) ||
 		strings.HasPrefix(reason, "capacity growth pauses for ") && strings.HasSuffix(reason, " real hours after a build price overrun")
 }
 
@@ -1050,6 +1054,12 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		decision.Reason = "oceanic capacity waits for an available mortgage slot"
 		decision.EconomicallyViable = false
 	}
+	if hold := r.debtServiceHoldPence(); hold > 0 &&
+		decision.EconomicallyViable && !decision.Accepted && decision.CashShortfallPence > 0 &&
+		decision.CashShortfallPence <= hold {
+		decision.Verdict = "debt_service_hold"
+		decision.Reason = debtServiceHoldPrefix
+	}
 	if err := r.decision(ctx, "", "capacity_candidate:"+port.ID+"|"+hull.ID, decision.Reason, map[string]any{
 		"accepted":                              decision.Accepted,
 		"hull_category":                         hull.HullCategory,
@@ -1075,6 +1085,8 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		"depth_competition":                     depthPlan.Competition,
 		"hazard_source":                         earningPlan.Economics.HazardSource,
 		"hazard_estimate":                       hazardEstimate,
+		"debt_service_hold_crowns":              float64(r.debtServiceHoldPence()) / 100,
+		"free_cash_crowns":                      float64(growthFreeCash(evidence.balances, evidence.required)) / 100,
 	}); err != nil {
 		return GrowthDecision{}, nil, err
 	}
@@ -1357,7 +1369,8 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 	saveIndex := -1
 	bestMargin, saveWait := float64(0), float64(0)
 	maxWait := capacityHistoryWindow.Seconds() * float64(r.stateCache.Clock.Calendar.TimeScale) / 86_400
-	if found {
+	canSave := r.debtServiceHoldPence() == 0
+	if found && canSave {
 		bestCashReturn := float64(0)
 		for _, candidate := range candidates {
 			if candidate.decision.Accepted {
@@ -1408,7 +1421,7 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 				saveIndex, bestMargin, saveWait = i, margin, wait
 			}
 		}
-	} else if pairedSavings && bestDecision.EconomicallyViable && bestDecision.CashShortfallPence > 0 &&
+	} else if canSave && pairedSavings && bestDecision.EconomicallyViable && bestDecision.CashShortfallPence > 0 &&
 		savingsRate > 0 && !math.IsNaN(savingsRate) && !math.IsInf(savingsRate, 0) {
 		for i, candidate := range candidates {
 			if candidate.port.ID != bestPort.ID || candidate.hull.ID != bestHull.ID {
@@ -1522,6 +1535,9 @@ func (r *Runner) considerCapacityGrowthAt(ctx context.Context, evidence *growthE
 			}
 		}
 		if handled, changed, err := r.holdExpansionGrowth(ctx, canExpand, r.overseasYardUnlocked()); handled || err != nil {
+			if handled && !changed && err == nil {
+				return r.prepayLoans(ctx)
+			}
 			return changed, err
 		}
 	}
@@ -1771,9 +1787,17 @@ func (r *Runner) capacityBuildReady(ctx context.Context, data *missionData) erro
 			}
 		}
 	}
-	if reason, err := r.growthCashFunding(ctx, &evidence); err != nil {
+	reason, err := r.growthCashFunding(ctx, &evidence)
+	if err != nil {
 		return err
-	} else if reason != "" {
+	}
+	if intent.Mortgage != nil {
+		evidence.available = growthFreeCash(evidence.balances, evidence.required)
+		if strings.HasPrefix(reason, debtServiceHoldPrefix) {
+			reason = ""
+		}
+	}
+	if reason != "" {
 		return errors.New(reason)
 	}
 	input, reason, err := r.capacityFleetInput(ctx, &evidence)

@@ -142,7 +142,7 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 	missions := make(map[string]*store.Mission)
 	dataByShip := make(map[string]missionData)
 	ids := make([]string, 0, len(r.stateCache.Ships)+10)
-	ids = append(ids, "__loans")
+	ids = append(ids, "__loans", loanRefinanceMission)
 	for _, ship := range r.stateCache.Ships {
 		ids = append(ids, ship.Ship.ID)
 	}
@@ -270,6 +270,12 @@ func (r *Runner) work(ctx context.Context) (bool, error) {
 		before := r.localRetirements
 		changed, err := r.serviceLoans(ctx)
 		if err != nil || changed && before == r.localRetirements {
+			return changed, err
+		}
+	}
+	if !unresolved {
+		data := dataByShip[loanRefinanceMission]
+		if changed, err := r.driveLoanRefinance(ctx, missions[loanRefinanceMission], &data); changed || err != nil {
 			return changed, err
 		}
 	}

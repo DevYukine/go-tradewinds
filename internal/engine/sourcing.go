@@ -693,21 +693,22 @@ func restingBidReservations(snapshot map[string]json.RawMessage) map[string]map[
 }
 
 func (r *Runner) committedPlanningInputExcept(ctx context.Context, ship ShipState, excludedMission string) (PlanningInput, error) {
-	return r.committedPlanningInputExceptLoan(ctx, ship, excludedMission, "")
+	return r.committedPlanningInputExceptLoan(ctx, ship, excludedMission)
 }
 
-func (r *Runner) committedPlanningInputExceptLoan(ctx context.Context, ship ShipState, excludedMission, excludedLoan string) (PlanningInput, error) {
+func (r *Runner) committedPlanningInputExceptLoan(ctx context.Context, ship ShipState, excludedMission string, excludedLoans ...string) (PlanningInput, error) {
 	input := r.planningInput(ship)
 	snapshot := r.snapshot
-	if excludedMission == americaFlagshipMission {
+	if excludedMission == americaFlagshipMission || excludedMission == loanRefinanceMission {
 		snapshot = maps.Clone(snapshot)
-		delete(snapshot, "_america_flagship")
-		input.ReserveByRegion = obligationReserves(r.stateCache, snapshot, r.protectedReservePence())
+		if excludedMission == americaFlagshipMission {
+			delete(snapshot, "_america_flagship")
+		} else {
+			delete(snapshot, "_loan_refinance")
+		}
 	}
-	if loan, exists := r.loanByID(excludedLoan); exists {
-		input.ReserveByRegion[loan.BankingRegion] = max(0, input.ReserveByRegion[loan.BankingRegion]-loanReserve(loan))
-	}
-	required, err := r.treasuryReservesFor(ctx, excludedLoan, snapshot)
+	input.ReserveByRegion = obligationReserves(r.stateCache, snapshot, r.protectedReservePence(), excludedLoans...)
+	required, err := r.treasuryReservesFor(ctx, snapshot, excludedLoans...)
 	if err != nil {
 		return input, err
 	}

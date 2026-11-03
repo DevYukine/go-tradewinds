@@ -17,6 +17,7 @@ import (
 const (
 	goldsmithsMinimumPence = int64(10_000)
 	goldsmithsMaximumPence = int64(750_000)
+	debtServiceHoldPrefix  = "growth deferred: free cash must keep the remaining unsecured loan payoff"
 )
 
 type capacityFinancing struct {
@@ -181,6 +182,29 @@ func loanDailyInterest(loan gameapi.Loan) float64 {
 
 func loanFullPayment(loan gameapi.Loan) int64 {
 	return growthCashTotal(loan.OwedPence, int64(math.Ceil(loanDailyInterest(loan))))
+}
+
+func debtServiceHoldLoan(loan gameapi.Loan, companyID string) bool {
+	return loan.BorrowerCompanyID == companyID && loan.Status == "active" &&
+		loan.CollateralKind == "unsecured" && !loan.IsMortgage && loan.OwedPence > 0
+}
+
+func (r *Runner) debtServiceHoldPence() int64 {
+	var hold int64
+	for _, loan := range r.stateCache.Loans {
+		if debtServiceHoldLoan(loan, r.account.CompanyID) {
+			hold = growthCashTotal(hold, max(0, loanFullPayment(loan)-loanReserve(loan)))
+		}
+	}
+	return hold
+}
+
+func (r *Runner) recordDebtServiceHold(ctx context.Context, free int64) error {
+	return r.decision(ctx, "", "capacity_financing:debt_service_hold", debtServiceHoldPrefix, map[string]any{
+		"verdict":          "debt_service_hold",
+		"hold_crowns":      float64(r.debtServiceHoldPence()) / 100,
+		"free_cash_crowns": float64(free) / 100,
+	})
 }
 
 func evaluateCapacityLoan(decision GrowthDecision, shortfall, capacity, principal, installment int64, annualRate int32) capacityLoanDecision {
@@ -352,7 +376,17 @@ func (r *Runner) considerCapacityFinancing(ctx context.Context, port Port, hull 
 	if !decision.EconomicallyViable || decision.Accepted || required == nil || decision.CashShortfallPence <= 0 {
 		return refuse("no borrowing: this is not a positive total cash-only capacity shortfall")
 	}
+	free := growthFreeCash(evidence.balances, evidence.required)
+	hold := r.debtServiceHoldPence()
+	evidence.available = free - hold
 	if !capacityDebtCashReady(decision, evidence.available) {
+		if hold > 0 && (free < hold || capacityDebtCashReady(decision, free)) {
+			if err := r.recordDebtServiceHold(ctx, free); err != nil {
+				return false, err
+			}
+			result.Verdict = "debt_service_hold"
+			return refuse(debtServiceHoldPrefix)
+		}
 		result.Verdict = "own_cash_buffer"
 		return refuse("own cash must cover the incumbent buffer before borrowing for capital and the candidate lot")
 	}
@@ -610,11 +644,11 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 			continue
 		}
 		input := r.planningInput(ShipState{})
-		required, err := r.treasuryReserves(ctx)
+		required, err := r.loanServiceReserves(ctx, loan.ID)
 		if err != nil {
 			return false, err
 		}
-		required[loan.BankingRegion] = growthCashTotal(max(0, required[loan.BankingRegion]-loanReserve(loan)), loan.ArrearsPence)
+		required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], loan.ArrearsPence)
 		intent := &loanRepaymentIntent{Before: loan, AmountPence: loan.ArrearsPence}
 		if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__loans", intent, nil); changed || err != nil {
 			return changed, err
@@ -636,6 +670,9 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 // Scheduled debt service stays ahead of growth in serviceLoans.
 func (r *Runner) prepayLoans(ctx context.Context) (bool, error) {
 	if !r.opts.Execute {
+		return false, nil
+	}
+	if r.loanRefinanceHoldsPrepay() {
 		return false, nil
 	}
 	if r.expansionAwaitingEvaluation() {
@@ -1015,9 +1052,9 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 	var protected map[string]int64
 	var err error
 	if mission.ShipID == "__loans" {
-		protected, err = r.treasuryReserves(ctx)
+		protected, err = r.loanServiceReserves(ctx, loan.ID)
 	} else {
-		input, err = r.committedPlanningInputExcept(ctx, ShipState{}, mission.ShipID)
+		input, err = r.committedPlanningInputExceptLoan(ctx, ShipState{}, mission.ShipID, loan.ID)
 		protected = input.ReserveByRegion
 	}
 	if err != nil {
@@ -1027,7 +1064,7 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 	if amount == 0 {
 		amount = loanFullPayment(loan)
 	}
-	if input.Balances[loan.BankingRegion]-amount < max(0, protected[loan.BankingRegion]-loanReserve(loan)) {
+	if input.Balances[loan.BankingRegion]-amount < protected[loan.BankingRegion] {
 		return errors.New("loan repayment would spend another hard cash obligation")
 	}
 	return nil

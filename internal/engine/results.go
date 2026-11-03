@@ -110,17 +110,39 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 		if status != http.StatusCreated || !r.acceptPlayerLoanRequest(data, response) {
 			return r.reconcileCommitted(ctx, mission, data)
 		}
-		mission.Phase = "growth_loan_request"
+		if mission.ShipID == loanRefinanceMission {
+			if retired, err := r.loanRefinanceResult(ctx, mission, data, true); retired || err != nil {
+				return retired, err
+			}
+		} else {
+			mission.Phase = "growth_loan_request"
+		}
 	case "loan-accept", "loan-repay":
 		if status != http.StatusOK || !r.acceptLoanResult(data, response) {
 			return r.reconcileCommitted(ctx, mission, data)
 		}
-		if data.Capacity != nil && data.Capacity.Financing != nil && data.Capacity.Financing.Cancel {
-			if err := r.recordCapacityFinancingRefusal(ctx, data); err != nil {
-				return false, err
+		if mission.ShipID == loanRefinanceMission {
+			repaymentConfirmed := true
+			if stage == "loan-repay" {
+				var loan gameapi.Loan
+				if json.Unmarshal(response, &loan) != nil || loan.OwedPence != 0 || loan.Status != "repaid" && loan.Status != "recovered" {
+					repaymentConfirmed = false
+					if err := r.decision(ctx, loanRefinanceMission, "loan_refinance_wait", "repayment receipt does not confirm the old loan repaid with zero owed; wait for fresh borrower history before a bounded retry", nil); err != nil {
+						return false, err
+					}
+				}
 			}
+			if retired, err := r.loanRefinanceResult(ctx, mission, data, repaymentConfirmed); retired || err != nil {
+				return retired, err
+			}
+		} else {
+			if data.Capacity != nil && data.Capacity.Financing != nil && data.Capacity.Financing.Cancel {
+				if err := r.recordCapacityFinancingRefusal(ctx, data); err != nil {
+					return false, err
+				}
+			}
+			loanResultPhase(mission, data)
 		}
-		loanResultPhase(mission, data)
 	case "marque":
 		var marque letterOfMarque
 		if status != http.StatusCreated || json.Unmarshal(response, &marque) != nil || !validMarque(marque) ||
@@ -405,6 +427,9 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 	}
 	if mission.ShipID == americaFlagshipMission {
 		return r.rejectAmericaFlagship(ctx, mission, data, status)
+	}
+	if mission.ShipID == loanRefinanceMission {
+		return r.rejectLoanRefinance(ctx, mission, data, status)
 	}
 	domainRefusal := status >= 400 && status < 500 && status != 401 && status != 403 && status != 429
 	if stage == "rename" && domainRefusal {

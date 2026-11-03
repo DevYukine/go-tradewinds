@@ -420,6 +420,16 @@ func (r *Runner) reserveGrowthMission(evidence *growthEvidence, mission *store.M
 	return data.Plan.Kind != "maintenance" && mission.Phase != "settling" && mission.Phase != "settled"
 }
 
+func growthFreeCash(balances, required map[string]int64) int64 {
+	var free int64
+	for region, balance := range balances {
+		if balance > required[region] {
+			free = growthCashTotal(free, balance-required[region])
+		}
+	}
+	return free
+}
+
 func (r *Runner) growthCashFunding(ctx context.Context, evidence *growthEvidence) (string, error) {
 	for _, vault := range r.stateCache.Vaults {
 		if vault.AccountType == "vault" && vault.BalancePence < 0 {
@@ -456,9 +466,11 @@ func (r *Runner) growthCashFunding(ctx context.Context, evidence *growthEvidence
 	evidence.home = home
 	evidence.lanes = make(map[string]store.GrowthHistory)
 	evidence.markets = withoutOwnOrders(r.stateCache.Markets, r.ownedOrders())
-	evidence.available = 0
-	for region, balance := range balances {
-		evidence.available = growthCashTotal(evidence.available, max(0, balance-required[region]))
+	free := growthFreeCash(balances, required)
+	hold := r.debtServiceHoldPence()
+	evidence.available = free - hold
+	if evidence.available < 0 {
+		return debtServiceHoldPrefix, r.recordDebtServiceHold(ctx, free)
 	}
 	return "", nil
 }

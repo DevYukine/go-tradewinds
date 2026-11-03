@@ -58,6 +58,9 @@ export function warningText(
     case "loss_streak":
       message = `Last ${count(warning.facts.count)} settlements lost ${money(Math.abs(warning.facts.net_pence))} since ${warningTime(warning.since)}.`;
       break;
+    case "loan_payments_at_risk":
+      message = `Loan payments at risk: cash covers ${count(warning.facts.installments_covered)} ${warning.facts.installments_covered === 1 ? "installment" : "installments"}.`;
+      break;
     case "falling_behind": {
       const median = warning.facts.median_growth_bps;
       const medianText =

@@ -50,6 +50,16 @@ export type EngineWarning = {
   | { code: "loss_streak"; facts: { count: number; net_pence: number } }
   | { code: "upkeep_seizure"; facts: Record<string, never> }
   | {
+      code: "loan_payments_at_risk";
+      facts: {
+        cash_pence: number;
+        owed_pence: number;
+        installment_pence: number;
+        arrears_pence: number;
+        installments_covered: number;
+      };
+    }
+  | {
       code: "falling_behind";
       facts: (
         | { ours_pence: number; median_pence: number; rival_count: number }

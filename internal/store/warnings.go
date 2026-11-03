@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/bits"
 	"slices"
 	"sort"
 	"strings"
@@ -100,6 +101,9 @@ type WarningInput struct {
 	SnapshotBytes int64
 	Engine        *WarningEngine
 	Metadata      map[string]WarningDataset
+	CompanyID     string
+	Loans         []gameapi.Loan
+	Vaults        []gameapi.Vault
 	Ships         []gameapi.ShipDetail
 	ShipDetails   map[string]gameapi.ShipDetail
 	ShipEvents    map[string]WarningShipEvents
@@ -218,6 +222,11 @@ func AssessWarnings(input WarningInput, at time.Time) WarningAssessment {
 	} else {
 		assessment.Suppressed = append(assessment.Suppressed, "fleet_idle", "hold_stuck")
 	}
+	if warning, assessed := assessLoanPaymentWarning(input, at); !assessed {
+		assessment.Suppressed = append(assessment.Suppressed, "loan_payments_at_risk")
+	} else if warning != nil {
+		result = append(result, *warning)
+	}
 	if loss := assessLossStreak(input.Settlements, at); loss != nil {
 		result = append(result, *loss)
 	}
@@ -311,6 +320,67 @@ func AssessWarnings(input WarningInput, at time.Time) WarningAssessment {
 func warningDatasetCurrent(meta WarningDataset, at time.Time) bool {
 	return meta.Complete && !meta.Stale && meta.Error == "" && !meta.UpdatedAt.IsZero() &&
 		!meta.UpdatedAt.After(at) && at.Sub(meta.UpdatedAt) < WarningFreshFor
+}
+
+func assessLoanPaymentWarning(input WarningInput, at time.Time) (*Warning, bool) {
+	for _, dataset := range []string{"loans", "vaults", "clock"} {
+		if !warningDatasetCurrent(input.Metadata[dataset], at) {
+			return nil, false
+		}
+	}
+	if input.Clock.Paused || input.Clock.Calendar.TimeScale <= 0 {
+		return nil, false
+	}
+	var installment, owed, arrears, cash int64
+	for _, loan := range input.Loans {
+		if loan.BorrowerCompanyID != input.CompanyID || loan.Status != "active" ||
+			loan.Repayment != "amortised" || loan.CollateralKind != "unsecured" || loan.IsMortgage {
+			continue
+		}
+		if loan.InstallmentPence == nil || *loan.InstallmentPence <= 0 ||
+			loan.OwedPence < 0 || loan.ArrearsPence < 0 ||
+			installment > math.MaxInt64-*loan.InstallmentPence ||
+			owed > math.MaxInt64-loan.OwedPence || arrears > math.MaxInt64-loan.ArrearsPence {
+			return nil, false
+		}
+		installment += *loan.InstallmentPence
+		owed += loan.OwedPence
+		arrears += loan.ArrearsPence
+	}
+	if installment == 0 {
+		return nil, true
+	}
+	for _, vault := range input.Vaults {
+		if vault.AccountType != "vault" {
+			continue
+		}
+		balance := max(0, vault.BalancePence)
+		if cash > math.MaxInt64-balance {
+			return nil, false
+		}
+		cash += balance
+	}
+	// Installments fall every ten game days. Compare a real day's payments
+	// without overflowing integer pence or rounding the threshold.
+	cashHigh, cashLow := bits.Mul64(uint64(cash), 10)
+	dueHigh, dueLow := bits.Mul64(uint64(installment), uint64(input.Clock.Calendar.TimeScale))
+	atRisk := cashHigh < dueHigh || cashHigh == dueHigh && cashLow < dueLow
+	covered := cash / installment
+	critical := covered < 2 || arrears > 0
+	if !atRisk && !critical {
+		return nil, true
+	}
+	severity := "warning"
+	if critical {
+		severity = "critical"
+	}
+	return &Warning{
+		Code: "loan_payments_at_risk", Severity: severity, Since: at,
+		Facts: map[string]int64{
+			"cash_pence": cash, "owed_pence": owed, "installment_pence": installment,
+			"arrears_pence": arrears, "installments_covered": covered,
+		},
+	}, true
 }
 
 type warningIdleShip struct {
@@ -533,6 +603,7 @@ func (s *Store) WarningReport(ctx context.Context, at time.Time) (WarningReport,
 				return err
 			}
 			input.Secrets = credentialSecrets(credentials)
+			input.CompanyID = account.CompanyID
 			display := displayCredentials{secrets: input.Secrets, available: true}
 			status.Label = displayText(account.Label, display)
 			if errorCode != "" {
@@ -631,10 +702,13 @@ func warningInput(tx *gorm.DB, accountID string, at time.Time) (WarningInput, st
 		Clock       json.RawMessage
 		Ports       json.RawMessage
 		ShipDetails json.RawMessage
+		Loans       json.RawMessage
+		Vaults      json.RawMessage
 	}
 	if err := tx.Table("snapshots").
 		Select(`data -> '_engine' AS engine, data -> '_meta' AS metadata, data -> 'ships' AS ships,
-			data -> 'clock' AS clock, data #> '{catalog,ports}' AS ports, data -> 'ship_details' AS ship_details`).
+			data -> 'clock' AS clock, data #> '{catalog,ports}' AS ports, data -> 'ship_details' AS ship_details,
+			data -> 'loans' AS loans, data #> '{vaults,vaults}' AS vaults`).
 		Where("account_id = ?", accountID).Scan(&snapshot).Error; err != nil {
 		return input, "", err
 	}
@@ -645,6 +719,7 @@ func warningInput(tx *gorm.DB, accountID string, at time.Time) (WarningInput, st
 		{snapshot.Engine, &input.Engine}, {snapshot.Metadata, &input.Metadata},
 		{snapshot.Ships, &input.Ships}, {snapshot.Clock, &input.Clock},
 		{snapshot.Ports, &input.Catalog.Ports}, {snapshot.ShipDetails, &input.ShipDetails},
+		{snapshot.Loans, &input.Loans}, {snapshot.Vaults, &input.Vaults},
 	} {
 		if len(field.raw) > 0 {
 			if err := json.Unmarshal(field.raw, field.target); err != nil {

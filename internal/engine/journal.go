@@ -186,6 +186,11 @@ func (r *Runner) stagedControlValid(action *durableAction) bool {
 // proof, may be released. Retain the mission's actual cargo and obligations so
 // its existing stage planner can re-evaluate fresh state before a new request.
 func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission, data *missionData, kind string) (bool, error) {
+	if mission.ShipID == loanRefinanceMission {
+		if err := r.resetUnsentLoanRefinanceApproval(ctx, data); err != nil {
+			return false, err
+		}
+	}
 	fenceInvalidated := kind == neverSentFinancialEvent || kind == neverSentControlEvent
 	if !fenceInvalidated {
 		now := time.Now().UTC()
@@ -1087,9 +1092,21 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 	case "rename":
 		mission.Phase = "done"
 	case "loan-request":
-		mission.Phase = "growth_loan_request"
+		if mission.ShipID == loanRefinanceMission {
+			if retired, err := r.loanRefinanceResult(ctx, mission, data, true); retired || err != nil {
+				return retired, err
+			}
+		} else {
+			mission.Phase = "growth_loan_request"
+		}
 	case "loan-accept", "loan-repay":
-		loanResultPhase(mission, data)
+		if mission.ShipID == loanRefinanceMission {
+			if retired, err := r.loanRefinanceResult(ctx, mission, data, true); retired || err != nil {
+				return retired, err
+			}
+		} else {
+			loanResultPhase(mission, data)
+		}
 	case "marque":
 		mission.Phase = "done"
 	case "depart":
@@ -1206,6 +1223,9 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 	if mission.ShipID == americaFlagshipMission {
 		return r.americaFlagshipPreflight(ctx, data)
 	}
+	if mission.ShipID == loanRefinanceMission {
+		return r.loanRefinancePreflight(ctx, data)
+	}
 	action := data.Action
 	if passengerStage(action.Stage) {
 		return r.passengerActionReady(ctx, mission, data)
@@ -1307,7 +1327,11 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 				return errors.New("loan reserve funding is no longer required by this active loan")
 			}
 			input = r.planningInput(ship)
-			input.ReserveByRegion, err = r.treasuryReserves(ctx)
+			if loan.ArrearsPence > 0 {
+				input.ReserveByRegion, err = r.loanServiceReserves(ctx, "")
+			} else {
+				input.ReserveByRegion, err = r.treasuryReserves(ctx)
+			}
 		} else if data.FundingMission != "" {
 			if mission.ShipID != "__treasury" || data.FundingMission == mission.ShipID || data.FundingGeneration == "" {
 				return errors.New("new remittance has an invalid funding owner")
@@ -1321,7 +1345,16 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			}
 			// This transfer spends its owner's reservation, not a second
 			// independent claim on the same donor cash.
-			input, err = r.committedPlanningInputExcept(ctx, ship, data.FundingMission)
+			if data.FundingMission == loanRefinanceMission {
+				state := decode[loanRefinanceState](r.snapshot, "_loan_refinance")
+				old, exists := r.loanByID(state.OldLoanID)
+				if !r.loanAuthority() || !exists {
+					return errors.New("refinance funding requires its named old-loan authority")
+				}
+				input, err = r.loanRefinanceRepaymentInput(ctx, state, old)
+			} else {
+				input, err = r.committedPlanningInputExcept(ctx, ship, data.FundingMission)
+			}
 		} else {
 			input, err = r.committedPlanningInput(ctx, ship)
 		}
