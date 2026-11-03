@@ -332,6 +332,12 @@ The browser reads `/api/dashboard` and bounded `/api/history` views through Next
 
 The bounded `/api/dashboard` raw account snapshot reads `snapshots.data`, not the merged runner snapshot, so it omits the internal `routes` payload after schema 21 extraction. Route freshness remains visible through `_meta`. There is no typed dashboard route-cache contract or in-repository UI consumer of `snapshot.routes`; external consumers must not depend on that internal payload.
 
+Each account also returns a non-null `missions` array of current recorded ship plans and an always-present boolean `missions_unavailable`. The display-only mission whitelist is `ship_id`, `phase`, `updated_at` and `plan {kind, origin, destination, commodity, quantity, contract_id?, economics {expected_net_pence?, basis?}}`. Strings are scrubbed with that account's credentials; raw mission data, recovery actions, requests and unlisted plan fields are never returned. A valid row without a recorded plan is omitted rather than invented from recovery metadata.
+
+Mission projection is bounded per account to 1,000 eligible rows and 8 MiB of combined metadata and data ciphertext. Authenticated, individually size-bounded metadata supplies encrypted ship identity and phase before any recovery data is hydrated. Empty ship identities, `__` controller identities and phases `""`, `done`, `settled`, `maintenance_done` and `growth_rejected` are excluded from both limits, and their `data_cipher` is never loaded. Eligible ciphertext is uncompressed, so the pre-hydration byte bound also bounds plaintext passed to the whitelist decoder.
+
+Corrupt or unreadable mission metadata or data, oversized metadata that cannot be safely classified, or an eligible row or byte limit breach degrades only that account to `missions: []` and `missions_unavailable: true`. Missing or corrupt account credentials also set the flag and retain existing secret-safe snapshot withholding. Mission-only failures retain account snapshots and healthy peer plans; database query failures remain response errors. An available account with no projectable plans has `missions: []` and `missions_unavailable: false`. Consumers must show plan unavailability when flagged, not fall back to a potentially stale decision.
+
 The Next.js host boundary lives in `web/src/proxy.ts`. It applies dashboard host checks before rewrites; it is not another game API client.
 
 

@@ -4,6 +4,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import {
   Anchor,
   Box,
+  Compass,
   ScrollText,
   Navigation,
   Ship,
@@ -11,6 +12,7 @@ import {
   Utensils,
   X,
 } from "lucide-react";
+import Link from "next/link";
 import { useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useNow } from "@/app/providers";
 import { dataset, fleet, shipSource } from "@/lib/data";
@@ -29,7 +31,6 @@ import type {
   ShipDetail,
 } from "@/lib/types";
 import { useUI } from "@/lib/ui-store";
-import { FleetMap } from "./fleet-map";
 import { ShipCurrentHold } from "./operations-overview";
 import {
   Badge,
@@ -328,13 +329,24 @@ export function FleetPanel({
 
   return (
     <div className={`${styles.workspace} ${compact ? styles.compact : ""}`}>
-      <div className={styles.chartLayout}>
+      <div className={styles.fleetLayout}>
         {compact && (
-          <FleetMap
-            accounts={accounts}
-            catalog={catalog}
-            snapshotUTC={dashboard.updated_at}
-          />
+          <section
+            className={`${styles.sectionHeading} ${styles.chartEntry}`}
+            aria-label="Fleet chart"
+          >
+            <div>
+              <h2>Fleet chart</h2>
+              <p>
+                Open the focused chart to follow recorded routes and inspect
+                ships, voyage legs and position estimates.
+              </p>
+            </div>
+            <Link className={styles.button} href="/chart">
+              <Compass size={17} strokeWidth={1.7} aria-hidden="true" />
+              Fleet chart
+            </Link>
+          </section>
         )}
         {!compact && (
           <section
@@ -359,14 +371,20 @@ export function FleetPanel({
                   it.
                 </p>
               </div>
-              {selectionInScope && (
-                <button
-                  className={styles.button}
-                  onClick={() => selectShip("")}
-                >
-                  Clear ship selection
-                </button>
-              )}
+              <div className={styles.ledgerActions}>
+                <Link className={styles.button} href="/chart">
+                  <Compass size={17} strokeWidth={1.7} aria-hidden="true" />
+                  Fleet chart
+                </Link>
+                {selectionInScope && (
+                  <button
+                    className={styles.button}
+                    onClick={() => selectShip("")}
+                  >
+                    Clear ship selection
+                  </button>
+                )}
+              </div>
             </header>
             <div className={styles.observations}>
               {accounts.map((account) => (

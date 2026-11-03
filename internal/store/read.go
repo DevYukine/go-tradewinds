@@ -40,6 +40,7 @@ func (s *Store) Dashboard(ctx context.Context) (Dashboard, error) {
 			result.Accounts = append(result.Accounts, DashboardAccount{
 				Account:  account,
 				Snapshot: make(map[string]json.RawMessage),
+				Missions: make([]DashboardMission, 0),
 			})
 		}
 		if len(ids) != 0 {
@@ -103,6 +104,17 @@ func (s *Store) Dashboard(ctx context.Context) (Dashboard, error) {
 						return err
 					}
 					result.Accounts[index].Snapshot[key] = clean
+				}
+			}
+			for index := range result.Accounts {
+				account := &result.Accounts[index]
+				missions, unavailable, err := s.dashboardMissions(tx, account.ID, scrubber.credentials(account.ID))
+				if err != nil {
+					return err
+				}
+				account.MissionsUnavailable = unavailable
+				if !unavailable {
+					account.Missions = missions
 				}
 			}
 		}

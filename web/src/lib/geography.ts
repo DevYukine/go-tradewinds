@@ -8,6 +8,10 @@ export interface Coordinate {
 // WGS84 harbour/city coordinates, not catalog data. Historical names resolve to
 // their modern ports: Danzig = Gdańsk, Königsberg = Kaliningrad, Batavia = Jakarta,
 // Whampoa = Huangpu. The combined Calicut / Madras entry is placed at Calicut.
+// Added Atlantic ports use the corresponding Wikipedia harbour/city references
+// (https://en.wikipedia.org/wiki/Port_of_Boston and named-place articles).
+// Norfolk uses https://www.cockettgroup.com/PortsMapAssets/region-usae.html.
+// These rounded reference points are schematic, not navigational coordinates.
 export const PORT_COORDINATES: Record<string, Coordinate> = {
   dover: { latitude: 51.125, longitude: 1.328 },
   calais: { latitude: 50.966, longitude: 1.855 },
@@ -51,6 +55,17 @@ export const PORT_COORDINATES: Record<string, Coordinate> = {
   batavia: { latitude: -6.121, longitude: 106.809 },
   ternate: { latitude: 0.789, longitude: 127.389 },
   canton: { latitude: 23.095, longitude: 113.448 },
+  st_johns: { latitude: 47.561, longitude: -52.712 },
+  boston: { latitude: 42.364, longitude: -71.037 },
+  new_york: { latitude: 40.668, longitude: -74.046 },
+  philadelphia: { latitude: 39.918, longitude: -75.137 },
+  norfolk: { latitude: 36.902, longitude: -76.298 },
+  charleston: { latitude: 32.785, longitude: -79.924 },
+  st_peter_port: { latitude: 49.456, longitude: -2.537 },
+  roscoff: { latitude: 48.733, longitude: -3.983 },
+  flushing: { latitude: 51.45, longitude: 3.567 },
+  st_eustatius: { latitude: 17.483, longitude: -62.983 },
+  ocracoke: { latitude: 35.064, longitude: -76.016 },
 };
 
 // Sea-zone centres are approximate route waypoints, never GPS ship positions.
@@ -143,8 +158,17 @@ export function shipCoordinate(
     0,
     Math.min(1, (estimatedCurrentUTC - departure) / (arrival - departure)),
   );
+  if (progress === 0) return from;
+  if (progress === 1) return to;
+  // Match the straight rhumb-line legs drawn in the chart's Mercator projection.
+  const radians = Math.PI / 180;
+  const fromY = Math.log(Math.tan(Math.PI / 4 + (from.latitude * radians) / 2));
+  const toY = Math.log(Math.tan(Math.PI / 4 + (to.latitude * radians) / 2));
   return {
-    latitude: from.latitude + (to.latitude - from.latitude) * progress,
+    latitude:
+      (2 * Math.atan(Math.exp(fromY + (toY - fromY) * progress)) -
+        Math.PI / 2) /
+      radians,
     longitude: from.longitude + (to.longitude - from.longitude) * progress,
   };
 }
@@ -184,6 +208,30 @@ function observationIssue(meta: DatasetMeta, serverUTC: number) {
   }
   return age >= 120_000 ? "recording stale" : undefined;
 }
+export function estimatedChartTime(
+  clock: Clock | undefined,
+  clockMeta: DatasetMeta,
+  serverUTC: number,
+  shipMeta?: DatasetMeta,
+): { utc?: number; reason?: string } {
+  const clockUTC = Date.parse(clock?.real_utc ?? "");
+  const observed = Date.parse(clockMeta.updated_at ?? "");
+  const clockIssue = observationIssue(clockMeta, serverUTC);
+  const shipIssue = shipMeta && observationIssue(shipMeta, serverUTC);
+  const reason =
+    (clock?.paused ? "world paused" : undefined) ??
+    (shipIssue ? `ship ${shipIssue}` : undefined) ??
+    (!clock || !Number.isFinite(clockUTC)
+      ? "recorded clock unavailable"
+      : clockIssue
+        ? `clock ${clockIssue}`
+        : serverUTC - clockUTC >= 120_000
+          ? "recorded clock stale"
+          : undefined);
+  return reason
+    ? { reason }
+    : { utc: clockUTC + Math.max(0, serverUTC - observed) };
+}
 
 export function shipPosition(
   detail: ShipDetail,
@@ -214,19 +262,8 @@ export function shipPosition(
     detail.ship.leg_departs_at,
     detail.ship.leg_arrives_at,
   ].join("|");
-  const clockUTC = Date.parse(clock?.real_utc ?? "");
-  const clockObserved = Date.parse(clockMeta.updated_at ?? "");
-  const clockIssue = observationIssue(clockMeta, serverUTC);
-  const unavailable =
-    (clock?.paused ? "world paused" : undefined) ??
-    (shipIssue ? `ship ${shipIssue}` : undefined) ??
-    (!clock || !Number.isFinite(clockUTC)
-      ? "recorded clock unavailable"
-      : clockIssue
-        ? `clock ${clockIssue}`
-        : serverUTC - clockUTC >= 120_000
-          ? "recorded clock stale"
-          : undefined);
+  const time = estimatedChartTime(clock, clockMeta, serverUTC, shipMeta);
+  const unavailable = time.reason;
 
   if (unavailable) {
     return previous?.voyageKey === voyageKey
@@ -238,7 +275,7 @@ export function shipPosition(
       : undefined;
   }
 
-  const estimatedCurrentUTC = clockUTC + Math.max(0, serverUTC - clockObserved);
+  const estimatedCurrentUTC = time.utc ?? Number.NaN;
   const coordinate = shipCoordinate(detail, estimatedCurrentUTC);
   if (!coordinate) {
     return undefined;

@@ -141,8 +141,33 @@ func (Request) TableName() string { return "requests" }
 
 type DashboardAccount struct {
 	Account
-	Snapshot  map[string]json.RawMessage `json:"snapshot"`
-	UpdatedAt *time.Time                 `json:"updated_at"`
+	Snapshot            map[string]json.RawMessage `json:"snapshot"`
+	Missions            []DashboardMission         `json:"missions"`
+	MissionsUnavailable bool                       `json:"missions_unavailable"`
+	UpdatedAt           *time.Time                 `json:"updated_at"`
+}
+
+// DashboardMission is a display-only whitelist, not durable recovery state.
+type DashboardMission struct {
+	ShipID    string               `json:"ship_id"`
+	Phase     string               `json:"phase"`
+	UpdatedAt time.Time            `json:"updated_at"`
+	Plan      DashboardMissionPlan `json:"plan"`
+}
+
+type DashboardMissionPlan struct {
+	Kind        string                    `json:"kind"`
+	Origin      string                    `json:"origin"`
+	Destination string                    `json:"destination"`
+	Commodity   string                    `json:"commodity"`
+	Quantity    int64                     `json:"quantity"`
+	ContractID  string                    `json:"contract_id,omitempty"`
+	Economics   DashboardMissionEconomics `json:"economics"`
+}
+
+type DashboardMissionEconomics struct {
+	ExpectedNetPence *int64 `json:"expected_net_pence,omitempty"`
+	Basis            string `json:"basis,omitempty"`
 }
 
 type Dashboard struct {

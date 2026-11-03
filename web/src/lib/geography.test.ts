@@ -117,7 +117,7 @@ describe("shipCoordinate ETA clamping", () => {
 
   it("interpolates midway along the leg", () => {
     const midpoint = shipCoordinate(sailing, DEPART + 300_000);
-    expect(midpoint?.latitude).toBeCloseTo(51.0455, 10);
+    expect(midpoint?.latitude).toBeCloseTo(51.04556822104777, 10);
     expect(midpoint?.longitude).toBeCloseTo(1.5915, 10);
   });
 
@@ -174,6 +174,24 @@ describe("shipCoordinate ETA clamping", () => {
       ),
     ).toBeUndefined();
   });
+
+  it("keeps long north-south voyages on the projected rhumb-line route", () => {
+    const detail = makeShip({}, [
+      {
+        ...DOVER_CALAIS,
+        from_node: "mozambique_channel",
+        to_node: "cape_of_good_hope",
+      },
+    ]);
+    const midpoint = shipCoordinate(detail, DEPART + 300_000);
+    const project = (latitude: number) =>
+      Math.log(Math.tan(Math.PI / 4 + (latitude * Math.PI) / 360));
+    expect(project(midpoint!.latitude)).toBeCloseTo(
+      (project(-17) + project(-35.5)) / 2,
+      12,
+    );
+    expect(midpoint?.longitude).toBe(30.25);
+  });
 });
 
 describe("shipPosition", () => {
@@ -186,7 +204,7 @@ describe("shipPosition", () => {
       SERVER,
     );
     expect(position?.kind).toBe("estimated");
-    expect(position?.coordinate.latitude).toBeCloseTo(51.05875, 8);
+    expect(position?.coordinate.latitude).toBeCloseTo(51.05881632382716, 8);
     expect(position?.coordinate.longitude).toBeCloseTo(1.5475833, 6);
   });
 
@@ -199,7 +217,7 @@ describe("shipPosition", () => {
       SERVER,
     );
     expect(position?.kind).toBe("estimated");
-    expect(position?.coordinate.latitude).toBeCloseTo(51.0614, 8);
+    expect(position?.coordinate.latitude).toBeCloseTo(51.06146548960886, 8);
     expect(position?.coordinate.longitude).toBeCloseTo(1.5388, 8);
   });
 

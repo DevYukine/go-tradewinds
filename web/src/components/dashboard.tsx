@@ -13,6 +13,7 @@ import {
   Globe2,
   Hammer,
   Landmark,
+  Map,
   Menu,
   MessagesSquare,
   Moon,
@@ -25,6 +26,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import Link from "next/link";
 import { useNow } from "@/app/providers";
 import { dataset, fleet, useDashboard } from "@/lib/data";
 import { age, count } from "@/lib/format";
@@ -256,6 +258,14 @@ export function Dashboard() {
               </button>
             );
           })}
+          <Link
+            href="/chart"
+            className="nav-item"
+            onClick={() => setNavigationOpen(false)}
+          >
+            <Map size={17} strokeWidth={1.7} aria-hidden="true" />
+            <span>Fleet chart</span>
+          </Link>
         </nav>
         <div className="navigation-footer">
           <span>Read-only operations</span>

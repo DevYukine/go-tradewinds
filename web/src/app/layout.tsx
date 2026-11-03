@@ -23,8 +23,18 @@ const plex = localFont({
 });
 
 const plexSerif = localFont({
-  src: "../../node_modules/@fontsource/ibm-plex-serif/files/ibm-plex-serif-latin-600-normal.woff2",
-  weight: "600",
+  src: [
+    {
+      path: "../../node_modules/@fontsource/ibm-plex-serif/files/ibm-plex-serif-latin-600-normal.woff2",
+      weight: "600",
+      style: "normal",
+    },
+    {
+      path: "../../node_modules/@fontsource/ibm-plex-serif/files/ibm-plex-serif-latin-400-italic.woff2",
+      weight: "400",
+      style: "italic",
+    },
+  ],
   variable: "--font-plex-serif",
   display: "swap",
 });

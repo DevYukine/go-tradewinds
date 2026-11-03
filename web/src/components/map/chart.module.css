@@ -1,0 +1,1335 @@
+.room {
+  --header-height: 80px;
+  --roster-width: 286px;
+  --inspector-width: 354px;
+  position: fixed;
+  inset: 0;
+  height: 100dvh;
+  overflow: hidden;
+  isolation: isolate;
+  background: var(--chart-water);
+  color: var(--ink);
+}
+
+.mapFrame,
+.map,
+.loading {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.loading {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+
+.map:global(.leaflet-container) {
+  z-index: 0;
+  background: var(--chart-water);
+  font: inherit;
+}
+
+.map:global(.leaflet-container):focus-visible {
+  outline-offset: -4px;
+}
+
+.land {
+  fill: var(--chart-land);
+  fill-opacity: 1;
+  stroke: var(--chart-coast);
+  stroke-opacity: 0.8;
+}
+
+.map :global(.leaflet-control-attribution),
+.map :global(.leaflet-control-scale-line) {
+  background: color-mix(in srgb, var(--chart-water) 92%, transparent);
+  color: var(--muted);
+  font:
+    10px var(--font-plex),
+    sans-serif;
+  box-shadow: none;
+  text-shadow: none;
+}
+
+.map :global(.leaflet-control-attribution a) {
+  color: var(--muted);
+}
+
+.map :global(.leaflet-bottom.leaflet-right) {
+  bottom: 3px;
+  right: 10px;
+}
+
+.map :global(.leaflet-control-scale-line) {
+  border-color: var(--chart-coast);
+  border-width: 0 1px 1px;
+}
+
+.topbar {
+  position: absolute;
+  z-index: 900;
+  top: 14px;
+  left: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  min-height: 58px;
+  padding: 6px 10px;
+  background: var(--chart-surface);
+  border: 1px solid color-mix(in srgb, var(--chart-coast) 45%, var(--border));
+  border-radius: 8px;
+  box-shadow: 0 3px 18px var(--chart-shadow);
+}
+
+.titleGroup,
+.headerActions,
+.layerControls,
+.button,
+.iconButton,
+.layerButton {
+  display: flex;
+  align-items: center;
+}
+
+.titleGroup {
+  flex-shrink: 0;
+  gap: 10px;
+}
+
+.titleGroup > svg {
+  color: var(--route);
+}
+
+.titleGroup h1 {
+  font-size: 22px;
+  white-space: nowrap;
+}
+
+.scope {
+  min-width: 140px;
+  max-width: 340px;
+  flex: 1 1 210px;
+}
+
+.scope select {
+  width: 100%;
+  min-width: 0;
+  border-color: transparent;
+  background-color: transparent;
+  text-overflow: ellipsis;
+  font-size: 13px;
+}
+
+.layerControls {
+  gap: 6px;
+  margin-left: auto;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+.headerActions {
+  flex-shrink: 0;
+  gap: 5px;
+}
+
+.button,
+.iconButton,
+.layerButton {
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--ink);
+  background: transparent;
+  text-decoration: none;
+  font-size: 13px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.button {
+  padding: 8px 11px;
+  border-color: var(--border);
+  white-space: nowrap;
+}
+
+.iconButton {
+  width: 36px;
+  flex: 0 0 36px;
+  padding: 5px;
+}
+
+.button:hover,
+.iconButton:hover,
+.layerButton:hover {
+  background: color-mix(in srgb, var(--route) 8%, var(--chart-surface));
+  color: var(--route);
+}
+
+.layerButton {
+  padding: 7px 8px;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.layerButton[aria-pressed="true"] {
+  color: var(--ink);
+}
+
+.check {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--chart-coast);
+  border-radius: 3px;
+  display: grid;
+  place-items: center;
+}
+
+.layerButton[aria-pressed="true"] .check {
+  color: var(--chart-surface);
+  border-color: var(--route);
+  background: var(--route);
+}
+
+.recordingStatus {
+  position: absolute;
+  z-index: 600;
+  top: calc(var(--header-height) + 1px);
+  left: 24px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 11px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.statusDot[data-error="true"] {
+  background: var(--attention);
+}
+
+.statusTime {
+  margin-left: auto;
+}
+
+.panels {
+  position: absolute;
+  z-index: 700;
+  top: calc(var(--header-height) + 32px);
+  bottom: 64px;
+  left: 16px;
+  right: 16px;
+  pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.roster,
+.inspector {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: 100%;
+  background: var(--chart-surface);
+  border: 1px solid color-mix(in srgb, var(--chart-coast) 40%, var(--border));
+  border-radius: 7px;
+  box-shadow: 0 4px 22px var(--chart-shadow);
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+.roster {
+  width: var(--roster-width);
+  flex-shrink: 0;
+}
+
+.inspector {
+  width: var(--inspector-width);
+  margin-left: auto;
+}
+
+.panelHeader {
+  min-height: 53px;
+  padding: 7px 12px 7px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panelHeader h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+}
+
+.panelHeader h2 span {
+  font-family: var(--font-plex), sans-serif;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.panelHeader p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.roster[data-open="false"] .panelHeader {
+  border: 0;
+}
+
+.rosterBody {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.search {
+  position: relative;
+  padding: 12px 12px 8px;
+}
+
+.search > svg {
+  position: absolute;
+  top: 24px;
+  left: 24px;
+  color: var(--muted);
+}
+
+.search input {
+  width: 100%;
+  min-width: 0;
+  min-height: 37px;
+  padding-left: 32px;
+  background: transparent;
+  font-size: 12px;
+}
+
+.rosterFilters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 0 12px 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.rosterFilters label {
+  flex: 1;
+  min-width: 0;
+}
+
+.rosterFilters label:last-child {
+  grid-column: 1 / -1;
+}
+
+.rosterFilters select {
+  width: 100%;
+  padding: 4px 5px;
+  min-height: 31px;
+  font-size: 11px;
+  background: transparent;
+}
+
+.rosterList {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.rosterList ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.vesselRow {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: 10px 14px;
+  background: transparent;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  cursor: pointer;
+}
+
+.vesselRow:hover {
+  background: color-mix(in srgb, var(--route) 5%, var(--chart-surface));
+}
+
+.vesselRow[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--route) 8%, var(--chart-surface));
+  border-left-color: var(--route);
+}
+
+.vesselRow:focus-visible {
+  outline-offset: -3px;
+}
+
+.vesselRowHeading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+}
+
+.vesselRowHeading > :global(.sprite-image) {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  max-width: none;
+  margin: 0;
+}
+
+.vesselRowHeading :global(.sprite-image) img {
+  width: 24px;
+  height: 24px;
+}
+
+.shipTitle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.portInspection {
+  padding: 12px 15px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--route) 4%, var(--chart-surface));
+  font-size: 12px;
+}
+
+.portInspection h3 {
+  font-size: 16px;
+}
+
+.portRecording {
+  margin-top: 12px;
+}
+
+.portRecording .facts {
+  margin: 8px 0;
+}
+
+.rosterList > .note {
+  padding: 10px 15px;
+}
+.vesselRoute {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  gap: 5px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.vesselRoute > span:first-child {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.rowDestination {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowETA {
+  margin-left: auto;
+  color: var(--route);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.cargoSummary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+  padding-left: 0;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.cargoTrack {
+  height: 3px;
+  min-width: 25px;
+  flex: 1;
+  background: var(--border);
+}
+
+.cargoTrack > span {
+  display: block;
+  height: 100%;
+  background: var(--route);
+}
+
+.rosterNote {
+  flex-shrink: 0;
+  padding: 10px 15px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.lossHeading {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.empty {
+  padding: 20px 16px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.inspectorBody {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  font-size: 12px;
+}
+
+.journey,
+.inspectionSection {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.journey {
+  background: color-mix(in srgb, var(--route) 5%, var(--chart-surface));
+}
+
+.shipState {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--route);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.shipState[data-state^="anchored"] {
+  color: var(--warning);
+}
+
+.shipState[data-state="sunk"] {
+  color: var(--attention);
+}
+
+.journey h3 {
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.positionNote {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.arrival {
+  display: grid;
+  gap: 3px;
+  padding: 13px 0 9px;
+}
+
+.arrival strong {
+  font-size: 15px;
+  color: var(--route);
+}
+
+.arrival span {
+  font-size: 12px;
+}
+
+.arrival small,
+.observation,
+.note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.observation {
+  margin-top: 8px;
+}
+
+.inspectionSection > h3 {
+  margin-bottom: 12px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.planHeading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 5px 12px;
+}
+
+.planHeading time {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.planLane {
+  margin-top: 7px;
+  color: var(--route);
+}
+
+.planValue {
+  margin-top: 6px;
+  color: var(--route);
+  font-size: 12px;
+}
+
+.planHeading > h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.facts {
+  display: grid;
+  margin: 8px 0;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.facts > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.manifest {
+  margin: 13px 0 0;
+  padding: 10px 0 0;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+
+.manifest li {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 4px 0;
+}
+
+.attention,
+.warning {
+  color: var(--attention);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  border-left: 2px solid var(--attention);
+  padding-left: 8px;
+  margin: 9px 0;
+  line-height: 1.6;
+}
+
+.warning svg {
+  margin-top: 3px;
+}
+
+.routeLegs {
+  margin: 0 0 12px;
+  padding: 0 0 0 19px;
+}
+
+.routeLegs li {
+  padding: 0 0 15px 5px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.routeLegs li::marker {
+  color: var(--chart-coast);
+}
+
+.routeLegs li[aria-current="step"],
+.routeLegs li[aria-current="step"]::marker {
+  color: var(--route);
+}
+
+.routeLegs strong,
+.routeLegs span,
+.routeLegs small {
+  display: block;
+}
+
+.routeLegs strong {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.routeLegs small {
+  font-size: 10px;
+  margin-top: 3px;
+}
+
+.mapZoom {
+  display: flex;
+  padding-left: 4px;
+  margin-left: 3px;
+  border-left: 1px solid var(--border);
+}
+
+.mapZoom .iconButton + .iconButton {
+  border-left-color: var(--border);
+  border-radius: 0 4px 4px 0;
+}
+
+.legend {
+  position: absolute;
+  z-index: 600;
+  bottom: 25px;
+  left: 22px;
+  max-width: min(380px, calc(100% - 40px));
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.legend details {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--chart-surface);
+}
+
+.legend summary {
+  padding: 8px 11px;
+  cursor: pointer;
+  min-height: 34px;
+}
+
+.legend:has(details[open]) {
+  z-index: 850;
+}
+
+.keyItems {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 9px;
+  padding: 4px 12px 12px;
+  max-height: calc(100dvh - 210px);
+  overflow-y: auto;
+}
+
+.keyItems > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.keyItems .warning {
+  color: var(--warning);
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+
+.keyItems .legendHull {
+  border-color: currentColor;
+  background-color: currentColor;
+}
+
+.keyItems .hollow {
+  border-color: var(--route);
+  background: transparent;
+}
+
+.keyItems small {
+  line-height: 1.6;
+}
+
+.legendHub,
+.legendYard {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--chart-coast);
+  border-radius: 50%;
+}
+
+.legendYard {
+  border-style: dashed;
+}
+
+.legendHull {
+  display: inline-block;
+  width: 8px;
+  height: 13px;
+  border: 1px solid var(--ink);
+  border-radius: 50% 50% 2px 2px;
+  background: var(--ink);
+}
+
+.hollow {
+  border-color: var(--route);
+  background: var(--chart-water);
+}
+
+.legendLine {
+  width: 22px;
+  border-top: 1px dashed var(--route);
+}
+
+.sheetNav {
+  display: none;
+}
+
+.north {
+  position: absolute;
+  z-index: 400;
+  top: 128px;
+  right: 32px;
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  color: var(--chart-coast);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.coordinates {
+  position: absolute;
+  inset: 0;
+  z-index: 400;
+  overflow: hidden;
+  pointer-events: none;
+  font-size: 9px;
+  color: var(--muted);
+}
+
+.coordinates span {
+  position: absolute;
+  white-space: nowrap;
+}
+
+.seaName {
+  color: var(--chart-coast);
+  font-family: var(--font-plex-serif), serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: 22px;
+  text-align: center;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.map :global(.leaflet-tooltip).portName {
+  padding: 0;
+  background: none;
+  border: none;
+  box-shadow: none;
+  color: var(--ink);
+  font-family: var(--font-plex-serif), serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: 12px;
+  text-shadow:
+    0 1px 2px var(--chart-water),
+    1px 0 2px var(--chart-water),
+    -1px 0 2px var(--chart-water);
+}
+
+.portName:global(.leaflet-tooltip)::before,
+.destinationLabel:global(.leaflet-tooltip)::before {
+  display: none;
+}
+
+.map :global(.leaflet-tooltip).tooltip {
+  background: var(--chart-surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  box-shadow: 0 3px 15px var(--chart-shadow);
+  font-family: var(--font-plex), sans-serif;
+  font-size: 11px;
+  white-space: normal;
+  max-width: 270px;
+}
+
+.shipMarker {
+  color: var(--ink);
+  border: none;
+  background: transparent;
+}
+
+.vessel {
+  position: relative;
+  width: 30px;
+  height: 40px;
+}
+
+.glyph {
+  display: block;
+  width: 28px;
+  height: 38px;
+  transform: rotate(var(--bearing, 0deg));
+  filter: drop-shadow(0 1px 1px var(--chart-water));
+}
+
+.glyph svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.glyph :global(.hull) {
+  fill: currentColor;
+  stroke: var(--chart-water);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  paint-order: stroke fill;
+}
+
+.glyph :global(.deck) {
+  fill: none;
+  stroke: var(--chart-water);
+  stroke-width: 1;
+  stroke-linecap: round;
+}
+
+.shipMarker[data-state="sailing"] {
+  color: var(--route);
+}
+
+.shipMarker[data-state^="anchored"],
+.shipMarker[data-state="frozen"] {
+  color: var(--warning);
+}
+
+.shipMarker[data-state="attention"],
+.shipMarker[data-state="sunk"] {
+  color: var(--attention);
+}
+
+.shipMarker[data-estimated="true"] .glyph :global(.hull) {
+  fill: var(--chart-water);
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+
+.shipMarker[data-estimated="true"] .glyph :global(.deck) {
+  stroke: currentColor;
+  opacity: 0.7;
+}
+
+.shipMarker[data-selected="true"] .glyph::before {
+  content: "";
+  position: absolute;
+  inset: -6px -9px;
+  border: 1px solid var(--route);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--route) 8%, transparent);
+}
+
+.shipMarker[data-selected="true"] .shipName {
+  color: var(--route);
+  border-color: var(--route);
+  background: var(--chart-surface);
+  font-weight: 600;
+}
+
+.shipMarker[data-dimmed="true"] .glyph {
+  opacity: 0.65;
+}
+
+.shipName {
+  position: absolute;
+  top: 12px;
+  left: 33px;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--chart-coast) 35%, transparent);
+  border-radius: 3px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--chart-surface) 92%, transparent);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.map :global(.leaflet-tooltip).destinationLabel {
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  font:
+    10px var(--font-plex),
+    sans-serif;
+}
+
+.arrivalTag {
+  color: var(--route);
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--route) 25%, var(--chart-water));
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--chart-surface) 92%, transparent);
+  line-height: 1.45;
+}
+
+.arrivalTag[data-dimmed="true"] {
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+.portPopup :global(.leaflet-popup-content-wrapper),
+.portPopup :global(.leaflet-popup-tip) {
+  background: var(--chart-surface);
+  color: var(--ink);
+}
+
+.portPopup p {
+  margin: 8px 0;
+  font-size: 12px;
+}
+
+@media (min-width: 2200px) {
+  .room {
+    --roster-width: 320px;
+    --inspector-width: 390px;
+  }
+  .topbar {
+    right: auto;
+    max-width: calc(100% - 32px);
+  }
+  .scope {
+    flex: 0 1 320px;
+    width: 320px;
+  }
+}
+
+@media (max-width: 1200px) {
+  .room {
+    --header-height: 121px;
+    --roster-width: 266px;
+    --inspector-width: 320px;
+  }
+  .topbar {
+    flex-wrap: wrap;
+    gap: 4px 14px;
+  }
+  .titleGroup {
+    flex: 1 1 auto;
+  }
+  .scope {
+    flex: 1 1 250px;
+  }
+  .layerControls {
+    order: 3;
+    flex: 1 0 100%;
+    margin: 0;
+    padding: 3px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+  .layerButton {
+    flex: 1;
+  }
+  .north {
+    top: 164px;
+  }
+}
+
+@media (max-width: 900px) {
+  .room {
+    --header-height: 121px;
+  }
+  .topbar {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+    gap: 4px 8px;
+    padding: 5px 7px;
+  }
+  .titleGroup {
+    gap: 7px;
+    flex: 0 0 auto;
+  }
+  .titleGroup h1 {
+    font-size: 19px;
+  }
+  .titleGroup > svg {
+    display: none;
+  }
+  .scope {
+    flex: 1;
+    max-width: none;
+    min-width: 140px;
+  }
+  .scope select {
+    font-size: 11px;
+    padding-left: 4px;
+  }
+  .headerActions {
+    gap: 2px;
+  }
+  .headerActions .button {
+    font-size: 11px;
+    padding: 8px;
+    gap: 4px;
+  }
+  .button,
+  .iconButton,
+  .layerButton {
+    min-height: 40px;
+  }
+  .layerButton {
+    font-size: 11px;
+    padding: 5px 4px;
+  }
+  .recordingStatus {
+    top: 116px;
+    left: 17px;
+    right: 17px;
+    font-size: 10px;
+    gap: 2px 8px;
+  }
+  .statusTime {
+    display: none;
+  }
+  .panels {
+    inset: auto 8px 82px;
+    max-height: min(52dvh, 460px);
+    display: block;
+  }
+  .roster,
+  .inspector {
+    display: none;
+    width: 100%;
+    max-height: min(52dvh, 460px);
+    margin: 0;
+    border-radius: 8px;
+  }
+  .room[data-sheet="fleet"] .roster,
+  .room[data-sheet="ship"] .inspector {
+    display: flex;
+  }
+  .room[data-sheet="fleet"] .roster {
+    max-height: min(39dvh, 350px);
+  }
+  .panelHeader {
+    min-height: 47px;
+    padding: 4px 10px 4px 16px;
+  }
+  .panelHeader h2 {
+    font-size: 17px;
+  }
+  .rosterBody {
+    min-height: 0;
+  }
+  .search {
+    padding-top: 9px;
+    padding-bottom: 7px;
+  }
+  .search > svg {
+    top: 21px;
+  }
+  .rosterFilters {
+    padding-bottom: 8px;
+  }
+  .rosterNote {
+    display: none;
+  }
+  .vesselRow {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .vesselRowHeading > span {
+    font-size: 11px;
+  }
+  .vesselRow .cargoSummary {
+    max-width: 360px;
+  }
+  .north {
+    top: 155px;
+    right: 22px;
+  }
+  .legend {
+    top: 143px;
+    bottom: auto;
+    left: 17px;
+  }
+  .keyItems {
+    max-height: calc(100dvh - 270px);
+  }
+  .sheetNav {
+    position: absolute;
+    z-index: 800;
+    left: 8px;
+    right: 8px;
+    bottom: max(22px, env(safe-area-inset-bottom));
+    display: flex;
+    gap: 8px;
+  }
+  .sheetNav button {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 46px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--chart-surface);
+    box-shadow: 0 2px 10px var(--chart-shadow);
+    font-size: 13px;
+  }
+  .sheetNav button[aria-expanded="true"] {
+    border-color: var(--route);
+    color: var(--route);
+  }
+  .map :global(.leaflet-bottom.leaflet-right) {
+    bottom: 3px;
+    max-width: calc(100% - 24px);
+  }
+  .map :global(.leaflet-control-scale) {
+    display: none;
+  }
+  .map :global(.leaflet-control-attribution) {
+    font-size: 8px;
+  }
+}
+
+@media (max-width: 560px) {
+  .room {
+    --header-height: 152px;
+  }
+  .scope {
+    order: 2;
+    flex: 1 0 100%;
+    border-top: 1px solid var(--border);
+  }
+  .scope select {
+    min-height: 30px;
+  }
+  .headerActions {
+    margin-left: auto;
+  }
+  .layerControls {
+    padding-top: 0;
+  }
+  .recordingStatus {
+    top: 149px;
+  }
+  .legend {
+    top: 181px;
+  }
+  .keyItems {
+    max-height: calc(100dvh - 308px);
+  }
+  .north {
+    top: 190px;
+  }
+}
+
+@media (max-height: 600px) and (max-width: 900px) {
+  .room[data-sheet="fleet"] .roster,
+  .roster,
+  .inspector,
+  .panels {
+    max-height: 43dvh;
+  }
+  .room[data-sheet="fleet"] .roster {
+    max-height: 43dvh;
+  }
+  .rosterFilters {
+    padding-bottom: 6px;
+  }
+  .roster .panelHeader {
+    display: none;
+  }
+  .rosterBody {
+    display: grid;
+    grid-template-columns: 210px minmax(0, 1fr);
+    grid-template-rows: 53px 1fr;
+    min-height: 0;
+  }
+  .search {
+    grid-column: 1;
+    grid-row: 1;
+    padding-top: 8px;
+  }
+  .rosterFilters {
+    display: flex;
+    grid-column: 1;
+    grid-row: 2;
+    align-items: start;
+    flex-direction: column;
+    border: 0;
+  }
+  .rosterFilters label {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+  .rosterList {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    max-height: 43dvh;
+    border-left: 1px solid var(--border);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map :global(.leaflet-marker-icon),
+  .map :global(.leaflet-zoom-animated) {
+    transition: none;
+    animation: none;
+  }
+}

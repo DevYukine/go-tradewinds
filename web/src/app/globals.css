@@ -25,6 +25,12 @@
   --warning: #80551a;
   --crown: #c9a227;
   --danger: #9f3e28;
+  --chart-water: #e7eeed;
+  --chart-land: #d4ddcf;
+  --chart-coast: #93a89c;
+  --chart-grid: #adc1ba;
+  --chart-surface: #fcfdfb;
+  --chart-shadow: #2749441a;
   --money-gain: #24734f;
   --money-loss: #b42335;
   --foreground: var(--ink);
@@ -53,6 +59,12 @@
   --danger: var(--attention);
   --money-gain: var(--success);
   --money-loss: #ff9ba5;
+  --chart-water: #11232c;
+  --chart-land: #283b3e;
+  --chart-coast: #4c6669;
+  --chart-grid: #36515a;
+  --chart-surface: #192c33;
+  --chart-shadow: #00000036;
   color-scheme: dark;
 }
 

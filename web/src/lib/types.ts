@@ -139,6 +139,21 @@ export interface BulletinThreadView {
   posts_total: number;
 }
 
+export interface ShipMission {
+  ship_id: string;
+  phase: string;
+  updated_at: string;
+  plan: {
+    kind: string;
+    origin: string;
+    destination: string;
+    commodity: string;
+    quantity: number;
+    contract_id?: string;
+    economics: { expected_net_pence?: number; basis?: string };
+  };
+}
+
 export interface Account {
   id: string;
   label: string;
@@ -147,6 +162,8 @@ export interface Account {
   created_at: string;
   updated_at?: string | null;
   snapshot: Record<string, unknown>;
+  missions?: ShipMission[];
+  missions_unavailable?: boolean;
 }
 
 export interface Metric {

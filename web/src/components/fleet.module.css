@@ -9,13 +9,12 @@
   gap: 0.5rem;
 }
 
-.chartLayout {
+.fleetLayout {
   min-width: 0;
   display: grid;
   align-items: start;
 }
 
-.chartSection,
 .ledger {
   min-width: 0;
 }
@@ -47,38 +46,18 @@
   font-size: 0.875rem;
 }
 
-.sectionHeading h2,
-.portDetail h3 {
+.sectionHeading h2 {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.chartToolbar,
 .filters {
   display: flex;
   align-items: end;
   flex-wrap: wrap;
   gap: 0.65rem;
   padding: 0.7rem 0;
-}
-
-.chartToolbar {
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 0 0.5rem;
-}
-
-.chartActions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-}
-
-.zoomActions {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
 }
 
 .button,
@@ -100,6 +79,25 @@
   cursor: pointer;
 }
 
+.button {
+  text-decoration: none;
+}
+
+.chartEntry {
+  border-block: 1px solid var(--border);
+}
+
+.chartEntry p {
+  max-width: 65ch;
+  line-height: 1.6;
+}
+
+.ledgerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
 .button:hover,
 .iconButton:hover,
 .shipButton:hover {
@@ -115,9 +113,7 @@
 .button:focus-visible,
 .iconButton:focus-visible,
 .shipButton:focus-visible,
-.portSelect select:focus-visible,
 .filters select:focus-visible,
-.chartSection a:focus-visible,
 .fleetHeading:focus-visible {
   outline: 3px solid var(--color-route);
   outline-offset: 3px;
@@ -129,15 +125,6 @@
   padding: 0.4rem;
 }
 
-.chartToolbar :is(button, select) {
-  min-height: 2.75rem;
-}
-
-.chartToolbar .iconButton {
-  width: 2.75rem;
-}
-
-.portSelect,
 .filterField {
   display: grid;
   gap: 0.3rem;
@@ -146,19 +133,6 @@
   min-width: 0;
 }
 
-.portSelect {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex: 1 1 12rem;
-  max-width: 19rem;
-}
-
-.portSelect select {
-  flex: 1;
-}
-
-.portSelect select,
 .filterField select {
   width: 100%;
   min-width: 0;
@@ -175,398 +149,6 @@
 .filterField {
   flex: 0 1 15rem;
   min-width: min(12rem, 100%);
-}
-
-.mapFrame,
-.loadingChart {
-  height: clamp(18rem, 34vh, 24rem);
-  min-height: 18rem;
-  overflow: hidden;
-  position: relative;
-  border: 1px solid var(--border);
-  border-radius: 0.45rem;
-  background: var(--color-water);
-}
-
-.loadingChart {
-  display: grid;
-  place-items: center;
-  color: var(--color-ink);
-}
-
-.map {
-  width: 100%;
-  height: 100%;
-  z-index: 0;
-  background: var(--color-water);
-  font: inherit;
-}
-
-.map:global(.leaflet-container) {
-  background: var(--color-water);
-  font: inherit;
-}
-
-.map:global(.leaflet-container) :global(.leaflet-control-attribution),
-.map :global(.leaflet-control-scale-line) {
-  background: var(--surface);
-  color: var(--color-ink);
-  font-family: inherit;
-  font-size: 0.75rem;
-  box-shadow: none;
-  text-shadow: none;
-}
-
-.map :global(.leaflet-control-attribution a) {
-  color: var(--color-route);
-}
-
-.map :global(.leaflet-control-scale-line) {
-  border-color: var(--color-ink);
-}
-
-.map :global(.leaflet-marker-icon):focus-visible,
-.map:focus-visible {
-  outline: 3px solid var(--color-route);
-  outline-offset: 2px;
-}
-
-.land {
-  fill: var(--land);
-  fill-opacity: 1;
-  stroke: color-mix(in srgb, var(--ink) 30%, var(--land));
-  stroke-width: 0.9;
-}
-
-.graticule {
-  fill: none;
-  stroke: var(--muted);
-  opacity: 0.22;
-  stroke-width: 0.75;
-}
-
-.route {
-  stroke: var(--route);
-  stroke-width: 2;
-  stroke-dasharray: 6 8;
-  stroke-linecap: round;
-}
-
-.currentRoute {
-  stroke-width: 3;
-}
-
-.routeDirection svg {
-  width: 20px;
-  height: 20px;
-  fill: none;
-  stroke: var(--route);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  filter: drop-shadow(0 1px 1px var(--water));
-}
-
-.map .portMarker,
-.map .shipMarker {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  color: var(--ink);
-  background: none;
-  border: 0;
-}
-
-.portDisc {
-  display: grid;
-  place-items: center;
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--muted);
-  border-radius: 50%;
-  background: var(--surface);
-  box-shadow: 0 0 0 2px var(--water);
-}
-
-.portDisc svg {
-  display: none;
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.portDetailed .portDisc {
-  width: 26px;
-  height: 26px;
-  border-width: 1px;
-}
-
-.portDetailed .portDisc svg {
-  display: block;
-}
-
-.portDetailed.port .portDisc {
-  width: calc(13px + var(--port-phase, 1) * 2px);
-  height: calc(13px + var(--port-phase, 1) * 2px);
-  border-style: double;
-  border-width: 3px;
-}
-
-.hub .portDisc {
-  color: var(--route);
-  border-color: var(--route);
-}
-
-.yard .portDisc {
-  color: var(--warning);
-  border-color: var(--warning);
-}
-
-.portSelected .portDisc {
-  outline: 2px solid var(--route);
-  outline-offset: 3px;
-}
-
-.map .shipMarker {
-  color: var(--muted);
-}
-
-.map .shipMarker[data-status="sailing"] {
-  color: var(--route);
-}
-
-.map .shipMarker[data-status="berthed"] {
-  color: var(--success);
-}
-
-.map .shipMarker[data-status="anchored_roadstead"] {
-  color: var(--warning);
-}
-
-.vessel {
-  position: relative;
-  width: 29px;
-  height: 36px;
-  overflow: visible;
-  transform: rotate(var(--bearing, 0deg));
-  filter: drop-shadow(
-    0 1px 2px color-mix(in srgb, var(--ink) 24%, transparent)
-  );
-}
-
-.vesselHull {
-  fill: currentColor;
-  stroke: var(--surface);
-  stroke-width: 1.8;
-  stroke-linejoin: round;
-}
-
-.vesselDeck {
-  fill: none;
-  stroke: var(--surface);
-  stroke-width: 1.2;
-}
-
-.vesselSail {
-  fill: var(--surface);
-  stroke: currentColor;
-  stroke-width: 0.6;
-}
-
-.shipPulse {
-  position: absolute;
-  width: 36px;
-  height: 36px;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  opacity: 0;
-}
-
-.shipEstimated .shipPulse {
-  opacity: 0.3;
-}
-
-.shipSelected .shipPulse {
-  width: 40px;
-  height: 40px;
-  opacity: 0.7;
-  border-width: 2px;
-}
-
-.shipWarning .vesselHull {
-  stroke: var(--attention);
-  stroke-width: 2.5;
-}
-
-.chartCoordinates {
-  position: absolute;
-  inset: 0;
-  z-index: 500;
-  pointer-events: none;
-}
-
-.chartCoordinates span {
-  position: absolute;
-  padding: 1px 3px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--water) 88%, transparent);
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.2;
-}
-
-.chartLegend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  margin-top: 8px;
-}
-
-.chartLegend > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 0;
-  color: var(--route);
-  font-size: 0.75rem;
-}
-
-.chartLegend .legendBerthed {
-  color: var(--success);
-}
-
-.chartLegend .legendAnchored {
-  color: var(--warning);
-}
-
-.chartLegend .legendFrozen {
-  color: var(--muted);
-}
-
-.legendPort {
-  width: 13px;
-  height: 13px;
-  border: 3px double currentColor;
-  border-radius: 50%;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .shipEstimated .shipPulse {
-    animation: estimatePulse 3.5s ease-in-out infinite;
-  }
-}
-
-@keyframes estimatePulse {
-  0%,
-  100% {
-    transform: scale(0.9);
-    opacity: 0.2;
-  }
-  50% {
-    transform: scale(1.12);
-    opacity: 0.5;
-  }
-}
-
-.map .markerTooltip {
-  max-width: min(21rem, 75vw);
-  white-space: normal;
-  border: 1px solid var(--border);
-  border-radius: 0.3rem;
-  padding: 0.45rem 0.6rem;
-  background: var(--surface);
-  color: var(--color-ink);
-  font: inherit;
-  font-size: 0.75rem;
-  box-shadow: none;
-}
-
-.map .portLabel {
-  white-space: nowrap;
-  padding: 2px 5px;
-  border: 0;
-  background: color-mix(in srgb, var(--water) 92%, transparent);
-  font-size: 11px;
-}
-
-.map .portLabel::before {
-  display: none;
-}
-
-.chartCaption {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 0.5rem 1.5rem;
-  padding: 0.65rem 0;
-  color: var(--muted);
-  font-size: 0.75rem;
-  line-height: 1.6;
-}
-
-.chartCaption p {
-  flex: 1 1 25rem;
-  max-width: 75ch;
-  margin: 0;
-}
-
-.chartCaption a,
-.chartSection > a {
-  color: var(--color-route);
-  text-underline-offset: 0.2em;
-}
-
-.sourceAccount {
-  display: grid;
-  gap: 0.35rem;
-  padding: 0.65rem 0;
-  border-top: 1px solid var(--border);
-}
-
-.sourceAccount strong {
-  color: var(--color-ink);
-  font-weight: 500;
-}
-
-.portDetail {
-  padding: 0.8rem 0;
-  border-top: 1px solid var(--border);
-}
-
-.portDetail h3 {
-  margin: 0 0 0.5rem;
-  color: var(--color-ink);
-  font-size: 1rem;
-}
-
-.portDetails {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 1.5rem;
-  margin: 0;
-}
-
-.portDetails div {
-  display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
-}
-
-.portDetails dt {
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
-.portDetails dd {
-  margin: 0;
-  font-size: 0.875rem;
-  font-variant-numeric: tabular-nums;
 }
 
 .observations {
@@ -715,23 +297,6 @@
   width: 44px;
   height: 44px;
   image-rendering: pixelated;
-}
-
-.vesselPicker {
-  display: flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 8px;
-  min-width: 0;
-  max-width: calc(100% - 9.5rem);
-  min-height: 2.75rem;
-  color: var(--muted);
-}
-
-.vesselPicker select {
-  flex: 1;
-  min-width: 0;
-  min-height: 2.75rem;
 }
 
 .inspectorDisclosures > summary {
@@ -908,21 +473,6 @@
 }
 
 @media (max-width: 639px) {
-  .chartActions {
-    width: 100%;
-  }
-
-  .portSelect {
-    max-width: none;
-  }
-
-  .mapFrame,
-  .loadingChart,
-  .compact .mapFrame,
-  .compact .loadingChart {
-    height: 18rem;
-  }
-
   .sectionHeading {
     align-items: start;
   }
@@ -932,19 +482,7 @@
   }
 }
 
-@media (max-height: 600px) and (min-width: 640px) {
-  .mapFrame,
-  .loadingChart,
-  .compact .mapFrame,
-  .compact .loadingChart {
-    height: 16rem;
-    min-height: 16rem;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .map :global(.leaflet-zoom-animated),
-  .map :global(.leaflet-marker-icon),
   .dialogContent,
   .dialogOverlay {
     animation: none;
