@@ -850,8 +850,11 @@ func TestMarqueZoneBackoffUsesAggregateEVNeverLifetimeLossCount(t *testing.T) {
 				t.Fatalf("zone backoff = %t, want %t with %+v", got, tc.backoff, input.ZoneReturns[marqueExecutionZone])
 			}
 			input.Quote = proxy.quote
-			if got := EvaluateMarque(input); got.Accepted == tc.backoff {
-				t.Fatalf("aggregate zone EV admission = %+v, want backoff %t", got, tc.backoff)
+			globalPaused := input.GlobalReturns.Count > 0 && input.GlobalReturns.PrizePence < input.GlobalReturns.CostPence &&
+				input.Now.Before(input.GlobalReturns.LatestExpiry.Add(24*time.Hour))
+			wantAccepted := !tc.backoff && !globalPaused
+			if got := EvaluateMarque(input); got.Accepted != wantAccepted {
+				t.Fatalf("aggregate zone EV admission = %+v, want accepted %t (zone backoff %t, global pause %t)", got, wantAccepted, tc.backoff, globalPaused)
 			}
 		})
 	}

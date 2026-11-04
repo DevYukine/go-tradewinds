@@ -192,7 +192,7 @@ func TestScoutDailyCapScalesOnlyWithAttributedMeasuredNet(t *testing.T) {
 func TestScoutConversionNetRequiresSameShipSettledIncomeWithinRealDay(t *testing.T) {
 	now := time.Now().UTC()
 	for _, scale := range []int64{30, 60, 120} {
-		for _, scenario := range []string{"scout", "other ship", "charter probe", "unknown costs", "expired", "loss"} {
+		for _, scenario := range []string{"scout", "other ship", "charter probe", "unknown costs", "expired", "loss", "two scout voyages", "unknown first scout voyage"} {
 			t.Run(fmt.Sprintf("%d/%s", scale, scenario), func(t *testing.T) {
 				probe := store.Settlement{Kind: "relocation", ShipID: recoveryShipBlastoise,
 					Origin: "hamburg", Destination: "amsterdam", Lane: scoutLaneKey("amsterdam", "hamburg", "provisions"),
@@ -212,9 +212,20 @@ func TestScoutConversionNetRequiresSameShipSettledIncomeWithinRealDay(t *testing
 					income.CompletedAt, want = now.Add(-24*time.Hour), 0
 				case "loss":
 					income.ProceedsPence, want = 10_000, -6000
+				case "two scout voyages":
+					want *= 2
+				case "unknown first scout voyage":
+					income.CostsKnown = false
+				}
+				rows := []store.Settlement{probe, income}
+				if scenario == "two scout voyages" || scenario == "unknown first scout voyage" {
+					second := income
+					second.CostsKnown = true
+					second.StartedAt, second.CompletedAt = now.Add(-2*time.Hour), now.Add(-time.Hour)
+					rows = append(rows, second)
 				}
 				history := probeHistoryFixture()
-				if err := history.rollingBudget([]store.Settlement{probe, income}, now, scale); err != nil {
+				if err := history.rollingBudget(rows, now, scale); err != nil {
 					t.Fatal(err)
 				}
 				if history.ScoutConversionNetPence != want {

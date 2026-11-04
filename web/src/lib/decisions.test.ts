@@ -265,6 +265,45 @@ describe("destination delivery economics", () => {
     },
   );
 
+  it("reconciles an insured ocean voyage with its cover premium", () => {
+    const view = buildDecisionView({
+      economics: {
+        basis: "destination",
+        revenue_pence: 3_942_012,
+        purchase_pence: 2_669_682,
+        customs_pence: 40_000,
+        provisions_pence: 120_000,
+        berth_dues_pence: 30_000,
+        funding_fees_pence: 0,
+        hazard_bps: 120,
+        hazard_pence: 0,
+        hazard_source: "hull-only",
+        voyage_premium_pence: 1_762_547,
+        expected_net_pence: -680_217,
+      },
+    });
+    const premium = view.cashRows.find(
+      (row) => row.key === "voyage_premium_pence",
+    );
+    expect(premium).toEqual({
+      key: "voyage_premium_pence",
+      label: "Voyage cover premium",
+      pence: 1_762_547,
+    });
+    const operating = view.cashRows.filter(
+      (row) => row.key !== "expected_net_pence",
+    );
+    const [revenue, ...costs] = operating;
+    expect(revenue.pence - costs.reduce((sum, row) => sum + row.pence, 0)).toBe(
+      view.expectedNetPence,
+    );
+    expect(
+      buildDecisionView(plan).cashRows.some(
+        (row) => row.key === "voyage_premium_pence",
+      ),
+    ).toBe(false);
+  });
+
   it.each([
     {
       kind: "rejected",

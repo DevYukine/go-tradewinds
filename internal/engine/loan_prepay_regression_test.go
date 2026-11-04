@@ -200,7 +200,7 @@ func TestLoanPrepayPreservesDominantRegionalFloor(t *testing.T) {
 		{name: "exact funded"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			h, runner, _, _ := moneyPrepayFixture(t, []int64{563_785}, 0, false)
+			h, runner, api, _ := moneyPrepayFixture(t, []int64{563_785}, 0, false)
 			port := runner.stateCache.Ports[recoveryHomePort]
 			port.BerthDuesPerDayPence = 100_000
 			runner.stateCache.Ports[recoveryHomePort] = port
@@ -218,18 +218,70 @@ func TestLoanPrepayPreservesDominantRegionalFloor(t *testing.T) {
 				}
 			}
 			changed, err := runner.prepayLoans(h.ctx)
-			if err != nil || changed != (test.extra == 0) {
+			if err != nil || !changed {
 				t.Fatalf("dominant floor prepayment boundary: changed=%t err=%v holds=%v", changed, err, runner.holding)
 			}
-			if test.extra == 0 {
-				h.api.mu.Lock()
-				cash := h.api.vaultBalance["north"]
-				h.api.mu.Unlock()
-				if cash != protected+468 {
-					t.Fatalf("payoff spent the dominant floor: cash=%d want=%d", cash, protected+468)
+			amount := int64(563_785)
+			if test.extra < 0 {
+				amount = (563_785 + 468 + test.extra - loanReserve(runner.stateCache.Loans[0])) / 100 * 100
+			}
+			h.api.mu.Lock()
+			cash := h.api.vaultBalance["north"]
+			h.api.mu.Unlock()
+			want := protected + 563_785 + 468 + test.extra - amount
+			if cash != want {
+				t.Fatalf("prepayment spent the dominant floor: cash=%d want=%d", cash, want)
+			}
+			api.mu.Lock()
+			remaining := api.loans[0].OwedPence
+			api.mu.Unlock()
+			if remaining != 563_785-amount || h.api.mutationCount("/v1/loan/repay") != 1 || len(h.pending()) != 0 {
+				t.Fatalf("prepayment did not reconcile the full or partial amount exactly once: remaining=%d want=%d", remaining, 563_785-amount)
+			}
+		})
+	}
+}
+
+func TestLoanPrepayPartialFirstSendPreservesFrozenAmountAndRegionalReserves(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		cashDelta   int64
+		otherRegion bool
+		wantReady   bool
+	}{
+		{name: "exact surplus", wantReady: true},
+		{name: "larger surplus keeps frozen amount", cashDelta: 50_000, wantReady: true},
+		{name: "one penny below frozen amount", cashDelta: -1},
+		{name: "another region below its reserve", cashDelta: -1, otherRegion: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h, runner, _ := partialPrepayFixture(t, 123_400, false)
+			loan, exists := runner.loanByID("partial-goldsmiths-dear")
+			if !exists {
+				t.Fatal("fixture lost its loan")
+			}
+			mission := &store.Mission{AccountID: h.account.ID, ShipID: "__loans", Phase: "loan_prepay", Generation: uuid.NewString()}
+			data := missionData{Plan: Plan{Kind: "treasury"}, CostsKnown: true}
+			if _, err := runner.stageLoanRepayment(h.ctx, mission, &data, loan, 123_400); err != nil {
+				t.Fatal(err)
+			}
+			before := append([]byte(nil), data.Action.Body...)
+			for i := range runner.stateCache.Vaults {
+				vault := &runner.stateCache.Vaults[i]
+				matchesLoanRegion := vault.BankingRegion == loan.BankingRegion
+				if matchesLoanRegion != test.otherRegion {
+					vault.BalancePence += test.cashDelta
 				}
-			} else if h.api.mutationCount("/v1/loan/repay") != 0 {
-				t.Fatal("payoff spent a penny of the protected regional floor")
+			}
+			err := runner.loanActionReady(h.ctx, mission, &data)
+			if (err == nil) != test.wantReady {
+				t.Fatalf("partial prepayment readiness: err=%v wantReady=%t", err, test.wantReady)
+			}
+			if data.LoanRepayment.AmountPence != 123_400 || !bytes.Equal(before, data.Action.Body) {
+				t.Fatal("first-send validation changed the frozen repayment amount")
+			}
+			if h.api.mutationCount("/v1/loan/repay") != 0 {
+				t.Fatal("preflight sent the staged repayment")
 			}
 		})
 	}

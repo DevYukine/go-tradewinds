@@ -92,6 +92,8 @@ func revenueCalibrationKeys(commodity, basis, horizon string) []string {
 	return []string{
 		"basis/" + basis + "/commodity/" + commodity + "/" + horizon,
 		"basis/" + basis + "/group/" + group + "/" + horizon,
+		"basis/" + basis + "/" + horizon,
+		"basis/" + basis,
 		"commodity/" + commodity + "/" + horizon,
 		"group/" + group + "/" + horizon,
 		"group/" + group,

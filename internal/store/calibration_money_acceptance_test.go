@@ -327,13 +327,13 @@ func TestRevenueCalibrationPoolsSparseCommodityAndHorizon(t *testing.T) {
 	rows = append(rows, calibrationRows("canvas_sails", "retained", 3, ratio(9, 9000)...)...)
 	model := FitRevenueCalibration(rows)
 	if got := model.Factor("canvas_sails", "depth", 1.2); got.Source != "global" || got.AdverseBPS != 7000 {
-		t.Fatalf("new commodity did not pool within horizon: %+v", got)
+		t.Fatalf("unmeasured child pools did not fall back to global evidence: %+v", got)
 	}
 	if got := model.Factor("coarse_cloth", "depth", 3); got.Source != "global" || got.Samples != 19 {
-		t.Fatalf("sparse horizon did not pool commodity group: %+v", got)
+		t.Fatalf("sparse horizon did not fall back to global evidence: %+v", got)
 	}
 	if got := model.Factor("new_commodity", "depth", 1.2); got.Source != "global" || got.MedianBPS != 7000 {
-		t.Fatalf("new group did not use global evidence: %+v", got)
+		t.Fatalf("new group did not use global evidence below the child minimum: %+v", got)
 	}
 	rows = append(rows, calibrationRows("canvas_sails", "depth", 1.2, ratio(30, 6000)...)...)
 	if got := FitRevenueCalibration(rows).Factor("canvas_sails", "depth", 1.2); got.Source != "basis/depth/commodity/canvas_sails/1-1.5" || got.MedianBPS != 6000 {

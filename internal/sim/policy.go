@@ -12,16 +12,14 @@ import (
 )
 
 type Variant struct {
-	Name                  string `json:"name"`
-	NextRungReceiptStress bool   `json:"next_rung_receipt_stress"`
-	SourcingCashBPS       *int64 `json:"sourcing_cash_bps,omitempty"`
+	Name            string `json:"name"`
+	SourcingCashBPS *int64 `json:"sourcing_cash_bps,omitempty"`
 }
 
 func DefaultVariants() []Variant {
 	zero, fifty, fourHundred := int64(0), int64(50), int64(400)
 	return []Variant{
 		{Name: "baseline"},
-		{Name: "i4", NextRungReceiptStress: true},
 		{Name: "probe0", SourcingCashBPS: &zero},
 		{Name: "probe50", SourcingCashBPS: &fifty},
 		{Name: "probe400", SourcingCashBPS: &fourHundred},
@@ -227,7 +225,6 @@ func (world *variantWorld) planningInput(view FrameView, ship engine.ShipState) 
 		CompanyID: world.options.CompanyID,
 		Metadata:  meta, Generation: generation, CharterProceedsPence: proceeds, Competition: competition,
 	})
-	input.NextRungReceiptStress = world.variant.NextRungReceiptStress
 	input.SourcingCashBPS = world.variant.SourcingCashBPS
 	input.PlayerBidSellFills = world.sellFills
 	if err := world.ledger.Apply(&input, snapshot); err != nil {

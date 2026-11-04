@@ -89,7 +89,9 @@ func (r *Runner) growthSourceAuthority(input PlanningInput, portID string) bool 
 
 // Only unpaid cash is committed. Existing cargo, hardware and completed store
 // orders do not reserve their original purchase price a second time.
-func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mission, data *missionData, ship ShipState) {
+// Return the current leg's premium so its own cover check can exclude that
+// reserve without releasing another leg's insurance or cargo funding.
+func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mission, data *missionData, ship ShipState) (currentPremium int64) {
 	if data.Commission != nil {
 		if mission.Phase != "done" {
 			if port, exists := findPort(r.stateCache.Catalog, data.Commission.Contract.OriginPortID); exists {
@@ -107,6 +109,7 @@ func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mi
 			intent.PolicyID == "" && !intent.Declined && intent.Quote.LloydsPremiumPence != nil {
 			if port, exists := findPort(r.stateCache.Catalog, intent.Quote.OriginPortID); exists {
 				required[port.BankingRegion] = growthCashTotal(required[port.BankingRegion], *intent.Quote.LloydsPremiumPence)
+				currentPremium = *intent.Quote.LloydsPremiumPence
 			}
 		}
 	}
@@ -150,6 +153,9 @@ func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mi
 		if data.Settlement == nil {
 			if origin, exists := findPort(r.stateCache.Catalog, data.Plan.Origin); exists {
 				required[origin.BankingRegion] = growthCashTotal(required[origin.BankingRegion], growthWorkingCapital(data.Plan))
+				if ship.Ship.CurrentPortID == data.Plan.Origin && mission.Destination == data.Plan.Destination {
+					currentPremium = growthCashTotal(currentPremium, data.Plan.Economics.VoyagePremiumPence)
+				}
 			}
 		}
 		return
@@ -186,6 +192,13 @@ func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mi
 			collateral = max(0, collateral-obligation.CollateralPence)
 		}
 		cash = growthCashTotal(cash, collateral)
+		if voyageInsuranceForLeg(data, plan.Origin, plan.Destination) == nil &&
+			(unbought || !data.ReturnJourney && ship.Voyage == nil && ship.Ship.CurrentPortID == plan.Origin) {
+			cash = growthCashTotal(cash, plan.Economics.VoyagePremiumPence)
+			if ship.Ship.CurrentPortID == plan.Origin && mission.Destination == plan.Destination {
+				currentPremium = growthCashTotal(currentPremium, plan.Economics.VoyagePremiumPence)
+			}
+		}
 		if unbought {
 			cash = growthCashTotal(cash, plan.Economics.BerthDuesPence, plan.Economics.TollPence)
 			if ordinaryIncomePending(data) {
@@ -238,10 +251,19 @@ func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mi
 		input := r.planningInput(ship)
 		if quote, err := growthReturnBasis(input, data.Plan.Origin); err == nil {
 			if port, exists := findPort(input.Catalog, ship.Ship.CurrentPortID); exists {
-				required[port.BankingRegion] = growthCashTotal(required[port.BankingRegion], quote.storeCash, quote.departureBill)
+				premium := int64(0)
+				if quote.premiumKnown {
+					premium = quote.premiumPence
+				}
+				if voyageInsuranceForLeg(data, ship.Ship.CurrentPortID, data.Plan.Origin) != nil {
+					premium = 0
+				}
+				required[port.BankingRegion] = growthCashTotal(required[port.BankingRegion], quote.storeCash, quote.departureBill, premium)
+				currentPremium = growthCashTotal(currentPremium, premium)
 			}
 		}
 	}
+	return
 }
 
 type growthOperatingQuote struct {
@@ -262,6 +284,8 @@ type growthReturnQuote struct {
 	storeLimit    int64
 	storeCash     int64
 	departureBill int64
+	premiumPence  int64
+	premiumKnown  bool
 	expense       int64
 }
 
@@ -324,7 +348,9 @@ func growthReturnBasis(input PlanningInput, source string) (growthReturnQuote, e
 	if err != nil {
 		return quote, err
 	}
-	quote.expense = growthCashTotal(provisionExpense, quote.departureBill)
+	quote.premiumPence, quote.premiumKnown = ballastVoyagePremium(input, hull, back,
+		max(0, sourcingFreeCash(input)-growthCashTotal(quote.storeCash, quote.departureBill)))
+	quote.expense = growthCashTotal(provisionExpense, quote.departureBill, quote.premiumPence)
 	return quote, nil
 }
 
@@ -332,6 +358,10 @@ func quoteGrowthDelivery(input PlanningInput, base Plan, lane *growthLaneIntent,
 	best := growthOperatingQuote{plan: reject(base, "no positive funded residual operating lot remains")}
 	if lane == nil || lane.AdmissionID == "" || lane.QuantityLimit <= 0 || len(base.FreightIDs) != 0 {
 		best.plan.Reason = "growth lane lacks its durable allocation"
+		return best
+	}
+	if back != nil && !back.premiumKnown {
+		best.plan.Reason = "growth return has no checked ocean voyage premium"
 		return best
 	}
 	for _, key := range []string{"catalog", "clock", "zones", "vaults", "contracts", "ships", "rates"} {
@@ -368,7 +398,9 @@ func quoteGrowthDelivery(input PlanningInput, base Plan, lane *growthLaneIntent,
 			return best
 		}
 		returnRegion = current.BankingRegion
-		returnCash = growthCashTotal(back.storeCash, back.departureBill)
+		returnCash = growthCashTotal(back.storeCash, back.departureBill, back.premiumPence)
+		quoted.ReserveByRegion = clonePence(input.ReserveByRegion)
+		quoted.ReserveByRegion[returnRegion] = growthCashTotal(quoted.ReserveByRegion[returnRegion], returnCash)
 	}
 	maximum := min(lane.QuantityLimit, quoted.Ship.EffectiveHoldCapacityTons-quoted.Ship.CargoUsedTons)
 	var reward int64
@@ -411,9 +443,6 @@ func quoteGrowthDelivery(input PlanningInput, base Plan, lane *growthLaneIntent,
 			continue
 		}
 		required := cargoFundingRequired(quoted, plan)
-		if back != nil {
-			required[returnRegion] = growthCashTotal(required[returnRegion], returnCash)
-		}
 		_, fees, transfers, funded := measuredFunding(input.Balances, required, input.Rates)
 		if !funded {
 			continue
@@ -549,6 +578,9 @@ func (r *Runner) quoteGrowthContinuation(ctx context.Context, ship ShipState, da
 	back, err := growthReturnBasis(input, base.Origin)
 	if err != nil {
 		return growthOperatingQuote{plan: reject(base, err.Error())}, nil
+	}
+	if !back.premiumKnown {
+		return growthOperatingQuote{plan: reject(base, "growth return has no checked ocean voyage premium")}, nil
 	}
 	quote := quoteGrowthDelivery(input, base, data.GrowthLane, false, &back)
 	if quote.plan.Accepted {

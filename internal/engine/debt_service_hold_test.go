@@ -131,7 +131,7 @@ func TestDebtServiceHoldGrowthHullCashBoundaries(t *testing.T) {
 	for _, scenario := range []string{"below hold", "one penny short of build", "exact build surplus", "above build surplus"} {
 		t.Run(scenario, func(t *testing.T) {
 			h, runner := loanCapacityFixture(t, 750_000, false)
-			installDebtServiceHoldLoan(runner, "north_sea")
+			loan := installDebtServiceHoldLoan(runner, "north_sea")
 			serveDebtServiceLoanPayments(h, runner)
 			hold := runner.debtServiceHoldPence()
 			setDebtServiceFreeCash(t, h, runner, "north_sea", hold+1_000_000)
@@ -151,6 +151,17 @@ func TestDebtServiceHoldGrowthHullCashBoundaries(t *testing.T) {
 			runner.snapshot["_capacity_financing_backoffs"] = encode(map[string]time.Time{
 				recoveryHomePort + "|" + recoveryHull: time.Now().UTC().Add(time.Hour),
 			})
+			var partialAmount int64
+			if scenario == "below hold" {
+				input, ready, err := runner.loanPrepaymentInput(h.ctx, loan)
+				if err != nil || !ready {
+					t.Fatalf("partial repayment input: ready=%t err=%v", ready, err)
+				}
+				partialAmount = (input.Balances[loan.BankingRegion] - input.ReserveByRegion[loan.BankingRegion] - loanReserve(loan)) / 100 * 100
+				if partialAmount < 100_000 || partialAmount >= loanFullPayment(loan) {
+					t.Fatalf("below-hold fixture lacks a partial-payment-sized surplus: %d", partialAmount)
+				}
+			}
 			changed, err := runner.considerGrowth(h.ctx)
 			if err != nil {
 				t.Fatal(err)
@@ -165,12 +176,20 @@ func TestDebtServiceHoldGrowthHullCashBoundaries(t *testing.T) {
 				if h.api.mutationCount("/v1/loan/quote") != 0 || h.api.mutationCount("/v1/loan/request") != 0 {
 					t.Fatal("cash withheld for repayment was replaced with new growth debt")
 				}
-				wantRepayments := 0
-				if scenario == "one penny short of build" {
-					wantRepayments = 1
+				calls := h.api.mutationsFor("/v1/loan/repay")
+				if len(calls) != 1 {
+					t.Fatalf("blocked growth did not safely use its actual repayment surplus: got %d repayments, want 1", len(calls))
 				}
-				if got := h.api.mutationCount("/v1/loan/repay"); got != wantRepayments {
-					t.Fatalf("blocked growth did not safely use its actual repayment surplus: got %d repayments, want %d", got, wantRepayments)
+				var request gameapi.RepayLoanRequest
+				if err := json.Unmarshal(calls[0].Body, &request); err != nil || request.LoanID != loan.ID {
+					t.Fatalf("repayment lost its loan identity: request=%+v err=%v", request, err)
+				}
+				if scenario == "below hold" {
+					if request.AmountPence == nil || *request.AmountPence != partialAmount {
+						t.Fatalf("below-hold cash must repay only its reserve-safe whole-Crown surplus %dp: %+v", partialAmount, request)
+					}
+				} else if request.AmountPence != nil {
+					t.Fatalf("funded payoff must omit the partial amount: %+v", request)
 				}
 				return
 			}
@@ -718,6 +737,7 @@ func TestDebtServiceHoldMortgageAdmissionCashBoundaries(t *testing.T) {
 func TestDebtServiceHoldStableReasonKeepsCrownDiagnostics(t *testing.T) {
 	t.Parallel()
 	h, runner := loanCapacityFixture(t, 750_000, false)
+	runner.opts.Execute = false
 	installDebtServiceHoldLoan(runner, "north_sea")
 	for _, free := range []int64{702_224, 702_223} {
 		setDebtServiceFreeCash(t, h, runner, "north_sea", free)

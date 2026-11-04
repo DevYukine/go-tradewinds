@@ -25,7 +25,7 @@ func simAcceptanceRunTape(t *testing.T) (*Tape, time.Time, time.Time) {
 		"_revenue_calibration": `{"cells":{"global":{"samples":30,"median_bps":10000,"adverse_bps":10000}}}`,
 		"ports/a":              `{"id":"a","effective_berths":4,"berth_dues_per_day_pence":0}`,
 		"ports/b":              `{"id":"b","effective_berths":4,"berth_dues_per_day_pence":0}`,
-		"books/a":              `{"port_id":"a","visibility":"quay","customs_bps":0,"books":[{"commodity_id":"cloth","depth":{"asks":[{"order_id":"cloth-ask","price_pence":40000,"remaining_quantity":30,"is_npc":true}]}},{"commodity_id":"provisions","depth":{"asks":[{"order_id":"stores-a","price_pence":100,"remaining_quantity":100,"is_npc":true}]}}]}`,
+		"books/a":              `{"port_id":"a","visibility":"quay","customs_bps":0,"books":[{"commodity_id":"cloth","depth":{"asks":[{"order_id":"cloth-ask","price_pence":20000,"remaining_quantity":30,"is_npc":true}]}},{"commodity_id":"provisions","depth":{"asks":[{"order_id":"stores-a","price_pence":100,"remaining_quantity":100,"is_npc":true}]}}]}`,
 		"books/b":              `{"port_id":"b","visibility":"quay","customs_bps":0,"books":[{"commodity_id":"cloth","depth":{"bids":[{"order_id":"bid-top","price_pence":44726,"remaining_quantity":66,"is_npc":true},{"order_id":"bid-middle","price_pence":33943,"remaining_quantity":101,"is_npc":true},{"order_id":"bid-low","price_pence":27505,"remaining_quantity":101,"is_npc":true}]}},{"commodity_id":"provisions","depth":{"asks":[{"order_id":"stores-b","price_pence":100,"remaining_quantity":100,"is_npc":true}]}}]}`,
 	}
 	for _, pair := range [][2]string{{"a", "b"}, {"b", "a"}} {
@@ -71,37 +71,59 @@ func simAcceptanceRecordedHazards(t *testing.T, at time.Time, datasets map[strin
 	datasets["_hazard_quotes"] = string(encoded)
 }
 
-func TestRunAcceptanceIncidentVariantsHaveHandComputedCashDifference(t *testing.T) {
-	tape, from, to := simAcceptanceRunTape(t)
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "i4", NextRungReceiptStress: true}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 2 {
-		t.Fatalf("variants produced %d rows", len(rows))
-	}
-	byName := make(map[string]VariantResult)
-	for _, row := range rows {
-		byName[row.Variant] = row
-	}
-	baseline, stress := byName["baseline"], byName["i4"]
-	if baseline.SettlementCount != 1 || len(baseline.Settlements) != 1 || baseline.Settlements[0].QuantityTons != 30 || baseline.Settlements[0].AcquisitionPence != 1_200_000 || baseline.Settlements[0].ProceedsPence != 1_341_780 {
-		t.Fatalf("baseline did not execute the exact top-rung incident lot: %+v", baseline)
-	}
-	if stress.SettlementCount != 0 || stress.FinalCashPence != 10_000_000 || stress.FinalNetWorthPence != 10_000_000 {
-		t.Fatalf("I4 variant executed receipt-risk-rejected cargo: %+v", stress)
-	}
-	if baseline.FinalCashPence != 10_141_780 || baseline.FinalNetWorthPence != 10_141_780 || stress.DeltaVsBaselinePence != -141_780 {
-		t.Fatalf("hand-computed receipt net (30*(44726-40000)) differs: baseline=%+v i4=%+v", baseline, stress)
-	}
-	if !baseline.Settlements[0].CompletedAt.Before(to) {
-		t.Fatalf("arrival/settlement waited for the next frame instead of the exact event time: %+v", baseline.Settlements[0])
+func TestRunAcceptanceReceiptStressIsLiveBaseline(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		ask         int64
+		settlements int64
+		cash        int64
+	}{
+		{name: "marginal lot rejected", ask: 40_000, cash: 10_000_000},
+		{name: "sufficient margin settles", ask: 20_000, settlements: 1, cash: 10_741_780},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tape, from, to := simAcceptanceRunTape(t)
+			for i := range tape.Frames {
+				dataset := tape.Frames[i].Datasets["books/a"]
+				book := simAcceptanceJSON[engine.Market](t, string(dataset.Data))
+				book.Books[0].Depth.Asks[0].PricePence = tc.ask
+				data, err := json.Marshal(book)
+				if err != nil {
+					t.Fatal(err)
+				}
+				dataset.Data = data
+				tape.Frames[i].Datasets["books/a"] = dataset
+			}
+			rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 4 {
+				t.Fatalf("default policies produced %d rows, want baseline and three sourcing variants", len(rows))
+			}
+			for _, row := range rows {
+				if row.SettlementCount != tc.settlements || int64(len(row.Settlements)) != tc.settlements ||
+					row.FinalCashPence != tc.cash || row.FinalNetWorthPence != tc.cash || row.DeltaVsBaselinePence != 0 {
+					t.Fatalf("live receipt stress diverged across sourcing policies: %+v", row)
+				}
+				if tc.settlements == 0 {
+					continue
+				}
+				settlement := row.Settlements[0]
+				if settlement.QuantityTons != 30 || settlement.AcquisitionPence != 600_000 || settlement.ProceedsPence != 1_341_780 {
+					t.Fatalf("profitable next-rung lot lost its hand-computed receipts: %+v", settlement)
+				}
+				if !settlement.CompletedAt.Before(to) {
+					t.Fatalf("arrival/settlement waited for the next frame instead of the exact event time: %+v", settlement)
+				}
+			}
+		})
 	}
 }
 
 func TestRunAcceptanceIdenticalTapeProducesByteIdenticalJSON(t *testing.T) {
 	tape, from, to := simAcceptanceRunTape(t)
-	options := RunOptions{From: from, To: to, Regen: 0.5, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "i4", NextRungReceiptStress: true}, {Name: "probe0", SourcingCashBPS: new(int64(0))}}}
+	options := RunOptions{From: from, To: to, Regen: 0.5, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "probe0", SourcingCashBPS: new(int64(0))}}}
 	before, err := json.Marshal(tape)
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +168,7 @@ func TestRunAcceptanceFreightIsNeverExecuted(t *testing.T) {
 		contracts.Data = []byte(`[{"id":"tempting-freight","contract_type":"freight","status":"open","origin_port_id":"a","dest_port_id":"b","commodity_id":"cloth","issuer_company_id":"competitor","quantity_required":30,"remaining_quantity":30,"reward_pence":99999999,"collateral_pence":100}]`)
 		frame.Datasets["contracts"] = contracts
 	}
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "i4", NextRungReceiptStress: true}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "probe0", SourcingCashBPS: new(int64(0))}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +332,7 @@ func TestRunAcceptanceRegionalFundingChargesFeeNotPrincipal(t *testing.T) {
 	for _, transfer := range transfers {
 		fees += transfer.Gross - transfer.Net
 	}
-	if rows[0].Settlements[0].FeesPence != fees || rows[0].FinalCashPence != 10_141_780-fees {
+	if rows[0].Settlements[0].FeesPence != fees || rows[0].FinalCashPence != 10_741_780-fees {
 		t.Fatalf("settlement must carry exactly the PlanFunding transfer fee %d and never the principal: %+v", fees, rows[0])
 	}
 }
@@ -364,11 +386,11 @@ func TestRunAcceptanceInitialVoyageCargoArrivesIdenticallyForEveryVariant(t *tes
 		book.Data = []byte(`{"port_id":"a","visibility":"quay","books":[]}`)
 		tape.Frames[i].Datasets["books/a"] = book
 	}
-	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "i4", NextRungReceiptStress: true}, {Name: "probe0", SourcingCashBPS: new(int64(0))}}})
+	rows, err := Run(context.Background(), tape, RunOptions{From: from, To: to, Regen: 0, CompanyID: "ours", Variants: []Variant{{Name: "baseline"}, {Name: "probe0", SourcingCashBPS: new(int64(0))}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 3 {
+	if len(rows) != 2 {
 		t.Fatalf("starting voyage lost variants: %+v", rows)
 	}
 	for _, row := range rows {
@@ -397,7 +419,7 @@ func TestRunAcceptanceLaterDestinationObservationChargesCurrentBerthDues(t *test
 	if len(rows) != 1 || len(rows[0].Settlements) != 1 {
 		t.Fatalf("updated destination observation prevented the planned delivery: %+v", rows)
 	}
-	if rows[0].Settlements[0].ExpensesPence != 600 || rows[0].FinalNetWorthPence != 10_141_180 {
+	if rows[0].Settlements[0].ExpensesPence != 600 || rows[0].FinalNetWorthPence != 10_741_180 {
 		t.Fatalf("arrival retained initial zero dues instead of charging six hours at the later observed 2400p/day: %+v", rows[0])
 	}
 }
@@ -424,7 +446,7 @@ func TestRunAcceptanceDeliveryPaysHighestNominalCharter(t *testing.T) {
 	if got := rows[0].Settlements[0].ProceedsPence; got != 10*50_000+20*49_000 {
 		t.Fatalf("delivery did not pay both charters in nominal reward order: %d", got)
 	}
-	if !rows[0].Settlements[0].CompletedAt.Equal(to) || rows[0].FinalCashPence != 10_280_000 {
+	if !rows[0].Settlements[0].CompletedAt.Equal(to) || rows[0].FinalCashPence != 10_880_000 {
 		t.Fatalf("charter remainder did not wait for the next pass and settle without spot sales: %+v", rows[0])
 	}
 }
@@ -660,6 +682,22 @@ func TestRunAcceptanceRollingPrefixAugmentsWindowHistoryOnce(t *testing.T) {
 
 func TestRunUsesRecordedHazardPricingAndNeverInventsZero(t *testing.T) {
 	tape, from, to := simAcceptanceRunTape(t)
+	for index := range tape.Frames {
+		dataset := tape.Frames[index].Datasets["books/a"]
+		book := simAcceptanceJSON[engine.Market](t, string(dataset.Data))
+		book.Books[0].Depth.Asks[0].PricePence = 29_000
+		data, err := json.Marshal(book)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dataset.Data = data
+		tape.Frames[index].Datasets["books/a"] = dataset
+	}
+	options := RunOptions{From: from, To: to, Variants: []Variant{{Name: "baseline"}}}
+	rows, err := Run(context.Background(), tape, options)
+	if err != nil || len(rows) != 1 || !rows[0].HazardAvailable || rows[0].SettlementCount != 1 {
+		t.Fatalf("zero-priced hazard control must survive next-rung stress: %+v, %v", rows, err)
+	}
 	view, err := tape.Reader().Advance(from)
 	if err != nil {
 		t.Fatal(err)
@@ -676,8 +714,7 @@ func TestRunUsesRecordedHazardPricingAndNeverInventsZero(t *testing.T) {
 		dataset.Data, _ = json.Marshal(quotes)
 		tape.Frames[index].Datasets["_hazard_quotes"] = dataset
 	}
-	options := RunOptions{From: from, To: to, Variants: []Variant{{Name: "baseline"}}}
-	rows, err := Run(context.Background(), tape, options)
+	rows, err = Run(context.Background(), tape, options)
 	if err != nil || len(rows) != 1 || !rows[0].HazardAvailable || rows[0].SettlementCount != 0 {
 		t.Fatalf("recorded 20%% hazard did not reject the thin-margin lot: %+v, %v", rows, err)
 	}

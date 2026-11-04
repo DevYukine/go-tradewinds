@@ -69,7 +69,7 @@ func recentRealizedSourcingLanes(rows []store.Settlement, now time.Time) ([]real
 	}
 	var result []realizedSourcingLane
 	for _, lane := range lanes {
-		if lane.NetPence <= 0 {
+		if lane.Samples < 2 || lane.NetPence <= 0 {
 			continue
 		}
 		if result == nil {
@@ -97,8 +97,8 @@ func realizedRelocationPlan(in PlanningInput, lane realizedSourcingLane) Plan {
 	if !in.SourcingIdleEligible {
 		return reject(plan, "realized-lane relocation waits for six coherent idle game hours")
 	}
-	if lane.NetPence <= 0 || lane.QuantityTons <= 0 || lane.GameDays <= 0 || lane.CompletedAt.IsZero() || lane.CompletedAt.After(in.Now) || lane.CompletedAt.Before(in.Now.Add(-realizedRelocationWindow)) {
-		return reject(plan, "realized-lane relocation lacks recent known positive lane net")
+	if lane.Samples < 2 || lane.NetPence <= 0 || lane.QuantityTons <= 0 || lane.GameDays <= 0 || lane.CompletedAt.IsZero() || lane.CompletedAt.After(in.Now) || lane.CompletedAt.Before(in.Now.Add(-realizedRelocationWindow)) {
+		return reject(plan, "realized-lane relocation requires two recent known settlements with positive mean lane net")
 	}
 	if !lane.RelocatedAt.IsZero() && !lane.CompletedAt.After(lane.RelocatedAt) {
 		return reject(plan, "realized lane has no newer settlement since its last relocation")

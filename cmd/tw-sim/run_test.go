@@ -65,7 +65,7 @@ func commandTestStore(t *testing.T) (*store.Store, string, []byte) {
 	return db, dsn, key
 }
 
-func TestRunCommandSyntheticTapeWritesFifteenDeterministicUntrustedRows(t *testing.T) {
+func TestRunCommandSyntheticTapeWritesTwelveDeterministicUntrustedRows(t *testing.T) {
 	db, dsn, key := commandTestStore(t)
 	ctx := context.Background()
 	const secret = "synthetic-command-private-key"
@@ -150,8 +150,8 @@ func TestRunCommandSyntheticTapeWritesFifteenDeterministicUntrustedRows(t *testi
 		if err := json.Unmarshal(encoded, &report); err != nil {
 			t.Fatal(err)
 		}
-		if len(report.Rows) != 15 {
-			t.Fatalf("got %d rows, want five policies under three scenarios", len(report.Rows))
+		if len(report.Rows) != 12 {
+			t.Fatalf("got %d rows, want four policies under three scenarios", len(report.Rows))
 		}
 		for _, row := range report.Rows {
 			if !strings.Contains(row.Status, "UNTRUSTED") {

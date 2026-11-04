@@ -36,11 +36,11 @@ func oceanicVoyage(route Route, zones []Zone) bool {
 	return false
 }
 
-func worthwhileVoyageCover(hull Hull, route Route, zones []Zone, quote gameapi.LloydsQuoteResult) bool {
+func worthwhileVoyageCover(hull Hull, route Route, zones []Zone, quote gameapi.LloydsQuoteResult, freeCash int64) bool {
 	if hull.HullCategory != "oceanic" || !oceanicVoyage(route, zones) || !quote.LloydsWrites ||
 		quote.OriginPortID != route.FromPort || quote.DestPortID != route.ToPort || quote.ShipID == "" ||
 		quote.HullValuePence <= 0 || quote.MaxInsurablePence < quote.HullValuePence || quote.MaxInsurablePence > maximumPence ||
-		quote.InsuredValuePence != quote.MaxInsurablePence || len(quote.PricedConsortShipIDs) != 0 ||
+		quote.InsuredValuePence != quote.MaxInsurablePence || quote.InsuredValuePence <= freeCash || len(quote.PricedConsortShipIDs) != 0 ||
 		quote.LloydsExpectedLossBPS == nil || *quote.LloydsExpectedLossBPS < 0 || *quote.LloydsExpectedLossBPS > 10_000 ||
 		quote.LloydsExpectedLossPence == nil || *quote.LloydsExpectedLossPence <= 0 || *quote.LloydsExpectedLossPence > maximumPence ||
 		quote.LloydsPremiumBPS == nil || *quote.LloydsPremiumBPS < 10 || *quote.LloydsPremiumBPS > 3_000 ||
@@ -48,6 +48,67 @@ func worthwhileVoyageCover(hull Hull, route Route, zones []Zone, quote gameapi.L
 		return false
 	}
 	return *quote.LloydsPremiumPence-*quote.LloydsExpectedLossPence <= *quote.LloydsExpectedLossPence
+}
+
+func plannedVoyagePremium(in PlanningInput, hull Hull, route Route, quote HazardQuote, cargo, freeCash int64) (int64, bool) {
+	if hull.HullCategory != "oceanic" || !oceanicVoyage(route, in.Catalog.SeaZones) {
+		return 0, true
+	}
+	if !quote.LloydsWrites {
+		return 0, quote.LloydsWritesKnown
+	}
+	if quote.HullValuePence <= 0 || quote.LloydsPremiumBPS == nil {
+		return 0, false
+	}
+	insured := growthCashTotal(quote.HullValuePence, cargo)
+	premium, premiumOK := hazardCharge(insured, *quote.LloydsPremiumBPS)
+	expectedLoss, lossOK := hazardCharge(insured, quote.ExpectedLossBPS)
+	if insured > maximumPence || !premiumOK || !lossOK {
+		return 0, false
+	}
+	cover := gameapi.LloydsQuoteResult{
+		ShipID: in.Ship.Ship.ID, OriginPortID: route.FromPort, DestPortID: route.ToPort,
+		HullValuePence: quote.HullValuePence, InsuredValuePence: insured, MaxInsurablePence: insured,
+		LloydsWrites: quote.LloydsWrites, LloydsPremiumBPS: quote.LloydsPremiumBPS, LloydsPremiumPence: &premium,
+		LloydsExpectedLossBPS: &quote.ExpectedLossBPS, LloydsExpectedLossPence: &expectedLoss,
+	}
+	if !worthwhileVoyageCover(hull, route, in.Catalog.SeaZones, cover, freeCash) {
+		return 0, true
+	}
+	return premium, true
+}
+
+func voyagePlanningFreeCash(in PlanningInput, cargo, stores int64) int64 {
+	return max(0, sourcingFreeCash(in)-growthCashTotal(cargo, stores, in.growthHullValuePence))
+}
+
+func ballastVoyagePremium(in PlanningInput, hull Hull, route Route, freeCash int64) (int64, bool) {
+	if hull.HullCategory != "oceanic" || !oceanicVoyage(route, in.Catalog.SeaZones) {
+		return 0, true
+	}
+	bound := resolvePlanningHazard(in, route)
+	if !bound.available {
+		outward, exists := in.Routes[routeKey(route.ToPort, route.FromPort, hull.ID)]
+		if exists {
+			candidate := resolvePlanningHazard(in, outward)
+			if candidate.available && hazardPiracyCovers(in, candidate.cover, route, false) {
+				bound = candidate
+			}
+		}
+	}
+	if bound.available {
+		return plannedVoyagePremium(in, hull, route, planningVoyageCover(in, hull, route, bound), 0, freeCash)
+	}
+	value := planningHullValue(in, HazardQuote{})
+	if value <= 0 || value > maximumPence {
+		return 0, false
+	}
+	if value <= freeCash {
+		return 0, true
+	}
+	// With no usable lane bound, the tariff ceiling bounds the premium;
+	// lack of a return quote must not invent a free repeat passage.
+	return hazardCharge(value, 3_000)
 }
 
 func voyageInsuranceForLeg(data *missionData, origin, destination string) *voyageInsuranceIntent {
@@ -100,7 +161,10 @@ func (r *Runner) voyageInsuranceWaitSafe(ship ShipState, hull Hull, route Route,
 func (r *Runner) voyagePremiumReserves(input *PlanningInput, mission *store.Mission, data *missionData, ship ShipState) {
 	protected := *data
 	protected.VoyageInsurance = nil
-	r.reserveMissionCash(input.ReserveByRegion, mission, &protected, ship)
+	premium := r.reserveMissionCash(input.ReserveByRegion, mission, &protected, ship)
+	if port, exists := findPort(r.stateCache.Catalog, ship.Ship.CurrentPortID); exists {
+		input.ReserveByRegion[port.BankingRegion] = max(0, input.ReserveByRegion[port.BankingRegion]-premium)
+	}
 }
 
 // Loading and the final liquidation comparison must finish before this call:
@@ -160,9 +224,6 @@ func (r *Runner) prepareVoyageInsurance(ctx context.Context, ship ShipState, hul
 			return false, false, nil
 		}
 	}
-	if quote.ShipID != ship.Ship.ID || !worthwhileVoyageCover(hull, route, r.stateCache.Catalog.SeaZones, quote) {
-		return false, false, nil
-	}
 	port, exists := findPort(r.stateCache.Catalog, route.FromPort)
 	if !exists {
 		return true, false, errors.New("insured departure port is absent from catalog")
@@ -172,7 +233,7 @@ func (r *Runner) prepareVoyageInsurance(ctx context.Context, ship ShipState, hul
 		return true, false, err
 	}
 	r.voyagePremiumReserves(&input, mission, data, ship)
-	if quote.InsuredValuePence <= sourcingFreeCash(input) ||
+	if quote.ShipID != ship.Ship.ID || !worthwhileVoyageCover(hull, route, r.stateCache.Catalog.SeaZones, quote, sourcingFreeCash(input)) ||
 		input.Balances[port.BankingRegion]-input.ReserveByRegion[port.BankingRegion] < *quote.LloydsPremiumPence ||
 		data.Relocation != nil && !r.relocationBudget(data, *quote.LloydsPremiumPence) {
 		return false, false, nil
@@ -234,18 +295,15 @@ func (r *Runner) voyageInsurancePreflight(ctx context.Context, mission *store.Mi
 	if err != nil {
 		return err
 	}
-	if quote.ShipID != ship.Ship.ID || !worthwhileVoyageCover(hull, route, r.stateCache.Catalog.SeaZones, quote) ||
-		*quote.LloydsPremiumBPS != request.PremiumBPS || *quote.LloydsPremiumPence > *intent.Quote.LloydsPremiumPence {
-		return errors.New("voyage cover no longer clears its immutable price and twice-expected-loss limit")
-	}
 	input, err := r.committedPlanningInputExcept(ctx, ship, mission.ShipID)
 	if err != nil {
 		return err
 	}
 	port, _ := findPort(r.stateCache.Catalog, ship.Ship.CurrentPortID)
 	r.voyagePremiumReserves(&input, mission, data, ship)
-	if quote.InsuredValuePence <= sourcingFreeCash(input) {
-		return errors.New("voyage value can be self-insured from free liquid cash")
+	if quote.ShipID != ship.Ship.ID || !worthwhileVoyageCover(hull, route, r.stateCache.Catalog.SeaZones, quote, sourcingFreeCash(input)) ||
+		*quote.LloydsPremiumBPS != request.PremiumBPS || *quote.LloydsPremiumPence > *intent.Quote.LloydsPremiumPence {
+		return errors.New("voyage cover no longer clears its immutable price, free-cash and twice-expected-loss limits")
 	}
 	if input.Balances[port.BankingRegion]-input.ReserveByRegion[port.BankingRegion] < *quote.LloydsPremiumPence {
 		return errors.New("voyage premium would spend protected operating cash")

@@ -180,7 +180,30 @@ func loanDailyInterest(loan gameapi.Loan) float64 {
 	return float64(loan.OutstandingPrincipalPence) * float64(loan.DailyRateBPS) / 10_000
 }
 
+func loanAnnualRate(loan gameapi.Loan) (int64, bool) {
+	var rate int64
+	switch loan.RateBasis {
+	case "annual":
+		if loan.AnnualRateBPS == nil {
+			return 0, false
+		}
+		rate = int64(*loan.AnnualRateBPS)
+	case "daily":
+		rate = int64(loan.DailyRateBPS) * 360
+	default:
+		return 0, false
+	}
+	return rate, rate >= 0 && rate <= 1_000_000
+}
+
 func loanFullPayment(loan gameapi.Loan) int64 {
+	if loan.OwedPence == 0 && loan.OutstandingPrincipalPence == 0 {
+		return 0
+	}
+	if _, valid := loanAnnualRate(loan); !valid || loan.OwedPence < 0 || loan.OwedPence > maximumPence ||
+		loan.OutstandingPrincipalPence < 0 || loan.OutstandingPrincipalPence > maximumPence {
+		return math.MaxInt64
+	}
 	return growthCashTotal(loan.OwedPence, int64(math.Ceil(loanDailyInterest(loan))))
 }
 
@@ -685,25 +708,52 @@ func (r *Runner) prepayLoans(ctx context.Context) (bool, error) {
 	if mission, err := r.db.GetMission(ctx, r.account.ID, "__loans"); err != nil || mission != nil {
 		return false, err
 	}
-	for _, loan := range r.stateCache.Loans {
-		if loan.IsMortgage || loan.Status != "active" || loan.BorrowerCompanyID != r.account.CompanyID || loan.OwedPence <= 0 {
+	type ratedLoan struct {
+		loan *gameapi.Loan
+		rate int64
+	}
+	candidates := make([]ratedLoan, 0, len(r.stateCache.Loans))
+	for i := range r.stateCache.Loans {
+		loan := &r.stateCache.Loans[i]
+		rate, valid := loanAnnualRate(*loan)
+		if !valid || loan.IsMortgage || loan.Status != "active" || loan.BorrowerCompanyID != r.account.CompanyID ||
+			loan.OwedPence <= 0 || loan.OwedPence > maximumPence {
 			continue
 		}
+		candidates = append(candidates, ratedLoan{loan: loan, rate: rate})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].rate > candidates[j].rate
+	})
+	for _, candidate := range candidates {
+		loan := *candidate.loan
 		input, ready, err := r.loanPrepaymentInput(ctx, loan)
-		if err != nil || !ready {
+		if err != nil {
 			return false, err
 		}
-		if input.Balances[loan.BankingRegion]-input.ReserveByRegion[loan.BankingRegion] < loanFullPayment(loan) {
+		if !ready {
 			continue
+		}
+		var amount int64
+		if input.Balances[loan.BankingRegion]-input.ReserveByRegion[loan.BankingRegion] < loanFullPayment(loan) {
+			amount = min(loanPrepaymentSurplus(input, loan), loan.OwedPence, maximumPence) / 100 * 100
+			if amount < 100_000 {
+				continue
+			}
 		}
 		mission := &store.Mission{AccountID: r.account.ID, ShipID: "__loans", Phase: "loan_prepay", Generation: uuid.NewString()}
 		data := missionData{Plan: Plan{Kind: "treasury"}, CostsKnown: true}
-		if _, err := r.stageLoanRepayment(ctx, mission, &data, loan, 0); err != nil {
+		if _, err := r.stageLoanRepayment(ctx, mission, &data, loan, amount); err != nil {
 			return false, err
 		}
 		return r.dispatch(ctx, mission, &data)
 	}
 	return false, nil
+}
+
+func loanPrepaymentSurplus(input PlanningInput, loan gameapi.Loan) int64 {
+	free := max(0, input.Balances[loan.BankingRegion]-input.ReserveByRegion[loan.BankingRegion])
+	return max(0, free-loanReserve(loan))
 }
 
 func (r *Runner) loanPrepaymentInput(ctx context.Context, loan gameapi.Loan) (PlanningInput, bool, error) {
@@ -1036,14 +1086,20 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 		return errors.New("mortgage cannot be repaid as capacity financing")
 	}
 	if mission.ShipID == "__loans" && mission.Phase == "loan_prepay" {
-		if loan.IsMortgage || loan.Status != "active" || intent.AmountPence != 0 {
-			return errors.New("surplus prepayment requires the full active non-mortgage balance")
+		_, validRate := loanAnnualRate(loan)
+		if !validRate || loan.IsMortgage || loan.Status != "active" || loan.OwedPence > maximumPence ||
+			intent.AmountPence < 0 || intent.AmountPence > loan.OwedPence || intent.AmountPence > maximumPence {
+			return errors.New("surplus prepayment requires bounded active non-mortgage debt and supported interest terms")
 		}
 		input, ready, err := r.loanPrepaymentInput(ctx, loan)
 		if err != nil {
 			return err
 		}
-		if !ready || input.Balances[loan.BankingRegion]-input.ReserveByRegion[loan.BankingRegion] < loanFullPayment(loan) {
+		covered := loanPrepaymentSurplus(input, loan) >= intent.AmountPence
+		if intent.AmountPence == 0 {
+			covered = input.Balances[loan.BankingRegion]-input.ReserveByRegion[loan.BankingRegion] >= loanFullPayment(loan)
+		}
+		if !ready || !covered {
 			return errors.New("surplus prepayment must preserve growth commitments, reserves and a cash lot for every ship plus one")
 		}
 		return nil
@@ -1123,6 +1179,21 @@ func loanRepaymentObserved(loan gameapi.Loan, intent *loanRepaymentIntent) bool 
 	return intent.AmountPence > 0 && paid >= intent.AmountPence
 }
 
+func loanRepaymentReconciled(mission *store.Mission, loan gameapi.Loan, intent *loanRepaymentIntent) bool {
+	if !loanRepaymentObserved(loan, intent) {
+		return false
+	}
+	if loan.OwedPence == 0 && (loan.Status == "repaid" || loan.Status == "recovered") {
+		return true
+	}
+	// Scheduled installments share the counters, so an open loan cannot
+	// prove a discretionary prepayment without the original request's receipt.
+	if mission.Phase == "loan_prepay" {
+		return false
+	}
+	return mission.ShipID != "__loans" || mission.Phase != "loan_repay" || loan.ArrearsPence == 0
+}
+
 func (r *Runner) reconcileLoanAction(ctx context.Context, mission *store.Mission, data *missionData, action *store.Action) (bool, error) {
 	if !r.loanAuthority() {
 		return false, nil
@@ -1152,7 +1223,7 @@ func (r *Runner) reconcileLoanAction(ctx context.Context, mission *store.Mission
 			found = &copy
 		}
 	} else if intent := data.LoanRepayment; intent != nil {
-		if loan, exists := r.loanByID(intent.Before.ID); exists && loanRepaymentObserved(loan, intent) {
+		if loan, exists := r.loanByID(intent.Before.ID); exists && loanRepaymentReconciled(mission, loan, intent) {
 			found = &loan
 		}
 	}

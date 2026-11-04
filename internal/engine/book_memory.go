@@ -242,7 +242,7 @@ func retainedCommodityDriftBPS(samples []BookDriftSample, commodity string) floa
 func revenueCalibrationFor(in PlanningInput, destination, commodity, basis string, horizon float64, at time.Time) (store.RevenueCalibrationCell, int64) {
 	cell := in.RevenueCalibration.Factor(commodity, basis, horizon)
 	addon := int64(0)
-	if basis == "retained" && !strings.HasPrefix(cell.Source, "basis/retained/") {
+	if basis == "retained" && !strings.HasPrefix(cell.Source, "basis/retained") {
 		observedAt := in.QuayBookMemory[destination].observedAt(commodity)
 		if age, valid := quayBookAgeGameDays(at, observedAt, in.Clock.Calendar.TimeScale); valid {
 			group := store.CommodityGroup(commodity)
@@ -273,8 +273,7 @@ func paidDestinationRevenue(in PlanningInput, destination, commodity string, qua
 		return 0, 0, source, "current server clock authority is unavailable"
 	}
 	horizon := max(0, arrival.Sub(upper).Seconds()*float64(in.Clock.Calendar.TimeScale)/86_400)
-	at := retainedValuationTime(in, destination, commodity, upper, arrival)
-	cell, _ := revenueCalibrationFor(in, destination, commodity, "retained", horizon, at)
+	cell, _ := revenueCalibrationFor(in, destination, commodity, "retained", horizon, arrival)
 	revenue -= ceilBPS(revenue, 10_000-cell.MedianBPS)
 	limit -= ceilBPS(limit, 10_000-cell.AdverseBPS)
 	return revenue, limit, source, ""
@@ -305,16 +304,6 @@ func fresherQuayBestBid(in PlanningInput, destination, commodity string, remembe
 	return best
 }
 
-func retainedValuationTime(in PlanningInput, destination, commodity string, now, arrival time.Time) time.Time {
-	observedAt := in.QuayBookMemory[destination].observedAt(commodity)
-	for _, shock := range in.MarketShocks[destination][commodity] {
-		if !shock.Structural && observedAt.Before(shock.StartsAt) && arrival.After(shock.ExpiresAt) {
-			return maxTime(now, arrival)
-		}
-	}
-	return now
-}
-
 func retainedDestinationRevenue(in PlanningInput, destination, commodity string, quantity, bidCap int64, arrival time.Time) (int64, int64, int64, string, string, bool) {
 	book, exists := in.QuayBookMemory[destination]
 	observedAt := book.observedAt(commodity)
@@ -324,7 +313,7 @@ func retainedDestinationRevenue(in PlanningInput, destination, commodity string,
 	if reason != "" {
 		return 0, 0, 0, "", reason, false
 	}
-	age, _ := quayBookAgeGameDays(retainedValuationTime(in, destination, commodity, currentUpper, arrival), observedAt, in.Clock.Calendar.TimeScale)
+	age, _ := quayBookAgeGameDays(arrival, observedAt, in.Clock.Calendar.TimeScale)
 	if !exists || !clockOK || !currentAgeOK || currentAge > retainedBookMaxGameDays {
 		return 0, 0, 0, "", "retained destination bids are absent or too old", false
 	}

@@ -477,7 +477,10 @@ func TestHazardRefreshLadenQuoteIllegalPairAndRateLimit(t *testing.T) {
 					if len(values) > 1 {
 						bps = 490
 					}
-					_ = json.NewEncoder(w).Encode(map[string]any{"lloyds_expected_loss_bps": bps, "max_insurable_pence": 2_000_000})
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"lloyds_expected_loss_bps": bps, "max_insurable_pence": 2_000_000,
+						"lloyds_premium_bps": 2 * bps, "hull_value_pence": 1_900_000, "lloyds_writes": true,
+					})
 				}
 			}))
 			defer server.Close()
@@ -495,6 +498,11 @@ func TestHazardRefreshLadenQuoteIllegalPairAndRateLimit(t *testing.T) {
 				laden := quotes[hazardLadenKey("origin", "destination", "hoy", 4, 3)]
 				if len(values) != 2 || values[0] != "10000" || values[1] != "2000000" || hull.ExpectedLossBPS != 351 || laden.ExpectedLossBPS != 490 {
 					t.Fatalf("laden quote values=%v hull=%+v laden=%+v", values, hull, laden)
+				}
+				if hull.LloydsPremiumBPS == nil || *hull.LloydsPremiumBPS != 702 ||
+					laden.LloydsPremiumBPS == nil || *laden.LloydsPremiumBPS != 980 ||
+					hull.HullValuePence != 1_900_000 || laden.HullValuePence != 1_900_000 || !hull.LloydsWrites || !laden.LloydsWrites {
+					t.Fatalf("departure cover terms were discarded: hull=%+v laden=%+v", hull, laden)
 				}
 			} else {
 				if len(values) != 1 || hull.Error == "" {

@@ -139,23 +139,27 @@ func (f *moneyLoanAPI) ServeHTTP(writer http.ResponseWriter, request *http.Reque
 			if payload.AmountPence != nil {
 				amount = *payload.AmountPence
 			}
-			if loan.IsMortgage || loan.Status != "active" || amount != loan.OwedPence || amount <= 0 {
-				f.h.t.Errorf("prepayment must be the exact observed owed amount of active non-mortgage debt: request=%s loan=%+v", body, loan)
+			if loan.IsMortgage || loan.Status != "active" || amount > loan.OwedPence || amount <= 0 {
+				f.h.t.Errorf("prepayment must not exceed active non-mortgage debt: request=%s loan=%+v", body, loan)
 				writer.WriteHeader(http.StatusBadRequest)
 				return
 			}
 			f.repayments[loan.ID]++
-			if f.repayments[loan.ID] != 1 {
-				f.h.t.Error("fully paid loan was sent again")
-			}
 			f.h.api.mu.Lock()
 			f.h.api.vaultBalance["north"] -= amount
 			f.h.api.record(request, body, http.StatusOK)
 			f.h.api.mu.Unlock()
-			loan.PrincipalRepaidPence += loan.OutstandingPrincipalPence
-			loan.OwedPence, loan.OutstandingPrincipalPence, loan.AccruedInterestPence = 0, 0, 0
-			loan.Status, loan.CollateralStatus = "repaid", "released"
-			loan.NextPaymentPence = new(int64(0))
+			interest := min(amount, max(int64(0), loan.AccruedInterestPence))
+			loan.AccruedInterestPence -= interest
+			loan.InterestPaidPence += interest
+			principal := amount - interest
+			loan.PrincipalRepaidPence += principal
+			loan.OutstandingPrincipalPence -= principal
+			loan.OwedPence -= amount
+			if loan.OwedPence == 0 {
+				loan.Status, loan.CollateralStatus = "repaid", "released"
+				loan.NextPaymentPence = new(int64(0))
+			}
 			loan.UpdatedAt = time.Now().UTC()
 			f.h.api.writeJSON(writer, http.StatusOK, loan)
 			return
@@ -279,28 +283,58 @@ func TestMoneyLoanPrepayExactSurplusAndOnePennyShort(t *testing.T) {
 						h.api.setVaultBalance("north", vault.BalancePence)
 					}
 				}
-				protected += 468 - 48_206
-				moneyLoanWork(t, h, runner, 8)
-				want := 1
+				if changed, err := runner.prepayLoans(h.ctx); err != nil || !changed {
+					t.Fatalf("funded prepayment was not dispatched: changed=%t err=%v", changed, err)
+				}
+				amount := owed
 				if extra < 0 {
-					want = 0
+					amount = surplus / 100 * 100
 				}
-				if got := h.api.mutationCount("/v1/loan/repay"); got != want {
-					t.Fatalf("surplus above reserves and (fleet+1) lots must repay the exact 5,637.xx Cr balance once, or send nothing when 1p short: got %d want %d, holds=%v", got, want, runner.holding)
+				if got := h.api.mutationCount("/v1/loan/repay"); got != 1 {
+					t.Fatalf("funded surplus must make one full or partial repayment: got %d, holds=%v", got, runner.holding)
 				}
-				if want == 1 {
-					api.mu.Lock()
-					count, balance := api.repayments["money-goldsmiths-0"], api.loans[0].OwedPence
-					api.mu.Unlock()
-					if count != 1 || balance != 0 || len(h.pending()) != 0 {
-						t.Fatal("prepayment did not close exactly one journaled loan")
+				api.mu.Lock()
+				count, balance := api.repayments["money-goldsmiths-0"], api.loans[0].OwedPence
+				api.mu.Unlock()
+				if count != 1 || balance != owed-amount || len(h.pending()) != 0 {
+					t.Fatalf("prepayment did not reconcile exactly once: count=%d balance=%d want=%d pending=%v", count, balance, owed-amount, h.pending())
+				}
+				rows := h.api.mutationsFor("/v1/loan/repay")
+				var request gameapi.RepayLoanRequest
+				if err := json.Unmarshal(rows[0].Body, &request); err != nil {
+					t.Fatal(err)
+				}
+				if extra < 0 {
+					if request.AmountPence == nil || *request.AmountPence != amount {
+						t.Fatalf("one penny below full payoff must freeze the reserve-safe whole-Crown surplus %dp: %+v", amount, request)
 					}
-					h.api.mu.Lock()
-					cash := h.api.vaultBalance["north"]
-					h.api.mu.Unlock()
-					if cash != protected+extra {
-						t.Fatalf("prepay spent protected reserves or lots: cash=%d, want %d", cash, protected+extra)
-					}
+				} else if request.AmountPence != nil {
+					t.Fatalf("full payoff must omit amount_pence: %+v", request)
+				}
+				h.api.mu.Lock()
+				cash := h.api.vaultBalance["north"]
+				h.api.mu.Unlock()
+				if cash != protected+surplus-amount {
+					t.Fatalf("prepay spent protected reserves or lots: cash=%d, want %d", cash, protected+surplus-amount)
+				}
+				moneyLoanWork(t, h, runner, 8)
+				wantPayments := 1
+				if extra < 0 {
+					// Reducing principal lowers the daily-interest buffer enough for
+					// the preserved installment reserve to fund the remaining payoff.
+					wantPayments = 2
+				}
+				api.mu.Lock()
+				count, balance = api.repayments["money-goldsmiths-0"], api.loans[0].OwedPence
+				api.mu.Unlock()
+				if count != wantPayments || balance != 0 || len(h.pending()) != 0 || h.api.mutationCount("/v1/loan/repay") != wantPayments {
+					t.Fatalf("repeated work duplicated repayment or failed to close the remainder: count=%d want=%d balance=%d pending=%v", count, wantPayments, balance, h.pending())
+				}
+				h.api.mu.Lock()
+				cash = h.api.vaultBalance["north"]
+				h.api.mu.Unlock()
+				if cash != protected+surplus-owed {
+					t.Fatalf("final payoff spent protected reserves or lots: cash=%d want=%d", cash, protected+surplus-owed)
 				}
 			})
 		}

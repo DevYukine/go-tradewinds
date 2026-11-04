@@ -423,8 +423,8 @@ func (r *Runner) dispatchWithOutcomeContext(ctx, outcomeCtx context.Context, mis
 				return false, r.hold(ctx, mission.ShipID, "reconciled borrowing lacks its exact quote-specific loan receipt")
 			}
 		}
-		if action.Stage == "loan-repay" && (evidence.Kind != "authoritative_loan" || !loanRepaymentObserved(evidence.Loan, data.LoanRepayment)) {
-			return false, r.hold(ctx, mission.ShipID, "reconciled repayment lacks its named paid debt")
+		if action.Stage == "loan-repay" && (evidence.Kind != "authoritative_loan" || !loanRepaymentReconciled(mission, evidence.Loan, data.LoanRepayment)) {
+			return false, r.hold(ctx, mission.ShipID, "reconciled repayment lacks its named closed debt, observed arrears cure or request-specific prepayment receipt")
 		}
 		if action.Stage == "rename" && data.Rename != nil && evidence.Kind == "authoritative_ship_rename_moot" &&
 			evidence.ShipID == data.Rename.ShipID &&
@@ -1602,7 +1602,8 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 				customs := ceilBPS(cost, r.stateCache.Markets[request.PortID].CustomsBPS) + request.Quantity
 				var futureBills int64
 				if action.Stage == "buy" {
-					futureBills = data.Plan.Economics.BerthDuesPence + data.Plan.Economics.UpkeepPence + data.Plan.Economics.CollateralPence + data.Plan.Economics.TollPence
+					futureBills = growthCashTotal(data.Plan.Economics.BerthDuesPence, data.Plan.Economics.UpkeepPence,
+						data.Plan.Economics.CollateralPence, data.Plan.Economics.TollPence, data.Plan.Economics.VoyagePremiumPence)
 				}
 				if action.Stage == "provision" && data.Relocation != nil {
 					if err := r.relocationProvisionReady(ctx, ship, data, request.Quantity, request.Price); err != nil {
@@ -1612,7 +1613,7 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 						return errors.New("new sourcing provisions exceed the immutable exploration expense cap")
 					}
 				}
-				if input.Balances[port.BankingRegion]-cost-customs-futureBills < input.ReserveByRegion[port.BankingRegion] {
+				if futureBills == math.MaxInt64 || input.Balances[port.BankingRegion]-cost-customs-futureBills < input.ReserveByRegion[port.BankingRegion] {
 					return errors.New("new purchase would spend protected regional bills reserves")
 				}
 			}
@@ -1621,6 +1622,7 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			contract, exists := r.contract(data.SourcingHandoff.TargetContractID)
 			probe := data.Plan
 			probe.Economics.GameDays = data.SourcingGameDays
+			input.pinnedHazard = &data.Plan.Economics
 			plan := sizeRelocationCargo(input, probe, contract, data.SourcingSpentPence)
 			if !exists || !plan.Accepted || plan.Quantity != request.Quantity || plan.BuyLimitPence != request.Price {
 				return errors.New("new sourcing purchase lost its fresh positive combined-cycle price case")

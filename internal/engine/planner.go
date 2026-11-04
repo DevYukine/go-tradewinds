@@ -160,6 +160,7 @@ type Economics struct {
 	HazardBPS                   int64    `json:"hazard_bps"`
 	HazardPence                 int64    `json:"hazard_pence"`
 	HazardSource                string   `json:"hazard_source,omitempty"`
+	VoyagePremiumPence          int64    `json:"voyage_premium_pence,omitempty"`
 	ExpectedNetPence            int64    `json:"expected_net_pence"`
 	StressHaircutBPS            int64    `json:"stress_haircut_bps"`
 	StressHaircutPence          int64    `json:"stress_haircut_pence"`
@@ -228,6 +229,7 @@ type planningHazardBound struct {
 	bps       int64
 	source    string
 	available bool
+	cover     HazardQuote
 }
 
 type PlanningInput struct {
@@ -237,6 +239,7 @@ type PlanningInput struct {
 	Catalog                Catalog
 	Fleet                  []ShipState
 	HazardQuotes           map[string]HazardQuote
+	growthHullValuePence   int64
 	Clock                  Clock
 	Zones                  []ZoneObservation
 	MarqueZones            map[string]bool
@@ -254,7 +257,6 @@ type PlanningInput struct {
 	RelocationTargets      map[string]string
 	// Nil retains the live 200-bps per-probe cash cap.
 	SourcingCashBPS           *int64
-	NextRungReceiptStress     bool
 	SourcingProbeLanes        map[string]bool
 	SourcingLoadingBlocked    bool
 	SourcingIdleEligible      bool
@@ -564,6 +566,34 @@ func sizePlan(in PlanningInput, hull Hull, origin Port, plan Plan, maximum, rewa
 			unitContribution := float64(plan.Economics.RevenuePence) - float64(freightReward) -
 				float64(plan.Economics.PurchasePence) - float64(plan.Economics.CustomsPence) - float64(plan.Economics.HazardPence-fixedHazard)
 			projectedNet := float64(plan.Economics.ExpectedNetPence) + unitContribution*float64(maximum-1)
+			if in.pinnedHazard == nil && hull.HullCategory == "oceanic" {
+				route := in.Routes[routeKey(plan.Origin, plan.Destination, hull.ID)]
+				if oceanicVoyage(route, in.Catalog.SeaZones) {
+					bound, cached := in.hazardBounds[plan.Destination]
+					if !cached {
+						bound = resolvePlanningHazard(in, route)
+						bound.cover = planningVoyageCover(in, hull, route, bound)
+					}
+					cargo := checkedPenceProduct(maximum, growthCashTotal(plan.Economics.PurchasePence, plan.Economics.CustomsPence))
+					premium, valid := plannedVoyagePremium(in, hull, route, bound.cover, cargo,
+						voyagePlanningFreeCash(in, cargo, plan.Economics.StoreCashPence))
+					if !valid {
+						return plan
+					}
+					if premium > 0 || plan.Economics.VoyagePremiumPence > 0 {
+						projectedHazard := int64(0)
+						if premium == 0 {
+							projectedHazard, _ = hazardCharge(cargo, bound.bps)
+						}
+						// Re-price the projected cargo and any cover switch-on;
+						// the hull premium is a single fixed passage charge.
+						projectedNet = float64(plan.Economics.ExpectedNetPence) +
+							(unitContribution+float64(plan.Economics.HazardPence-fixedHazard))*float64(maximum-1) +
+							float64(plan.Economics.HazardPence-fixedHazard+plan.Economics.VoyagePremiumPence) -
+							float64(projectedHazard+premium)
+					}
+				}
+			}
 			projectedStress := float64(plan.Economics.PriceUncertaintyStressPence) * float64(maximum)
 			if projectedNet-projectedStress > 0 {
 				plan.onwardPriority = projectedNet / plan.Economics.GameDays
@@ -705,7 +735,7 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 	}
 	valuationAt := upper.Add(in.onwardDelay)
 	if revenueBasis == "retained" {
-		valuationAt = retainedValuationTime(in, plan.Destination, plan.Commodity, valuationAt, arrival)
+		valuationAt = arrival
 	}
 	revenueHorizon := gameDays + in.onwardDelay.Seconds()*float64(in.Clock.Calendar.TimeScale)/86_400
 	calibration, ageAddon := revenueCalibrationFor(in, plan.Destination, plan.Commodity, revenueBasis, revenueHorizon, valuationAt)
@@ -713,10 +743,10 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 	calibrationBPS := calibration.MedianBPS
 	calibratedCargoRevenue := cargoRevenue - ceilBPS(cargoRevenue, 10_000-calibrationBPS)
 	adverseCargoRevenue := cargoRevenue - ceilBPS(cargoRevenue, 10_000-calibration.AdverseBPS)
-	// Gossip bids can vanish before arrival. Keep their executable fallback
-	// floor as well as measured receipt uncertainty.
+	// Keep executable gossip and fresh-depth fallback floors as well as
+	// measured receipt uncertainty.
 	priceStress = max(0, calibratedCargoRevenue-adverseCargoRevenue)
-	if revenueBasis == "gossip" || in.NextRungReceiptStress && revenueBasis == "depth" {
+	if revenueBasis == "gossip" || revenueBasis == "depth" {
 		priceStress = max(priceStress, ceilBPS(quoteStress, calibrationBPS))
 	}
 	revenue = revenue - cargoRevenue + calibratedCargoRevenue
@@ -749,17 +779,23 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 		}
 	}
 	stressHaircut := ceilBPS(revenue, stressBPS)
+	storeCash := int64(0)
+	if plan.StoresToBuy > 0 {
+		storeCash = growthCargoCash(Plan{Quantity: plan.StoresToBuy, BuyLimitPence: plan.StoresLimitPence}, originBook.CustomsBPS)
+	}
 	expectedNet := revenue - purchase - customs - provisionExpense - berthCost
-	var hazardBPS, hazardPence int64
+	var hazardBPS, hazardPence, voyagePremium int64
 	var hazardSource string
 	if in.pinnedHazard != nil {
 		hazardBPS = in.pinnedHazard.HazardBPS
 		hazardPence = in.pinnedHazard.HazardPence
 		hazardSource = in.pinnedHazard.HazardSource
+		voyagePremium = in.pinnedHazard.VoyagePremiumPence
 	} else {
 		bound, cached := in.hazardBounds[plan.Destination]
 		if !cached {
-			bound.bps, bound.source, bound.available = planHazard(in, outward)
+			bound = resolvePlanningHazard(in, outward)
+			bound.cover = planningVoyageCover(in, hull, outward, bound)
 			if in.hazardBounds != nil {
 				in.hazardBounds[plan.Destination] = bound
 			}
@@ -774,8 +810,20 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 		if risk == math.MaxInt64 || !validCharge {
 			return reject(plan, "Lloyd's hazard charge exceeds checked integer-pence bounds")
 		}
+		cargo := growthCashTotal(purchase, customs)
+		freeAfterLot := voyagePlanningFreeCash(in, cargo, storeCash)
+		var validPremium bool
+		voyagePremium, validPremium = plannedVoyagePremium(in, hull, outward, bound.cover, cargo, freeAfterLot)
+		if !validPremium {
+			return reject(plan, "Lloyd's voyage premium has no checked hull value or exceeds integer-pence bounds")
+		}
+		if voyagePremium > 0 {
+			// Hull and declared cargo are covered; freight collateral remains
+			// a separate liability rather than a second cargo-loss charge.
+			hazardPence, _ = hazardCharge(plan.Economics.CollateralPence, hazardBPS)
+		}
 	}
-	expectedNet -= hazardPence
+	expectedNet -= hazardPence + voyagePremium
 	collateral := plan.Economics.CollateralPence
 	var revenueObservedAt time.Time
 	switch revenueBasis {
@@ -803,11 +851,13 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 		PurchasePence:               purchase,
 		CustomsPence:                customs,
 		ProvisionsPence:             provisionExpense,
+		StoreCashPence:              storeCash,
 		BerthDuesPence:              berthCost,
 		CollateralPence:             collateral,
 		HazardBPS:                   hazardBPS,
 		HazardPence:                 hazardPence,
 		HazardSource:                hazardSource,
+		VoyagePremiumPence:          voyagePremium,
 		ExpectedNetPence:            expectedNet,
 		StressHaircutBPS:            stressBPS,
 		StressHaircutPence:          stressHaircut,
@@ -817,12 +867,6 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 		NetPencePerGameDay:          float64(expectedNet) / gameDays,
 	}
 	plan.Economics.BallastRepeatGameDays, plan.Economics.BallastRepeatNetPence = ballastRepeatEconomics(in, hull, origin, plan, portDays)
-	plan.Economics.StoreCashPence = growthCargoCash(Plan{
-		Quantity: plan.StoresToBuy, BuyLimitPence: plan.StoresLimitPence,
-	}, originBook.CustomsBPS)
-	if plan.StoresToBuy == 0 {
-		plan.Economics.StoreCashPence = 0
-	}
 	if plan.PriceSource == playerBidGossipSource && expectedNet-priceStress <= 0 && plan.Quantity == 1 {
 		playerRevenue, _, _, _, _, _ := destinationRevenue(in, plan.Destination, plan.Commodity, 1, arrival)
 		in.ignorePlayerBids = true
@@ -982,8 +1026,17 @@ func ballastRepeatEconomics(in PlanningInput, hull Hull, origin Port, plan Plan,
 	if !ok {
 		return 0, 0
 	}
+	returnInput := in
+	returnInput.Ship.Ship.CurrentPortID = plan.Destination
+	returnCash := growthCashTotal(sourcingFreeCash(in), plan.Economics.RevenuePence)
+	returnSpent := growthCashTotal(in.growthHullValuePence, plan.Economics.PurchasePence, plan.Economics.CustomsPence,
+		plan.Economics.StoreCashPence, plan.Economics.BerthDuesPence, plan.Economics.VoyagePremiumPence)
+	returnPremium, valid := ballastVoyagePremium(returnInput, hull, back, max(0, returnCash-returnSpent))
+	if returnCash == math.MaxInt64 || returnSpent == math.MaxInt64 || !valid {
+		return 0, 0
+	}
 	repeatProvisions := plan.Economics.ProvisionsPence + returnProvisions
-	repeatNet := plan.Economics.ExpectedNetPence - returnProvisions - returnBerth
+	repeatNet := plan.Economics.ExpectedNetPence - returnProvisions - returnBerth - returnPremium
 	destination, exists := findPort(in.Catalog, plan.Destination)
 	if !exists || origin.BankingRegion == "" || destination.BankingRegion == "" {
 		return 0, 0
@@ -1006,9 +1059,9 @@ func ballastRepeatEconomics(in PlanningInput, hull Hull, origin Port, plan Plan,
 		originDues := plan.Economics.BerthDuesPence - destinationBerth + returnBerth
 		// Restore only recurring origin cash. Initial safety-stock inventory
 		// remains funded once; its consumed replacement is the repeat expense.
-		replacementCash := plan.Economics.PurchasePence + plan.Economics.CustomsPence + repeatProvisions + originDues
+		replacementCash := plan.Economics.PurchasePence + plan.Economics.CustomsPence + repeatProvisions + originDues + plan.Economics.VoyagePremiumPence
 		gross, err := GrossRemittance(replacementCash, feeBPS)
-		if err != nil || plan.Economics.RevenuePence-destinationBerth < gross {
+		if err != nil || plan.Economics.RevenuePence-destinationBerth-returnPremium < gross {
 			return 0, 0
 		}
 		repeatNet -= gross - replacementCash
@@ -1060,16 +1113,14 @@ func destinationRevenue(in PlanningInput, destination, commodity string, quantit
 				return 0, 0, 0, "", "fresh destination quay bids cannot fill the whole lot", false
 			}
 			stress := int64(0)
-			if in.NextRungReceiptStress {
-				var nextBid int64
-				for _, level := range levels {
-					if level.IsNPC && level.RemainingQuantity > 0 && level.PricePence < fill.LimitPence {
-						nextBid = max(nextBid, level.PricePence)
-					}
+			var nextBid int64
+			for _, level := range levels {
+				if level.IsNPC && level.RemainingQuantity > 0 && level.PricePence < fill.LimitPence {
+					nextBid = max(nextBid, level.PricePence)
 				}
-				if nextBid > 0 {
-					stress = max(0, fill.GrossPence-quantity*nextBid)
-				}
+			}
+			if nextBid > 0 {
+				stress = max(0, fill.GrossPence-quantity*nextBid)
 			}
 			return fill.GrossPence, fill.LimitPence, eventPriceStress(fill.GrossPence, stress, required), "observed destination full depth", "", required
 		}

@@ -12,9 +12,11 @@ import (
 
 func TestRealizedRelocationConcurrentTargetsAndShipOwnership(t *testing.T) {
 	h, runner := realizedRelocationRunner(t)
-	putProbeHistorySettlement(t, h, store.Settlement{ID: "second-measured-origin", Kind: "spot", ShipID: recoveryShipLapras,
-		Origin: "flushing", Destination: "hamburg", Commodity: "copper_sheathing", QuantityTons: 30, GameSeconds: 21_600,
-		ProceedsPence: 60_000, AcquisitionPence: 10_000, CompletedAt: time.Now().UTC().Add(-time.Hour)})
+	for _, id := range []string{"second-measured-origin", "second-measured-origin-again"} {
+		putProbeHistorySettlement(t, h, store.Settlement{ID: id, Kind: "spot", ShipID: recoveryShipLapras,
+			Origin: "flushing", Destination: "hamburg", Commodity: "copper_sheathing", QuantityTons: 30, GameSeconds: 21_600,
+			ProceedsPence: 60_000, AcquisitionPence: 10_000, CompletedAt: time.Now().UTC().Add(-time.Hour)})
+	}
 	runner.refreshSourcingHistory(h.ctx, runner.planningInput(ShipState{}))
 	runner.refreshSourcingBudget(h.ctx, runner.planningInput(ShipState{}))
 	first, firstData := scoutAcceptanceAdmit(t, h, runner)

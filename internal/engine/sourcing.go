@@ -617,12 +617,19 @@ func sizeRelocationCargo(in PlanningInput, probe Plan, charter Contract, spentCo
 	}
 	best := reject(base, "no whole-ton size has positive combined cash net after relocation expense")
 	maximum := min(charter.RemainingQuantity, in.Ship.EffectiveHoldCapacityTons-in.Ship.CargoUsedTons)
-	for quantity := int64(1); quantity <= maximum; quantity++ {
+	first := int64(1)
+	if in.pinnedHazard != nil {
+		// A staged buy owns one admitted lot and its fixed passage charges.
+		// Reprice that lot, rather than spreading its premium over other sizes.
+		first = probe.Quantity
+		maximum = min(maximum, probe.Quantity)
+	}
+	for quantity := max(1, first); quantity <= maximum; quantity++ {
 		candidate := base
 		candidate.Quantity = quantity
 		candidate = evaluatePlan(in, hull, origin, candidate, quantity**charter.RewardPerTonPence, 0)
 		if !candidate.Accepted {
-			if !best.Accepted && quantity == 1 {
+			if !best.Accepted && quantity == first {
 				best.Reason = candidate.Reason
 			}
 			continue

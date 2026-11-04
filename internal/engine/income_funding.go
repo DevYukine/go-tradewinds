@@ -125,7 +125,7 @@ func cargoFundingRequired(in PlanningInput, plan Plan) map[string]int64 {
 	stores := iocCash(plan.StoresToBuy, plan.StoresLimitPence, in.Markets[plan.Origin].CustomsBPS)
 	required[origin.BankingRegion] = growthCashTotal(required[origin.BankingRegion], purchase, stores,
 		plan.Economics.BerthDuesPence, plan.Economics.UpkeepPence, plan.Economics.CollateralPence,
-		plan.Economics.TollPence, voyageFleetBills(in, plan))
+		plan.Economics.TollPence, plan.Economics.VoyagePremiumPence, voyageFleetBills(in, plan))
 	if destination.BankingRegion != origin.BankingRegion {
 		required[destination.BankingRegion] = growthCashTotal(
 			max(in.ReservePence, required[destination.BankingRegion]),
@@ -228,8 +228,8 @@ func priceIncomePlan(in PlanningInput, pinned Plan, paidFees int64) Plan {
 	if plan.Kind == "freight" && len(plan.FreightIDs) != 1 || revenue == math.MaxInt64 || extraTons == math.MaxInt64 {
 		return rejected("pinned income manifest exceeds checked terms or integer-pence bounds")
 	}
-	// Procurement is an existing commitment, not a fresh hazard-priced voyage.
-	// Keep its admission charge, including zero for plans made before HZ.
+	// Procurement retains the admitted hazard and premium, including zero for
+	// older plans, rather than flipping cover eligibility as cash moves.
 	in.pinnedHazard = &pinned.Economics
 	plan = pricePlan(in, hull, origin, plan, revenue, extraTons)
 	if plan.Accepted {

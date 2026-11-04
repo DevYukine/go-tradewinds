@@ -120,7 +120,8 @@ func TestQuayBookMemoryAgeBoundaryAndPruning(t *testing.T) {
 			book := in.QuayBookMemory["portsmouth"]
 			book.ObservedAt = book.ObservedAt.Add(-extraAge)
 			in.QuayBookMemory["portsmouth"] = book
-			_, _, _, _, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 20, time.Time{})
+			arrival := in.Now.Add(gameDuration(15, in.Clock.Calendar.TimeScale))
+			_, _, _, _, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 20, arrival)
 			if (reason == "") != (extraAge == 0) {
 				t.Fatalf("12 game day pricing boundary changed at +%s: %s", extraAge, reason)
 			}
@@ -142,9 +143,10 @@ func TestQuayBookMemoryLeavesReceiptHaircutToAdmissionModel(t *testing.T) {
 	for _, age := range []float64{0.5, 6, 12} {
 		t.Run(fmt.Sprintf("%.1f game days", age), func(t *testing.T) {
 			in := retainedBookInput(t, age, RetainedBid{PricePence: 1_000_001, RemainingQuantity: 20})
-			revenue, limit, stress, source, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 1, time.Time{})
+			arrival := in.Now.Add(gameDuration(2, in.Clock.Calendar.TimeScale))
+			revenue, limit, stress, source, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 1, arrival)
 			if reason != "" || revenue != 1_000_001 || stress != 0 || limit != 1_000_001 ||
-				source != fmt.Sprintf("our quay book %.1f game days old", age) {
+				source != fmt.Sprintf("our quay book %.1f game days old", age+2) {
 				t.Fatalf("retained quote applied an extra age floor or capped stress: %dp, %dp, %dp, %q, %q", revenue, limit, stress, source, reason)
 			}
 		})
@@ -230,8 +232,8 @@ func TestQuayBookMemoryStressGateAtZeroAndOnePenny(t *testing.T) {
 		accepted bool
 		net      int64
 	}{
-		{dues: 667, net: 180},
-		{dues: 666, accepted: true, net: 181},
+		{dues: 659, net: 180},
+		{dues: 658, accepted: true, net: 181},
 	} {
 		t.Run(fmt.Sprintf("%dp harbour expense", tc.dues), func(t *testing.T) {
 			in := retainedBookInput(t, 6, RetainedBid{PricePence: 2_000, RemainingQuantity: 20})

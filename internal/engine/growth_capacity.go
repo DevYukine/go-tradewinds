@@ -863,6 +863,7 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 	// Charge the candidate's nonlinear marginal upkeep separately from its
 	// voyage rate rather than assigning the incumbent fleet's upkeep to it.
 	planning.FleetDailyUpkeepPence = 0
+	planning.growthHullValuePence = *quote.TotalCostPence
 	plans := PlanVoyages(planning)
 	input.Hull = hull
 	input.HullPricePence = *quote.TotalCostPence
@@ -879,7 +880,8 @@ func (r *Runner) capacityAtYard(ctx context.Context, port Port, hull Hull, quote
 		// A finite charter can be the first load, but never a perpetual rate;
 		// its cash lot costs the candidate alone while every incumbent hull
 		// keeps the existing fleet's median delivery lot.
-		input.CandidateLotCashPence = max(input.CandidateLotCashPence, growthCashTotal(plan.Economics.PurchasePence, plan.Economics.CustomsPence, plan.Economics.StoreCashPence))
+		input.CandidateLotCashPence = max(input.CandidateLotCashPence, growthCashTotal(plan.Economics.PurchasePence,
+			plan.Economics.CustomsPence, plan.Economics.StoreCashPence, plan.Economics.VoyagePremiumPence))
 		if plan.ContractID != "" || basis != "depth" && basis != "gossip" && basis != "retained" {
 			continue
 		}

@@ -29,21 +29,18 @@ func offlineIncidentInput(t *testing.T, ask int64) (PlanningInput, Plan) {
 	return in, Plan{Kind: "spot", ShipID: in.Ship.Ship.ID, Origin: "le_havre", Destination: "portsmouth", Commodity: "coarse_cloth", Quantity: 30}
 }
 
-func TestOfflineIncidentLadderFlagAndFundingBoundary(t *testing.T) {
+func TestOfflineIncidentLadderAndFundingBoundary(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		ask      int64
-		flag     bool
 		accepted bool
 		stress   int64
 	}{
-		{name: "live default retains fresh quay economics", ask: 40_000, accepted: true},
-		{name: "next rung rejects thin margin", ask: 40_000, flag: true, stress: 323_490},
-		{name: "next rung admits sufficient margin", ask: 20_000, flag: true, accepted: true, stress: 323_490},
+		{name: "live default rejects thin margin", ask: 40_000, stress: 323_490},
+		{name: "next rung admits sufficient margin", ask: 20_000, accepted: true, stress: 323_490},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in, candidate := offlineIncidentInput(t, tc.ask)
-			in.NextRungReceiptStress = tc.flag
 			plan := pricePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 0, 0)
 			if plan.Accepted != tc.accepted || plan.Economics.PriceUncertaintyStressPence != tc.stress {
 				t.Fatalf("incident lot: accepted=%v stress=%d, want %v/%d: %+v", plan.Accepted, plan.Economics.PriceUncertaintyStressPence, tc.accepted, tc.stress, plan)
@@ -51,7 +48,7 @@ func TestOfflineIncidentLadderFlagAndFundingBoundary(t *testing.T) {
 			if plan.SellLimitPence != 44_726 {
 				t.Fatalf("risk diagnostic replaced executable sell limit: %d", plan.SellLimitPence)
 			}
-			if tc.flag && tc.accepted {
+			if tc.accepted {
 				fee := plan.Economics.ExpectedNetPence - tc.stress
 				if fee <= 0 || !addFundingFees(plan, fee-1).Accepted || addFundingFees(plan, fee).Accepted {
 					t.Fatalf("funding fees did not recheck strict positive next-rung contribution: %+v", plan)
@@ -63,13 +60,11 @@ func TestOfflineIncidentLadderFlagAndFundingBoundary(t *testing.T) {
 
 func TestOfflineIncidentSizeSelectsBestAcceptedWholeTon(t *testing.T) {
 	in, candidate := offlineIncidentInput(t, 20_000)
-	in.NextRungReceiptStress = true
 	best := sizePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 30, 0, 0, 0)
 	if !best.Accepted || best.Quantity != 30 || best.SellLimitPence != 44_726 || best.Economics.PriceUncertaintyStressPence != 323_490 {
 		t.Fatalf("profitable incident ladder lot was undersized or repriced: %+v", best)
 	}
 	in, candidate = offlineIncidentInput(t, 40_000)
-	in.NextRungReceiptStress = true
 	if got := sizePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 30, 0, 0, 0); got.Accepted {
 		t.Fatalf("sizing escaped the receipt stress floor: %+v", got)
 	}
@@ -78,38 +73,33 @@ func TestOfflineIncidentSizeSelectsBestAcceptedWholeTon(t *testing.T) {
 func TestOfflineReceiptStressLeavesContractAndGossipEconomicsUnchanged(t *testing.T) {
 	for _, kind := range []string{"charter", "freight"} {
 		t.Run(kind, func(t *testing.T) {
-			in := incomeFundingInput(t, kind)
-			before := PlanVoyages(in)
-			in.NextRungReceiptStress = true
-			if after := PlanVoyages(in); !reflect.DeepEqual(before, after) {
-				t.Fatalf("receipt stress changed %s economics: before=%+v after=%+v", kind, before, after)
+			plan := incomeFundingBest(t, incomeFundingInput(t, kind))
+			if plan.Kind != kind || plan.Economics.RevenueBasis != "contract" || plan.Economics.PriceUncertaintyStressPence != 0 {
+				t.Fatalf("next-rung stress changed fixed %s receipts: %+v", kind, plan)
 			}
 		})
 	}
-	in, _ := offlineIncidentInput(t, 20_000)
+	in, candidate := offlineIncidentInput(t, 20_000)
 	delete(in.Markets, "portsmouth")
 	bid := int64(44_726)
 	detail := in.Ports["le_havre"]
 	detail.CoffeeHouseGossip = []Gossip{{SubjectPortID: "portsmouth", SnapshotAt: in.Now, Commodities: []GossipCommodity{{CommodityID: "coarse_cloth", SnapshotAt: in.Now, BestBidPence: &bid}}}}
 	in.Ports["le_havre"] = detail
-	before := PlanVoyages(in)
-	in.NextRungReceiptStress = true
-	if after := PlanVoyages(in); !reflect.DeepEqual(before, after) {
-		t.Fatalf("one-ton gossip economics changed: before=%+v after=%+v", before, after)
+	candidate.Quantity = 1
+	probe := evaluatePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 0, 0)
+	if !probe.Accepted || probe.PriceSource != "recent observed gossip; one-ton probe; unverified bid size" ||
+		probe.Economics.RevenuePence != 44_726 || probe.Economics.PriceUncertaintyStressPence != 11_182 {
+		t.Fatalf("one-ton gossip lost its existing receipt stress: %+v", probe)
 	}
-	in.NextRungReceiptStress = false
 	playerBid, playerQuantity := int64(40_000), int64(30)
 	detail.CoffeeHouseGossip[0].Commodities[0].BestPlayerBidPence = &playerBid
 	detail.CoffeeHouseGossip[0].Commodities[0].BestPlayerBidQuantity = &playerQuantity
 	in.Ports["le_havre"] = detail
-	candidate := Plan{Kind: "spot", ShipID: in.Ship.Ship.ID, Origin: "le_havre", Destination: "portsmouth", Commodity: "coarse_cloth", Quantity: 20}
+	candidate.Quantity = 20
 	quoted := evaluatePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 0, 0)
-	if !quoted.Accepted || quoted.PriceSource != playerBidGossipSource {
-		t.Fatalf("player gossip fixture has no executable player-bid opportunity: %+v", quoted)
-	}
-	in.NextRungReceiptStress = true
-	if after := evaluatePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 0, 0); !reflect.DeepEqual(quoted, after) {
-		t.Fatalf("fresh-quay flag altered existing player-bid stress economics: before=%+v after=%+v", quoted, after)
+	if !quoted.Accepted || quoted.PriceSource != playerBidGossipSource || quoted.Economics.RevenuePence != 800_000 ||
+		quoted.Economics.PriceUncertaintyStressPence != 129_120 {
+		t.Fatalf("player gossip lost its existing NPC fallback stress: %+v", quoted)
 	}
 }
 
@@ -178,8 +168,8 @@ func TestOfflinePlanningInputForMatchesRunner(t *testing.T) {
 	if !reflect.DeepEqual(live, offline) {
 		t.Fatalf("offline input lost Runner policy sources:\nlive=%+v\noffline=%+v", live, offline)
 	}
-	if live.NextRungReceiptStress || live.SourcingCashBPS != nil {
-		t.Fatal("offline experiment knobs changed live defaults")
+	if live.SourcingCashBPS != nil {
+		t.Fatal("offline sourcing experiment knob changed the live default")
 	}
 }
 
@@ -386,9 +376,9 @@ func TestOfflineSourcingLedgerUsesLiveRollingConversions(t *testing.T) {
 		{ID: "expired-profit", Kind: "charter", Origin: "amsterdam", QuantityTons: 1,
 			StartedAt: in.Now.Add(-49 * time.Hour), CompletedAt: in.Now.Add(-48 * time.Hour),
 			ProceedsPence: 9_000_000, CostsKnown: true},
-		{ID: "seed-probe", Kind: "relocation", Origin: "le_havre", Destination: "amsterdam",
+		{ID: "seed-probe", Kind: "relocation", ShipID: in.Ship.Ship.ID, Origin: "le_havre", Destination: "amsterdam",
 			CompletedAt: in.Now.Add(-12 * time.Hour), CostsKnown: true, ExplorationExpensePence: new(int64(900))},
-		{ID: "conversion", Kind: "charter", Origin: "amsterdam", QuantityTons: 1,
+		{ID: "conversion", Kind: "charter", ShipID: in.Ship.Ship.ID, Origin: "amsterdam", QuantityTons: 1,
 			StartedAt: in.Now.Add(-10 * time.Hour), CompletedAt: in.Now.Add(-9 * time.Hour),
 			ProceedsPence: 60_000, AcquisitionPence: 20_000, CostsKnown: true},
 		{ID: "window-probe", Kind: "relocation", Origin: "le_havre", Destination: "portsmouth",

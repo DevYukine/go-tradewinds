@@ -101,6 +101,9 @@ func EvaluateMarque(in MarqueInput) MarqueDecision {
 		return MarqueDecision{Reason: "the new marque would exceed the zone's 5,000 bps cap"}
 	case in.Quote.ExpectedNetPrizePence*2 < in.Quote.CostPence*3:
 		return MarqueDecision{Reason: "expected prize after the Admiral's tenth is below 1.5 times cost"}
+	case in.GlobalReturns.Count > 0 && in.GlobalReturns.PrizePence < in.GlobalReturns.CostPence &&
+		in.Now.Before(in.GlobalReturns.LatestExpiry.Add(24*time.Hour)):
+		return MarqueDecision{Reason: "global rolling prize is below cost; remeasurement must wait 24 real hours after the latest expiry"}
 	case in.GlobalReturns.Count > 0 && in.GlobalReturns.PrizePence*100 < in.GlobalReturns.CostPence*105 &&
 		in.Quote.ExpectedNetPrizePence < in.Quote.CostPence*2:
 		return MarqueDecision{Reason: "global rolling prize is below 1.05 times cost; re-entry requires a fresh quote at least twice cost"}

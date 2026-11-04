@@ -29,9 +29,43 @@ func TestLloydsQuoteDecodesObservedMinimumPremium(t *testing.T) {
 	if err := json.Unmarshal(payload, &quote); err != nil {
 		t.Fatal(err)
 	}
-	if !quote.LloydsWrites || quote.LloydsPremiumPence == nil || *quote.LloydsPremiumPence != 100 ||
+	if !quote.LloydsWrites || !quote.LloydsWritesKnown || quote.LloydsPremiumPence == nil || *quote.LloydsPremiumPence != 100 ||
 		quote.LloydsExpectedLossPence == nil || *quote.LloydsExpectedLossPence != 4 || quote.MaxInsurablePence != 4_271_766 || len(quote.PricedConsortShipIDs) != 0 {
 		t.Fatalf("published quote or its minimum premium was lost: %+v", quote)
+	}
+}
+
+func TestLloydsQuoteDistinguishesUnknownAndDeclinedWrites(t *testing.T) {
+	for _, test := range []struct {
+		payload string
+		known   bool
+		writes  bool
+	}{
+		{`{"hull_value_pence":2000000}`, false, false},
+		{`{"lloyds_writes":null}`, false, false},
+		{`{"hull_value_pence":2000000,"lloyds_premium_bps":400}`, false, false},
+		{`{"hull_value_pence":2000000,"lloyds_premium_bps":400,"lloyds_writes":null}`, false, false},
+		{`{"lloyds_writes":false}`, true, false},
+		{`{"lloyds_writes":true}`, true, true},
+	} {
+		var quote LloydsQuoteResult
+		if err := json.Unmarshal([]byte(test.payload), &quote); err != nil {
+			t.Fatal(err)
+		}
+		if quote.LloydsWritesKnown != test.known || quote.LloydsWrites != test.writes {
+			t.Fatalf("write eligibility presence lost for %s: %+v", test.payload, quote)
+		}
+		stored, err := json.Marshal(quote)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored LloydsQuoteResult
+		if err := json.Unmarshal(stored, &restored); err != nil {
+			t.Fatal(err)
+		}
+		if restored.LloydsWritesKnown != test.known || restored.LloydsWrites != test.writes {
+			t.Fatalf("persisted eligibility changed for %s: %s restored=%+v", test.payload, stored, restored)
+		}
 	}
 }
 

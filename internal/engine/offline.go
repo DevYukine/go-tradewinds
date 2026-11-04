@@ -10,7 +10,7 @@ import (
 )
 
 // PlanningSources supplies the policy context normally owned by a Runner.
-// The experiment knobs deliberately remain zero-valued on live inputs.
+// The sourcing cash experiment knob remains zero-valued on live inputs.
 type PlanningSources struct {
 	CompanyID            string
 	Metadata             map[string]DatasetMeta

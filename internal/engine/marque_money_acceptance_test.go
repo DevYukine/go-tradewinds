@@ -305,14 +305,14 @@ func TestMarqueMoneyExpiredNeverListedIssueReconciles(t *testing.T) {
 func TestMarqueMoneyZoneBackoffProbeAndNegativeCompletionSurviveRestart(t *testing.T) {
 	h := newRecoveryHarness(t)
 	proxy := newMarqueExecutionAPI(h)
-	proxy.clockOffset, proxy.timeScale = 48*time.Hour, 60
+	proxy.clockOffset, proxy.timeScale = 48*time.Hour, 10
 	proxy.quote.ExpectedNetPrizePence = 20_000
 	now := time.Now().UTC().Add(proxy.clockOffset)
 	for range 3 {
 		id := uuid.NewString()
 		proxy.issued[id] = letterOfMarque{ID: id, SeaZoneID: marqueExecutionZone, AddedPiracyBPS: 500,
-			CostPence: 10_000, PrizeEarnedPence: 9_900, CreatedAt: now.Add(-2 * time.Hour),
-			ExpiresAt: now.Add(-time.Hour), UpdatedAt: now}
+			CostPence: 10_000, PrizeEarnedPence: 9_900, CreatedAt: now.Add(-9 * time.Hour),
+			ExpiresAt: now.Add(-8 * time.Hour), UpdatedAt: now}
 	}
 	runner := h.runner(primaryTestKey)
 	refreshMarqueExecution(t, h, runner)

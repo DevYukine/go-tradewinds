@@ -133,7 +133,7 @@ func growthWorkingCapital(plan Plan) int64 {
 		purchase = worstPurchase
 	}
 	return growthCashTotal(purchase, customs, plan.Economics.CollateralPence,
-		plan.Economics.BerthDuesPence, stores, plan.Economics.TollPence)
+		plan.Economics.BerthDuesPence, stores, plan.Economics.TollPence, plan.Economics.VoyagePremiumPence)
 }
 
 func growthCashTotal(costs ...int64) int64 {
@@ -786,6 +786,9 @@ func (r *Runner) growthAtYard(ctx context.Context, port Port, hull Hull, quote Y
 	input := r.planningInput(growthCandidate(port, hull))
 	input.Markets = evidence.markets
 	input.FleetDailyUpkeepPence = 0
+	if quote.TotalCostPence != nil {
+		input.growthHullValuePence = *quote.TotalCostPence
+	}
 	for _, dataset := range []string{"catalog", "clock", "zones", "vaults", "contracts", "ships", "rates"} {
 		if !input.fresh(dataset) {
 			return best, false, nil

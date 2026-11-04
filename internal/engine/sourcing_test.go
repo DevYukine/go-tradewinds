@@ -208,7 +208,7 @@ func TestSourcingRollingExpenseSurvivesRestartAndOnlyConvertedNetReplenishes(t *
 	})
 	idleFallbackSettlement(t, h, store.Settlement{
 		ID: "source-budget-loss", Kind: "spot", CostsKnown: true, ExpensesPence: 10_000, QuantityTons: 1,
-		Origin: "amsterdam", Commodity: "sawn_planks", CompletedAt: now.Add(-time.Hour),
+		Origin: "amsterdam", Commodity: "sawn_planks", CompletedAt: now.Add(-90 * time.Minute),
 	})
 	idleFallbackSettlement(t, h, store.Settlement{
 		ID: "source-budget-profit", Kind: "charter", CostsKnown: true, QuantityTons: 10, ProceedsPence: 110_000,
@@ -219,11 +219,11 @@ func TestSourcingRollingExpenseSurvivesRestartAndOnlyConvertedNetReplenishes(t *
 	if err := runner.loadSourcingHistory(h.ctx, &in); err != nil {
 		t.Fatal(err)
 	}
-	if in.SourcingAllowancePence == nil || *in.SourcingAllowancePence != 50_000 {
-		t.Fatalf("converted loss-inclusive 100000p net did not replenish exactly 50000p: %+v", in.SourcingAllowancePence)
+	if in.SourcingAllowancePence == nil || *in.SourcingAllowancePence != 0 || in.SourcingProbeHistory.ConversionNetPence != -10_000 {
+		t.Fatalf("the first converted loss was replaced or replenished by a second voyage: %+v", in.SourcingProbeHistory)
 	}
-	if len(acceptedRelocations(planSourcingRelocation(in))) == 0 {
-		t.Fatal("known converted net could not fund a different legal inspection")
+	if len(acceptedRelocations(planSourcingRelocation(in))) != 0 {
+		t.Fatal("a second commercial voyage funded a different inspection from the same probe")
 	}
 }
 

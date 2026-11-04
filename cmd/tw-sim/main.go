@@ -391,7 +391,7 @@ func writeComparison(writer io.Writer, report comparisonReport) error {
 			}
 		}
 	}
-	for _, variant := range []string{"i4", "probe0", "probe50", "probe400"} {
+	for _, variant := range []string{"probe0", "probe50", "probe400"} {
 		better := report.Validation.Trusted
 		seen := 0
 		for _, row := range report.Rows {

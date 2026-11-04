@@ -60,7 +60,7 @@ func loanJournalAmbiguousAction(t *testing.T, stage string) (*recoveryHarness, *
 			}
 		} else {
 			var body gameapi.RepayLoanRequest
-			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || request.URL.Path != "/v1/loan/repay" || body.LoanID != loan.ID || body.AmountPence == nil || *body.AmountPence != loan.OwedPence {
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || request.URL.Path != "/v1/loan/repay" || body.LoanID != loan.ID || body.AmountPence != nil {
 				t.Errorf("loan repayment sent a different debt or amount: path %s body %+v error %v", request.URL.Path, body, err)
 			}
 		}
@@ -84,7 +84,7 @@ func loanJournalAmbiguousAction(t *testing.T, stage string) (*recoveryHarness, *
 		loanJournalCapture(t, runner, []gameapi.Loan{loan})
 		mission.Phase = "growth_finance_repay"
 		data.Capacity.Financing.Loans = []gameapi.Loan{loan}
-		if changed, err := runner.stageLoanRepayment(h.ctx, mission, &data, loan, loan.OwedPence); err != nil || !changed {
+		if changed, err := runner.stageLoanRepayment(h.ctx, mission, &data, loan, 0); err != nil || !changed {
 			t.Fatalf("stage repayment: changed %t error %v", changed, err)
 		}
 	}
@@ -296,7 +296,7 @@ func TestLoanRepaymentInsufficientCountersDoNotProvePayment(t *testing.T) {
 			}
 			persisted, current := h.mission("__growth")
 			pending := h.pending()
-			if persisted.Phase != "growth_finance_repay" || current.Action == nil || current.Action.ID != action.ID || current.LoanRepayment == nil || current.LoanRepayment.Before.ID != "loan-one" || current.LoanRepayment.AmountPence != 750_000 || current.Sequence != 0 || current.LastActionID != "" {
+			if persisted.Phase != "growth_finance_repay" || current.Action == nil || current.Action.ID != action.ID || current.LoanRepayment == nil || current.LoanRepayment.Before.ID != "loan-one" || current.LoanRepayment.AmountPence != 0 || current.Sequence != 0 || current.LastActionID != "" {
 				t.Fatalf("ambiguous repayment lost its named original intent: phase %s data %+v", persisted.Phase, current)
 			}
 			if len(pending) != 1 || pending[0].ID != action.ID || !bytes.Equal(pending[0].Body, action.Body) || sends.Load() != 1 {
@@ -342,19 +342,19 @@ func TestLoanRepaymentNamedRepaidOrRecoveredDebtReconcilesWithoutResend(t *testi
 	}
 }
 
-func TestLoanRepaymentCounterDeltaAtLeastAmountReconciles(t *testing.T) {
+func TestLoanRepaymentFullCounterDeltaWithoutClosureRemainsPending(t *testing.T) {
 	h, runner, loan, sends := loanJournalAmbiguousAction(t, "loan-repay")
 	loan.PrincipalRepaidPence += loan.OwedPence
 	loan.InterestPaidPence += 10
 	loan.OutstandingPrincipalPence, loan.OwedPence = 0, 0
 	loanJournalCapture(t, runner, []gameapi.Loan{loan})
 	mission, data := h.mission("__growth")
-	if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || !changed {
-		t.Fatalf("sufficient named repayment counters did not reconcile: %t, %v", changed, err)
+	if changed, err := runner.dispatch(h.ctx, mission, &data); err != nil || changed {
+		t.Fatalf("full repayment counters without closure reconciled: %t, %v", changed, err)
 	}
 	_, data = h.mission("__growth")
-	if data.Action != nil || data.LoanRepayment != nil || data.Sequence != 1 || sends.Load() != 1 || len(h.pending()) != 0 {
-		t.Fatalf("repayment delta was resent or left unresolved: %+v", data)
+	if data.Action == nil || data.LoanRepayment == nil || data.Sequence != 0 || sends.Load() != 1 || len(h.pending()) != 1 {
+		t.Fatalf("unproven full repayment lost its pending identity or was resent: %+v", data)
 	}
 	loanJournalRequireAccounting(t, h, data)
 }

@@ -134,7 +134,7 @@ func TestPaidRetainedValuationKeepsCalibratedAgeAdjustment(t *testing.T) {
 	arrival := in.Now.Add(gameDuration(1, in.Clock.Calendar.TimeScale))
 	raw, _, _, _, reason, _ := destinationRevenue(in, "portsmouth", "provisions", 20, arrival)
 	paid, _, _, paidReason := paidDestinationRevenue(in, "portsmouth", "provisions", 20, arrival)
-	if reason != "" || paidReason != "" || raw != 20000 || paid != 18200 || paid >= 19000 {
+	if reason != "" || paidReason != "" || raw != 20000 || paid != 18000 || paid >= 19000 {
 		t.Fatalf("paid retained cargo lost its age-adjusted comparison with 19000p local liquidation: raw=%d paid=%d reason=%q/%q", raw, paid, reason, paidReason)
 	}
 }
@@ -143,7 +143,7 @@ func TestPaidRetainedValuationDoesNotLiquidateOnUnmeasuredAdmissionPrior(t *test
 	for _, tc := range []struct {
 		age  float64
 		want int64
-	}{{0, 20000}, {10, 18200}} {
+	}{{0, 20000}, {10, 18000}} {
 		in := retainedBookInput(t, tc.age, RetainedBid{PricePence: 1000, RemainingQuantity: 20})
 		in.RevenueCalibration = store.RevenueCalibrationModel{}
 		arrival := in.Now.Add(gameDuration(1, in.Clock.Calendar.TimeScale))

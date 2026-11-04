@@ -359,9 +359,10 @@ func (h *sourcingProbeHistory) rollingBudget(rows []store.Settlement, now time.T
 	h.Conversions = nil
 	h.ScoutExpensePence, h.ScoutCostsUnknown, h.ScoutConversionNetPence = 0, false, 0
 	type budgetProbe struct {
-		at     time.Time
-		shipID string
-		scout  bool
+		at              time.Time
+		shipID          string
+		scout           bool
+		firstCommercial *store.Settlement
 	}
 	probes := make(map[string][]budgetProbe)
 	for _, row := range rows {
@@ -410,30 +411,10 @@ func (h *sourcingProbeHistory) rollingBudget(rows []store.Settlement, now time.T
 			h.ProbeExpensePence += expense
 		}
 	}
-	for _, row := range rows {
-		switch row.Kind {
-		case "spot", "charter", "freight", "spot+freight", "charter+freight", "recovery":
-		default:
-			continue
-		}
-		if !row.CostsKnown || row.QuantityTons <= 0 || row.StartedAt.IsZero() || row.CompletedAt.IsZero() ||
-			row.CompletedAt.Before(row.StartedAt) || row.CompletedAt.Before(h.BudgetWindowStart) && !row.CompletedAt.After(now.Add(-24*time.Hour)) || row.CompletedAt.After(now) {
-			continue
-		}
-		var probeAt time.Time
-		var scoutProbe budgetProbe
-		for _, candidate := range probes[row.Origin] {
-			at := candidate.at
-			if !at.After(row.StartedAt) && row.StartedAt.Sub(at) <= sourcingConversionWindow && at.After(probeAt) {
-				probeAt = at
-			}
-			if candidate.shipID != "" && candidate.shipID == row.ShipID && !at.After(row.StartedAt) &&
-				row.StartedAt.Sub(at) <= sourcingConversionWindow && at.After(scoutProbe.at) {
-				scoutProbe = candidate
-			}
-		}
-		if probeAt.IsZero() {
-			continue
+	credit := func(row *store.Settlement, probe budgetProbe) error {
+		if !row.CostsKnown || row.QuantityTons <= 0 ||
+			row.CompletedAt.Before(h.BudgetWindowStart) && !row.CompletedAt.After(now.Add(-24*time.Hour)) {
+			return nil
 		}
 		net := row.ProceedsPence
 		for _, cost := range []int64{row.AcquisitionPence, row.FeesPence, row.ProvisionsPence, row.ExpensesPence} {
@@ -448,13 +429,56 @@ func (h *sourcingProbeHistory) rollingBudget(rows []store.Settlement, now time.T
 			}
 			h.ConversionNetPence += net
 			h.Conversions = append(h.Conversions, probeConversion{SettlementID: row.ID, Source: row.Origin, Commodity: row.Commodity,
-				ProbeAt: probeAt, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, NetPence: net})
+				ProbeAt: probe.at, StartedAt: row.StartedAt, CompletedAt: row.CompletedAt, NetPence: net})
 		}
-		if scoutProbe.scout && row.CompletedAt.After(now.Add(-24*time.Hour)) {
+		if probe.scout && row.CompletedAt.After(now.Add(-24*time.Hour)) {
 			if net > 0 && h.ScoutConversionNetPence > math.MaxInt64-net || net < 0 && h.ScoutConversionNetPence < math.MinInt64-net {
 				return fmt.Errorf("daily scout conversion net exceeds integer-pence bounds")
 			}
 			h.ScoutConversionNetPence += net
+		}
+		return nil
+	}
+	// Select each non-scout probe's first voyage before filtering receipts, so
+	// unknown or aged-out first settlements cannot credit a later voyage.
+	for i := range rows {
+		row := &rows[i]
+		switch row.Kind {
+		case "spot", "charter", "freight", "spot+freight", "charter+freight", "recovery":
+		default:
+			continue
+		}
+		if row.StartedAt.IsZero() || row.StartedAt.After(now) || row.CompletedAt.IsZero() ||
+			row.CompletedAt.Before(row.StartedAt) || row.CompletedAt.After(now) {
+			continue
+		}
+		var probe *budgetProbe
+		for i := range probes[row.Origin] {
+			candidate := &probes[row.Origin][i]
+			if candidate.shipID != "" && candidate.shipID == row.ShipID && !candidate.at.After(row.StartedAt) &&
+				row.StartedAt.Sub(candidate.at) <= sourcingConversionWindow && (probe == nil || candidate.at.After(probe.at)) {
+				probe = candidate
+			}
+		}
+		if probe == nil {
+			continue
+		}
+		if probe.scout {
+			if err := credit(row, *probe); err != nil {
+				return err
+			}
+		} else if probe.firstCommercial == nil || row.StartedAt.Before(probe.firstCommercial.StartedAt) ||
+			row.StartedAt.Equal(probe.firstCommercial.StartedAt) && row.ID < probe.firstCommercial.ID {
+			probe.firstCommercial = row
+		}
+	}
+	for _, candidates := range probes {
+		for _, probe := range candidates {
+			if probe.firstCommercial != nil {
+				if err := credit(probe.firstCommercial, probe); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	sort.Slice(h.Conversions, func(i, j int) bool {

@@ -114,7 +114,7 @@ func moneyRankAlternatives(t *testing.T, in PlanningInput) (Plan, Plan) {
 			dark = plan
 		}
 	}
-	if !presence.Accepted || !dark.Accepted || presence.Economics.ExpectedNetPence != 300 || dark.Economics.ExpectedNetPence != 450 ||
+	if !presence.Accepted || !dark.Accepted || presence.Economics.ExpectedNetPence != 300 || dark.Economics.ExpectedNetPence != 447 ||
 		math.Abs(presence.Economics.GameDays-1.25) > 1e-12 || math.Abs(dark.Economics.GameDays-1.5) > 1e-12 {
 		t.Fatalf("two-leg fixture lost its single-leg admissible economics: presence=%+v dark=%+v", presence, dark)
 	}
@@ -148,7 +148,7 @@ func TestMoneyRankPresenceContinuationOutranksHigherSingleLegDarkPort(t *testing
 	plans := []Plan{dark, presence}
 	rankPlans(plans, in)
 	if plans[0].Destination != "hamburg" {
-		t.Fatalf("300p/1.25gd + 500p/1.2gd must beat 450p/1.5gd then 40p/1.6gd ballast: %+v", plans)
+		t.Fatalf("300p/1.25gd + 500p/1.2gd must beat 447p/1.5gd then 40p/1.6gd ballast: %+v", plans)
 	}
 	moneyRankDetails(t, encode(plans[0]), float64(800)/2.45)
 	var darkDetails struct {
@@ -159,7 +159,7 @@ func TestMoneyRankPresenceContinuationOutranksHigherSingleLegDarkPort(t *testing
 	if err := json.Unmarshal(encode(plans[1]), &darkDetails); err != nil {
 		t.Fatal(err)
 	}
-	if darkDetails.Economics.RankScore == nil || math.Abs(*darkDetails.Economics.RankScore-float64(410)/3.1) > 1e-8 {
+	if darkDetails.Economics.RankScore == nil || math.Abs(*darkDetails.Economics.RankScore-float64(407)/3.1) > 1e-8 {
 		t.Fatalf("dark port omitted the mirrored 1.6gd, 40p ballast cost: %+v", plans[1])
 	}
 	if plans[0].Economics.ExpectedNetPence != 300 || plans[0].Economics.GameDays != presence.Economics.GameDays {

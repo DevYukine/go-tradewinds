@@ -759,15 +759,15 @@ func TestProbeHistoryVersionRebuildsRollingBudgetFromAccounting(t *testing.T) {
 		runner = h.runner(primaryTestKey)
 		probeHistoryRunner(runner, in)
 	}
-	// Accounting recorded later still credits a delivery whose probe predates
-	// its start. A cached budget and capped ledger are never the authority.
+	// Recording a second commercial voyage later cannot replenish the same
+	// probe again, even after a restart and an accounting rebuild.
 	delivery.ID = "rolling-version-late-delivery"
 	delivery.ProceedsPence = 30_000
 	putProbeHistorySettlement(t, h, delivery)
 	if err := runner.loadSourcingHistory(h.ctx, &in); err != nil {
 		t.Fatal(err)
 	}
-	if *in.SourcingAllowancePence != 75_000 {
-		t.Fatalf("late converted net was lost after restart: %dp", *in.SourcingAllowancePence)
+	if *in.SourcingAllowancePence != 70_000 {
+		t.Fatalf("a later commercial voyage replenished an already converted probe: %dp", *in.SourcingAllowancePence)
 	}
 }

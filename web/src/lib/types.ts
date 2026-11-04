@@ -589,6 +589,7 @@ export interface Economics {
   hazard_bps?: number;
   hazard_pence?: number;
   hazard_source?: string;
+  voyage_premium_pence?: number;
   expected_net_pence?: number;
   stress_haircut_bps?: number;
   stress_haircut_pence?: number;

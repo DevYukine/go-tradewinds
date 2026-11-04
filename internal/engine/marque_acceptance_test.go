@@ -116,12 +116,14 @@ func TestEvaluateMarqueRollingZoneEV(t *testing.T) {
 					LadenPassagesPerDay: 2, AddedPiracyBPS: 500},
 				Now: now, LiquidPence: 1_000_000, ZoneReturns: zones, GlobalReturns: global,
 			}
-			if got := EvaluateMarque(input); got.Accepted != tc.want {
-				t.Fatalf("zone EV admission = %+v, want %t with %+v", got, tc.want, zones["zone"])
+			globalPaused := global.Count > 0 && global.PrizePence < global.CostPence
+			want := tc.want && !globalPaused
+			if got := EvaluateMarque(input); got.Accepted != want {
+				t.Fatalf("zone EV admission = %+v, want %t with %+v", got, want, zones["zone"])
 			}
 			input.Quote.SeaZoneID = "another-zone"
-			if got := EvaluateMarque(input); !got.Accepted {
-				t.Fatalf("another zone inherited this zone's loss gate: %+v", got)
+			if got := EvaluateMarque(input); got.Accepted == globalPaused {
+				t.Fatalf("another zone admission = %+v, want global pause %t", got, globalPaused)
 			}
 		})
 	}

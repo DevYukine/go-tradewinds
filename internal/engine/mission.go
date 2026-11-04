@@ -959,8 +959,9 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 		}
 		worstPurchase := data.Plan.Quantity * data.Plan.BuyLimitPence
 		worstCustoms := ceilBPS(worstPurchase, r.stateCache.Markets[port].CustomsBPS) + data.Plan.Quantity
-		futureBills := data.Plan.Economics.BerthDuesPence + data.Plan.Economics.UpkeepPence + data.Plan.Economics.CollateralPence + data.Plan.Economics.TollPence
-		if input.Balances[origin.BankingRegion]-worstPurchase-worstCustoms-futureBills < input.ReserveByRegion[origin.BankingRegion] {
+		futureBills := growthCashTotal(data.Plan.Economics.BerthDuesPence, data.Plan.Economics.UpkeepPence,
+			data.Plan.Economics.CollateralPence, data.Plan.Economics.TollPence, data.Plan.Economics.VoyagePremiumPence)
+		if futureBills == math.MaxInt64 || input.Balances[origin.BankingRegion]-worstPurchase-worstCustoms-futureBills < input.ReserveByRegion[origin.BankingRegion] {
 			return r.unwindProcurement(ctx, ship, mission, data, "fresh funds cannot preserve regional reserve at the persisted IOC limit; release the unbought plan")
 		}
 		// A new request is permitted here only before this stage has ever had a

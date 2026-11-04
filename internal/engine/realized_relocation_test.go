@@ -108,7 +108,8 @@ func TestRealizedRelocationHistorySurvivesSnapshotReload(t *testing.T) {
 		{name: "finite demand only", rows: []store.Settlement{finite}},
 		{name: "losing lane", rows: []store.Settlement{loss}},
 		{name: "offsetting receipts", rows: []store.Settlement{base, loss}},
-		{name: "profitable lane", rows: []store.Settlement{base}, want: 1},
+		{name: "one profitable receipt", rows: []store.Settlement{base}},
+		{name: "profitable lane", rows: []store.Settlement{base, base}, want: 1},
 	} {
 		t.Run(candidate.name, func(t *testing.T) {
 			lanes, err := recentRealizedSourcingLanes(candidate.rows, now)
@@ -238,9 +239,11 @@ func realizedRelocationRunner(t *testing.T) (*recoveryHarness, *Runner) {
 	t.Helper()
 	h, runner := scoutAcceptanceRunner(t)
 	now := time.Now().UTC()
-	putProbeHistorySettlement(t, h, store.Settlement{ID: "measured-spot", Kind: "spot", ShipID: recoveryShipLapras,
-		Origin: "amsterdam", Destination: "hamburg", Commodity: "copper_sheathing", QuantityTons: 30, GameSeconds: 21_600,
-		ProceedsPence: 60_000, AcquisitionPence: 10_000, CompletedAt: now.Add(-48 * time.Hour)})
+	for _, id := range []string{"measured-spot", "measured-spot-second"} {
+		putProbeHistorySettlement(t, h, store.Settlement{ID: id, Kind: "spot", ShipID: recoveryShipLapras,
+			Origin: "amsterdam", Destination: "hamburg", Commodity: "copper_sheathing", QuantityTons: 30, GameSeconds: 21_600,
+			ProceedsPence: 60_000, AcquisitionPence: 10_000, CompletedAt: now.Add(-48 * time.Hour)})
+	}
 	expense := int64(200_001)
 	putProbeHistorySettlement(t, h, store.Settlement{ID: "daily-scout-spent", Kind: "relocation", ShipID: recoveryShipLapras,
 		Origin: "elsewhere", Destination: "somewhere", Commodity: "provisions", Lane: "somewhere|elsewhere|provisions|scout",
@@ -395,7 +398,7 @@ func TestRealizedRelocationShrinkingNetBoundsPaidExpense(t *testing.T) {
 	data.FeesPence = 8_000
 	putProbeHistorySettlement(t, h, store.Settlement{ID: "smaller-realized-mean", Kind: "spot", ShipID: recoveryShipLapras,
 		Origin: "amsterdam", Destination: "hamburg", Commodity: "copper_sheathing", QuantityTons: 30, GameSeconds: 21_600,
-		AcquisitionPence: 30_000, CompletedAt: time.Now().UTC().Add(-time.Minute)})
+		AcquisitionPence: 70_000, CompletedAt: time.Now().UTC().Add(-time.Minute)})
 	// The new 10,000p lane mean still covers remaining modeled sailing cost,
 	// but cannot cover 8,000p already paid plus a further 3,000p mutation.
 	if err := runner.relocationSpendingReady(h.ctx, harnessShip(t, runner, recoveryShipBlastoise), &data, 3_000); err == nil {
@@ -408,9 +411,11 @@ func TestRealizedRelocationCapturesBoundedRemoteContinuationRoutes(t *testing.T)
 	runner := w.h.runner(primaryTestKey)
 	w.observe(t, runner, 100)
 	for index, source := range []string{"amsterdam", "rouen", "calais", "ostend"} {
-		putProbeHistorySettlement(t, w.h, store.Settlement{ID: "measured-" + source, Kind: "spot", ShipID: recoveryShipLapras,
-			Origin: source, Destination: recoveryFarPort, Commodity: "sawn_planks", QuantityTons: 10, GameSeconds: 21_600,
-			ProceedsPence: int64(100_000 - index*10_000), CompletedAt: time.Now().UTC().Add(-time.Hour)})
+		for _, suffix := range []string{"-first", "-second"} {
+			putProbeHistorySettlement(t, w.h, store.Settlement{ID: "measured-" + source + suffix, Kind: "spot", ShipID: recoveryShipLapras,
+				Origin: source, Destination: recoveryFarPort, Commodity: "sawn_planks", QuantityTons: 10, GameSeconds: 21_600,
+				ProceedsPence: int64(100_000 - index*10_000), CompletedAt: time.Now().UTC().Add(-time.Hour)})
+		}
 	}
 	var gets atomic.Int64
 	base := w.h.api.server.Config.Handler

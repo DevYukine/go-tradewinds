@@ -63,6 +63,7 @@ export function buildDecisionView(details: unknown): DecisionView {
     ["toll_pence", "Tolls"],
     ["funding_fees_pence", "Regional funding fees"],
     ["hazard_pence", `Lloyd's hazard bound (${hazardSource})`],
+    ["voyage_premium_pence", "Voyage cover premium"],
     ["expected_net_pence", netLabel],
     ["collateral_pence", "Collateral locked, not an expense"],
   ];

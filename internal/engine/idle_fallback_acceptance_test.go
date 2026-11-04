@@ -380,7 +380,7 @@ func TestIdleFallbackBudgetUsesRollingConvertedNetNotLiquiditySeed(t *testing.T)
 				CompletedAt: time.Now().UTC().Add(-3 * time.Hour), ExplorationExpensePence: &rest,
 			})
 			if tc.profit > 0 {
-				idleFallbackSettlement(t, w.h, store.Settlement{ID: "idle-commercial", Kind: "charter", CostsKnown: true,
+				idleFallbackSettlement(t, w.h, store.Settlement{ID: "idle-commercial", ShipID: recoveryShipCharizard, Kind: "charter", CostsKnown: true,
 					Origin: "amsterdam", Commodity: "sawn_planks", QuantityTons: 1, ProceedsPence: tc.profit})
 			}
 			runner := w.h.runner(primaryTestKey)

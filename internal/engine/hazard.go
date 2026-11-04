@@ -39,6 +39,10 @@ type HazardQuote struct {
 	Laden             bool             `json:"laden"`
 	ExpectedLossBPS   int64            `json:"expected_loss_bps"`
 	MaxInsurablePence int64            `json:"max_insurable_pence"`
+	LloydsPremiumBPS  *int64           `json:"lloyds_premium_bps,omitempty"`
+	HullValuePence    int64            `json:"hull_value_pence"`
+	LloydsWrites      bool             `json:"lloyds_writes"`
+	LloydsWritesKnown bool             `json:"lloyds_writes_known,omitempty"`
 	ObservedAt        time.Time        `json:"observed_at"`
 	AttemptedAt       time.Time        `json:"attempted_at"`
 	NetPiracyBPS      map[string]int64 `json:"net_piracy_bps"`
@@ -258,8 +262,13 @@ func estimatedZoneHazard(in PlanningInput, route Route) (int64, string, bool) {
 }
 
 func planHazard(in PlanningInput, route Route) (int64, string, bool) {
+	bound := resolvePlanningHazard(in, route)
+	return bound.bps, bound.source, bound.available
+}
+
+func resolvePlanningHazard(in PlanningInput, route Route) planningHazardBound {
 	if !in.fresh("zones") {
-		return 0, "", false
+		return planningHazardBound{}
 	}
 	if in.Ship.Ship.ID != "growth-candidate" {
 		if quote, source, exists := quotedLaneHazard(in, route); exists {
@@ -267,7 +276,7 @@ func planHazard(in PlanningInput, route Route) (int64, string, bool) {
 		}
 		if quote := in.HazardQuotes[hazardHullKey(in.Ship.Ship.ID, route.FromPort, route.ToPort)]; quote.Illegal &&
 			hazardQuoteCurrent(in, quote, route, false) {
-			return 0, "", false
+			return planningHazardBound{}
 		}
 	}
 	var quote HazardQuote
@@ -311,23 +320,23 @@ func planHazard(in PlanningInput, route Route) (int64, string, bool) {
 			break
 		}
 	}
-	if !failed {
-		return estimatedZoneHazard(in, route)
-	}
-	for _, candidate := range in.HazardQuotes {
-		age, valid := hazardAgeGameHours(in.Now, candidate.ObservedAt, in.Clock.Calendar.TimeScale)
-		if candidate.Origin != route.FromPort || candidate.Destination != route.ToPort || candidate.Illegal ||
-			candidate.ExpectedLossBPS < 0 || !valid || age > hazardPublishedGameHours ||
-			!hazardSameStormSeason(candidate.Month, in.Clock.Calendar.Month) || !hazardProxyEligible(in, candidate, route) {
-			continue
-		}
-		if !exists || candidate.ExpectedLossBPS > quote.ExpectedLossBPS ||
-			candidate.ExpectedLossBPS == quote.ExpectedLossBPS && candidate.ObservedAt.After(quote.ObservedAt) {
-			quote, exists = candidate, true
+	if failed {
+		for _, candidate := range in.HazardQuotes {
+			age, valid := hazardAgeGameHours(in.Now, candidate.ObservedAt, in.Clock.Calendar.TimeScale)
+			if candidate.Origin != route.FromPort || candidate.Destination != route.ToPort || candidate.Illegal ||
+				candidate.ExpectedLossBPS < 0 || !valid || age > hazardPublishedGameHours ||
+				!hazardSameStormSeason(candidate.Month, in.Clock.Calendar.Month) || !hazardProxyEligible(in, candidate, route) {
+				continue
+			}
+			if !exists || candidate.ExpectedLossBPS > quote.ExpectedLossBPS ||
+				candidate.ExpectedLossBPS == quote.ExpectedLossBPS && candidate.ObservedAt.After(quote.ObservedAt) {
+				quote, exists = candidate, true
+			}
 		}
 	}
 	if !exists {
-		return estimatedZoneHazard(in, route)
+		bps, source, available := estimatedZoneHazard(in, route)
+		return planningHazardBound{bps: bps, source: source, available: available}
 	}
 	source = "hull-only"
 	if quote.Laden {
@@ -370,9 +379,12 @@ func hazardQuoteOwned(in PlanningInput, shipID string) bool {
 	return false
 }
 
-func describeHazardQuote(in PlanningInput, quote HazardQuote, source, label string) (int64, string, bool) {
+func describeHazardQuote(in PlanningInput, quote HazardQuote, source, label string) planningHazardBound {
 	age, _ := hazardAgeGameHours(in.Now, quote.ObservedAt, in.Clock.Calendar.TimeScale)
-	return quote.ExpectedLossBPS, fmt.Sprintf("%s, %s, %.2f gh old", label, source, age), true
+	return planningHazardBound{
+		bps: quote.ExpectedLossBPS, source: fmt.Sprintf("%s, %s, %.2f gh old", label, source, age),
+		available: true, cover: quote,
+	}
 }
 
 func quotedLaneHazard(in PlanningInput, route Route) (HazardQuote, string, bool) {
@@ -382,10 +394,99 @@ func quotedLaneHazard(in PlanningInput, route Route) (HazardQuote, string, bool)
 	}
 	source := "hull-only"
 	laden := in.HazardQuotes[hazardLadenKey(route.FromPort, route.ToPort, in.Ship.Ship.ShipClass, in.Ship.Ship.CannonsCount, in.Clock.Calendar.Month)]
-	if laden.Error == "" && !laden.Illegal && hazardQuoteCurrent(in, laden, route, true) && laden.ExpectedLossBPS > quote.ExpectedLossBPS {
-		quote, source = laden, "laden"
+	if laden.Error == "" && !laden.Illegal && laden.ExpectedLossBPS >= 0 && hazardQuoteCurrent(in, laden, route, true) {
+		premiumBPS, hullValue := quote.LloydsPremiumBPS, quote.HullValuePence
+		writes, writesKnown := quote.LloydsWrites, quote.LloydsWritesKnown
+		if laden.LloydsPremiumBPS != nil {
+			if premiumBPS == nil || *laden.LloydsPremiumBPS > *premiumBPS {
+				premiumBPS = laden.LloydsPremiumBPS
+			}
+			hullValue, writes, writesKnown = laden.HullValuePence, laden.LloydsWrites, laden.LloydsWritesKnown
+		}
+		if laden.ExpectedLossBPS > quote.ExpectedLossBPS {
+			quote, source = laden, "laden"
+		}
+		quote.LloydsPremiumBPS, quote.HullValuePence = premiumBPS, hullValue
+		quote.LloydsWrites, quote.LloydsWritesKnown = writes, writesKnown
 	}
 	return quote, source, true
+}
+
+func planningVoyageCover(in PlanningInput, hull Hull, route Route, bound planningHazardBound) HazardQuote {
+	if hull.HullCategory != "oceanic" || !oceanicVoyage(route, in.Catalog.SeaZones) {
+		return HazardQuote{}
+	}
+	quote := bound.cover
+	writesKnown := quote.LloydsWritesKnown
+	if in.Ship.Ship.ID == "growth-candidate" {
+		quote = HazardQuote{}
+		for _, ship := range in.Fleet {
+			if ship.Ship.Status == "sunk" || ship.Ship.ConvoyID != "" {
+				continue
+			}
+			sourceRoute, found := in.Routes[routeKey(route.FromPort, route.ToPort, ship.Ship.ShipClass)]
+			if !found {
+				continue
+			}
+			owner := in
+			owner.Ship = ship
+			candidate, _, available := quotedLaneHazard(owner, sourceRoute)
+			if !available || !hazardProxyEligible(in, candidate, route) ||
+				!candidate.LloydsWrites || candidate.LloydsPremiumBPS == nil || *candidate.LloydsPremiumBPS <= 0 {
+				continue
+			}
+			if quote.LloydsPremiumBPS == nil || *candidate.LloydsPremiumBPS > *quote.LloydsPremiumBPS {
+				quote = candidate
+			}
+		}
+		writesKnown = false
+	}
+	if writesKnown && !quote.LloydsWrites {
+		quote.LloydsWritesKnown = true
+		return quote
+	}
+	if quote.LloydsPremiumBPS == nil {
+		// Unknown terms are not a free passage: the departure rule can pay
+		// up to twice expected loss, capped at Lloyd's maximum quoted rate.
+		quote.LloydsPremiumBPS = new(max(int64(10), min(int64(3_000), 2*min(int64(10_000), bound.bps))))
+	}
+	quote.LloydsWrites, quote.LloydsWritesKnown = true, true
+	quote.ExpectedLossBPS = bound.bps
+	quote.HullValuePence = planningHullValue(in, quote)
+	return quote
+}
+
+func planningHullValue(in PlanningInput, selected HazardQuote) int64 {
+	if in.growthHullValuePence > 0 {
+		return in.growthHullValuePence
+	}
+	var ownValue, classValue int64
+	var ownObserved time.Time
+	for _, quote := range in.HazardQuotes {
+		value := quote.HullValuePence
+		if value <= 0 {
+			value = quote.MaxInsurablePence
+		}
+		if value <= 0 || value > maximumPence {
+			continue
+		}
+		if quote.ShipID == in.Ship.Ship.ID && (ownValue == 0 || quote.ObservedAt.After(ownObserved)) {
+			ownValue, ownObserved = value, quote.ObservedAt
+		}
+		if quote.ShipClass == in.Ship.Ship.ShipClass && hazardQuoteOwned(in, quote.ShipID) {
+			classValue = max(classValue, value)
+		}
+	}
+	if ownValue > 0 {
+		return ownValue
+	}
+	if classValue > 0 {
+		return classValue
+	}
+	if selected.HullValuePence > 0 {
+		return selected.HullValuePence
+	}
+	return selected.MaxInsurablePence
 }
 
 func hazardStationary(ship ShipState) bool {
@@ -576,6 +677,10 @@ func (r *Runner) refreshHazardQuotes(ctx context.Context, state AccountState) er
 			quote.ObservedAt = time.Now()
 			quote.ExpectedLossBPS = *response.LloydsExpectedLossBPS
 			quote.MaxInsurablePence = response.MaxInsurablePence
+			quote.LloydsPremiumBPS = response.LloydsPremiumBPS
+			quote.HullValuePence = response.HullValuePence
+			quote.LloydsWrites = response.LloydsWrites
+			quote.LloydsWritesKnown = response.LloydsWritesKnown
 			if request.laden {
 				hull := quotes[hazardHullKey(request.ship.Ship.ID, request.route.FromPort, request.route.ToPort)]
 				if entry := r.log.Check(zap.InfoLevel, "Lloyd's voyage hazard bounds"); entry != nil {

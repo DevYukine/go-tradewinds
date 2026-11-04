@@ -1,6 +1,9 @@
 package gameapi
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type LloydsQuoteResult struct {
 	ShipID                  string   `json:"ship_id"`
@@ -14,7 +17,26 @@ type LloydsQuoteResult struct {
 	LloydsPremiumBPS        *int64   `json:"lloyds_premium_bps"`
 	LloydsPremiumPence      *int64   `json:"lloyds_premium_pence"`
 	LloydsWrites            bool     `json:"lloyds_writes"`
+	LloydsWritesKnown       bool     `json:"lloyds_writes_known"`
 	PricedConsortShipIDs    []string `json:"priced_consort_ship_ids"`
+}
+
+func (quote *LloydsQuoteResult) UnmarshalJSON(data []byte) error {
+	type wireQuote LloydsQuoteResult
+	wire := struct {
+		*wireQuote
+		Writes      *bool `json:"lloyds_writes"`
+		WritesKnown *bool `json:"lloyds_writes_known"`
+	}{wireQuote: (*wireQuote)(quote)}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	quote.LloydsWritesKnown = wire.Writes != nil
+	if wire.WritesKnown != nil {
+		quote.LloydsWritesKnown = quote.LloydsWritesKnown && *wire.WritesKnown
+	}
+	quote.LloydsWrites = wire.Writes != nil && *wire.Writes
+	return nil
 }
 
 type CreateInsurancePolicyRequest struct {

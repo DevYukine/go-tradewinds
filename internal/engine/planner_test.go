@@ -144,11 +144,11 @@ func TestPlannerUsesRetainedQuayDepthWithoutRepeatFunding(t *testing.T) {
 	}
 	plan := engine.PlanVoyages(in)[0]
 	if !plan.Accepted || plan.Kind != "spot" || plan.Quantity != 20 ||
-		plan.Economics.RevenueBasis != "retained" || plan.Economics.RevenuePence != 95_000 ||
-		plan.Economics.PriceUncertaintyStressPence != 0 || plan.SellLimitPence != 4_750 {
+		plan.Economics.RevenueBasis != "retained" || plan.Economics.RevenuePence != 94_570 ||
+		plan.Economics.PriceUncertaintyStressPence != 0 || plan.SellLimitPence != 4_728 {
 		t.Fatalf("remembered quay depth did not fund the complete delivery lot: %+v", plan)
 	}
-	if plan.PriceSource != "our quay book 6.0 game days old" ||
+	if plan.PriceSource != "our quay book 6.4 game days old" ||
 		plan.Economics.BallastRepeatGameDays != 0 || plan.Economics.BallastRepeatNetPence != 0 {
 		t.Fatalf("retained estimates lost their source or financed a repeat: %+v", plan)
 	}

@@ -79,7 +79,7 @@ func TestSourcingRollingBudgetConversionAttributionAndLedgerBound(t *testing.T) 
 	t.Parallel()
 	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
 	probeAt := now.Add(-8 * 24 * time.Hour)
-	probe := store.Settlement{Kind: "relocation", Origin: "home", Destination: "source", Commodity: "grain", CompletedAt: probeAt, CostsKnown: true}
+	probe := store.Settlement{Kind: "relocation", ShipID: "probe-ship", Origin: "home", Destination: "source", Commodity: "grain", CompletedAt: probeAt, CostsKnown: true}
 	start := probeAt.Add(sourcingConversionWindow)
 	for _, tc := range []struct {
 		name   string
@@ -99,7 +99,7 @@ func TestSourcingRollingBudgetConversionAttributionAndLedgerBound(t *testing.T) 
 		{"known net loss", func(r *store.Settlement) { r.ProceedsPence = 0 }, -40_000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			row := store.Settlement{ID: "conversion", Kind: "charter", Origin: "source", Commodity: "grain", QuantityTons: 10, CostsKnown: true,
+			row := store.Settlement{ID: "conversion", ShipID: probe.ShipID, Kind: "charter", Origin: "source", Commodity: "grain", QuantityTons: 10, CostsKnown: true,
 				StartedAt: start, CompletedAt: now.Add(-time.Hour), ProceedsPence: 140_000, AcquisitionPence: 30_000, FeesPence: 2_000, ProvisionsPence: 3_000, ExpensesPence: 5_000}
 			tc.change(&row)
 			history := probeHistoryFixture()
@@ -119,7 +119,11 @@ func TestSourcingRollingBudgetConversionAttributionAndLedgerBound(t *testing.T) 
 	}
 	rows := []store.Settlement{probe}
 	for i := range 205 {
-		rows = append(rows, store.Settlement{ID: fmt.Sprintf("delivery-%03d", i), Kind: "spot", Origin: "source", Commodity: "grain", QuantityTons: 1,
+		shipID := fmt.Sprintf("probe-ship-%03d", i)
+		shipProbe := probe
+		shipProbe.ShipID = shipID
+		rows = append(rows, shipProbe)
+		rows = append(rows, store.Settlement{ID: fmt.Sprintf("delivery-%03d", i), ShipID: shipID, Kind: "spot", Origin: "source", Commodity: "grain", QuantityTons: 1,
 			CostsKnown: true, StartedAt: start, CompletedAt: now.Add(-time.Hour).Add(time.Duration(i) * time.Second), ProceedsPence: 100})
 	}
 	history := probeHistoryFixture()
@@ -128,5 +132,55 @@ func TestSourcingRollingBudgetConversionAttributionAndLedgerBound(t *testing.T) 
 	}
 	if len(history.Conversions) != 200 || history.ConversionNetPence != 20_500 || history.Conversions[0].SettlementID != "delivery-204" || history.Conversions[199].SettlementID != "delivery-005" {
 		t.Fatalf("capping diagnostic rows changed money evidence or ordering: %+v", history)
+	}
+}
+
+func TestSourcingRollingBudgetCreditsFirstVoyagePerNearestProbe(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	probe := store.Settlement{ID: "first-probe", Kind: "relocation", ShipID: "probing-ship",
+		Origin: "home", Destination: "source", CostsKnown: true, CompletedAt: now.Add(-4 * time.Hour)}
+	first := store.Settlement{ID: "first-voyage", Kind: "charter", ShipID: probe.ShipID,
+		Origin: probe.Destination, Destination: "demand", QuantityTons: 1, CostsKnown: true,
+		StartedAt: probe.CompletedAt, CompletedAt: now.Add(-3 * time.Hour), ProceedsPence: 1_000}
+	second := first
+	second.ID, second.StartedAt, second.CompletedAt, second.ProceedsPence =
+		"second-voyage", now.Add(-2*time.Hour), now.Add(-time.Hour), 9_000
+	reprobe := probe
+	reprobe.ID, reprobe.CompletedAt = "second-probe", second.StartedAt
+	for _, tc := range []struct {
+		name string
+		rows []store.Settlement
+		want int64
+	}{
+		{"inclusive handoff counted once", []store.Settlement{probe, first, first}, 1_000},
+		{"second voyage not credited", []store.Settlement{probe, first, second}, 1_000},
+		{"each probe credits its nearest first voyage", []store.Settlement{probe, first, reprobe, second}, 10_000},
+		{"missing first settlement costs cannot credit second voyage", func() []store.Settlement {
+			unknown := first
+			unknown.CostsKnown = false
+			return []store.Settlement{probe, unknown, second}
+		}(), 0},
+		{"aged first settlement cannot credit second voyage", func() []store.Settlement {
+			oldProbe, oldFirst := probe, first
+			oldProbe.CompletedAt = now.Add(-26 * time.Hour)
+			oldFirst.StartedAt, oldFirst.CompletedAt = oldProbe.CompletedAt, now.Add(-25*time.Hour)
+			return []store.Settlement{oldProbe, oldFirst, second}
+		}(), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for range 2 {
+				var history sourcingProbeHistory
+				if err := history.rollingBudget(tc.rows, now, 60); err != nil {
+					t.Fatal(err)
+				}
+				if history.ConversionNetPence != tc.want {
+					t.Fatalf("conversion net=%dp want=%dp: %+v", history.ConversionNetPence, tc.want, history.Conversions)
+				}
+				for i, j := 0, len(tc.rows)-1; i < j; i, j = i+1, j-1 {
+					tc.rows[i], tc.rows[j] = tc.rows[j], tc.rows[i]
+				}
+			}
+		})
 	}
 }
