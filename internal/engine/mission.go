@@ -66,6 +66,7 @@ type missionData struct {
 	FundingMission            string                  `json:"funding_mission,omitempty"`
 	FundingGeneration         string                  `json:"funding_generation,omitempty"`
 	GrowthFunding             bool                    `json:"growth_funding,omitempty"`
+	GrowthPartnerHire         bool                    `json:"growth_partner_hire,omitempty"`
 	SourcingSpentPence        int64                   `json:"sourcing_spent_pence"`
 	SourcingGameDays          float64                 `json:"sourcing_game_days"`
 	ClosingObservedAt         time.Time               `json:"closing_observed_at"`
@@ -963,7 +964,8 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 		worstCustoms := ceilBPS(worstPurchase, r.stateCache.Markets[port].CustomsBPS) + data.Plan.Quantity
 		futureBills := growthCashTotal(data.Plan.Economics.BerthDuesPence, data.Plan.Economics.UpkeepPence,
 			data.Plan.Economics.CollateralPence, data.Plan.Economics.TollPence, data.Plan.Economics.VoyagePremiumPence)
-		if futureBills == math.MaxInt64 || input.Balances[origin.BankingRegion]-worstPurchase-worstCustoms-futureBills < input.ReserveByRegion[origin.BankingRegion] {
+		reserve := cargoLoanReserves(input, data.Plan)[origin.BankingRegion]
+		if futureBills == math.MaxInt64 || input.Balances[origin.BankingRegion]-worstPurchase-worstCustoms-futureBills < reserve {
 			return r.unwindProcurement(ctx, ship, mission, data, "fresh funds cannot preserve regional reserve at the persisted IOC limit; release the unbought plan")
 		}
 		// A new request is permitted here only before this stage has ever had a
@@ -1001,7 +1003,7 @@ func (r *Runner) driveMission(ctx context.Context, ship ShipState, mission *stor
 					return false, err
 				}
 				port, exists := findPort(input.Catalog, ship.Ship.CurrentPortID)
-				if !exists || input.Balances[port.BankingRegion]-contract.CollateralPence < input.ReserveByRegion[port.BankingRegion] {
+				if !exists || input.Balances[port.BankingRegion]-contract.CollateralPence < cargoLoanReserves(input, data.Plan)[port.BankingRegion] {
 					removeFreightCandidate(&data.Plan, id)
 					if err := r.decision(ctx, ship.Ship.ID, "freight-reselection", "unaccepted freight collateral cannot preserve the fresh regional reserve; retain actual cargo and accepted obligations", map[string]any{"contract_id": id}); err != nil {
 						return false, err

@@ -118,6 +118,7 @@ func TestLoanBridgeTransientQuoteFaultsStayUnlatched(t *testing.T) {
 				t.Fatal("fault hook never observed the attempted quote")
 			}
 			// The fleet keeps trading: the same due stages once the fault clears.
+			loanBridgeExpireRetry(t, world, runner, loan)
 			loanCapacityRefresh(t, world.h, runner)
 			loanBridgeStage(t, world, runner, loan.ID, 100_000, recoveryShipCharizard)
 		})
@@ -220,7 +221,7 @@ func TestLoanBridgeAvoidsPendingGrowthFinancingCollateral(t *testing.T) {
 	if err := world.h.db.DeleteMission(world.h.ctx, world.h.account.ID, "__loans"); err != nil {
 		t.Fatal(err)
 	}
-	dates := decode[map[string]bool](runner.snapshot, "_loan_bridge_due")
+	dates := decode[map[string]loanBridgeTestDue](runner.snapshot, "_loan_bridge_due")
 	delete(dates, loanRefinanceDueKey(loan))
 	runner.snapshot["_loan_bridge_due"] = encode(dates)
 	if err := world.h.db.SaveSnapshot(world.h.ctx, world.h.account.ID, runner.snapshot); err != nil {

@@ -1110,6 +1110,11 @@ func (r *Runner) applyReconciliation(ctx context.Context, mission *store.Mission
 				return retired, err
 			}
 		} else {
+			if data.LoanBridge != nil && data.Action.Stage == "loan-accept" {
+				if err := r.recordLoanBridgeFunding(ctx, data.LoanBridge); err != nil {
+					return false, err
+				}
+			}
 			loanResultPhase(mission, data)
 		}
 	case "marque":
@@ -1394,7 +1399,18 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			return errors.New("new remittance would spend protected donor reserves or incumbent commitments")
 		}
 		fee := request.Gross/10_000*rate.FeeBPS + request.Gross%10_000*rate.FeeBPS/10_000
-		if data.GrowthFunding {
+		partnerHire := false
+		if data.GrowthFunding && data.GrowthPartnerHire && mission.ShipID == "__treasury" && r.fresh("factors") {
+			agents := decode[[]expansionAgent](r.snapshot, "_expansion_agents")
+			now := time.Now().UTC()
+			for _, agent := range agents {
+				if agent.Region == request.ToRegion && r.expansionPartnerHire(agents, agent, now) {
+					partnerHire = true
+					break
+				}
+			}
+		}
+		if data.GrowthFunding && !partnerHire {
 			var free int64
 			for region, balance := range input.Balances {
 				if region == request.FromRegion {
@@ -1546,7 +1562,8 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 				if err != nil {
 					return err
 				}
-				if input.Balances[port.BankingRegion]-contract.CollateralPence < input.ReserveByRegion[port.BankingRegion] {
+				reserve := cargoLoanReserves(input, data.Plan)[port.BankingRegion]
+				if input.Balances[port.BankingRegion]-contract.CollateralPence < reserve {
 					return errors.New("new freight acceptance would spend protected regional reserves")
 				}
 			}
@@ -1645,7 +1662,11 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 						return errors.New("new sourcing provisions exceed the immutable exploration expense cap")
 					}
 				}
-				if futureBills == math.MaxInt64 || input.Balances[port.BankingRegion]-cost-customs-futureBills < input.ReserveByRegion[port.BankingRegion] {
+				reserve := input.ReserveByRegion[port.BankingRegion]
+				if action.Stage == "buy" && !ordinaryIncomePending(data) {
+					reserve = cargoLoanReserves(input, data.Plan)[port.BankingRegion]
+				}
+				if futureBills == math.MaxInt64 || input.Balances[port.BankingRegion]-cost-customs-futureBills < reserve {
 					return errors.New("new purchase would spend protected regional bills reserves")
 				}
 			}

@@ -168,7 +168,7 @@ func obligationReservePlan(state AccountState, snapshot map[string]json.RawMessa
 		if reserve == 0 && loanReserve(loan) > 0 {
 			deferred = append(deferred, loanReserveDeferral{
 				Region: loan.BankingRegion, FullReserve: loanReserve(loan),
-				ReserveFrom: loan.NextPaymentDueAt.Add(-gameDuration(loanServiceLeadGameDays, state.Clock.Calendar.TimeScale)),
+				ReserveFrom: loan.NextPaymentDueAt.Add(-gameDuration(loanServiceLeadGameDays, state.Clock.Calendar.TimeScale) - serverClockStaleness),
 			})
 		}
 	}

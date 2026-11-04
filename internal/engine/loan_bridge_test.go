@@ -17,23 +17,36 @@ import (
 	"github.com/DevYukine/go-tradewinds/internal/store"
 )
 
+type loanBridgeQuoteProblem struct {
+	Status int
+	Code   string
+	Detail string
+}
+
+type loanBridgeTestDue struct {
+	NeedPence    int64 `json:"need_pence"`
+	BridgedPence int64 `json:"bridged_pence"`
+	Pending      bool  `json:"pending"`
+}
+
 // Keep the existing recovery world's real captures, reserves, missions and
 // journal. Only the clock and Goldsmiths debt/quote surface differ here.
 type loanBridgeWorld struct {
-	h            *recoveryHarness
-	mu           sync.Mutex
-	now          time.Time
-	loans        []gameapi.Loan
-	quotes       map[string]gameapi.GoldsmithsQuote
-	receipts     map[string]json.RawMessage
-	rebuild      map[string]int64
-	caps         map[string]int64
-	queries      []gameapi.GoldsmithsQuoteRequest
-	quoteStatus  int
-	quoteCode    string
-	acceptStatus int
-	acceptCode   string
-	dropReceipt  bool
+	h             *recoveryHarness
+	mu            sync.Mutex
+	now           time.Time
+	loans         []gameapi.Loan
+	quotes        map[string]gameapi.GoldsmithsQuote
+	receipts      map[string]json.RawMessage
+	rebuild       map[string]int64
+	caps          map[string]int64
+	queries       []gameapi.GoldsmithsQuoteRequest
+	quoteStatus   int
+	quoteCode     string
+	quoteProblems map[string]loanBridgeQuoteProblem
+	acceptStatus  int
+	acceptCode    string
+	dropReceipt   bool
 }
 
 func loanBridgeFixture(t *testing.T, payment int64) (*loanBridgeWorld, *Runner) {
@@ -49,7 +62,7 @@ func loanBridgeFixture(t *testing.T, payment int64) (*loanBridgeWorld, *Runner) 
 	loan.DisbursedAt, loan.MaturesAt, loan.NextPaymentDueAt = new(loan.CreatedAt), new(now.Add(6*24*time.Hour)), new(now.Add(time.Hour))
 	world := &loanBridgeWorld{
 		h: h, now: now, loans: []gameapi.Loan{loan},
-		quotes: make(map[string]gameapi.GoldsmithsQuote), receipts: make(map[string]json.RawMessage),
+		quotes: make(map[string]gameapi.GoldsmithsQuote), receipts: make(map[string]json.RawMessage), quoteProblems: make(map[string]loanBridgeQuoteProblem),
 		rebuild: map[string]int64{recoveryShipBlastoise: 4_000_000, recoveryShipCharizard: 2_000_000},
 		caps:    make(map[string]int64),
 	}
@@ -57,6 +70,7 @@ func loanBridgeFixture(t *testing.T, payment int64) (*loanBridgeWorld, *Runner) 
 		sailingShipRow(recoveryShipBlastoise, "Blastoise", recoveryHomePort, recoveryFarPort),
 		sailingShipRow(recoveryShipCharizard, "Charizard", recoveryFarPort, recoveryHomePort),
 	})
+	h.api.setRates(Rate{FromRegion: "north", ToRegion: "south"}, Rate{FromRegion: "south", ToRegion: "north"})
 	base := h.api.server.Config.Handler
 	h.api.server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
@@ -114,9 +128,18 @@ func (world *loanBridgeWorld) quote(writer http.ResponseWriter, request *http.Re
 		world.h.api.writeProblem(writer, world.quoteStatus, world.quoteCode, "Goldsmiths will not quote this borrower")
 		return
 	}
+	if problem, exists := world.quoteProblems[terms.BankingRegion+"|"+terms.ShipID]; exists {
+		world.h.api.writeProblem(writer, problem.Status, problem.Code, problem.Detail)
+		return
+	}
 	cap, exists := world.caps[terms.ShipID]
 	if !exists {
 		cap = 750_000
+	}
+	if principal > cap {
+		world.h.api.writeProblem(writer, http.StatusBadRequest, "bad_request",
+			fmt.Sprintf("Goldsmiths lends at most %dp against this ship now, limited by what the house can spare", cap))
+		return
 	}
 	installment := int64(math.Ceil(float64(principal) * (0.30 / 36) / (1 - math.Pow(1+0.30/36, -36))))
 	shipID := terms.ShipID
@@ -158,7 +181,7 @@ func (world *loanBridgeWorld) accept(writer http.ResponseWriter, request *http.R
 		return
 	}
 	snapshot, err := world.h.db.Snapshot(request.Context(), world.h.account.ID)
-	if err != nil || !decode[map[string]bool](snapshot, "_loan_bridge_due")[loanRefinanceDueKey(data.LoanBridge.Before)] {
+	if err != nil || decode[map[string]loanBridgeTestDue](snapshot, "_loan_bridge_due")[loanRefinanceDueKey(data.LoanBridge.Before)].NeedPence <= 0 {
 		world.h.t.Error("bridge accept reached the server before its due-date marker was persisted")
 		writer.WriteHeader(http.StatusConflict)
 		return
@@ -231,18 +254,25 @@ func (world *loanBridgeWorld) setLoans(loans ...gameapi.Loan) {
 	world.mu.Unlock()
 }
 
-// Fund every non-loan hard bill first, then place only the requested free cash
-// in the two real vaults. Loan reserves must not be counted as hard bills here.
+// Fund only upkeep collections scheduled before the fixture's installment,
+// then leave the requested hard-cash remainder in the two real vaults.
 func (world *loanBridgeWorld) cash(t *testing.T, runner *Runner, free map[string]int64) {
 	t.Helper()
-	excluded := make([]string, 0, len(runner.stateCache.Loans))
-	for _, loan := range runner.stateCache.Loans {
-		excluded = append(excluded, loan.ID)
+	clock := runner.stateCache.Clock
+	collectionBy := clock.RealUTC
+	loan := runner.stateCache.Loans[0]
+	if loan.ArrearsPence <= 0 && loan.NextPaymentDueAt != nil && loan.NextPaymentDueAt.After(collectionBy) {
+		collectionBy = *loan.NextPaymentDueAt
 	}
-	required, err := runner.treasuryReservesFor(world.h.ctx, runner.snapshot, excluded...)
-	if err != nil {
-		t.Fatal(err)
+	day := 24 * time.Hour / time.Duration(clock.Calendar.TimeScale)
+	elapsed := time.Duration(clock.Calendar.TotalGameHours%24)*time.Hour/time.Duration(clock.Calendar.TimeScale) +
+		time.Duration(clock.Calendar.Minute)*time.Minute/time.Duration(clock.Calendar.TimeScale)
+	days := int64((elapsed + collectionBy.Sub(clock.RealUTC)) / day)
+	home, exists := findPort(runner.stateCache.Catalog, runner.stateCache.HomePortID)
+	if !exists {
+		t.Fatal("bridge fixture has no home billing region")
 	}
+	required := map[string]int64{home.BankingRegion: days * DailyUpkeep(runner.stateCache.Ships, runner.stateCache.Catalog, len(runner.stateCache.Factors))}
 	world.h.api.setVaultBalance("north", required["north_sea"]+free["north_sea"])
 	world.h.api.setVaultBalance("south", required["channel"]+free["channel"])
 	loanCapacityRefresh(t, world.h, runner)
@@ -263,12 +293,21 @@ func loanBridgeMarker(t *testing.T, world *loanBridgeWorld, loan gameapi.Loan) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !decode[map[string]bool](snapshot, "_loan_bridge_due")[loanRefinanceDueKey(loan)] {
+	if decode[map[string]loanBridgeTestDue](snapshot, "_loan_bridge_due")[loanRefinanceDueKey(loan)].NeedPence <= 0 {
 		t.Fatalf("bridge due-date marker was not persisted for %s", loanRefinanceDueKey(loan))
 	}
 }
 
 func loanBridgeStage(t *testing.T, world *loanBridgeWorld, runner *Runner, loanID string, principal int64, shipID string) (*store.Mission, missionData) {
+	t.Helper()
+	loan, exists := runner.loanByID(loanID)
+	if !exists {
+		t.Fatalf("bridge target %s is absent from authoritative loans", loanID)
+	}
+	return loanBridgeStageInRegion(t, world, runner, loanID, principal, shipID, loan.BankingRegion)
+}
+
+func loanBridgeStageInRegion(t *testing.T, world *loanBridgeWorld, runner *Runner, loanID string, principal int64, shipID, region string) (*store.Mission, missionData) {
 	t.Helper()
 	if changed, err := runner.serviceLoans(world.h.ctx); err != nil || !changed {
 		t.Fatalf("short installment did not stage bridge: changed=%v err=%v", changed, err)
@@ -280,7 +319,7 @@ func loanBridgeStage(t *testing.T, world *loanBridgeWorld, runner *Runner, loanI
 		t.Fatalf("bridge did not persist its loan-service action: phase=%s data=%+v", mission.Phase, data)
 	}
 	quote := data.LoanBridge.Quote.Quote
-	if quote.PrincipalPence != principal || quote.BankingRegion != data.LoanBridge.Before.BankingRegion ||
+	if quote.PrincipalPence != principal || quote.BankingRegion != region ||
 		quote.TermGameDays != 360 || quote.Repayment != "amortised" || quote.CollateralShipID == nil || *quote.CollateralShipID != shipID ||
 		data.LoanBridge.ShortfallPence <= 0 || !runner.validGoldsmithsQuote(data.LoanBridge.Quote, shipID, quote.BankingRegion, principal) {
 		t.Fatalf("wrong exact bridge principal, region or collateral: %+v", data.LoanBridge)
@@ -432,8 +471,8 @@ func TestLoanBridgeBoundsPrincipalWithoutCapacityReserveOrCoverage(t *testing.T)
 			runner.stateCache.Markets = nil
 			runner.stateCache.Quotes = nil
 			_, data := loanBridgeStage(t, world, runner, "bridge-target", test.principal, recoveryShipCharizard)
-			if data.LoanBridge.ShortfallPence != test.shortfall {
-				t.Fatalf("bridge counted loan payoff/installment reserves as non-loan bills: got %d want %d", data.LoanBridge.ShortfallPence, test.shortfall)
+			if got := loanBridgeTestNeed(t, world, runner, data.LoanBridge.Before); got != test.shortfall {
+				t.Fatalf("bridge counted loan payoff/installment reserves or operating floors as hard bills: got %d want %d", got, test.shortfall)
 			}
 			for _, request := range world.requests() {
 				if request.PrincipalPence != test.principal || request.TermGameDays != 360 || request.Repayment != "amortised" || request.BankingRegion != "north_sea" {
@@ -526,7 +565,7 @@ func TestLoanBridgeMarkerSeparatesIndependentLoansAndNextDueDate(t *testing.T) {
 	world.setLoans(first, second)
 	loanCapacityRefresh(t, world.h, runner)
 	_, secondData := loanBridgeStage(t, world, runner, second.ID, 200_000, recoveryShipCharizard)
-	if secondData.LoanBridge.ShortfallPence != 200_000 || secondData.LoanBridge.Quote.Quote.BankingRegion != "channel" {
+	if loanBridgeTestNeed(t, world, runner, secondData.LoanBridge.Before) != 200_000 || secondData.LoanBridge.Quote.Quote.BankingRegion != "channel" {
 		t.Fatal("independent due loan reused earlier collections' cash or borrowed in the wrong region")
 	}
 	if err := world.h.db.DeleteMission(world.h.ctx, world.h.account.ID, "__loans"); err != nil {
@@ -557,7 +596,6 @@ func TestLoanBridgeQuoteRefusalWithoutRetryDateSurvivesRestart(t *testing.T) {
 		code   string
 	}{
 		{http.StatusForbidden, "goldsmiths_walk_away_ban"},
-		{http.StatusBadRequest, "principal_cap"},
 	} {
 		t.Run(test.code, func(t *testing.T) {
 			world, runner := loanBridgeFixture(t, 100_000)

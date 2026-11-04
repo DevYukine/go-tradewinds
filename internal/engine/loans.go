@@ -6,7 +6,10 @@ import (
 	"errors"
 	"maps"
 	"math"
+	"net/http"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +22,8 @@ const (
 	goldsmithsMinimumPence  = int64(10_000)
 	goldsmithsMaximumPence  = int64(750_000)
 	loanServiceLeadGameDays = 3
+	loanBridgeRetryDelay    = 15 * time.Second
+	loanBridgeInstantLimit  = 4
 	debtServiceHoldPrefix   = "growth deferred: free cash must keep the remaining unsecured loan payoff"
 )
 
@@ -35,6 +40,16 @@ type loanBridgeIntent struct {
 	Before         gameapi.Loan            `json:"before"`
 	Quote          gameapi.GoldsmithsQuote `json:"quote"`
 	ShortfallPence int64                   `json:"shortfall_pence"`
+	NeedPence      int64                   `json:"need_pence"`
+	BridgedBefore  int64                   `json:"bridged_before"`
+	FundingPence   int64                   `json:"funding_pence"`
+}
+
+type loanBridgeProgress struct {
+	NeedPence    int64 `json:"need_pence"`
+	BridgedPence int64 `json:"bridged_pence"`
+	Pending      bool  `json:"pending,omitempty"`
+	Banned       bool  `json:"banned,omitempty"`
 }
 
 func validMortgageTerms(terms *gameapi.MortgageTerms, total int64) bool {
@@ -655,6 +670,195 @@ func (r *Runner) stageLoanRepayment(ctx context.Context, mission *store.Mission,
 	return true, r.stage(ctx, mission, data, ShipState{}, "loan-repay", "/v1/loan/repay", gameapi.RepayLoanRequest{LoanID: loan.ID, AmountPence: requested})
 }
 
+// Healthy bridge sizing counts due collections and bills, not reserve floors.
+// An immediate arrears cure can reach only donor surplus above those floors.
+func (r *Runner) loanBridgeNeed(ctx context.Context, loan gameapi.Loan) (int64, error) {
+	collectionBy := r.stateCache.Clock.RealUTC
+	if loan.NextPaymentDueAt != nil && loan.NextPaymentDueAt.After(collectionBy) {
+		collectionBy = *loan.NextPaymentDueAt
+	}
+	var bills int64
+	var protected map[string]int64
+	if loan.ArrearsPence > 0 {
+		var err error
+		protected, err = r.loanServiceReserves(ctx, loan.ID)
+		if err != nil {
+			return 0, err
+		}
+	} else {
+		bills = r.loanBridgeBillsDue(collectionBy)
+	}
+	need := growthCashTotal(loanRefinancePayment(loan), bills)
+	for _, other := range r.stateCache.Loans {
+		if other.ID == loan.ID || other.BorrowerCompanyID != r.account.CompanyID ||
+			other.Status != "active" && other.Status != "defaulted" {
+			continue
+		}
+		var collection int64
+		if other.ArrearsPence > 0 {
+			collection = other.ArrearsPence
+		}
+		if other.NextPaymentDueAt != nil && !other.NextPaymentDueAt.After(collectionBy) && other.NextPaymentPence != nil {
+			collection = max(collection, *other.NextPaymentPence)
+		}
+		need = growthCashTotal(need, collection)
+	}
+	for _, vault := range r.stateCache.Vaults {
+		if vault.AccountType != "vault" {
+			continue
+		}
+		cash := vault.BalancePence
+		if vault.BankingRegion != loan.BankingRegion {
+			if loan.ArrearsPence > 0 {
+				cash = max(0, cash-protected[vault.BankingRegion])
+			}
+			fee, known := r.loanBridgeFee(vault.BankingRegion, loan.BankingRegion)
+			if !known {
+				continue
+			}
+			cash = loanBridgeNet(cash, fee)
+		}
+		need -= cash
+	}
+	return max(0, need), nil
+}
+
+func (r *Runner) loanBridgeFee(from, to string) (int64, bool) {
+	if from == to {
+		return 0, true
+	}
+	var fee int64
+	found := false
+	for _, rate := range r.stateCache.Rates {
+		if rate.FromRegion == from && rate.ToRegion == to && rate.FeeBPS >= 0 && rate.FeeBPS < 10_000 &&
+			(!found || rate.FeeBPS < fee) {
+			fee, found = rate.FeeBPS, true
+		}
+	}
+	return fee, found
+}
+
+func loanBridgeNet(gross, fee int64) int64 {
+	return gross - (gross/10_000*fee + gross%10_000*fee/10_000)
+}
+
+func (r *Runner) loanBridgeQuoteAmount(ctx context.Context, loan gameapi.Loan, region string, need, cap int64) (int64, int64, error) {
+	fee, known := r.loanBridgeFee(region, loan.BankingRegion)
+	if !known || cap < 100_000 {
+		return 0, 0, nil
+	}
+	var gap int64
+	if loan.ArrearsPence > 0 && region != loan.BankingRegion {
+		required, err := r.loanServiceReserves(ctx, loan.ID)
+		if err != nil {
+			return 0, 0, err
+		}
+		var balance int64
+		for _, vault := range r.stateCache.Vaults {
+			if vault.AccountType == "vault" && vault.BankingRegion == region {
+				balance += vault.BalancePence
+			}
+		}
+		gap = max(0, required[region]-balance)
+	}
+	principal := loanBridgePrincipal(need)
+	if region != loan.BankingRegion {
+		gross, err := GrossRemittance(principal, fee)
+		if err != nil {
+			return 0, 0, nil
+		}
+		principal = loanBridgePrincipal(growthCashTotal(gross, gap))
+	}
+	principal = min(principal, cap)
+	return principal, loanBridgeNet(max(0, principal-gap), fee), nil
+}
+
+func (r *Runner) loanBridgeBillsDue(collectionBy time.Time) int64 {
+	clock := r.stateCache.Clock
+	remaining := collectionBy.Sub(clock.RealUTC)
+	if remaining <= 0 || clock.Calendar.TimeScale <= 0 {
+		return 0
+	}
+	// Upkeep is collected on game-day boundaries, not three hypothetical
+	// reserve days. Include only boundaries reached before this collection.
+	day := gameDuration(1, clock.Calendar.TimeScale)
+	elapsed := gameDuration(float64(clock.Calendar.TotalGameHours%24)/24+float64(clock.Calendar.Minute)/1_440, clock.Calendar.TimeScale)
+	days := int64((elapsed + remaining) / day)
+	if days == 0 {
+		return 0
+	}
+	daily := DailyUpkeep(r.stateCache.Ships, r.stateCache.Catalog, len(r.stateCache.Factors))
+	// Other recurring bills have no tariff in the account frame. Reuse the
+	// latest observed daily collection for each owned bill account/reason.
+	var latest map[string]ledgerBill
+	for _, bill := range decode[[]ledgerBill](r.snapshot, "ledger") {
+		if bill.Amount <= 0 || bill.CreatedAt.After(clock.RealUTC) ||
+			bill.Reason != "daily_warehouse_rent" && bill.Reason != "research_upkeep" {
+			continue
+		}
+		for _, vault := range r.stateCache.Vaults {
+			if bill.Debit == vault.AccountID && bill.Credit != vault.AccountID {
+				key := bill.Debit + "|" + bill.Credit + "|" + bill.Reason
+				if latest == nil {
+					latest = make(map[string]ledgerBill)
+				}
+				if bill.CreatedAt.After(latest[key].CreatedAt) {
+					latest[key] = bill
+				}
+				break
+			}
+		}
+	}
+	for _, bill := range latest {
+		daily = growthCashTotal(daily, bill.Amount)
+	}
+	if days > 0 && daily > math.MaxInt64/days {
+		return math.MaxInt64
+	}
+	return daily * days
+}
+
+func (r *Runner) loanBridgeTargetReason(loan gameapi.Loan) string {
+	if loan.IsMortgage || loan.CollateralKind != "unsecured" {
+		return "emergency bridge refuses secured or mortgage targets; never bridge a bridge"
+	}
+	active := 0
+	for _, debt := range r.stateCache.Loans {
+		if debt.BorrowerCompanyID == r.account.CompanyID && debt.Status == "active" &&
+			debt.CollateralKind == "ship_lien" && !debt.IsMortgage {
+			active++
+		}
+	}
+	if active >= loanBridgeInstantLimit {
+		return "emergency bridge refuses another lien: four active Goldsmiths instant loans already protect the fleet"
+	}
+	return ""
+}
+
+func loanBridgePrincipal(need int64) int64 {
+	principal := max(int64(100_000), min(goldsmithsMaximumPence, need))
+	return min(goldsmithsMaximumPence, (principal+9_999)/10_000*10_000)
+}
+
+func goldsmithsRefusalCap(detail string) int64 {
+	_, suffix, found := strings.Cut(strings.ToLower(detail), "at most ")
+	if !found {
+		return 0
+	}
+	digits := 0
+	for digits < len(suffix) && suffix[digits] >= '0' && suffix[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || digits == len(suffix) || suffix[digits] != 'p' {
+		return 0
+	}
+	cap, err := strconv.ParseInt(suffix[:digits], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return max(0, cap)
+}
+
 // Installment collections draw from all vaults. Protect non-loan bills and
 // earlier collections once, rather than counting the same cash for every loan.
 func (r *Runner) loanBridgeShortfall(ctx context.Context, loan gameapi.Loan) (int64, error) {
@@ -758,13 +962,21 @@ func (r *Runner) recordLoanBridgeDecision(ctx context.Context, intent *loanBridg
 	})
 }
 
+func (r *Runner) loanBridgeDates() map[string]loanBridgeProgress {
+	var dates map[string]loanBridgeProgress
+	if json.Unmarshal(r.snapshot["_loan_bridge_due"], &dates) != nil {
+		return nil
+	}
+	return dates
+}
+
 func (r *Runner) markLoanBridgeDue(ctx context.Context, intent *loanBridgeIntent, reason string) error {
 	if err := r.recordLoanBridgeDecision(ctx, intent, reason); err != nil {
 		return err
 	}
-	dates := decode[map[string]bool](r.snapshot, "_loan_bridge_due")
+	dates := r.loanBridgeDates()
 	if dates == nil {
-		dates = make(map[string]bool)
+		dates = make(map[string]loanBridgeProgress)
 	}
 	for key := range dates {
 		id, _, _ := strings.Cut(key, "|")
@@ -772,14 +984,78 @@ func (r *Runner) markLoanBridgeDue(ctx context.Context, intent *loanBridgeIntent
 			delete(dates, key)
 		}
 	}
-	dates[loanRefinanceDueKey(intent.Before)] = true
+	progress, exists := dates[loanRefinanceDueKey(intent.Before)]
+	if !exists {
+		progress = loanBridgeProgress{NeedPence: intent.NeedPence, BridgedPence: intent.BridgedBefore}
+	}
+	progress.Pending = intent.Quote.Quote.ID != ""
+	if !progress.Pending {
+		progress.Banned = true
+	}
+	dates[loanRefinanceDueKey(intent.Before)] = progress
 	r.snapshot["_loan_bridge_due"] = encode(dates)
+	retries := decode[map[string]time.Time](r.snapshot, "_loan_bridge_retry_at")
+	delete(retries, loanRefinanceDueKey(intent.Before))
+	r.snapshot["_loan_bridge_retry_at"] = encode(retries)
 	return r.saveSnapshot(ctx)
 }
 
 func (r *Runner) clearLoanBridgeDue(ctx context.Context, intent *loanBridgeIntent) error {
-	dates := decode[map[string]bool](r.snapshot, "_loan_bridge_due")
-	delete(dates, loanRefinanceDueKey(intent.Before))
+	dates := r.loanBridgeDates()
+	key := loanRefinanceDueKey(intent.Before)
+	progress := dates[key]
+	progress.Pending = false
+	if progress.BridgedPence == 0 && !progress.Banned {
+		delete(dates, key)
+	} else {
+		dates[key] = progress
+	}
+	r.snapshot["_loan_bridge_due"] = encode(dates)
+	return r.saveSnapshot(ctx)
+}
+
+func (r *Runner) deferLoanBridge(ctx context.Context, intent *loanBridgeIntent, reason string, retryAt time.Time) error {
+	if err := r.recordLoanBridgeDecision(ctx, intent, reason); err != nil {
+		return err
+	}
+	key := loanRefinanceDueKey(intent.Before)
+	dates := r.loanBridgeDates()
+	progress := dates[key]
+	progress.Pending = false
+	if progress.BridgedPence == 0 && !progress.Banned {
+		delete(dates, key)
+	} else {
+		dates[key] = progress
+	}
+	r.snapshot["_loan_bridge_due"] = encode(dates)
+	retries := decode[map[string]time.Time](r.snapshot, "_loan_bridge_retry_at")
+	if retries == nil {
+		retries = make(map[string]time.Time)
+	}
+	until := maxTime(time.Now().UTC().Add(loanBridgeRetryDelay), retryAt)
+	retries[key] = until
+	r.snapshot["_loan_bridge_retry_at"] = encode(retries)
+	r.wakeBy(until)
+	return r.saveSnapshot(ctx)
+}
+
+func (r *Runner) recordLoanBridgeFunding(ctx context.Context, intent *loanBridgeIntent) error {
+	dates := r.loanBridgeDates()
+	if dates == nil {
+		dates = make(map[string]loanBridgeProgress)
+	}
+	key := loanRefinanceDueKey(intent.Before)
+	progress := dates[key]
+	if progress.NeedPence == 0 {
+		progress.NeedPence = intent.NeedPence
+	}
+	funding := intent.FundingPence
+	if funding <= 0 {
+		funding = intent.Quote.Quote.PrincipalPence
+	}
+	progress.BridgedPence = max(progress.BridgedPence, growthCashTotal(intent.BridgedBefore, funding))
+	progress.Pending = false
+	dates[key] = progress
 	r.snapshot["_loan_bridge_due"] = encode(dates)
 	return r.saveSnapshot(ctx)
 }
@@ -793,9 +1069,15 @@ func (r *Runner) serviceInstallmentBridge(ctx context.Context) (bool, error) {
 			return false, nil
 		}
 	}
-	dates := decode[map[string]bool](r.snapshot, "_loan_bridge_due")
+	dates := r.loanBridgeDates()
+	retries := decode[map[string]time.Time](r.snapshot, "_loan_bridge_retry_at")
 	for _, loan := range r.stateCache.Loans {
-		if dates[loanRefinanceDueKey(loan)] {
+		progress, attempted := dates[loanRefinanceDueKey(loan)]
+		if attempted && (progress.Pending || progress.Banned || progress.BridgedPence >= progress.NeedPence) {
+			continue
+		}
+		if until := retries[loanRefinanceDueKey(loan)]; time.Now().Before(until) {
+			r.wakeBy(until)
 			continue
 		}
 		shortfall, err := r.loanBridgeShortfall(ctx, loan)
@@ -805,9 +1087,27 @@ func (r *Runner) serviceInstallmentBridge(ctx context.Context) (bool, error) {
 		if shortfall == 0 {
 			continue
 		}
-		intent := &loanBridgeIntent{Before: loan, ShortfallPence: shortfall}
-		principal := max(int64(100_000), min(goldsmithsMaximumPence, shortfall))
-		principal = min(goldsmithsMaximumPence, (principal+9_999)/10_000*10_000)
+		need, err := r.loanBridgeNeed(ctx, loan)
+		if err != nil {
+			return false, err
+		}
+		if attempted {
+			need = min(need, max(0, progress.NeedPence-progress.BridgedPence))
+		}
+		if need == 0 {
+			continue
+		}
+		intent := &loanBridgeIntent{Before: loan, ShortfallPence: need, NeedPence: need}
+		if attempted {
+			intent.NeedPence, intent.BridgedBefore = progress.NeedPence, progress.BridgedPence
+		}
+		if reason := r.loanBridgeTargetReason(loan); reason != "" {
+			if err := r.recordLoanBridgeDecision(ctx, intent, reason); err != nil {
+				return false, err
+			}
+			continue
+		}
+		principal := loanBridgePrincipal(need)
 		ships, err := r.loanBridgeShips(ctx)
 		if err != nil {
 			return false, err
@@ -829,44 +1129,111 @@ func (r *Runner) serviceInstallmentBridge(ctx context.Context) (bool, error) {
 			values[ship.Ship.ID] = value
 		}
 		sort.SliceStable(ships, func(i, j int) bool { return values[ships[i].Ship.ID] < values[ships[j].Ship.ID] })
-		var best gameapi.GoldsmithsQuote
-		for _, ship := range ships {
-			quote, err := r.api.GetGoldsmithsQuote(ctx, gameapi.GoldsmithsQuoteRequest{
-				PrincipalPence: principal, TermGameDays: 360, Repayment: "amortised",
-				ShipID: ship.Ship.ID, BankingRegion: loan.BankingRegion,
-			})
-			if err != nil {
-				var apiErr *gameapi.APIError
-				if errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 {
-					return false, r.markLoanBridgeDue(ctx, intent, "Goldsmiths bridge quote refused: "+apiErr.Code+" "+apiErr.Detail)
-				}
-				if ctx.Err() != nil {
-					return false, ctx.Err()
-				}
-				return false, r.recordLoanBridgeDecision(ctx, intent, "Goldsmiths bridge quote temporarily unavailable: "+err.Error())
+		regions := []string{loan.BankingRegion}
+		for _, port := range r.stateCache.Catalog.Ports {
+			if port.BankingRegion != "" && port.Phase <= r.stateCache.Clock.UnlockedPhase && !slices.Contains(regions, port.BankingRegion) {
+				regions = append(regions, port.BankingRegion)
 			}
-			if quote.MaxPrincipalPence < principal {
+		}
+		slices.Sort(regions[1:])
+		var best gameapi.GoldsmithsQuote
+		var bestFunding int64
+		var caps map[[2]string]int64
+		capRetry := false
+	quoteSearch:
+		for {
+			capsChanged := false
+			for _, region := range regions {
+				for _, ship := range ships {
+					key := [2]string{region, ship.Ship.ID}
+					cap, known := caps[key]
+					if !known {
+						cap = goldsmithsMaximumPence
+					}
+					amount, funding, err := r.loanBridgeQuoteAmount(ctx, loan, region, principal, cap)
+					if err != nil {
+						return false, err
+					}
+					if amount == 0 || funding <= 0 {
+						continue
+					}
+					quote, err := r.api.GetGoldsmithsQuote(ctx, gameapi.GoldsmithsQuoteRequest{
+						PrincipalPence: amount, TermGameDays: 360, Repayment: "amortised",
+						ShipID: ship.Ship.ID, BankingRegion: region,
+					})
+					if err != nil {
+						if ctx.Err() != nil {
+							return false, ctx.Err()
+						}
+						var apiErr *gameapi.APIError
+						if errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden && apiErr.Code == "goldsmiths_walk_away_ban" {
+							intent.Quote = gameapi.GoldsmithsQuote{}
+							return false, r.markLoanBridgeDue(ctx, intent, "Goldsmiths bridge quote refused: "+apiErr.Code+" "+apiErr.Detail)
+						}
+						if errors.As(err, &apiErr) && (apiErr.Status == http.StatusBadRequest || apiErr.Status == http.StatusConflict) {
+							if cap := goldsmithsRefusalCap(apiErr.Detail); cap > 0 && cap < amount {
+								if caps == nil {
+									caps = make(map[[2]string]int64)
+								}
+								caps[key], capsChanged = cap, true
+							}
+							if err := r.recordLoanBridgeDecision(ctx, intent, "Goldsmiths bridge quote refused for "+ship.Ship.ID+" in "+region+": "+apiErr.Code+" "+apiErr.Detail); err != nil {
+								return false, err
+							}
+							continue
+						}
+						if best.Quote.ID != "" {
+							break quoteSearch
+						}
+						retryAt := time.Time{}
+						if apiErr != nil {
+							retryAt = apiErr.RetryAfter
+						}
+						return false, r.deferLoanBridge(ctx, intent, "Goldsmiths bridge quote temporarily unavailable: "+err.Error(), retryAt)
+					}
+					if quote.MaxPrincipalPence < amount || !r.validGoldsmithsQuote(quote, ship.Ship.ID, region, amount) {
+						if quote.MaxPrincipalPence > 0 && quote.MaxPrincipalPence < amount {
+							if caps == nil {
+								caps = make(map[[2]string]int64)
+							}
+							caps[key], capsChanged = quote.MaxPrincipalPence, true
+						}
+						if err := r.recordLoanBridgeDecision(ctx, intent, "Goldsmiths bridge quote refused: unavailable, expired or mismatched exact terms"); err != nil {
+							return false, err
+						}
+						continue
+					}
+					if best.Quote.ID == "" || quote.RebuildValuePence < best.RebuildValuePence {
+						best, bestFunding = quote, funding
+					}
+				}
+				if best.Quote.ID != "" {
+					break quoteSearch
+				}
+			}
+			if capsChanged && !capRetry {
+				capRetry = true
 				continue
 			}
-			if !r.validGoldsmithsQuote(quote, ship.Ship.ID, loan.BankingRegion, principal) {
-				return false, r.markLoanBridgeDue(ctx, intent, "Goldsmiths bridge quote refused: unavailable, expired or mismatched exact terms")
+			if principal == 100_000 {
+				break
 			}
-			if best.Quote.ID == "" || quote.RebuildValuePence < best.RebuildValuePence {
-				best = quote
-			}
+			principal = max(int64(100_000), principal/2/10_000*10_000)
+			capRetry = false
 		}
 		if best.Quote.ID == "" {
-			return false, r.markLoanBridgeDue(ctx, intent, "Goldsmiths bridge unavailable: no free lien can cover the bounded installment shortfall")
+			return false, r.deferLoanBridge(ctx, intent, "Goldsmiths bridge unavailable: no free lien or regional house can cover the bounded installment shortfall", time.Time{})
 		}
-		intent.Quote = best
-		if err := r.markLoanBridgeDue(ctx, intent, "emergency Goldsmiths bridge admitted for installment cash shortfall"); err != nil {
-			return false, err
-		}
+		intent.Quote, intent.FundingPence = best, bestFunding
 		mission := &store.Mission{AccountID: r.account.ID, ShipID: "__loans", Phase: "loan_bridge", Generation: uuid.NewString()}
 		data := missionData{Plan: Plan{Kind: "treasury"}, CostsKnown: true, LoanBridge: intent}
-		err = r.stage(ctx, mission, &data, ShipState{}, "loan-accept", "/v1/loan/accept-quote", gameapi.QuoteActionRequest{QuoteID: best.Quote.ID})
-		if err != nil || data.Action == nil {
-			return false, errors.Join(err, r.clearLoanBridgeDue(ctx, intent))
+		if err := r.stage(ctx, mission, &data, ShipState{}, "loan-accept", "/v1/loan/accept-quote", gameapi.QuoteActionRequest{QuoteID: best.Quote.ID}); err != nil || data.Action == nil {
+			return false, err
+		}
+		// Persist the intent first. A restart can recover its missing marker;
+		// it must never find a newly burned due date with no staged mission.
+		if err := r.markLoanBridgeDue(ctx, intent, "emergency Goldsmiths bridge admitted for installment cash shortfall"); err != nil {
+			return false, err
 		}
 		return true, nil
 	}
@@ -882,7 +1249,7 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if mission != nil {
-		if data.Action != nil || time.Now().Before(data.CooldownUntil) {
+		if data.Action != nil || data.LoanBridge == nil && time.Now().Before(data.CooldownUntil) {
 			return false, nil
 		}
 		if mission.Phase == "loan_prepay_done" {
@@ -909,10 +1276,12 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 				return false, r.hold(ctx, "", "completed surplus repayment awaits authoritative repayment evidence")
 			}
 		}
+		if data.LoanBridge != nil {
+			if err := r.clearLoanBridgeDue(ctx, data.LoanBridge); err != nil {
+				return false, err
+			}
+		}
 		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
-	}
-	if changed, err := r.serviceInstallmentBridge(ctx); changed || err != nil {
-		return changed, err
 	}
 	for _, loan := range r.stateCache.Loans {
 		if !loan.IsMortgage || loan.Status != "active" || loan.OwedPence <= 0 || loan.NextPaymentDueAt == nil {
@@ -938,7 +1307,12 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], loan.ArrearsPence)
+		required[loan.BankingRegion] = loan.ArrearsPence
+		if input.Balances[loan.BankingRegion] < required[loan.BankingRegion] {
+			if _, _, _, funded := bestRemittance(input.Balances, required, input.Rates, loan.BankingRegion); !funded {
+				continue
+			}
+		}
 		intent := &loanRepaymentIntent{Before: loan, AmountPence: loan.ArrearsPence}
 		if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__loans", intent, nil, false); changed || err != nil {
 			return changed, err
@@ -952,6 +1326,14 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 			return false, err
 		}
 		return r.dispatch(ctx, mission, &data)
+	}
+	if changed, err := r.serviceInstallmentBridge(ctx); changed || err != nil {
+		return changed, err
+	}
+	for _, loan := range r.stateCache.Loans {
+		if loan.Status == "active" && loan.ArrearsPence > 0 {
+			return false, r.hold(ctx, "", "active loan arrears await hard-obligation-safe regional funding")
+		}
 	}
 	return false, nil
 }
@@ -1337,15 +1719,20 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 			loan, exists := r.loanByID(intent.Before.ID)
 			if mission.ShipID != "__loans" || mission.Phase != "loan_bridge" || !exists ||
 				loanRefinanceDueKey(loan) != loanRefinanceDueKey(intent.Before) ||
-				!decode[map[string]bool](r.snapshot, "_loan_bridge_due")[loanRefinanceDueKey(loan)] ||
 				json.Unmarshal(data.Action.Body, &request) != nil || request.QuoteID != intent.Quote.Quote.ID ||
 				intent.Quote.Quote.CollateralShipID == nil {
-				return errors.New("emergency bridge requires its immutable installment, quote and durable due-date marker")
+				return errors.New("emergency bridge requires its immutable installment and quote")
 			}
 			for _, dataset := range []string{"ship_listings", "loan_requests", "clock"} {
 				if !r.fresh(dataset) {
 					return errors.New("emergency bridge awaits fresh collateral and installment authority")
 				}
+			}
+			if reason := r.loanBridgeTargetReason(loan); reason != "" {
+				if err := r.recordLoanBridgeDecision(ctx, intent, reason); err != nil {
+					return err
+				}
+				return errors.New(reason)
 			}
 			shipID := *intent.Quote.Quote.CollateralShipID
 			available := false
@@ -1356,7 +1743,7 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 			for _, ship := range ships {
 				available = available || ship.Ship.ID == shipID
 			}
-			if !available || !r.validGoldsmithsQuote(intent.Quote, shipID, loan.BankingRegion, intent.Quote.Quote.PrincipalPence) {
+			if !available || !r.validGoldsmithsQuote(intent.Quote, shipID, intent.Quote.Quote.BankingRegion, intent.Quote.Quote.PrincipalPence) {
 				return errors.New("emergency bridge quote expired or collateral is no longer free")
 			}
 			shortfall, err := r.loanBridgeShortfall(ctx, loan)
@@ -1366,10 +1753,39 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 			if shortfall == 0 {
 				return errors.New("emergency bridge no longer has an installment cash shortfall")
 			}
-			principal := max(int64(100_000), min(goldsmithsMaximumPence, shortfall))
-			principal = min(goldsmithsMaximumPence, (principal+9_999)/10_000*10_000)
-			if principal < intent.Quote.Quote.PrincipalPence {
+			need, err := r.loanBridgeNeed(ctx, loan)
+			if err != nil {
+				return err
+			}
+			progress := r.loanBridgeDates()[loanRefinanceDueKey(loan)]
+			if progress.Banned || progress.BridgedPence > intent.BridgedBefore {
+				return errors.New("emergency bridge installment budget is already consumed or banned")
+			}
+			changed := intent.NeedPence <= 0
+			if changed {
+				intent.NeedPence, intent.BridgedBefore = need, progress.BridgedPence
+			}
+			need = min(need, max(0, intent.NeedPence-intent.BridgedBefore))
+			if need == 0 {
+				return errors.New("emergency bridge no longer has a hard installment cash need")
+			}
+			principal, funding, err := r.loanBridgeQuoteAmount(ctx, loan, intent.Quote.Quote.BankingRegion, need, intent.Quote.Quote.PrincipalPence)
+			if err != nil {
+				return err
+			}
+			if principal < intent.Quote.Quote.PrincipalPence || funding <= 0 {
 				return errors.New("emergency bridge cash shortfall shrank below its admitted principal")
+			}
+			changed = changed || intent.FundingPence != funding
+			intent.FundingPence = funding
+			if _, exists := r.loanBridgeDates()[loanRefinanceDueKey(loan)]; !exists {
+				if err := r.markLoanBridgeDue(ctx, intent, "recovered staged emergency bridge due-date marker before first send"); err != nil {
+					return err
+				}
+				changed = true
+			}
+			if changed {
+				return r.saveMission(ctx, mission, data)
 			}
 			return nil
 		}
@@ -1430,6 +1846,9 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 	}
 	if err != nil {
 		return err
+	}
+	if mission.ShipID == "__loans" && mission.Phase == "loan_repay" && loan.ArrearsPence > 0 && intent.AmountPence <= loan.ArrearsPence {
+		protected[loan.BankingRegion] = 0
 	}
 	amount := intent.AmountPence
 	if amount == 0 {

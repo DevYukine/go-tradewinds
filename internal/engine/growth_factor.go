@@ -1265,6 +1265,14 @@ func expansionMate(agents []expansionAgent, agent expansionAgent) (expansionAgen
 	return expansionAgent{}, false
 }
 
+func (r *Runner) expansionPartnerHire(agents []expansionAgent, agent expansionAgent, now time.Time) bool {
+	mate, paired := expansionMate(agents, agent)
+	return paired && agent.Region != "" && mate.Region == agent.Region &&
+		agent.HiredAt.IsZero() && !slices.Contains(r.stateCache.Factors, agent.PortID) &&
+		!mate.HiredAt.IsZero() && slices.Contains(r.stateCache.Factors, mate.PortID) &&
+		now.Before(mate.HiredAt.Add(2*time.Hour))
+}
+
 func expansionPairTime(agents []expansionAgent, agent expansionAgent) time.Time {
 	at := agent.HiredAt
 	if mate, found := expansionMate(agents, agent); found {
@@ -1622,8 +1630,7 @@ func (r *Runner) manageExpansionAgents(ctx context.Context) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		mate, paired := expansionMate(agents, agent)
-		partnerHire := paired && !mate.HiredAt.IsZero() && slices.Contains(r.stateCache.Factors, mate.PortID)
+		partnerHire := r.expansionPartnerHire(agents, agent, now)
 		if hold := r.debtServiceHoldPence(); hold > 0 && !partnerHire {
 			projected, _, _, funded := measuredFunding(input.Balances, required, input.Rates)
 			if funded && growthFreeCash(projected, required) < hold {
@@ -1634,6 +1641,17 @@ func (r *Runner) manageExpansionAgents(ctx context.Context) (bool, error) {
 			}
 		}
 		if changed, err := r.fundTreasury(ctx, input.Balances, required); changed || err != nil {
+			if changed && err == nil && partnerHire {
+				funding, data, err := r.loadMission(ctx, "__treasury")
+				if err != nil {
+					return true, err
+				}
+				if funding != nil && funding.Destination == agent.Region && data.GrowthFunding &&
+					data.Action != nil && data.Action.Stage == "remit" {
+					data.GrowthPartnerHire = true
+					return true, r.saveMission(ctx, funding, &data)
+				}
+			}
 			return changed, err
 		}
 		if input.Balances[agent.Region] < required[agent.Region] {
@@ -1873,23 +1891,19 @@ func (r *Runner) expansionHireReady(ctx context.Context, body []byte) error {
 		return &expansionAdmissionError{reason: expansionAgentAdmissionReason}
 	}
 	agents := decode[[]expansionAgent](r.snapshot, "_expansion_agents")
+	now := time.Now().UTC()
 	partnerHire := false
 	for _, agent := range agents {
 		if agent.PortID != port.ID || agent.Partner == "" || !agent.HiredAt.IsZero() {
 			continue
 		}
 		if _, paired := expansionMate(agents, agent); paired &&
-			!time.Now().Before(expansionPairTime(agents, agent).Add(2*time.Hour)) {
+			!now.Before(expansionPairTime(agents, agent).Add(2*time.Hour)) {
 			return &expansionAdmissionError{
 				reason: "expansion pair observation floor expired before its first send", retryOnly: true,
 			}
 		}
-		for _, mate := range agents {
-			if mate.PortID == agent.Partner && mate.Partner == agent.PortID &&
-				!mate.HiredAt.IsZero() && slices.Contains(r.stateCache.Factors, mate.PortID) {
-				partnerHire = true
-			}
-		}
+		partnerHire = partnerHire || r.expansionPartnerHire(agents, agent, now)
 	}
 	target, err := r.liveCapacitySavingsTarget(ctx)
 	if err != nil {

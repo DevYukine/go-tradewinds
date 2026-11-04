@@ -515,7 +515,6 @@ func TestDebtServiceHoldDoesNotBlockCommissioningRefit(t *testing.T) {
 func TestDebtServiceHoldDoesNotBlockArrearsCure(t *testing.T) {
 	t.Parallel()
 	h, runner := loanCapacityFixture(t, 750_000, false)
-	refuseInstallmentBridgeQuotes(h)
 	loan := installDebtServiceHoldLoan(runner, "north_sea")
 	loan.ArrearsPence = 1_000
 	runner.stateCache.Loans[0] = loan

@@ -159,6 +159,8 @@ func (r *Runner) voyageInsuranceWaitSafe(ship ShipState, hull Hull, route Route,
 }
 
 func (r *Runner) voyagePremiumReserves(input *PlanningInput, mission *store.Mission, data *missionData, ship ShipState) {
+	input.ReserveByRegion = fullLoanReserves(*input)
+	input.DeferredLoanReserves = nil
 	protected := *data
 	protected.VoyageInsurance = nil
 	premium := r.reserveMissionCash(input.ReserveByRegion, mission, &protected, ship)

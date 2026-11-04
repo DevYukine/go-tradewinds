@@ -151,7 +151,7 @@ func TestObligationReservesDeferInstallmentUntilLeadWindow(t *testing.T) {
 			if offset > 0 {
 				want = 0
 				if len(deferred) != 1 || deferred[0].Region != "america" ||
-					deferred[0].FullReserve != loanReserve(loan) || !deferred[0].ReserveFrom.Equal(due.Add(-lead)) {
+					deferred[0].FullReserve != loanReserve(loan) || !deferred[0].ReserveFrom.Equal(due.Add(-lead-serverClockStaleness)) {
 					t.Fatalf("missing exact deferred reserve: %+v", deferred)
 				}
 				sources := PlanningSources{CompanyID: state.CompanyID, Generation: "installment-test", Metadata: map[string]DatasetMeta{
@@ -248,8 +248,8 @@ func TestObligationReservesPhaseEachAmortisedLoanIndependently(t *testing.T) {
 	if required["america"] != *state.Loans[0].NextPaymentPence || len(deferred) != 2 {
 		t.Fatalf("mixed due dates were collapsed to one regional schedule: %v %+v", required, deferred)
 	}
-	if !deferred[0].ReserveFrom.Equal(state.Loans[1].NextPaymentDueAt.Add(-72*time.Minute)) ||
-		!deferred[1].ReserveFrom.Equal(state.Loans[2].NextPaymentDueAt.Add(-72*time.Minute)) {
+	if !deferred[0].ReserveFrom.Equal(state.Loans[1].NextPaymentDueAt.Add(-72*time.Minute-serverClockStaleness)) ||
+		!deferred[1].ReserveFrom.Equal(state.Loans[2].NextPaymentDueAt.Add(-72*time.Minute-serverClockStaleness)) {
 		t.Fatalf("distinct bridge due dates lost their own reserve windows: %+v", deferred)
 	}
 	in := PlanningInput{ReserveByRegion: required, DeferredLoanReserves: deferred, Clock: state.Clock}
@@ -259,7 +259,7 @@ func TestObligationReservesPhaseEachAmortisedLoanIndependently(t *testing.T) {
 	state.Clock.RealUTC = state.Clock.RealUTC.Add(3 * time.Hour)
 	required, deferred = obligationReservePlan(state, nil, 0)
 	if want := *state.Loans[0].NextPaymentPence + *state.Loans[1].NextPaymentPence; required["america"] != want ||
-		len(deferred) != 1 || !deferred[0].ReserveFrom.Equal(state.Loans[2].NextPaymentDueAt.Add(-72*time.Minute)) {
+		len(deferred) != 1 || !deferred[0].ReserveFrom.Equal(state.Loans[2].NextPaymentDueAt.Add(-72*time.Minute-serverClockStaleness)) {
 		t.Fatalf("one bridge entering its window changed another loan's phase: %v %+v", required, deferred)
 	}
 }

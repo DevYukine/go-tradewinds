@@ -121,7 +121,7 @@ func TestIncomeFundingInstallmentCashOnlyForCapitalBackBeforeReserveWindow(t *te
 			{"no authoritative arrival", hour + 10*time.Second, true, false},
 		} {
 			t.Run(test.name, func(t *testing.T) {
-				due := plan.ExpectedArrival.Add(lead + test.slack)
+				due := plan.ExpectedArrival.Add(lead + serverClockStaleness + test.slack)
 				runner.stateCache.Loans = []gameapi.Loan{installmentFundingLoan(due, 500_000)}
 				runner.snapshot["loans"] = encode(runner.stateCache.Loans)
 				key := routeKey(plan.Origin, plan.Destination, state.Ships[0].Ship.ShipClass)
@@ -307,7 +307,7 @@ func TestInstallmentFreeze20261104(t *testing.T) {
 		{FromRegion: "america", ToRegion: "channel", FeeBPS: 335},
 		{FromRegion: "channel", ToRegion: "america", FeeBPS: 335},
 	}
-	if state.HomePortID != "le_havre" || input.FleetDailyUpkeepPence != 67_081 || len(input.DeferredLoanReserves) != 1 || !input.DeferredLoanReserves[0].ReserveFrom.Equal(due.Add(-gameDuration(3, input.Clock.Calendar.TimeScale))) || input.DeferredLoanReserves[0].FullReserve != 1_963_488 {
+	if state.HomePortID != "le_havre" || input.FleetDailyUpkeepPence != 67_081 || len(input.DeferredLoanReserves) != 1 || !input.DeferredLoanReserves[0].ReserveFrom.Equal(due.Add(-gameDuration(3, input.Clock.Calendar.TimeScale)-serverClockStaleness)) || input.DeferredLoanReserves[0].FullReserve != 1_963_488 {
 		t.Fatalf("replay lost the captured home, upkeep or installment window: %+v", input)
 	}
 	required := clonePence(input.ReserveByRegion)

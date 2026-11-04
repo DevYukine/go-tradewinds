@@ -108,9 +108,7 @@ func voyageFleetBills(in PlanningInput, plan Plan) int64 {
 	return int64(bills)
 }
 
-// Quotation, staged funding and first-send procurement use the same immutable
-// IOC bounds. MaxInt64 is the existing fail-closed cash-overflow sentinel.
-func cargoFundingRequired(in PlanningInput, plan Plan) map[string]int64 {
+func cargoLoanReserves(in PlanningInput, plan Plan) map[string]int64 {
 	required := clonePence(in.ReserveByRegion)
 	for _, deferred := range in.DeferredLoanReserves {
 		if in.Clock.Calendar.TimeScale <= 0 || plan.ExpectedArrival.IsZero() ||
@@ -118,6 +116,13 @@ func cargoFundingRequired(in PlanningInput, plan Plan) map[string]int64 {
 			required[deferred.Region] = growthCashTotal(required[deferred.Region], deferred.FullReserve)
 		}
 	}
+	return required
+}
+
+// Quotation, staged funding and first-send procurement use the same immutable
+// IOC bounds. MaxInt64 is the existing fail-closed cash-overflow sentinel.
+func cargoFundingRequired(in PlanningInput, plan Plan) map[string]int64 {
+	required := cargoLoanReserves(in, plan)
 	origin, originOK := findPort(in.Catalog, plan.Origin)
 	destination, destinationOK := findPort(in.Catalog, plan.Destination)
 	if !originOK || !destinationOK || origin.BankingRegion == "" || destination.BankingRegion == "" {

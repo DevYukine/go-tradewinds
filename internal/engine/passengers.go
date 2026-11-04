@@ -512,7 +512,7 @@ func quotePassageWithMinimumLifetime(in PlanningInput, destination string, group
 			return quote, err
 		}
 		origin, _ := findPort(in.Catalog, route.FromPort)
-		if in.Balances[origin.BankingRegion]-order.cash < in.ReserveByRegion[origin.BankingRegion] {
+		if in.Balances[origin.BankingRegion]-order.cash < fullLoanReserves(in)[origin.BankingRegion] {
 			return quote, errors.New("passage safe stores would spend protected regional reserves")
 		}
 		plan.StoresLimitPence, plan.Economics.StoreCashPence = order.limit, order.cash

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"sync"
 	"testing"
@@ -13,14 +14,14 @@ import (
 func loanBridgeNoMarker(t *testing.T, world *loanBridgeWorld, runner *Runner, loan gameapi.Loan) {
 	t.Helper()
 	key := loanRefinanceDueKey(loan)
-	if _, exists := decode[map[string]bool](runner.snapshot, "_loan_bridge_due")[key]; exists {
+	if _, exists := decode[map[string]json.RawMessage](runner.snapshot, "_loan_bridge_due")[key]; exists {
 		t.Fatalf("proven never-sent bridge retained its in-memory due-date marker for %s", key)
 	}
 	snapshot, err := world.h.db.Snapshot(world.h.ctx, world.h.account.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := decode[map[string]bool](snapshot, "_loan_bridge_due")[key]; exists {
+	if _, exists := decode[map[string]json.RawMessage](snapshot, "_loan_bridge_due")[key]; exists {
 		t.Fatalf("proven never-sent bridge retained its durable due-date marker for %s", key)
 	}
 }

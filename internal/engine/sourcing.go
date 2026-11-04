@@ -1594,6 +1594,9 @@ func (r *Runner) driveRelocation(ctx context.Context, ship ShipState, mission *s
 		if err != nil {
 			return false, err
 		}
+		source, _ := findPort(input.Catalog, data.Plan.Destination)
+		input.ReserveByRegion = sourcingReserves(input, source)
+		input.DeferredLoanReserves = nil
 		bills, _ := r.unclaimedBillsSince(data)
 		spent := relocationCashCost(data) + bills
 		plan := sizeRelocationCargo(input, data.Plan, contract, spent)

@@ -143,6 +143,9 @@ func (r *Runner) consumeResult(ctx context.Context, mission *store.Mission, data
 				}
 			}
 			if data.LoanBridge != nil {
+				if err := r.recordLoanBridgeFunding(ctx, data.LoanBridge); err != nil {
+					return false, err
+				}
 				if err := r.recordLoanBridgeDecision(ctx, data.LoanBridge, "Goldsmiths bridge accepted: installment shortfall funded by quote "+data.LoanBridge.Quote.Quote.ID); err != nil {
 					return false, err
 				}
@@ -465,15 +468,21 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 		}
 	}
 	playerApprovalRefusal := stage == "loan-accept" && data.PlayerLoan != nil && data.Action.Path == "/v1/loan/approve" && domainRefusal
-	// A refused emergency bridge quote can never serve this installment again:
-	// the due-date marker persisted before staging bars a restage, so the only
-	// work left is recording the refusal and retiring the loan control.
 	bridgeRefusal := data.LoanBridge != nil && stage == "loan-accept" && data.Action.Path == "/v1/loan/accept-quote" &&
-		(domainRefusal || status == http.StatusForbidden && problem.Code == "goldsmiths_walk_away_ban")
+		(domainRefusal || status == http.StatusTooManyRequests || status == http.StatusForbidden && problem.Code == "goldsmiths_walk_away_ban")
 	if bridgeRefusal {
-		if err := r.recordLoanBridgeDecision(ctx, data.LoanBridge, fmt.Sprintf("Goldsmiths bridge refused: HTTP %d %s: %s", status, problem.Code, problem.Detail)); err != nil {
+		reason := fmt.Sprintf("Goldsmiths bridge refused: HTTP %d %s: %s", status, problem.Code, problem.Detail)
+		if status == http.StatusForbidden && problem.Code == "goldsmiths_walk_away_ban" {
+			refused := *data.LoanBridge
+			refused.Quote = gameapi.GoldsmithsQuote{}
+			if err := r.markLoanBridgeDue(ctx, &refused, reason); err != nil {
+				return false, err
+			}
+		} else if err := r.deferLoanBridge(ctx, data.LoanBridge, reason, data.CooldownUntil); err != nil {
 			return false, err
 		}
+		applyRejectedResult(mission, data, status, problem.Detail)
+		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 	}
 	if stage == "loan-request" && domainRefusal {
 		if err := r.recordPlayerLoanDecision(ctx, data.PlayerLoan, "request_refused", "server refused the player request: "+problem.Detail); err != nil {
@@ -488,7 +497,7 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 			return false, err
 		}
 	}
-	if stage == "loan-accept" && data.Capacity != nil && domainRefusal && !playerApprovalRefusal && !bridgeRefusal {
+	if stage == "loan-accept" && data.Capacity != nil && domainRefusal && !playerApprovalRefusal {
 		if err := r.recordCapacityFinancingRefusal(ctx, data); err != nil {
 			return false, err
 		}
@@ -556,11 +565,6 @@ func (r *Runner) consumeRejection(ctx context.Context, mission *store.Mission, d
 	if stage == "loan-request" && domainRefusal {
 		// A refused borrower request acquired no hull or trading obligation.
 		// Do not invent an aborted trade settlement from its journal receipt.
-		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
-	}
-	if bridgeRefusal {
-		// The known walk-away ban must not trip the generic authorization stop,
-		// and the persisted marker already bars a restage for this loan + due.
 		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 	}
 	if err := r.saveMission(ctx, mission, data); err != nil {

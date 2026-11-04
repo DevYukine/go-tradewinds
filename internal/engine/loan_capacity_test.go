@@ -660,24 +660,9 @@ func TestLoanCapacityReservationsAddOnlyGrowthAndDonorOutflows(t *testing.T) {
 	}
 }
 
-func refuseInstallmentBridgeQuotes(h *recoveryHarness) {
-	base := h.api.server.Config.Handler
-	h.api.server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method == http.MethodGet && request.URL.Path == "/v1/loan/quote" {
-			h.api.writeJSON(writer, http.StatusConflict, map[string]any{
-				"code": "house_funds_insufficient", "detail": "no instant bridge available for this repayment fixture",
-			})
-			return
-		}
-		base.ServeHTTP(writer, request)
-	})
-}
-
 func TestLoanArrearsFundingPreemptsOrdinaryCargoAndOccupiedTreasury(t *testing.T) {
 	t.Parallel()
 	h, runner := loanCapacityFixture(t, 750_000, false)
-	// A refused emergency bridge must not delay the existing exact arrears cure.
-	refuseInstallmentBridgeQuotes(h)
 	loan := snapshotTestLoan()
 	loan.BankingRegion, loan.ArrearsPence = "channel", 1_000
 	runner.stateCache.Loans, runner.snapshot["loans"] = []gameapi.Loan{loan}, encode([]gameapi.Loan{loan})
@@ -689,7 +674,7 @@ func TestLoanArrearsFundingPreemptsOrdinaryCargoAndOccupiedTreasury(t *testing.T
 		vault := &runner.stateCache.Vaults[index]
 		vault.BalancePence = hard[vault.BankingRegion]
 		if vault.BankingRegion == "channel" {
-			vault.BalancePence = hard[vault.BankingRegion] - loanReserve(loan) + loan.ArrearsPence - 1_000
+			vault.BalancePence = loan.ArrearsPence - 1_000
 		} else {
 			vault.BalancePence += 10_000
 		}
@@ -749,7 +734,6 @@ func loanCapacityAcceptedFixture(t *testing.T) (*recoveryHarness, *Runner) {
 func TestLoanArrearsCashCrunchStagesAndSendsCureInSameCycle(t *testing.T) {
 	t.Parallel()
 	h, runner := loanCapacityFixture(t, 750_000, false)
-	refuseInstallmentBridgeQuotes(h)
 	installExcludedHullCatalog(h, "unknown")
 	excluded := sailingShipRow(recoveryShipCharizard, "Charizard", recoveryFarPort, recoveryHomePort)
 	excluded["ship"].(map[string]any)["ship_class"] = "excluded-barque"
