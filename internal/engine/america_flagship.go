@@ -293,7 +293,13 @@ func (r *Runner) americaFlagshipBuildQuote(ctx context.Context, data *missionDat
 	if err != nil {
 		return quote, err
 	}
-	if !r.fresh("vaults") || input.Balances["america"]-input.ReserveByRegion["america"] < *quote.TotalCostPence {
+	reserve := input.ReserveByRegion["america"]
+	for _, deferred := range input.DeferredLoanReserves {
+		if deferred.Region == "america" {
+			reserve = growthCashTotal(reserve, deferred.FullReserve)
+		}
+	}
+	if !r.fresh("vaults") || input.Balances["america"]-reserve < *quote.TotalCostPence {
 		return quote, errors.New("America flagship waits for America cash above other committed reservations to cover the live Boston quote")
 	}
 	return quote, nil

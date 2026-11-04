@@ -5,12 +5,14 @@ import (
 	"time"
 )
 
+const serverClockStaleness = 2 * time.Minute
+
 // The request envelope brackets the observed server reading. Elapsed time is
 // real time; the game time scale applies only when converting game durations.
 func serverBounds(hostNow time.Time, clock Clock, meta DatasetMeta, generation string) (lower, upper time.Time, ok bool) {
 	if clock.RealUTC.IsZero() || meta.AttemptedAt.IsZero() || meta.UpdatedAt.IsZero() ||
 		!meta.Complete || meta.Stale || meta.Error != "" || generation == "" || meta.Generation != generation ||
-		meta.AttemptedAt.After(meta.UpdatedAt) || meta.UpdatedAt.After(hostNow) || hostNow.Sub(meta.UpdatedAt) > 2*time.Minute {
+		meta.AttemptedAt.After(meta.UpdatedAt) || meta.UpdatedAt.After(hostNow) || hostNow.Sub(meta.UpdatedAt) > serverClockStaleness {
 		return time.Time{}, time.Time{}, false
 	}
 	return clock.RealUTC.Add(hostNow.Sub(meta.UpdatedAt)), clock.RealUTC.Add(hostNow.Sub(meta.AttemptedAt)), true

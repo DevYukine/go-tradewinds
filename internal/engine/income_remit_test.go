@@ -138,7 +138,7 @@ func TestExactGrowthAndSourcingRemitsFundSmallShortfalls(t *testing.T) {
 				}
 				required := clonePence(input.ReserveByRegion)
 				required["north"] = input.Balances["north"] + 1_000
-				if changed, err := r.fundTreasuryMission(h.ctx, input.Balances, required, "__treasury", nil, funding); err != nil || !changed {
+				if changed, err := r.fundTreasuryMission(h.ctx, input.Balances, required, "__treasury", nil, funding, false); err != nil || !changed {
 					t.Fatalf("exact growth funding did not stage: changed=%t error=%v", changed, err)
 				}
 				mission, data = h.mission("__treasury")

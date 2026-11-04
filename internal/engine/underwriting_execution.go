@@ -221,6 +221,7 @@ func (r *Runner) underwritingBudget(ctx context.Context, policy InsurancePolicy,
 	if err != nil {
 		return UnderwritingBudget{}, err
 	}
+	input.ReserveByRegion = fullLoanReserves(input)
 	if self {
 		pending := decode[underwritingPending](r.snapshot, "_underwriting_pending")
 		for _, region := range pending.Regions {

@@ -69,10 +69,18 @@ func TestLoanPrepaySkipsUnfundedHigherRateRegion(t *testing.T) {
 		channelCash-dearInput.ReserveByRegion["channel"] >= loanFullPayment(dear) || loanPrepaymentSurplus(dearInput, dear) >= 100_000 {
 		t.Fatalf("higher-rate loan's region must have neither full-payoff funds nor partial surplus: cash=%d input=%+v", channelCash, dearInput)
 	}
+	cheapInput, ready, err := runner.loanPrepaymentInput(h.ctx, cheap)
+	if err != nil || !ready {
+		t.Fatalf("lower-rate region input: ready=%t err=%v", ready, err)
+	}
+	want := loanPrepaymentSurplus(cheapInput, cheap) / 100 * 100
+	if want != 171_600 {
+		t.Fatalf("moving the expensive loan must preserve its full buffer in the newly funded region while releasing the cheap loan's own buffer for payoff: %d", want)
+	}
 	if changed, err := runner.prepayLoans(h.ctx); err != nil || !changed {
 		t.Fatalf("funded lower-rate loan was starved: changed=%t err=%v", changed, err)
 	}
-	if len(api.repays) != 1 || api.repays[0].LoanID != cheap.ID || api.repays[0].AmountPence == nil || *api.repays[0].AmountPence != 171_600 {
+	if len(api.repays) != 1 || api.repays[0].LoanID != cheap.ID || api.repays[0].AmountPence == nil || *api.repays[0].AmountPence != want {
 		t.Fatalf("unfunded higher-rate debt blocked the other region's reserve-safe surplus: %+v", api.repays)
 	}
 }
@@ -156,6 +164,17 @@ func TestLoanPrepayPartialAmbiguousInstallmentCannotReconcile(t *testing.T) {
 
 func TestLoanPrepayPartialDoneWaitsForFreshCapture(t *testing.T) {
 	h, runner, _, _ := moneyPrepayFixture(t, []int64{563_785}, 123_456, false)
+	loan := runner.stateCache.Loans[0]
+	// Optional partial prepayment still keeps the full two-installment buffer,
+	// even when scheduled service is deferred.
+	buffer := loanReserve(loan) - runner.stateCache.loanServiceReserve(loan, runner.stateCache.Clock.RealUTC.Add(serverClockStaleness))
+	for i := range runner.stateCache.Vaults {
+		vault := &runner.stateCache.Vaults[i]
+		if vault.BankingRegion == loan.BankingRegion {
+			vault.BalancePence += buffer
+			h.api.setVaultBalance("north", vault.BalancePence)
+		}
+	}
 	oldLoans := append([]gameapi.Loan(nil), runner.stateCache.Loans...)
 	oldVaults := append([]Vault(nil), runner.stateCache.Vaults...)
 	if changed, err := runner.prepayLoans(h.ctx); err != nil || !changed {

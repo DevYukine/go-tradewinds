@@ -142,12 +142,13 @@ func (r *Runner) futuresBookBudgets(ctx context.Context, rows []store.FuturesInt
 	if err != nil {
 		return nil, nil, err
 	}
+	required := r.growthLoanReserves(input.ReserveByRegion)
 	free := make(map[string]int64, len(input.Balances))
 	budgets := make(map[string]int64, len(input.Balances))
 	for region, balance := range input.Balances {
-		free[region] = balance - input.ReserveByRegion[region]
+		free[region] = balance - required[region]
 	}
-	totalFree := growthFreeCash(input.Balances, input.ReserveByRegion)
+	totalFree := growthFreeCash(input.Balances, required)
 	hold := r.debtServiceHoldPence()
 	if totalFree < hold {
 		if err := r.recordDebtServiceHold(ctx, totalFree); err != nil {

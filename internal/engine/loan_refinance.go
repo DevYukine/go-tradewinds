@@ -37,18 +37,19 @@ func (r *Runner) saveLoanRefinance(ctx context.Context, state loanRefinanceState
 	return r.saveSnapshot(ctx)
 }
 
-func loanRefinanceEarmark(state loanRefinanceState, loan gameapi.Loan) int64 {
+func loanRefinanceEarmark(state loanRefinanceState, loan gameapi.Loan, serviceReserve int64) int64 {
 	if state.OldLoanID != loan.ID || state.NewLoanID == "" && state.State != "approve" {
 		return 0
 	}
-	return max(0, loanFullPayment(loan)-loanReserve(loan))
+	return max(0, loanFullPayment(loan)-serviceReserve)
 }
 
 func reserveLoanRefinance(required map[string]int64, state AccountState, snapshot map[string]json.RawMessage) {
 	refinance := decode[loanRefinanceState](snapshot, "_loan_refinance")
 	for _, loan := range state.Loans {
 		if loan.ID == refinance.OldLoanID && loan.OwedPence > 0 {
-			required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], loanRefinanceEarmark(refinance, loan))
+			required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion],
+				loanRefinanceEarmark(refinance, loan, state.loanServiceReserve(loan, state.Clock.RealUTC.Add(serverClockStaleness))))
 			return
 		}
 	}
@@ -86,7 +87,7 @@ func (r *Runner) loanRefinanceNeeded(loan gameapi.Loan) (bool, string) {
 	if ratio > 0.9 {
 		return false, "refinance no longer meets the ten-percent annuity gate"
 	}
-	window := time.Duration(float64(72*time.Hour) / float64(r.stateCache.Clock.Calendar.TimeScale))
+	window := gameDuration(loanServiceLeadGameDays, r.stateCache.Clock.Calendar.TimeScale)
 	if loan.NextPaymentDueAt.After(lower.Add(window)) {
 		return false, "next installment is outside the three-game-day emergency window"
 	}
@@ -524,6 +525,8 @@ func (r *Runner) loanRefinanceRepaymentInput(ctx context.Context, state loanRefi
 	if err != nil {
 		return input, err
 	}
+	input.ReserveByRegion = fullLoanReserves(input)
+	input.DeferredLoanReserves = nil
 	if loanReserve(old) == math.MaxInt64 || loanReserve(newLoan) == math.MaxInt64 ||
 		loanFullPayment(old) <= 0 || loanFullPayment(old) > maximumPence ||
 		growthCashTotal(input.ReserveByRegion[old.BankingRegion], loanFullPayment(old)) == math.MaxInt64 {
@@ -548,7 +551,7 @@ func (r *Runner) repayLoanRefinance(ctx context.Context, mission *store.Mission,
 	required := clonePence(input.ReserveByRegion)
 	required[old.BankingRegion] = growthCashTotal(required[old.BankingRegion], loanFullPayment(old))
 	if input.Balances[old.BankingRegion] < required[old.BankingRegion] {
-		if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__treasury", &loanRepaymentIntent{Before: old}, mission); changed || err != nil {
+		if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__treasury", &loanRepaymentIntent{Before: old}, mission, false); changed || err != nil {
 			return changed, err
 		}
 		return false, r.decision(ctx, loanRefinanceMission, "loan_refinance_wait", "refinance payoff awaits regional funding above the operating floor and trading commitments", state)

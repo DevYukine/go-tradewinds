@@ -57,6 +57,7 @@ type missionData struct {
 	Futures                   *futuresState           `json:"futures,omitempty"`
 	Bulletin                  *bulletinIntent         `json:"bulletin,omitempty"`
 	LoanRepayment             *loanRepaymentIntent    `json:"loan_repayment,omitempty"`
+	LoanBridge                *loanBridgeIntent       `json:"loan_bridge,omitempty"`
 	PlayerLoan                *playerLoanIntent       `json:"player_loan,omitempty"`
 	Rename                    *shipRenameIntent       `json:"rename,omitempty"`
 	Commission                *commissionIntent       `json:"commission,omitempty"`
@@ -64,6 +65,7 @@ type missionData struct {
 	VoyageInsuranceSettledAt  time.Time               `json:"voyage_insurance_settled_at,omitempty"`
 	FundingMission            string                  `json:"funding_mission,omitempty"`
 	FundingGeneration         string                  `json:"funding_generation,omitempty"`
+	GrowthFunding             bool                    `json:"growth_funding,omitempty"`
 	SourcingSpentPence        int64                   `json:"sourcing_spent_pence"`
 	SourcingGameDays          float64                 `json:"sourcing_game_days"`
 	ClosingObservedAt         time.Time               `json:"closing_observed_at"`

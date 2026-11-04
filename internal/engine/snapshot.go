@@ -40,8 +40,10 @@ func gameVersionLogText(version string) string {
 
 // AccountState is the decoded account frame consumed by the pure planners.
 type AccountState struct {
+	CompanyID         string
 	Catalog           Catalog
 	Clock             Clock
+	loanClockUnknown  bool
 	Ships             []ShipState
 	Markets           map[string]Market
 	Ports             map[string]PortDetail
@@ -1132,12 +1134,13 @@ func (r *Runner) refresh(ctx context.Context) error {
 }
 
 func (r *Runner) state() AccountState {
-	return StateFromSnapshot(time.Now(), r.snapshot, PlanningSources{Metadata: r.meta, Generation: r.generation})
+	return StateFromSnapshot(time.Now(), r.snapshot, PlanningSources{CompanyID: r.account.CompanyID, Metadata: r.meta, Generation: r.generation})
 }
 
 // StateFromSnapshot decodes a retained frame without network or database access.
 func StateFromSnapshot(now time.Time, snapshot map[string]json.RawMessage, sources PlanningSources) AccountState {
 	state := AccountState{
+		CompanyID:         sources.CompanyID,
 		Catalog:           decode[Catalog](snapshot, "catalog"),
 		Clock:             decode[Clock](snapshot, "clock"),
 		Ships:             decode[[]ShipState](snapshot, "ships"),
@@ -1171,11 +1174,15 @@ func StateFromSnapshot(now time.Time, snapshot map[string]json.RawMessage, sourc
 	state.Vaults = vaults.Vaults
 	var profile struct {
 		Company struct {
+			ID         string `json:"id"`
 			HomePortID string `json:"home_port_id"`
 		} `json:"company"`
 	}
 	_ = json.Unmarshal(snapshot["profile"], &profile)
 	state.HomePortID = profile.Company.HomePortID
+	if state.CompanyID == "" {
+		state.CompanyID = profile.Company.ID
+	}
 	state.Markets = monopolyMarketView(now, snapshot, sources, state.Markets, state.Catalog, state.Clock)
 	return state
 }

@@ -47,9 +47,14 @@ func PlanningInputFor(now time.Time, ship ShipState, state AccountState, snapsho
 	_, eventsTracked := sources.Metadata["world_events"]
 	_, eventsRecorded := snapshot["world_events"]
 	reserve := ProtectedReservePence(state)
+	if state.CompanyID == "" {
+		state.CompanyID = sources.CompanyID
+	}
+	state.loanClockUnknown = !validClock
+	required, deferred := obligationReservePlan(state, snapshot, reserve)
 	return PlanningInput{
 		Now:                   now,
-		CompanyID:             sources.CompanyID,
+		CompanyID:             state.CompanyID,
 		Ship:                  ship,
 		Fleet:                 state.Ships,
 		HazardQuotes:          state.HazardQuotes,
@@ -68,7 +73,8 @@ func PlanningInputFor(now time.Time, ship ShipState, state AccountState, snapsho
 		Routes:                state.Routes,
 		Contracts:             taperedContracts(state.Contracts, state.Catalog, sources.CharterProceedsPence, ship.EffectiveHoldCapacityTons),
 		Balances:              balances,
-		ReserveByRegion:       obligationReserves(state, snapshot, reserve),
+		ReserveByRegion:       required,
+		DeferredLoanReserves:  deferred,
 		ReservePence:          reserve,
 		Metadata:              sources.Metadata,
 		Generation:            sources.Generation,

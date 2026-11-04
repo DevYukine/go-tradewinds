@@ -391,7 +391,7 @@ func sourcingRouteReady(in PlanningInput, from, to string, hull Hull) (Route, er
 }
 
 func sourcingReserves(in PlanningInput, source Port) map[string]int64 {
-	required := clonePence(in.ReserveByRegion)
+	required := fullLoanReserves(in)
 	required[source.BankingRegion] = max(required[source.BankingRegion], in.ReservePence+3*in.Ports[source.ID].BerthDuesPerDayPence)
 	return required
 }
@@ -714,7 +714,10 @@ func (r *Runner) committedPlanningInputExceptLoan(ctx context.Context, ship Ship
 			delete(snapshot, "_loan_refinance")
 		}
 	}
-	input.ReserveByRegion = obligationReserves(r.stateCache, snapshot, r.protectedReservePence(), excludedLoans...)
+	state := r.stateCache
+	_, _, validClock := input.serverBounds()
+	state.loanClockUnknown = !validClock
+	input.ReserveByRegion, input.DeferredLoanReserves = obligationReservePlan(state, snapshot, r.protectedReservePence(), excludedLoans...)
 	required, err := r.treasuryReservesFor(ctx, snapshot, excludedLoans...)
 	if err != nil {
 		return input, err
@@ -1083,6 +1086,7 @@ func (r *Runner) considerSourcing(ctx context.Context, ship ShipState) (bool, st
 	plan := plans[planIndex]
 	source, _ := findPort(input.Catalog, plan.Destination)
 	input.ReserveByRegion = sourcingReserves(input, source)
+	input.DeferredLoanReserves = nil
 	provisions := bookCommodity(input.Markets[plan.Origin], "provisions")
 	if provisions == nil || provisions.Depth == nil {
 		return false, "", r.hold(ctx, ship.Ship.ID, "sourcing store-risk basis lacks current local replacement depth")
@@ -1300,6 +1304,7 @@ func (r *Runner) relocationSpendingReadyAtPrice(ctx context.Context, ship ShipSt
 		return errors.New("idle exploration source is absent from the current catalog")
 	}
 	input.ReserveByRegion = sourcingReserves(input, source)
+	input.DeferredLoanReserves = nil
 	// Committed source continuation does not re-earn idle after the physical
 	// voyage reset. Origin sends above still require current idle eligibility.
 	// Neither path acquires a fresh seed or a larger durable cap.

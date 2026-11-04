@@ -197,6 +197,12 @@ func partialPrepayFixture(t *testing.T, targetSurplus int64, withCheap bool) (*r
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Optional repayment cannot use another loan's deferred operating capital.
+	for _, loan := range runner.stateCache.Loans {
+		if runner.loanServiceReserve(loan) == 0 {
+			protected[loan.BankingRegion] += loanReserve(loan)
+		}
+	}
 	for i := range runner.stateCache.Vaults {
 		vault := &runner.stateCache.Vaults[i]
 		vault.BalancePence = protected[vault.BankingRegion]

@@ -642,6 +642,7 @@ func (r *Runner) marqueHomeFunds(ctx context.Context, self bool) (string, int64,
 	if err != nil {
 		return "", 0, err
 	}
+	input.ReserveByRegion = fullLoanReserves(input)
 	if self {
 		pending := decode[marquePending](r.snapshot, "_marque_pending")
 		if pending.BankingRegion == home.BankingRegion && pending.CostPence > 0 && pending.CostPence <= maximumPence {

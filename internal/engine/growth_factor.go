@@ -902,13 +902,13 @@ func (r *Runner) expansionRequired(ctx context.Context, input PlanningInput, reg
 	if err != nil {
 		return nil, err
 	}
-	return r.expansionFundingRequired(input, required, region, fees), nil
+	return r.expansionFundingRequired(input, r.growthLoanReserves(required), region, fees), nil
 }
 
 func (r *Runner) expansionFundingRequired(input PlanningInput, required map[string]int64, region string, fees int64) map[string]int64 {
 	ownFees := expansionFeeCommitments(r.stateCache, r.snapshot)[region]
 	required[region] = max(0, required[region]-ownFees)
-	for candidate, protected := range input.ReserveByRegion {
+	for candidate, protected := range r.growthLoanReserves(input.ReserveByRegion) {
 		if candidate == region {
 			protected = max(0, protected-ownFees)
 		}
@@ -929,7 +929,7 @@ func (r *Runner) expansionPassEvidence(ctx context.Context, input PlanningInput)
 	if reason, err := r.growthCashFunding(ctx, &pass.growth); err != nil || reason != "" {
 		return pass, reason, err
 	}
-	free := growthFreeCash(input.Balances, input.ReserveByRegion)
+	free := growthFreeCash(input.Balances, r.growthLoanReserves(input.ReserveByRegion))
 	hold := r.debtServiceHoldPence()
 	pass.growth.available = free - hold
 	if pass.growth.available < 0 {
@@ -973,7 +973,7 @@ func (r *Runner) expansionProbeAdmission(ctx context.Context, admission *expansi
 		return "overseas probe waits for both hire fees, transfer fees and protected regional reserves", false, nil
 	}
 	if hold := r.debtServiceHoldPence(); growthFreeCash(projected, admission.required) < hold {
-		free := growthFreeCash(admission.input.Balances, admission.input.ReserveByRegion)
+		free := growthFreeCash(admission.input.Balances, r.growthLoanReserves(admission.input.ReserveByRegion))
 		return debtServiceHoldPrefix, false, r.recordDebtServiceHold(ctx, free)
 	}
 	return "", false, nil
@@ -988,7 +988,7 @@ func (r *Runner) expansionBuildAdmissionForPass(ctx context.Context, admission *
 	free := growthFreeCash(projected, admission.required)
 	hold := r.debtServiceHoldPence()
 	if funded && free < hold {
-		return debtServiceHoldPrefix, false, r.recordDebtServiceHold(ctx, growthFreeCash(input.Balances, input.ReserveByRegion))
+		return debtServiceHoldPrefix, false, r.recordDebtServiceHold(ctx, growthFreeCash(input.Balances, r.growthLoanReserves(input.ReserveByRegion)))
 	}
 	capacity.SurplusPence = growthCashTotal(2*expansionAgentHireFeePence, free) - hold
 	admission.build, admission.quote, admission.fresh, err = r.expansionBuildEstimateForRegion(ctx,
@@ -1001,7 +1001,7 @@ func (r *Runner) expansionBuildAdmissionForPass(ctx context.Context, admission *
 		if hold > 0 && admission.build.EconomicallyViable && admission.build.rejection == capacityRejectionNone &&
 			admission.build.CashShortfallPence > 0 && admission.build.CashShortfallPence <= hold {
 			admission.build.Reason = debtServiceHoldPrefix
-			if err := r.recordDebtServiceHold(ctx, growthFreeCash(input.Balances, input.ReserveByRegion)); err != nil {
+			if err := r.recordDebtServiceHold(ctx, growthFreeCash(input.Balances, r.growthLoanReserves(input.ReserveByRegion))); err != nil {
 				return "", false, err
 			}
 		}
@@ -1627,7 +1627,7 @@ func (r *Runner) manageExpansionAgents(ctx context.Context) (bool, error) {
 		if hold := r.debtServiceHoldPence(); hold > 0 && !partnerHire {
 			projected, _, _, funded := measuredFunding(input.Balances, required, input.Rates)
 			if funded && growthFreeCash(projected, required) < hold {
-				if err := r.recordDebtServiceHold(ctx, growthFreeCash(input.Balances, input.ReserveByRegion)); err != nil {
+				if err := r.recordDebtServiceHold(ctx, growthFreeCash(input.Balances, r.growthLoanReserves(input.ReserveByRegion))); err != nil {
 					return false, err
 				}
 				return false, r.holdExpected(ctx, "", debtServiceHoldPrefix)
@@ -1912,7 +1912,7 @@ func (r *Runner) expansionHireReady(ctx context.Context, body []byte) error {
 		return err
 	}
 	if hold := r.debtServiceHoldPence(); hold > 0 && !partnerHire {
-		free := growthFreeCash(input.Balances, input.ReserveByRegion)
+		free := growthFreeCash(input.Balances, r.growthLoanReserves(input.ReserveByRegion))
 		if free < hold {
 			if err := r.recordDebtServiceHold(ctx, free); err != nil {
 				return err

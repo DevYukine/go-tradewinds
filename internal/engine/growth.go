@@ -430,6 +430,19 @@ func growthFreeCash(balances, required map[string]int64) int64 {
 	return free
 }
 
+func (r *Runner) growthLoanReserves(phased map[string]int64) map[string]int64 {
+	required := clonePence(phased)
+	for _, loan := range r.stateCache.Loans {
+		// Unsecured debt already retains its whole payoff through the growth
+		// hold; restoring its deferred installments here would count them twice.
+		if !debtServiceHoldLoan(loan, r.account.CompanyID) &&
+			r.stateCache.loanServiceReserve(loan, r.stateCache.Clock.RealUTC.Add(serverClockStaleness)) == 0 {
+			required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], loanReserve(loan))
+		}
+	}
+	return required
+}
+
 func (r *Runner) growthCashFunding(ctx context.Context, evidence *growthEvidence) (string, error) {
 	for _, vault := range r.stateCache.Vaults {
 		if vault.AccountType == "vault" && vault.BalancePence < 0 {
@@ -440,6 +453,7 @@ func (r *Runner) growthCashFunding(ctx context.Context, evidence *growthEvidence
 	if err != nil {
 		return "", err
 	}
+	required = r.growthLoanReserves(required)
 	for region, working := range evidence.workingByRegion {
 		required[region] = growthCashTotal(max(required[region], r.protectedReservePence()), working)
 	}
@@ -1289,7 +1303,7 @@ func (r *Runner) driveGrowth(ctx context.Context, mission *store.Mission, data *
 	if mission.Phase == "growth_refit" {
 		if ship.Ship.CannonsCount < data.TargetCannons {
 			cost := addedCannons * 15_000
-			if input.Balances[port.BankingRegion]-cost-data.GrowthWorkingCapitalPence < input.ReserveByRegion[port.BankingRegion]-cost {
+			if input.Balances[port.BankingRegion]-cost-data.GrowthWorkingCapitalPence < fullLoanReserves(input)[port.BankingRegion]-cost {
 				return false, r.hold(ctx, ship.Ship.ID, "commissioning cannons must preserve incumbent commitments, own cargo allocation and regional reserves")
 			}
 			return true, r.stage(ctx, mission, data, ship, "refit", "/v1/shipyard/modify-ship", map[string]any{"ship_id": ship.Ship.ID, "target_cannons_count": data.TargetCannons})

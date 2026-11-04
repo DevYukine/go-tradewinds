@@ -660,9 +660,24 @@ func TestLoanCapacityReservationsAddOnlyGrowthAndDonorOutflows(t *testing.T) {
 	}
 }
 
+func refuseInstallmentBridgeQuotes(h *recoveryHarness) {
+	base := h.api.server.Config.Handler
+	h.api.server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == "/v1/loan/quote" {
+			h.api.writeJSON(writer, http.StatusConflict, map[string]any{
+				"code": "house_funds_insufficient", "detail": "no instant bridge available for this repayment fixture",
+			})
+			return
+		}
+		base.ServeHTTP(writer, request)
+	})
+}
+
 func TestLoanArrearsFundingPreemptsOrdinaryCargoAndOccupiedTreasury(t *testing.T) {
 	t.Parallel()
 	h, runner := loanCapacityFixture(t, 750_000, false)
+	// A refused emergency bridge must not delay the existing exact arrears cure.
+	refuseInstallmentBridgeQuotes(h)
 	loan := snapshotTestLoan()
 	loan.BankingRegion, loan.ArrearsPence = "channel", 1_000
 	runner.stateCache.Loans, runner.snapshot["loans"] = []gameapi.Loan{loan}, encode([]gameapi.Loan{loan})
@@ -734,6 +749,7 @@ func loanCapacityAcceptedFixture(t *testing.T) (*recoveryHarness, *Runner) {
 func TestLoanArrearsCashCrunchStagesAndSendsCureInSameCycle(t *testing.T) {
 	t.Parallel()
 	h, runner := loanCapacityFixture(t, 750_000, false)
+	refuseInstallmentBridgeQuotes(h)
 	installExcludedHullCatalog(h, "unknown")
 	excluded := sailingShipRow(recoveryShipCharizard, "Charizard", recoveryFarPort, recoveryHomePort)
 	excluded["ship"].(map[string]any)["ship_class"] = "excluded-barque"
@@ -813,7 +829,7 @@ func TestLoanArrearsFundingOnlyTargetsLoanRegion(t *testing.T) {
 	runner.stateCache.Rates = []Rate{{FromRegion: "north_sea", ToRegion: "baltic"}, {FromRegion: "north_sea", ToRegion: "channel"}}
 	balances := map[string]int64{"north_sea": 10_000}
 	required := map[string]int64{"north_sea": 1_000, "baltic": 1_000, "channel": 1_000}
-	if changed, err := runner.fundTreasuryMission(h.ctx, balances, required, "__loans", &loanRepaymentIntent{Before: loan, AmountPence: 1_000}, nil); err != nil || !changed {
+	if changed, err := runner.fundTreasuryMission(h.ctx, balances, required, "__loans", &loanRepaymentIntent{Before: loan, AmountPence: 1_000}, nil, false); err != nil || !changed {
 		t.Fatalf("fund loan region: %t, %v", changed, err)
 	}
 	_, data := h.mission("__loans")

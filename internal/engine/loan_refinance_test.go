@@ -278,10 +278,11 @@ func TestLoanRefinanceEarmarkFullPayoffExactlyOnceAcrossRestart(t *testing.T) {
 				}
 			}
 			without := obligationReserves(runner.stateCache, withoutSnapshot, runner.protectedReservePence())
-			if with[old.BankingRegion]-without[old.BankingRegion] != loanFullPayment(old)-loanReserve(old) {
+			serviceReserve := runner.stateCache.loanServiceReserve(old, runner.stateCache.Clock.RealUTC.Add(serverClockStaleness))
+			if with[old.BankingRegion]-without[old.BankingRegion] != loanFullPayment(old)-serviceReserve {
 				t.Fatal("refinance proceeds are not earmarked above the old installment reservation")
 			}
-			// Cash before borrowing covered only the old two-installment reserve;
+			// Cash before borrowing covered only the old phased service reserve;
 			// the new reserve and earmark must not veto paying the old loan off.
 			input, err := runner.loanRefinanceRepaymentInput(h.ctx, state, old)
 			if err != nil {
@@ -619,7 +620,7 @@ func TestLoanRefinanceUnsentAndRateLimitedApprovalsReleaseEarmark(t *testing.T) 
 			}
 			state := decode[loanRefinanceState](runner.snapshot, "_loan_refinance")
 			old, _ := runner.loanByID(state.OldLoanID)
-			if state.State != "wait" || loanRefinanceEarmark(state, old) != 0 {
+			if state.State != "wait" || loanRefinanceEarmark(state, old, runner.stateCache.loanServiceReserve(old, runner.stateCache.Clock.RealUTC.Add(serverClockStaleness))) != 0 {
 				t.Fatalf("unissued approval left a phantom earmark: %+v", state)
 			}
 		})

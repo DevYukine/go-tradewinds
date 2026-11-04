@@ -125,12 +125,18 @@ func (r *Runner) commissionAdmission(row gameapi.CommissionListing, port Port, q
 	if !slices.Contains(r.stateCache.Factors, port.ID) {
 		return commissionDecision{Reason: "commission requires resident factor presence without pinning a trading ship"}
 	}
-	available := input.Balances[port.BankingRegion] - input.ReserveByRegion[port.BankingRegion]
+	reserve := input.ReserveByRegion[port.BankingRegion]
+	for _, deferred := range input.DeferredLoanReserves {
+		if deferred.Region == port.BankingRegion {
+			reserve = growthCashTotal(reserve, deferred.FullReserve)
+		}
+	}
+	available := input.Balances[port.BankingRegion] - reserve
 	fee := paidFee
 	if quote.TotalCostPence != nil {
 		capital := growthCashTotal(*quote.TotalCostPence, row.CollateralPence)
 		if available < capital && r.fresh("rates") {
-			required := clonePence(input.ReserveByRegion)
+			required := fullLoanReserves(input)
 			required[port.BankingRegion] = growthCashTotal(required[port.BankingRegion], capital)
 			_, gross, net, funded := bestRemittance(input.Balances, required, r.stateCache.Rates, port.BankingRegion)
 			if funded && net >= capital-available {
@@ -290,7 +296,7 @@ func (r *Runner) prepareCommissionBuild(ctx context.Context, mission *store.Miss
 		return false, err
 	}
 	target := *quote.TotalCostPence
-	required := clonePence(input.ReserveByRegion)
+	required := fullLoanReserves(input)
 	if data.Commission.Accepted {
 		if target > row.RewardPence+row.CollateralPence {
 			return false, r.hold(ctx, commissionMission, "commission build quote exceeds price and recoverable deposit")
@@ -391,7 +397,13 @@ func (r *Runner) commissionPreflight(ctx context.Context, data *missionData) err
 		if !decision.Accepted || *quote.TotalCostPence > intent.BuildLimitPence {
 			return errors.New("commission no longer clears its admitted cash and margin: " + decision.Reason)
 		}
-		if input.Balances[port.BankingRegion]-input.ReserveByRegion[port.BankingRegion] < growthCashTotal(*quote.TotalCostPence, row.CollateralPence) {
+		reserve := input.ReserveByRegion[port.BankingRegion]
+		for _, deferred := range input.DeferredLoanReserves {
+			if deferred.Region == port.BankingRegion {
+				reserve = growthCashTotal(reserve, deferred.FullReserve)
+			}
+		}
+		if input.Balances[port.BankingRegion]-reserve < growthCashTotal(*quote.TotalCostPence, row.CollateralPence) {
 			return errors.New("commission acceptance waits for build and deposit funding in the yard region")
 		}
 		return nil

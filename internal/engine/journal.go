@@ -219,7 +219,7 @@ func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission,
 		}
 	}
 	r.localRetirements++
-	if (data.Bulletin != nil || data.Rename != nil) && (kind == neverSentFinancialEvent || kind == neverSentControlEvent) {
+	if (data.Bulletin != nil || data.Rename != nil || data.LoanBridge != nil) && (kind == neverSentFinancialEvent || kind == neverSentControlEvent) {
 		exists, err := r.db.HasAction(ctx, r.account.ID, data.Action.ID)
 		if err != nil {
 			return false, err
@@ -288,6 +288,11 @@ func (r *Runner) replanUnsentAction(ctx context.Context, mission *store.Mission,
 		data.Marque = nil
 		mission.Phase = "done"
 		data.CooldownUntil = maxTime(data.CooldownUntil, time.Now().UTC().Add(marqueQuoteInterval))
+	}
+	if data.LoanBridge != nil {
+		if err := r.clearLoanBridgeDue(ctx, data.LoanBridge); err != nil {
+			return false, err
+		}
 	}
 	data.Action = nil
 	data.Sequence++
@@ -1380,10 +1385,31 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 			}
 		}
 		required := input.ReserveByRegion
+		if data.GrowthFunding {
+			required = r.growthLoanReserves(required)
+		} else if data.Commission != nil || action.Stage == "sourcing-remit" || data.FundingMission != "" {
+			required = fullLoanReserves(input)
+		}
 		if input.Balances[request.FromRegion]-request.Gross < required[request.FromRegion] {
 			return errors.New("new remittance would spend protected donor reserves or incumbent commitments")
 		}
 		fee := request.Gross/10_000*rate.FeeBPS + request.Gross%10_000*rate.FeeBPS/10_000
+		if data.GrowthFunding {
+			var free int64
+			for region, balance := range input.Balances {
+				if region == request.FromRegion {
+					balance -= request.Gross
+				} else if region == request.ToRegion {
+					balance += request.Gross - fee
+				}
+				if balance > required[region] {
+					free = growthCashTotal(free, balance-required[region])
+				}
+			}
+			if free < r.debtServiceHoldPence() {
+				return errors.New("growth remittance must preserve the remaining unsecured loan payoff")
+			}
+		}
 		if action.Stage == "sourcing-remit" {
 			if err := r.relocationSpendingReady(ctx, ship, data, fee); err != nil {
 				return err
@@ -1551,7 +1577,13 @@ func (r *Runner) newActionPreflight(ctx context.Context, mission *store.Mission,
 		if data.Capacity != nil {
 			workingCapital = 0
 		}
-		if input.Balances[port.BankingRegion]-added*15_000-workingCapital < input.ReserveByRegion[port.BankingRegion] {
+		reserve := input.ReserveByRegion[port.BankingRegion]
+		for _, deferred := range input.DeferredLoanReserves {
+			if deferred.Region == port.BankingRegion {
+				reserve = growthCashTotal(reserve, deferred.FullReserve)
+			}
+		}
+		if input.Balances[port.BankingRegion]-added*15_000-workingCapital < reserve {
 			return errors.New("new refit would spend protected regional reserves or commissioning working capital")
 		}
 	case "buy", "sell", "provision":

@@ -112,6 +112,12 @@ func voyageFleetBills(in PlanningInput, plan Plan) int64 {
 // IOC bounds. MaxInt64 is the existing fail-closed cash-overflow sentinel.
 func cargoFundingRequired(in PlanningInput, plan Plan) map[string]int64 {
 	required := clonePence(in.ReserveByRegion)
+	for _, deferred := range in.DeferredLoanReserves {
+		if in.Clock.Calendar.TimeScale <= 0 || plan.ExpectedArrival.IsZero() ||
+			plan.ExpectedArrival.Add(gameDuration(1.0/24, in.Clock.Calendar.TimeScale)).After(deferred.ReserveFrom) {
+			required[deferred.Region] = growthCashTotal(required[deferred.Region], deferred.FullReserve)
+		}
+	}
 	origin, originOK := findPort(in.Catalog, plan.Origin)
 	destination, destinationOK := findPort(in.Catalog, plan.Destination)
 	if !originOK || !destinationOK || origin.BankingRegion == "" || destination.BankingRegion == "" {

@@ -54,7 +54,13 @@ func (r *Runner) maintain(ctx context.Context, ship ShipState, mission *store.Mi
 	if err != nil {
 		return false, err
 	}
-	if input.Balances[port.BankingRegion]-cost < input.ReserveByRegion[port.BankingRegion] {
+	reserve := input.ReserveByRegion[port.BankingRegion]
+	for _, deferred := range input.DeferredLoanReserves {
+		if deferred.Region == port.BankingRegion {
+			reserve = growthCashTotal(reserve, deferred.FullReserve)
+		}
+	}
+	if input.Balances[port.BankingRegion]-cost < reserve {
 		return false, r.hold(ctx, ship.Ship.ID, "armed maintenance deferred: measured gun cost would spend regional bills reserve")
 	}
 	if (target-ship.Ship.CannonsCount)*2 > ship.EffectiveHoldCapacityTons-ship.CargoUsedTons {
@@ -89,7 +95,13 @@ func (r *Runner) protectedReservePence() int64 {
 // obligationReserves protects observed obligations, not every vault or every
 // hypothetical destination. Candidate-specific funding adds its chosen ports.
 func obligationReserves(state AccountState, snapshot map[string]json.RawMessage, base int64, excludedLoans ...string) map[string]int64 {
+	required, _ := obligationReservePlan(state, snapshot, base, excludedLoans...)
+	return required
+}
+
+func obligationReservePlan(state AccountState, snapshot map[string]json.RawMessage, base int64, excludedLoans ...string) (map[string]int64, []loanReserveDeferral) {
 	required := make(map[string]int64)
+	var deferred []loanReserveDeferral
 	if home, exists := findPort(state.Catalog, state.HomePortID); exists {
 		upkeep := max(0, DailyUpkeep(state.Ships, state.Catalog, len(state.Factors)))
 		required[home.BankingRegion] = growthCashTotal(base, upkeep, upkeep, upkeep)
@@ -151,14 +163,21 @@ func obligationReserves(state AccountState, snapshot map[string]json.RawMessage,
 		if slices.Contains(excludedLoans, loan.ID) {
 			continue
 		}
-		required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], loanReserve(loan))
+		reserve := state.loanServiceReserve(loan, state.Clock.RealUTC.Add(serverClockStaleness))
+		required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], reserve)
+		if reserve == 0 && loanReserve(loan) > 0 {
+			deferred = append(deferred, loanReserveDeferral{
+				Region: loan.BankingRegion, FullReserve: loanReserve(loan),
+				ReserveFrom: loan.NextPaymentDueAt.Add(-gameDuration(loanServiceLeadGameDays, state.Clock.Calendar.TimeScale)),
+			})
+		}
 	}
 	for region, fees := range expansionFeeCommitments(state, snapshot) {
 		required[region] = growthCashTotal(max(required[region], base), fees)
 	}
 	reserveAmericaFlagship(required, state, snapshot)
 	reserveLoanRefinance(required, state, snapshot)
-	return required
+	return required, deferred
 }
 
 func (r *Runner) treasuryReserves(ctx context.Context) (map[string]int64, error) {
@@ -171,6 +190,8 @@ func (r *Runner) treasuryReservesExceptLoan(ctx context.Context, excludedLoan st
 
 func (r *Runner) treasuryReservesFor(ctx context.Context, snapshot map[string]json.RawMessage, excludedLoans ...string) (map[string]int64, error) {
 	state := r.stateCache
+	_, _, validClock := r.serverBounds()
+	state.loanClockUnknown = !validClock
 	base := r.protectedReservePence()
 	required := obligationReserves(state, snapshot, base, excludedLoans...)
 	portRegions := make(map[string]string, len(state.Catalog.Ports))
@@ -246,14 +267,14 @@ func (r *Runner) manageTreasury(ctx context.Context) (bool, error) {
 			"auto_remit_min_reserve_pence": minimumReserve,
 		})
 	}
-	return r.fundTreasury(ctx, balances, required)
+	return r.fundTreasuryMission(ctx, balances, required, "__treasury", nil, nil, false)
 }
 
 func (r *Runner) fundTreasury(ctx context.Context, balances, required map[string]int64) (bool, error) {
-	return r.fundTreasuryMission(ctx, balances, required, "__treasury", nil, nil)
+	return r.fundTreasuryMission(ctx, balances, required, "__treasury", nil, nil, true)
 }
 
-func (r *Runner) fundTreasuryMission(ctx context.Context, balances, required map[string]int64, owner string, repayment *loanRepaymentIntent, funding *store.Mission) (bool, error) {
+func (r *Runner) fundTreasuryMission(ctx context.Context, balances, required map[string]int64, owner string, repayment *loanRepaymentIntent, funding *store.Mission, growthFunding bool) (bool, error) {
 	current, data, err := r.loadMission(ctx, owner)
 	if err != nil {
 		return false, err
@@ -295,6 +316,7 @@ func (r *Runner) fundTreasuryMission(ctx context.Context, balances, required map
 			StartedAt:     time.Now().UTC(),
 			CostsKnown:    true,
 			LoanRepayment: repayment,
+			GrowthFunding: growthFunding,
 		}
 		if funding != nil {
 			data.FundingMission, data.FundingGeneration = funding.ShipID, funding.Generation

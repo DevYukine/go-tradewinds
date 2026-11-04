@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"math"
 	"sort"
 	"strings"
@@ -15,9 +16,10 @@ import (
 )
 
 const (
-	goldsmithsMinimumPence = int64(10_000)
-	goldsmithsMaximumPence = int64(750_000)
-	debtServiceHoldPrefix  = "growth deferred: free cash must keep the remaining unsecured loan payoff"
+	goldsmithsMinimumPence  = int64(10_000)
+	goldsmithsMaximumPence  = int64(750_000)
+	loanServiceLeadGameDays = 3
+	debtServiceHoldPrefix   = "growth deferred: free cash must keep the remaining unsecured loan payoff"
 )
 
 type capacityFinancing struct {
@@ -28,6 +30,11 @@ type capacityFinancing struct {
 	DonorByRegion     map[string]int64    `json:"donor_by_region"`
 	BuildBy           time.Time           `json:"build_by,omitempty"`
 	Cancel            bool                `json:"cancel,omitempty"`
+}
+type loanBridgeIntent struct {
+	Before         gameapi.Loan            `json:"before"`
+	Quote          gameapi.GoldsmithsQuote `json:"quote"`
+	ShortfallPence int64                   `json:"shortfall_pence"`
 }
 
 func validMortgageTerms(terms *gameapi.MortgageTerms, total int64) bool {
@@ -173,6 +180,42 @@ func loanReserve(loan gameapi.Loan) int64 {
 	return max(reserve, loan.ArrearsPence)
 }
 
+type loanReserveDeferral struct {
+	Region      string
+	FullReserve int64
+	ReserveFrom time.Time
+}
+
+// Only short-turnover operating capital may use an installment before the
+// three-game-day cash window shared with emergency refinancing.
+func (state AccountState) loanServiceReserve(loan gameapi.Loan, at time.Time) int64 {
+	if state.CompanyID == "" || loan.BorrowerCompanyID != state.CompanyID || loan.Status != "active" ||
+		loan.Repayment != "amortised" || loan.ArrearsPence != 0 || loan.NextPaymentDueAt == nil ||
+		loan.NextPaymentDueAt.IsZero() || loan.NextPaymentPence == nil || *loan.NextPaymentPence <= 0 ||
+		at.IsZero() || state.Clock.RealUTC.IsZero() || state.Clock.Paused || state.Clock.Calendar.TimeScale <= 0 || state.loanClockUnknown {
+		return loanReserve(loan)
+	}
+	if at.Add(gameDuration(loanServiceLeadGameDays, state.Clock.Calendar.TimeScale)).Before(*loan.NextPaymentDueAt) {
+		return 0
+	}
+	return max(*loan.NextPaymentPence, loan.ArrearsPence)
+}
+
+func (r *Runner) loanServiceReserve(loan gameapi.Loan) int64 {
+	state := r.stateCache
+	_, _, valid := r.serverBounds()
+	state.loanClockUnknown = !valid
+	return state.loanServiceReserve(loan, state.Clock.RealUTC.Add(serverClockStaleness))
+}
+
+func fullLoanReserves(in PlanningInput) map[string]int64 {
+	required := clonePence(in.ReserveByRegion)
+	for _, deferred := range in.DeferredLoanReserves {
+		required[deferred.Region] = growthCashTotal(required[deferred.Region], deferred.FullReserve)
+	}
+	return required
+}
+
 func loanDailyInterest(loan gameapi.Loan) float64 {
 	if loan.RateBasis == "annual" && loan.AnnualRateBPS != nil {
 		return float64(loan.OutstandingPrincipalPence) * float64(*loan.AnnualRateBPS) / 10_000 / 360
@@ -216,7 +259,10 @@ func (r *Runner) debtServiceHoldPence() int64 {
 	var hold int64
 	for _, loan := range r.stateCache.Loans {
 		if debtServiceHoldLoan(loan, r.account.CompanyID) {
-			hold = growthCashTotal(hold, max(0, loanFullPayment(loan)-loanReserve(loan)))
+			// Match the captured input's phase even if its metadata becomes stale
+			// while a controller is running; never release a zero-reserve payoff.
+			reserve := r.stateCache.loanServiceReserve(loan, r.stateCache.Clock.RealUTC.Add(serverClockStaleness))
+			hold = growthCashTotal(hold, max(0, loanFullPayment(loan)-reserve))
 		}
 	}
 	return hold
@@ -609,6 +655,224 @@ func (r *Runner) stageLoanRepayment(ctx context.Context, mission *store.Mission,
 	return true, r.stage(ctx, mission, data, ShipState{}, "loan-repay", "/v1/loan/repay", gameapi.RepayLoanRequest{LoanID: loan.ID, AmountPence: requested})
 }
 
+// Installment collections draw from all vaults. Protect non-loan bills and
+// earlier collections once, rather than counting the same cash for every loan.
+func (r *Runner) loanBridgeShortfall(ctx context.Context, loan gameapi.Loan) (int64, error) {
+	if !r.opts.Execute || loan.BorrowerCompanyID != r.account.CompanyID || loan.Status != "active" ||
+		loan.Repayment != "amortised" || loan.OwedPence <= 0 ||
+		r.stateCache.Clock.Paused || r.stateCache.Clock.Calendar.TimeScale <= 0 {
+		return 0, nil
+	}
+	if _, _, ok := r.serverBounds(); !ok {
+		return 0, nil
+	}
+	at := r.stateCache.Clock.RealUTC.Add(serverClockStaleness)
+	if loan.ArrearsPence <= 0 && (loan.NextPaymentDueAt == nil || loan.NextPaymentDueAt.IsZero() ||
+		loan.NextPaymentPence == nil || *loan.NextPaymentPence <= 0 ||
+		at.Add(gameDuration(loanServiceLeadGameDays, r.stateCache.Clock.Calendar.TimeScale)).Before(*loan.NextPaymentDueAt)) {
+		return 0, nil
+	}
+	collectionBy := at
+	if loan.NextPaymentDueAt != nil {
+		collectionBy = *loan.NextPaymentDueAt
+	}
+	excluded := make([]string, 0, len(r.stateCache.Loans))
+	for _, other := range r.stateCache.Loans {
+		excluded = append(excluded, other.ID)
+	}
+	snapshot := maps.Clone(r.snapshot)
+	delete(snapshot, "_loan_refinance")
+	delete(snapshot, "_america_flagship")
+	bills, err := r.treasuryReservesFor(ctx, snapshot, excluded...)
+	if err != nil {
+		return 0, err
+	}
+	var cash int64
+	for _, vault := range r.stateCache.Vaults {
+		if vault.AccountType == "vault" {
+			cash += vault.BalancePence
+		}
+	}
+	for _, bill := range bills {
+		cash -= bill
+	}
+	for _, other := range r.stateCache.Loans {
+		if other.ID == loan.ID || other.BorrowerCompanyID != r.account.CompanyID ||
+			other.Status != "active" && other.Status != "defaulted" {
+			continue
+		}
+		var collection int64
+		if other.ArrearsPence > 0 {
+			collection = other.ArrearsPence
+		}
+		if other.NextPaymentDueAt != nil && !other.NextPaymentDueAt.After(collectionBy) && other.NextPaymentPence != nil {
+			collection = max(collection, *other.NextPaymentPence)
+		}
+		cash -= collection
+	}
+	payment := loanRefinancePayment(loan)
+	return max(0, payment-cash), nil
+}
+
+func (r *Runner) loanBridgeShips(ctx context.Context) ([]ShipState, error) {
+	mission, data, err := r.loadMission(ctx, "__growth")
+	if err != nil {
+		return nil, err
+	}
+	var pending []gameapi.LoanQuote
+	if mission != nil && data.Capacity != nil && data.Capacity.Financing != nil {
+		financing := data.Capacity.Financing
+		if !financing.Cancel && len(financing.Loans) < len(financing.Quotes) {
+			pending = financing.Quotes[len(financing.Loans):]
+		}
+	}
+	ships := r.freeLoanShips()
+	free := ships[:0]
+	for _, ship := range ships {
+		pledged := false
+		for _, loan := range r.stateCache.Loans {
+			if loan.CollateralShipID != nil && *loan.CollateralShipID == ship.Ship.ID &&
+				(loan.Status == "active" || loan.Status == "defaulted") {
+				pledged = true
+				break
+			}
+		}
+		for _, quote := range pending {
+			if quote.CollateralShipID != nil && *quote.CollateralShipID == ship.Ship.ID {
+				pledged = true
+				break
+			}
+		}
+		if !pledged {
+			free = append(free, ship)
+		}
+	}
+	return free, nil
+}
+
+func (r *Runner) recordLoanBridgeDecision(ctx context.Context, intent *loanBridgeIntent, reason string) error {
+	return r.decision(ctx, "__loans", "loan_bridge", reason, map[string]any{
+		"loan_id": intent.Before.ID, "due_at": intent.Before.NextPaymentDueAt,
+		"shortfall_pence": intent.ShortfallPence, "principal_pence": intent.Quote.Quote.PrincipalPence,
+		"banking_region": intent.Before.BankingRegion, "ship_id": intent.Quote.Quote.CollateralShipID,
+	})
+}
+
+func (r *Runner) markLoanBridgeDue(ctx context.Context, intent *loanBridgeIntent, reason string) error {
+	if err := r.recordLoanBridgeDecision(ctx, intent, reason); err != nil {
+		return err
+	}
+	dates := decode[map[string]bool](r.snapshot, "_loan_bridge_due")
+	if dates == nil {
+		dates = make(map[string]bool)
+	}
+	for key := range dates {
+		id, _, _ := strings.Cut(key, "|")
+		if loan, exists := r.loanByID(id); !exists || loan.Status != "active" && loan.Status != "defaulted" {
+			delete(dates, key)
+		}
+	}
+	dates[loanRefinanceDueKey(intent.Before)] = true
+	r.snapshot["_loan_bridge_due"] = encode(dates)
+	return r.saveSnapshot(ctx)
+}
+
+func (r *Runner) clearLoanBridgeDue(ctx context.Context, intent *loanBridgeIntent) error {
+	dates := decode[map[string]bool](r.snapshot, "_loan_bridge_due")
+	delete(dates, loanRefinanceDueKey(intent.Before))
+	r.snapshot["_loan_bridge_due"] = encode(dates)
+	return r.saveSnapshot(ctx)
+}
+
+func (r *Runner) serviceInstallmentBridge(ctx context.Context) (bool, error) {
+	if !r.opts.Execute || !r.loanRequestAuthority() {
+		return false, nil
+	}
+	for _, dataset := range []string{"clock", "ships", "ship_listings", "catalog", "profile", "settings", "factors", "warehouses", "contracts"} {
+		if !r.fresh(dataset) {
+			return false, nil
+		}
+	}
+	dates := decode[map[string]bool](r.snapshot, "_loan_bridge_due")
+	for _, loan := range r.stateCache.Loans {
+		if dates[loanRefinanceDueKey(loan)] {
+			continue
+		}
+		shortfall, err := r.loanBridgeShortfall(ctx, loan)
+		if err != nil {
+			return false, err
+		}
+		if shortfall == 0 {
+			continue
+		}
+		intent := &loanBridgeIntent{Before: loan, ShortfallPence: shortfall}
+		principal := max(int64(100_000), min(goldsmithsMaximumPence, shortfall))
+		principal = min(goldsmithsMaximumPence, (principal+9_999)/10_000*10_000)
+		ships, err := r.loanBridgeShips(ctx)
+		if err != nil {
+			return false, err
+		}
+		if len(ships) == 0 {
+			return false, r.recordLoanBridgeDecision(ctx, intent, "Goldsmiths bridge unavailable: no free collateral; no quote requested")
+		}
+		// Fresh turnkey class prices rank the requests cheaply; the returned
+		// appraisal below decides which exact eligible lien is least valuable.
+		values := make(map[string]int64, len(ships))
+		for _, ship := range ships {
+			value := int64(math.MaxInt64)
+			for key, quote := range r.stateCache.Quotes {
+				if quote.ShipClass == ship.Ship.ShipClass && r.fresh("yard_quotes/"+key) &&
+					quote.TotalCostPence != nil && *quote.TotalCostPence > 0 {
+					value = min(value, growthCashTotal(*quote.TotalCostPence, ship.Ship.CannonsCount*15_000))
+				}
+			}
+			values[ship.Ship.ID] = value
+		}
+		sort.SliceStable(ships, func(i, j int) bool { return values[ships[i].Ship.ID] < values[ships[j].Ship.ID] })
+		var best gameapi.GoldsmithsQuote
+		for _, ship := range ships {
+			quote, err := r.api.GetGoldsmithsQuote(ctx, gameapi.GoldsmithsQuoteRequest{
+				PrincipalPence: principal, TermGameDays: 360, Repayment: "amortised",
+				ShipID: ship.Ship.ID, BankingRegion: loan.BankingRegion,
+			})
+			if err != nil {
+				var apiErr *gameapi.APIError
+				if errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 {
+					return false, r.markLoanBridgeDue(ctx, intent, "Goldsmiths bridge quote refused: "+apiErr.Code+" "+apiErr.Detail)
+				}
+				if ctx.Err() != nil {
+					return false, ctx.Err()
+				}
+				return false, r.recordLoanBridgeDecision(ctx, intent, "Goldsmiths bridge quote temporarily unavailable: "+err.Error())
+			}
+			if quote.MaxPrincipalPence < principal {
+				continue
+			}
+			if !r.validGoldsmithsQuote(quote, ship.Ship.ID, loan.BankingRegion, principal) {
+				return false, r.markLoanBridgeDue(ctx, intent, "Goldsmiths bridge quote refused: unavailable, expired or mismatched exact terms")
+			}
+			if best.Quote.ID == "" || quote.RebuildValuePence < best.RebuildValuePence {
+				best = quote
+			}
+		}
+		if best.Quote.ID == "" {
+			return false, r.markLoanBridgeDue(ctx, intent, "Goldsmiths bridge unavailable: no free lien can cover the bounded installment shortfall")
+		}
+		intent.Quote = best
+		if err := r.markLoanBridgeDue(ctx, intent, "emergency Goldsmiths bridge admitted for installment cash shortfall"); err != nil {
+			return false, err
+		}
+		mission := &store.Mission{AccountID: r.account.ID, ShipID: "__loans", Phase: "loan_bridge", Generation: uuid.NewString()}
+		data := missionData{Plan: Plan{Kind: "treasury"}, CostsKnown: true, LoanBridge: intent}
+		err = r.stage(ctx, mission, &data, ShipState{}, "loan-accept", "/v1/loan/accept-quote", gameapi.QuoteActionRequest{QuoteID: best.Quote.ID})
+		if err != nil || data.Action == nil {
+			return false, errors.Join(err, r.clearLoanBridgeDue(ctx, intent))
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 	if !r.loanAuthority() || !r.fresh("vaults") || !r.fresh("rates") {
 		return false, nil
@@ -647,6 +911,9 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 		}
 		return true, r.db.DeleteMission(ctx, r.account.ID, mission.ShipID)
 	}
+	if changed, err := r.serviceInstallmentBridge(ctx); changed || err != nil {
+		return changed, err
+	}
 	for _, loan := range r.stateCache.Loans {
 		if !loan.IsMortgage || loan.Status != "active" || loan.OwedPence <= 0 || loan.NextPaymentDueAt == nil {
 			continue
@@ -657,7 +924,7 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 		}
 		input := r.planningInput(ShipState{})
 		if input.Balances[loan.BankingRegion] < required[loan.BankingRegion] {
-			if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__loans", &loanRepaymentIntent{Before: loan}, nil); changed || err != nil {
+			if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__loans", &loanRepaymentIntent{Before: loan}, nil, false); changed || err != nil {
 				return changed, err
 			}
 		}
@@ -673,7 +940,7 @@ func (r *Runner) serviceLoans(ctx context.Context) (bool, error) {
 		}
 		required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], loan.ArrearsPence)
 		intent := &loanRepaymentIntent{Before: loan, AmountPence: loan.ArrearsPence}
-		if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__loans", intent, nil); changed || err != nil {
+		if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__loans", intent, nil, false); changed || err != nil {
 			return changed, err
 		}
 		if input.Balances[loan.BankingRegion] < required[loan.BankingRegion] {
@@ -779,6 +1046,8 @@ func (r *Runner) loanPrepaymentInput(ctx context.Context, loan gameapi.Loan) (Pl
 	if err != nil {
 		return PlanningInput{}, false, err
 	}
+	input.ReserveByRegion = fullLoanReserves(input)
+	input.DeferredLoanReserves = nil
 	region := loan.BankingRegion
 	for bankRegion, required := range input.ReserveByRegion {
 		if input.Balances[bankRegion] < required {
@@ -913,7 +1182,7 @@ func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (G
 	if err != nil {
 		return financing.Decision, nil, err
 	}
-	required := clonePence(input.ReserveByRegion)
+	required := fullLoanReserves(input)
 	port, exists := findPort(r.stateCache.Catalog, data.BuildPort)
 	if !exists {
 		return financing.Decision, nil, errors.New("capacity financing lacks its yard banking region")
@@ -922,7 +1191,11 @@ func (r *Runner) capacityFinanceReady(ctx context.Context, data *missionData) (G
 	var protectedDebt int64
 	for _, accepted := range financing.Loans {
 		loan, _ := r.loanByID(accepted.ID)
-		protectedDebt = growthCashTotal(protectedDebt, loanReserve(loan))
+		reserve := r.loanServiceReserve(loan)
+		if reserve == 0 {
+			reserve = loanReserve(loan)
+		}
+		protectedDebt = growthCashTotal(protectedDebt, reserve)
 	}
 	required[port.BankingRegion] = growthCashTotal(required[port.BankingRegion], capital, max(0, growthCashTotal(installment, installment)-protectedDebt))
 	if len(financing.Loans) == len(financing.Quotes) {
@@ -963,14 +1236,14 @@ func (r *Runner) repayCapacityFinancing(ctx context.Context, mission *store.Miss
 		if loan.OwedPence <= 0 {
 			continue
 		}
-		input, err := r.committedPlanningInputExcept(ctx, ShipState{}, "__growth")
+		input, err := r.committedPlanningInputExceptLoan(ctx, ShipState{}, "__growth", loan.ID)
 		if err != nil {
 			return false, err
 		}
-		required := clonePence(input.ReserveByRegion)
-		required[loan.BankingRegion] = growthCashTotal(max(0, required[loan.BankingRegion]-loanReserve(loan)), loanFullPayment(loan))
+		required := fullLoanReserves(input)
+		required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], loanFullPayment(loan))
 		if input.Balances[loan.BankingRegion] < required[loan.BankingRegion] {
-			if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__treasury", &loanRepaymentIntent{Before: loan}, mission); changed || err != nil {
+			if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__treasury", &loanRepaymentIntent{Before: loan}, mission, false); changed || err != nil {
 				return changed, err
 			}
 			return false, r.holdExpected(ctx, mission.ShipID, "unused capacity principal and one day of interest remain protected pending repayment funding")
@@ -1038,7 +1311,7 @@ func (r *Runner) driveCapacityFinancing(ctx context.Context, mission *store.Miss
 		return true, r.stage(ctx, mission, data, ShipState{}, "loan-accept", path, gameapi.QuoteActionRequest{QuoteID: quote.ID})
 	}
 	input := r.planningInput(ShipState{})
-	if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__treasury", nil, mission); changed || err != nil {
+	if changed, err := r.fundTreasuryMission(ctx, input.Balances, required, "__treasury", nil, mission, false); changed || err != nil {
 		return changed, err
 	}
 	for region, amount := range required {
@@ -1058,6 +1331,48 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 		return errors.New("new loan action requires fresh debt, fleet and cash authority")
 	}
 	if data.Action.Stage == "loan-accept" {
+		if data.LoanBridge != nil {
+			intent := data.LoanBridge
+			var request gameapi.QuoteActionRequest
+			loan, exists := r.loanByID(intent.Before.ID)
+			if mission.ShipID != "__loans" || mission.Phase != "loan_bridge" || !exists ||
+				loanRefinanceDueKey(loan) != loanRefinanceDueKey(intent.Before) ||
+				!decode[map[string]bool](r.snapshot, "_loan_bridge_due")[loanRefinanceDueKey(loan)] ||
+				json.Unmarshal(data.Action.Body, &request) != nil || request.QuoteID != intent.Quote.Quote.ID ||
+				intent.Quote.Quote.CollateralShipID == nil {
+				return errors.New("emergency bridge requires its immutable installment, quote and durable due-date marker")
+			}
+			for _, dataset := range []string{"ship_listings", "loan_requests", "clock"} {
+				if !r.fresh(dataset) {
+					return errors.New("emergency bridge awaits fresh collateral and installment authority")
+				}
+			}
+			shipID := *intent.Quote.Quote.CollateralShipID
+			available := false
+			ships, err := r.loanBridgeShips(ctx)
+			if err != nil {
+				return err
+			}
+			for _, ship := range ships {
+				available = available || ship.Ship.ID == shipID
+			}
+			if !available || !r.validGoldsmithsQuote(intent.Quote, shipID, loan.BankingRegion, intent.Quote.Quote.PrincipalPence) {
+				return errors.New("emergency bridge quote expired or collateral is no longer free")
+			}
+			shortfall, err := r.loanBridgeShortfall(ctx, loan)
+			if err != nil {
+				return err
+			}
+			if shortfall == 0 {
+				return errors.New("emergency bridge no longer has an installment cash shortfall")
+			}
+			principal := max(int64(100_000), min(goldsmithsMaximumPence, shortfall))
+			principal = min(goldsmithsMaximumPence, (principal+9_999)/10_000*10_000)
+			if principal < intent.Quote.Quote.PrincipalPence {
+				return errors.New("emergency bridge cash shortfall shrank below its admitted principal")
+			}
+			return nil
+		}
 		if mission.ShipID != "__growth" || data.Capacity == nil || data.Capacity.Financing == nil {
 			return errors.New("new borrowing requires its durable capacity financing intent")
 		}
@@ -1111,7 +1426,7 @@ func (r *Runner) loanActionReady(ctx context.Context, mission *store.Mission, da
 		protected, err = r.loanServiceReserves(ctx, loan.ID)
 	} else {
 		input, err = r.committedPlanningInputExceptLoan(ctx, ShipState{}, mission.ShipID, loan.ID)
-		protected = input.ReserveByRegion
+		protected = fullLoanReserves(input)
 	}
 	if err != nil {
 		return err
@@ -1150,6 +1465,11 @@ func (r *Runner) acceptLoanResult(data *missionData, response json.RawMessage) b
 		return false
 	}
 	if data.Action.Stage == "loan-accept" {
+		if data.LoanBridge != nil {
+			var request gameapi.QuoteActionRequest
+			quote := data.LoanBridge.Quote.Quote
+			return json.Unmarshal(data.Action.Body, &request) == nil && request.QuoteID == quote.ID && loanQuoteIdentity(loan, quote)
+		}
 		if data.Capacity == nil || data.Capacity.Financing == nil {
 			return false
 		}
@@ -1200,14 +1520,19 @@ func (r *Runner) reconcileLoanAction(ctx context.Context, mission *store.Mission
 	}
 	var found *gameapi.Loan
 	if data.Action.Stage == "loan-accept" {
-		if data.Capacity == nil || data.Capacity.Financing == nil {
-			return false, nil
+		var quote gameapi.LoanQuote
+		if data.LoanBridge != nil {
+			quote = data.LoanBridge.Quote.Quote
+		} else {
+			if data.Capacity == nil || data.Capacity.Financing == nil {
+				return false, nil
+			}
+			financing := data.Capacity.Financing
+			if len(financing.Loans) >= len(financing.Quotes) {
+				return false, nil
+			}
+			quote = financing.Quotes[len(financing.Loans)]
 		}
-		financing := data.Capacity.Financing
-		if len(financing.Loans) >= len(financing.Quotes) {
-			return false, nil
-		}
-		quote := financing.Quotes[len(financing.Loans)]
 		var request gameapi.QuoteActionRequest
 		if json.Unmarshal(action.Body, &request) != nil || request.QuoteID != quote.ID {
 			return false, nil
@@ -1236,7 +1561,11 @@ func (r *Runner) reconcileLoanAction(ctx context.Context, mission *store.Mission
 			return false, err
 		}
 	}
-	if data.Action.Stage == "loan-accept" {
+	if data.Action.Stage == "loan-accept" && data.LoanBridge != nil {
+		if err := r.recordLoanBridgeDecision(ctx, data.LoanBridge, "emergency Goldsmiths bridge reconciled to its authoritative loan"); err != nil {
+			return false, err
+		}
+	} else if data.Action.Stage == "loan-accept" {
 		quote := data.Capacity.Financing.Quotes[len(data.Capacity.Financing.Loans)]
 		r.recordAcceptedCapacityLoan(data, *found, quote)
 		if data.Capacity.Financing.Cancel {
@@ -1250,6 +1579,10 @@ func (r *Runner) reconcileLoanAction(ctx context.Context, mission *store.Mission
 
 func loanResultPhase(mission *store.Mission, data *missionData) {
 	if data.Action.Stage == "loan-accept" {
+		if data.LoanBridge != nil {
+			mission.Phase = "done"
+			return
+		}
 		mission.Phase = "growth_finance"
 		if data.Capacity.Financing.Cancel {
 			mission.Phase = "growth_finance_repay"

@@ -249,6 +249,7 @@ type PlanningInput struct {
 	Contracts              []Contract
 	Balances               map[string]int64
 	ReserveByRegion        map[string]int64
+	DeferredLoanReserves   []loanReserveDeferral
 	ReservePence           int64
 	SourcingAllowancePence *int64
 	// Other active relocations retain their modeled or already incurred risk.

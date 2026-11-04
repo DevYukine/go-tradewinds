@@ -157,7 +157,10 @@ func TestDebtServiceHoldGrowthHullCashBoundaries(t *testing.T) {
 				if err != nil || !ready {
 					t.Fatalf("partial repayment input: ready=%t err=%v", ready, err)
 				}
-				partialAmount = (input.Balances[loan.BankingRegion] - input.ReserveByRegion[loan.BankingRegion] - loanReserve(loan)) / 100 * 100
+				// Voluntary prepayment still keeps the full legacy loan buffer,
+				// even though the growth hold now subtracts only phased service.
+				prepaymentReserve := loanReserve(loan)
+				partialAmount = (input.Balances[loan.BankingRegion] - input.ReserveByRegion[loan.BankingRegion] - prepaymentReserve) / 100 * 100
 				if partialAmount < 100_000 || partialAmount >= loanFullPayment(loan) {
 					t.Fatalf("below-hold fixture lacks a partial-payment-sized surplus: %d", partialAmount)
 				}
@@ -512,6 +515,7 @@ func TestDebtServiceHoldDoesNotBlockCommissioningRefit(t *testing.T) {
 func TestDebtServiceHoldDoesNotBlockArrearsCure(t *testing.T) {
 	t.Parallel()
 	h, runner := loanCapacityFixture(t, 750_000, false)
+	refuseInstallmentBridgeQuotes(h)
 	loan := installDebtServiceHoldLoan(runner, "north_sea")
 	loan.ArrearsPence = 1_000
 	runner.stateCache.Loans[0] = loan
@@ -521,7 +525,8 @@ func TestDebtServiceHoldDoesNotBlockArrearsCure(t *testing.T) {
 	for index := range runner.stateCache.Vaults {
 		vault := &runner.stateCache.Vaults[index]
 		if vault.AccountType == "vault" && vault.BankingRegion == loan.BankingRegion {
-			vault.BalancePence += loan.ArrearsPence - loanReserve(loan)
+			serviceReserve := runner.stateCache.loanServiceReserve(loan, runner.stateCache.Clock.RealUTC.Add(serverClockStaleness))
+			vault.BalancePence += loan.ArrearsPence - serviceReserve
 		}
 	}
 	if changed, err := runner.serviceLoans(h.ctx); err != nil || !changed {
@@ -692,7 +697,7 @@ func TestDebtServiceHoldDoesNotVetoAdmittedMortgageBuild(t *testing.T) {
 	for index := range runner.stateCache.Vaults {
 		vault := &runner.stateCache.Vaults[index]
 		if vault.AccountType == "vault" && vault.BankingRegion == port.BankingRegion {
-			vault.BalancePence += loanReserve(loan)
+			vault.BalancePence += runner.stateCache.loanServiceReserve(loan, runner.stateCache.Clock.RealUTC.Add(serverClockStaleness))
 		}
 	}
 	if err := runner.newActionPreflight(h.ctx, mission, &data); err != nil {
@@ -739,7 +744,8 @@ func TestDebtServiceHoldStableReasonKeepsCrownDiagnostics(t *testing.T) {
 	h, runner := loanCapacityFixture(t, 750_000, false)
 	runner.opts.Execute = false
 	installDebtServiceHoldLoan(runner, "north_sea")
-	for _, free := range []int64{702_224, 702_223} {
+	hold := runner.debtServiceHoldPence()
+	for _, free := range []int64{hold - 1, hold - 2} {
 		setDebtServiceFreeCash(t, h, runner, "north_sea", free)
 		if reason, err := runner.growthCashFunding(h.ctx, &growthEvidence{}); err != nil || reason != debtServiceHoldPrefix {
 			t.Fatalf("debt hold reason changed with cash: %q %v", reason, err)
@@ -753,7 +759,7 @@ func TestDebtServiceHoldStableReasonKeepsCrownDiagnostics(t *testing.T) {
 	if err := json.Unmarshal(row.Details, &details); err != nil {
 		t.Fatal(err)
 	}
-	if details["hold_crowns"] != 7022.25 || details["free_cash_crowns"] != 7022.24 {
+	if details["hold_crowns"] != float64(hold)/100 || details["free_cash_crowns"] != float64(hold-1)/100 {
 		t.Fatalf("hold diagnostics lost their Crown amounts: %s", row.Details)
 	}
 	history, err := h.db.History(h.ctx, h.account.ID, "decisions", store.MaxHistoryLimit)
@@ -770,5 +776,30 @@ func TestDebtServiceHoldStableReasonKeepsCrownDiagnostics(t *testing.T) {
 		if counts[kind] != 1 {
 			t.Fatalf("cash drift churned %s decisions: %v", kind, counts)
 		}
+	}
+}
+
+func TestDebtServiceHoldKeepsFullPayoffWhileInstallmentDeferred(t *testing.T) {
+	t.Parallel()
+	loan := snapshotTestLoan()
+	loan.CollateralKind, loan.CollateralShipID = "unsecured", nil
+	runner := &Runner{account: store.Account{CompanyID: loan.BorrowerCompanyID}}
+	now := time.Now().UTC()
+	runner.generation = "deferred-hold"
+	runner.meta = map[string]DatasetMeta{"clock": {
+		AttemptedAt: now, UpdatedAt: now, Generation: runner.generation, Complete: true,
+	}}
+	runner.stateCache.CompanyID = loan.BorrowerCompanyID
+	runner.stateCache.Clock.RealUTC = time.Date(2026, 11, 4, 7, 0, 0, 0, time.UTC)
+	runner.stateCache.Clock.Calendar.TimeScale = 60
+	due := runner.stateCache.Clock.RealUTC.Add(serverClockStaleness + gameDuration(loanServiceLeadGameDays, 60) + time.Second)
+	loan.NextPaymentDueAt = &due
+	runner.stateCache.Loans = []gameapi.Loan{loan}
+	if got := runner.debtServiceHoldPence(); got != loanFullPayment(loan) {
+		t.Fatalf("deferred service released unsecured payoff capital: hold=%d full=%d", got, loanFullPayment(loan))
+	}
+	runner.stateCache.Clock.RealUTC = runner.stateCache.Clock.RealUTC.Add(time.Second)
+	if got, want := runner.debtServiceHoldPence(), loanFullPayment(loan)-*loan.NextPaymentPence; got != want {
+		t.Fatalf("inside-window hold subtracts more than the funded installment: got=%d want=%d", got, want)
 	}
 }

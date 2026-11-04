@@ -274,8 +274,11 @@ func TestMoneyLoanPrepayExactSurplusAndOnePennyShort(t *testing.T) {
 		for _, extra := range []int64{-1, 0, 1} {
 			t.Run(fmt.Sprintf("owed_%d_surplus_%+d", owed, extra), func(t *testing.T) {
 				h, runner, api, protected := moneyPrepayFixture(t, []int64{owed}, 0, false)
-				// 561,367p × 3000/10,000/360 rounds up to 468p interest; payoff releases 2 × 24,103p of this loan's reserves.
-				surplus := owed + 468 - 48_206 + extra
+				loan := runner.stateCache.Loans[0]
+				service := runner.stateCache.loanServiceReserve(loan, runner.stateCache.Clock.RealUTC.Add(serverClockStaleness))
+				// 561,367p × 3000/10,000/360 rounds up to 468p interest.
+				// Full payoff releases only the installment reserve currently held.
+				surplus := owed + 468 - service + extra
 				for i := range runner.stateCache.Vaults {
 					vault := &runner.stateCache.Vaults[i]
 					if vault.BankingRegion == "north_sea" {
@@ -288,7 +291,7 @@ func TestMoneyLoanPrepayExactSurplusAndOnePennyShort(t *testing.T) {
 				}
 				amount := owed
 				if extra < 0 {
-					amount = surplus / 100 * 100
+					amount = (surplus + service - loanReserve(loan)) / 100 * 100
 				}
 				if got := h.api.mutationCount("/v1/loan/repay"); got != 1 {
 					t.Fatalf("funded surplus must make one full or partial repayment: got %d, holds=%v", got, runner.holding)

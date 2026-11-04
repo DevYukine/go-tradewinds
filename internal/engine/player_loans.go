@@ -384,7 +384,7 @@ func (r *Runner) playerCapacityNeed(ctx context.Context, intent *playerLoanInten
 		return port, hull, GrowthDecision{}, nil, err
 	}
 	evidence := &growthEvidence{
-		asOf: time.Now().UTC(), balances: planning.Balances, required: planning.ReserveByRegion,
+		asOf: time.Now().UTC(), balances: planning.Balances, required: r.growthLoanReserves(planning.ReserveByRegion),
 		workingByRegion: make(map[string]int64),
 	}
 	free := growthFreeCash(planning.Balances, evidence.required)

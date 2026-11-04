@@ -1909,7 +1909,7 @@ func (r *Runner) driveCapacityGrowth(ctx context.Context, ship ShipState, missio
 	}
 	cost := (data.TargetCannons - ship.Ship.CannonsCount) * 15_000
 	// Guns were funded at admission; hold rather than let an unarmed hull trade.
-	if input.Balances[port.BankingRegion]-cost < input.ReserveByRegion[port.BankingRegion] {
+	if input.Balances[port.BankingRegion]-cost < fullLoanReserves(input)[port.BankingRegion] {
 		return false, r.hold(ctx, ship.Ship.ID, "capacity cannons must preserve incumbent commitments and regional reserves")
 	}
 	// An evicted hull must berth again before the yard can arm it; nothing else

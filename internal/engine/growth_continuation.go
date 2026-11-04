@@ -127,14 +127,14 @@ func (r *Runner) reserveMissionCash(required map[string]int64, mission *store.Mi
 		if mission.Phase == "growth_finance_repay" || mission.Phase == "growth_rejected" {
 			for _, accepted := range financing.Loans {
 				if loan, exists := r.loanByID(accepted.ID); exists {
-					required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], max(0, loanFullPayment(loan)-loanReserve(loan)))
+					required[loan.BankingRegion] = growthCashTotal(required[loan.BankingRegion], max(0, loanFullPayment(loan)-r.loanServiceReserve(loan)))
 				}
 			}
 		} else {
 			for region, amount := range financing.ProtectedByRegion {
 				for _, accepted := range financing.Loans {
 					if loan, exists := r.loanByID(accepted.ID); exists && loan.BankingRegion == region {
-						amount = max(0, amount-loanReserve(loan))
+						amount = max(0, amount-r.loanServiceReserve(loan))
 					}
 				}
 				required[region] = growthCashTotal(required[region], amount, financing.DonorByRegion[region])
@@ -390,6 +390,10 @@ func quoteGrowthDelivery(input PlanningInput, base Plan, lane *growthLaneIntent,
 	returnRegion := ""
 	if back != nil {
 		quoted.Ship.Ship.BerthedAt = nil
+		// The quoted lot is a round trip: its cash only comes home after the
+		// ballast return, so the shared onwardDelay moves ExpectedArrival by
+		// the return exactly once for deadline and reserve gates alike.
+		quoted.onwardDelay = gameDuration(back.days, input.Clock.Calendar.TimeScale)
 		quoted.Ship.Stores.ProvisionsTons = max(0, input.Ship.Stores.ProvisionsTons+float64(back.stores)-back.consumed)
 		quoted.Ship.EffectiveHoldCapacityTons += int64(math.Ceil(input.Ship.Stores.ProvisionsTons)) -
 			int64(math.Ceil(quoted.Ship.Stores.ProvisionsTons))
@@ -439,7 +443,8 @@ func quoteGrowthDelivery(input PlanningInput, base Plan, lane *growthLaneIntent,
 		if !plan.Accepted || initial && growthCargoCash(plan, input.Markets[origin.ID].CustomsBPS) > lane.InitialProcurementLimitPence {
 			continue
 		}
-		if back != nil && plan.Deadline != nil && !plan.ExpectedArrival.Add(gameDuration(back.days+1, input.Clock.Calendar.TimeScale)).Before(*plan.Deadline) {
+		// ExpectedArrival already carries the return leg via onwardDelay.
+		if back != nil && plan.Deadline != nil && !plan.ExpectedArrival.Add(gameDuration(1, input.Clock.Calendar.TimeScale)).Before(*plan.Deadline) {
 			continue
 		}
 		required := cargoFundingRequired(quoted, plan)
@@ -677,7 +682,9 @@ func growthSourceInspectionReady(input PlanningInput, plan Plan) error {
 	if harbour.BerthDuesPerDayPence%4 != 0 {
 		bill++
 	}
-	if input.Balances[port.BankingRegion]-bill < input.ReserveByRegion[port.BankingRegion] {
+	// Docking is a non-turnover spend: a fully deferred installment must stay
+	// protected here, not just its phased reserve.
+	if input.Balances[port.BankingRegion]-bill < fullLoanReserves(input)[port.BankingRegion] {
 		return errors.New("growth source inspection cannot fund its harbour bill without protected reserves or forecast receipts")
 	}
 	return nil
