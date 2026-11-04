@@ -80,6 +80,12 @@ At 02:58:56 UTC the tenth Kraken installment (9,817.44 Cr) left the America vaul
 
 Selling Butterfree or the small losing hulls is not automated. It needs an owner decision: a sale band of 50% to 150% of rebuild value applies and the hull must be empty, unmortgaged and uninsured.
 
+### Fleet downsizing to six ships (2026-11-04)
+
+On the owner's instruction four Phase 1 hoys were broken up between 11:30 and 12:09 UTC, with the bot stopped for each yard mutation: Charizard at Hamburg (8,396.93 Cr), Venusaur (8,437.00 Cr), Ivysaur (8,285.92 Cr) and Lapras (8,285.92 Cr) at Amsterdam, 33,405.77 Cr in total to the North Sea vault (M). Portsmouth and London refused with 409 because the Channel Crown's treasury could not pay the yard. Lapras and Ivysaur were listed on the Exchange at 50% of rebuild value, drew no broker or player buyer in 13 real minutes, and were then sailed to Amsterdam. The fleet is Butterfree, Wartortle, Squirtle, Charmeleon, Charmander and Bulbasaur.
+
+Six ships still lose money (E, per real day): upkeep about 26.6k Cr (443.5 Cr per game day), interest about 13k, berth dues and fees about 2k, against about 15.5k of contribution over the previous 15 real hours, almost all Butterfree. The Kraken installments need about 58.9k Cr per real day of cash on top. At 11:49 the Cape Verde provisions charter for Butterfree was still rejected as unfundable, and after 12:10 it was no longer the best evaluated alternative. European yards stay closed to new construction because an overseas yard is unlocked (`phaseOneYard` in [growth_factor.go](../internal/engine/growth_factor.go)).
+
 ## Admiralty commissions and ocean cover (2026-11-02)
 
 The [guide](https://tradewinds.kibb.io/skill.md), [OpenAPI](https://tradewinds.kibb.io/api-docs/openapi.json) and [release notes](https://tradewinds.kibb.io/update) were rechecked before this implementation. This section supersedes the historical commission and insurance verdicts below. Neither market is an automatic positive-return assumption.
