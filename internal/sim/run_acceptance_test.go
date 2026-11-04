@@ -78,7 +78,7 @@ func TestRunAcceptanceReceiptStressIsLiveBaseline(t *testing.T) {
 		settlements int64
 		cash        int64
 	}{
-		{name: "marginal lot rejected", ask: 40_000, cash: 10_000_000},
+		{name: "thin top-rung lot settles", ask: 40_000, settlements: 1, cash: 10_141_780},
 		{name: "sufficient margin settles", ask: 20_000, settlements: 1, cash: 10_741_780},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,8 +110,8 @@ func TestRunAcceptanceReceiptStressIsLiveBaseline(t *testing.T) {
 					continue
 				}
 				settlement := row.Settlements[0]
-				if settlement.QuantityTons != 30 || settlement.AcquisitionPence != 600_000 || settlement.ProceedsPence != 1_341_780 {
-					t.Fatalf("profitable next-rung lot lost its hand-computed receipts: %+v", settlement)
+				if settlement.QuantityTons != 30 || settlement.AcquisitionPence != 30*tc.ask || settlement.ProceedsPence != 1_341_780 {
+					t.Fatalf("fresh-depth lot lost its hand-computed receipts: %+v", settlement)
 				}
 				if !settlement.CompletedAt.Before(to) {
 					t.Fatalf("arrival/settlement waited for the next frame instead of the exact event time: %+v", settlement)
@@ -696,14 +696,15 @@ func TestRunUsesRecordedHazardPricingAndNeverInventsZero(t *testing.T) {
 	options := RunOptions{From: from, To: to, Variants: []Variant{{Name: "baseline"}}}
 	rows, err := Run(context.Background(), tape, options)
 	if err != nil || len(rows) != 1 || !rows[0].HazardAvailable || rows[0].SettlementCount != 1 {
-		t.Fatalf("zero-priced hazard control must survive next-rung stress: %+v, %v", rows, err)
+		t.Fatalf("zero-priced hazard control must still settle its lot: %+v, %v", rows, err)
 	}
 	view, err := tape.Reader().Advance(from)
 	if err != nil {
 		t.Fatal(err)
 	}
 	quote := view.State.HazardQuotes["hull|ship-a|a|b"]
-	quote.ExpectedLossBPS = 2_000
+	// 60% of the 870,000p cargo exceeds the lot's 471,780p contribution.
+	quote.ExpectedLossBPS = 6_000
 	for index := range tape.Frames {
 		dataset := tape.Frames[index].Datasets["_hazard_quotes"]
 		var quotes map[string]engine.HazardQuote
@@ -716,7 +717,7 @@ func TestRunUsesRecordedHazardPricingAndNeverInventsZero(t *testing.T) {
 	}
 	rows, err = Run(context.Background(), tape, options)
 	if err != nil || len(rows) != 1 || !rows[0].HazardAvailable || rows[0].SettlementCount != 0 {
-		t.Fatalf("recorded 20%% hazard did not reject the thin-margin lot: %+v, %v", rows, err)
+		t.Fatalf("recorded 60%% hazard did not reject the lot it outweighs: %+v, %v", rows, err)
 	}
 	for index := range tape.Frames {
 		delete(tape.Frames[index].Datasets, "_hazard_quotes")

@@ -1,79 +1,16 @@
 package engine
 
-// Acceptance tests for spot receipt realism (planner.md D1-D3). Live planning
-// must price fresh quay books at their executable next rung instead of the top
-// bid alone, and retained destination bids must be haircut for their age on
-// arrival (not departure) when the fit is not retained-specific. Retained
-// calibration cells already include age decay and must not double count it.
+// Acceptance tests for spot receipt realism. Retained
+// destination bids must be haircut for their age on arrival (not departure)
+// when the fit is not retained-specific. Retained calibration cells already
+// include age decay and must not double count it.
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/DevYukine/go-tradewinds/internal/store"
 )
-
-// livePlanningInput rebuilds the fixture through PlanningInputFor, the input
-// constructor the live Runner uses, so the assertions cover the live path and
-// not just a hand-built planning input.
-func livePlanningInput(t *testing.T, fixture PlanningInput) PlanningInput {
-	t.Helper()
-	state := AccountState{
-		Catalog: fixture.Catalog, Clock: fixture.Clock,
-		Ships:   []ShipState{fixture.Ship},
-		Markets: fixture.Markets, Ports: fixture.Ports, Routes: fixture.Routes,
-		Contracts: fixture.Contracts, HazardQuotes: fixture.HazardQuotes,
-	}
-	for region, balance := range fixture.Balances {
-		state.Vaults = append(state.Vaults, Vault{AccountType: "vault", BankingRegion: region, BalancePence: balance})
-	}
-	return PlanningInputFor(fixture.Now, fixture.Ship, state, map[string]json.RawMessage{
-		"zones":                encode(fixture.Zones),
-		"_revenue_calibration": encode(fixture.RevenueCalibration),
-	}, PlanningSources{
-		CompanyID: fixture.CompanyID, Metadata: fixture.Metadata, Generation: fixture.Generation,
-	})
-}
-
-func TestLivePlanningPricesFreshBooksAtTheirNextRung(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		ask      int64
-		accepted bool
-	}{
-		{name: "marginal top-rung lot", ask: 40_000},
-		{name: "sufficient-margin lot", ask: 20_000, accepted: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			fixture, candidate := offlineIncidentInput(t, tc.ask)
-			plan := pricePlan(livePlanningInput(t, fixture), fixture.Catalog.ShipClasses[0], fixture.Catalog.Ports[0], candidate, 0, 0)
-			if plan.Accepted != tc.accepted || plan.Economics.PriceUncertaintyStressPence != 323_490 {
-				t.Fatalf("live planning priced the fresh book at its top bid only (ask %d): accepted=%v stress=%d, want accepted=%v stress=323490: %+v",
-					tc.ask, plan.Accepted, plan.Economics.PriceUncertaintyStressPence, tc.accepted, plan)
-			}
-		})
-	}
-}
-
-// TestFreshDepthMarginalLotIsRejectedOrSizedDown pins the November 3 shape: a
-// fresh-depth lot planned from the top bid alone looked profitable while its
-// next executable rung erased the margin, so live planning must reject the
-// whole lot or size down to a lot that survives its next-rung stress.
-func TestFreshDepthMarginalLotIsRejectedOrSizedDown(t *testing.T) {
-	in, candidate := offlineIncidentInput(t, 40_000)
-	hull := in.Catalog.ShipClasses[0]
-	origin := in.Catalog.Ports[0]
-	quoted := pricePlan(in, hull, origin, candidate, 0, 0)
-	if quoted.Accepted {
-		t.Fatalf("fresh-depth lot planned %d net from the top bid with %d next-rung stress omitted, like the Nov 3 29t loser: %+v",
-			quoted.Economics.ExpectedNetPence, quoted.Economics.PriceUncertaintyStressPence, quoted)
-	}
-	sized := sizePlan(in, hull, origin, candidate, 30, 0, 0, 0)
-	if sized.Accepted && sized.Quantity >= candidate.Quantity {
-		t.Fatalf("sizing kept the full thin top-rung lot instead of shrinking or rejecting it: %+v", sized)
-	}
-}
 
 // retainedClothFixture deletes the portsmouth quay book so the destination
 // receipts come from the retained memory: one 66t bid observed half a game day

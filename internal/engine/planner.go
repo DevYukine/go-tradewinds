@@ -744,10 +744,12 @@ func pricePlan(in PlanningInput, hull Hull, origin Port, plan Plan, revenue, ext
 	calibrationBPS := calibration.MedianBPS
 	calibratedCargoRevenue := cargoRevenue - ceilBPS(cargoRevenue, 10_000-calibrationBPS)
 	adverseCargoRevenue := cargoRevenue - ceilBPS(cargoRevenue, 10_000-calibration.AdverseBPS)
-	// Keep executable gossip and fresh-depth fallback floors as well as
-	// measured receipt uncertainty.
+	// Gossip bids can vanish before arrival. Keep their executable fallback
+	// floor as well as measured receipt uncertainty. Fresh depth is not
+	// stressed to its next rung: live on 2026-11-04 that tripled depth stress
+	// (455 to 1,514 bps of revenue) and rejected every positive depth lot.
 	priceStress = max(0, calibratedCargoRevenue-adverseCargoRevenue)
-	if revenueBasis == "gossip" || revenueBasis == "depth" {
+	if revenueBasis == "gossip" {
 		priceStress = max(priceStress, ceilBPS(quoteStress, calibrationBPS))
 	}
 	revenue = revenue - cargoRevenue + calibratedCargoRevenue

@@ -36,8 +36,8 @@ func TestOfflineIncidentLadderAndFundingBoundary(t *testing.T) {
 		accepted bool
 		stress   int64
 	}{
-		{name: "live default rejects thin margin", ask: 40_000, stress: 323_490},
-		{name: "next rung admits sufficient margin", ask: 20_000, accepted: true, stress: 323_490},
+		{name: "thin top-rung margin keeps fresh quay economics", ask: 40_000, accepted: true},
+		{name: "sufficient margin keeps fresh quay economics", ask: 20_000, accepted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in, candidate := offlineIncidentInput(t, tc.ask)
@@ -49,9 +49,12 @@ func TestOfflineIncidentLadderAndFundingBoundary(t *testing.T) {
 				t.Fatalf("risk diagnostic replaced executable sell limit: %d", plan.SellLimitPence)
 			}
 			if tc.accepted {
-				fee := plan.Economics.ExpectedNetPence - tc.stress
-				if fee <= 0 || !addFundingFees(plan, fee-1).Accepted || addFundingFees(plan, fee).Accepted {
-					t.Fatalf("funding fees did not recheck strict positive next-rung contribution: %+v", plan)
+				// Admission needs positive stressed contribution and the 2%
+				// minimum margin on purchase plus customs.
+				floor := max(tc.stress+1, ceilBPS(plan.Economics.PurchasePence+plan.Economics.CustomsPence, 200))
+				fee := plan.Economics.ExpectedNetPence - floor
+				if fee <= 0 || !addFundingFees(plan, fee).Accepted || addFundingFees(plan, fee+1).Accepted {
+					t.Fatalf("funding fees did not recheck strict positive contribution: %+v", plan)
 				}
 			}
 		})
@@ -61,12 +64,14 @@ func TestOfflineIncidentLadderAndFundingBoundary(t *testing.T) {
 func TestOfflineIncidentSizeSelectsBestAcceptedWholeTon(t *testing.T) {
 	in, candidate := offlineIncidentInput(t, 20_000)
 	best := sizePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 30, 0, 0, 0)
-	if !best.Accepted || best.Quantity != 30 || best.SellLimitPence != 44_726 || best.Economics.PriceUncertaintyStressPence != 323_490 {
+	if !best.Accepted || best.Quantity != 30 || best.SellLimitPence != 44_726 || best.Economics.PriceUncertaintyStressPence != 0 {
 		t.Fatalf("profitable incident ladder lot was undersized or repriced: %+v", best)
 	}
+	// Fresh depth is not stressed to its next rung, so the thin top-rung lot
+	// that cleared its measured receipts keeps its full size.
 	in, candidate = offlineIncidentInput(t, 40_000)
-	if got := sizePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 30, 0, 0, 0); got.Accepted {
-		t.Fatalf("sizing escaped the receipt stress floor: %+v", got)
+	if got := sizePlan(in, in.Catalog.ShipClasses[0], in.Catalog.Ports[0], candidate, 30, 0, 0, 0); !got.Accepted || got.Quantity != 30 {
+		t.Fatalf("sizing shrank or rejected a fresh-depth lot with positive contribution: %+v", got)
 	}
 }
 
@@ -75,7 +80,7 @@ func TestOfflineReceiptStressLeavesContractAndGossipEconomicsUnchanged(t *testin
 		t.Run(kind, func(t *testing.T) {
 			plan := incomeFundingBest(t, incomeFundingInput(t, kind))
 			if plan.Kind != kind || plan.Economics.RevenueBasis != "contract" || plan.Economics.PriceUncertaintyStressPence != 0 {
-				t.Fatalf("next-rung stress changed fixed %s receipts: %+v", kind, plan)
+				t.Fatalf("receipt stress changed fixed %s receipts: %+v", kind, plan)
 			}
 		})
 	}
